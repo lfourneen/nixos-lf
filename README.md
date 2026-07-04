@@ -87,7 +87,7 @@ A declarative NixOS system configuration using Nix flakes, featuring a customize
 - Noctalia shell
 - Disko
 - Impermanence
-- Nix-FLake
+- Nix-Flake
 
 ## License
 
