@@ -117,7 +117,7 @@
       // Focus ring (active window highlight)
       focus-ring {
         width 1
-	      active-color "#E6B450"      // ayu accent color
+	      active-color "#9DCAFF"
 	      inactive-color "#0A0E14"
       }
 
@@ -138,7 +138,10 @@
       }
 
       struts {
-
+        left 5
+        right 5
+        top 5
+        bottom 5
       }
     }
 
@@ -317,6 +320,12 @@
       open-floating true
     }
 
+    // Wechat
+    window-rule {
+      match app-id=r#"^wechat$"#
+      open-floating true
+    }
+
     // Peazip
     window-rule {
       match app-id=r#"^peazip$"#
@@ -343,7 +352,7 @@
 
     // Global window appearance
     window-rule {
-      geometry-corner-radius 0
+      geometry-corner-radius 20
       clip-to-geometry true
     }
 
