@@ -29,7 +29,7 @@ in
       #};
     };
     displayManager = {
-      defaultSession = "gnome";
+      defaultSession = "niri";
 
       #cosmic-greeter = {
         #enable = true;
