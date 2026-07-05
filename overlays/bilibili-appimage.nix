@@ -31,6 +31,15 @@ pkgs.appimageTools.wrapType2 {
      libXScrnSaver
      libXtst
      libXext
+     libglvnd
+     libGL
+     libGLU
+     libGLX
+     egl-wayland
+     egl-wayland2
+     vulkan-tools
+     vulkan-loader
+     vulkan-headers
    ];
 
   extraInstallCommands = ''
@@ -41,7 +50,7 @@ pkgs.appimageTools.wrapType2 {
 
         # Change Exec=AppRun to Exec=bilibili
         substituteInPlace $out/share/applications/$desktopname \
-          --replace-fail 'Exec=AppRun' 'Exec=bash -lc "exec ${pname}"' 
+          --replace-fail 'Exec=AppRun' 'Exec=bash -lc "exec ${pname} --no-sandbox"'
       fi
     done
 
