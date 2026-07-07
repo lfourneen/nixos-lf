@@ -290,6 +290,18 @@
       open-floating true
     }
 
+    // File manager
+    window-rule {
+      match app-id=r#"^org\.gnome\.Nautilus$"#
+      open-floating true
+    }
+    
+    // Text Editor
+    window-rule {
+      match app-id=r#"^org\.gnome\.TextEditor$"#
+      open-floating true
+    }
+
     // Steam client
     window-rule {
       match app-id=r#"^steam$"#
