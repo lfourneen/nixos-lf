@@ -146,7 +146,7 @@
     }
 
     hotkey-overlay {
-
+      skip-at-startup
     }
 
     animations {
