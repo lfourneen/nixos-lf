@@ -1,6 +1,6 @@
 {
   imports = [
-    ./fuzzel.nix
+    #./fuzzel.nix
     ./noctalia.nix
     ./niri.nix
     #./swayidle.nix

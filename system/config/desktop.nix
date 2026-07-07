@@ -134,8 +134,6 @@ in
     gnome-software
     gnome-tweaks
     hydrapaper
-    nautilus
-    nautilus-open-any-terminal
     ptyxis
     
     # KDE
@@ -146,7 +144,7 @@ in
     wayland-utils # Wayland utilities
 
     # Niri
-    fuzzel
+    #fuzzel
     kitty
     linux-wallpaperengine
     lswt

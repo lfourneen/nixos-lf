@@ -377,8 +377,8 @@
     binds {
       Mod+Shift+Slash { show-hotkey-overlay; }
       Mod+Z hotkey-overlay-title="Open a Terminal: kitty" { spawn "kitty"; }
-      Mod+Space hotkey-overlay-title="Run an Application: fuzzel" { spawn "fuzzel"; }
-      Super+Alt+L hotkey-overlay-title="Lock the Screen: noctalia-shell" { spawn "noctalia-shell" "ipc" "call" "lockScreen" "lock"; }
+      Mod+Space hotkey-overlay-title="Run ..." { spawn "noctalia-shell" "ipc" "call" "launcher" "toggle"; }
+      Super+Alt+L hotkey-overlay-title="Lock the Screen" { spawn "noctalia-shell" "ipc" "call" "lockScreen" "lock"; }
 
       Super+Alt+S allow-when-locked=true hotkey-overlay-title=null { spawn-sh "pkill orca || exec orca"; }
 
