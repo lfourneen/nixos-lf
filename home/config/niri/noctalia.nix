@@ -42,14 +42,14 @@
             { colorizeDistroLogo = false; colorizeSystemIcon = "none"; customIconPath = ""; enableColorization = false; icon = "noctalia"; id = "ControlCenter"; useDistroLogo = true; }
             { id = "plugin:network-indicator"; }
             { id = "Network"; displayMode = "onhover"; iconColor = "none"; textColor = "none"; }
-            { id = "plugin:port-monitor"; }
+            { id = "plugin:port-monitor"; hideSystemPorts = true; hideWhenEmpty = false; }
             { id = "plugin:mini-docker"; }
             { id = "Bluetooth"; displayMode = "onhover"; iconColor = "none"; textColor = "none"; }
-            { id = "plugin:usb-drive-manager"; }
+            { id = "plugin:usb-drive-manager"; terminalCommand = "kitty"; iconColor = "none"; fileBrowser = "nautilus"; autoMount = true; hideWhenEmpty = false; showBadge = true; showNotifications = true; }
             { id = "plugin:linux-wallpaperengine-controller"; }
             { id = "plugin:screen-toolkit"; }
             { id = "plugin:color-scheme-creator"; }
-            { blacklist = []; chevronColor = "none"; colorizeIcons = false; drawerEnabled = true; hidePassive = false; id = "Tray"; pinned = []; }
+            { id = "Tray"; chevronColor = "none"; colorizeIcons = false; drawerEnabled = true; hidePassive = true; pinned = []; blacklist = [ "Fcitx*" ]; }
           ];
           center = [
             { characterCount = 2; colorizeIcons = false; emptyColor = "secondary"; enableScrollWheel = true; focusedColor = "primary"; followFocusedScreen = false; fontWeight = "bold"; groupedBorderOpacity = 1; hideUnoccupied = false; iconScale = 1; id = "Workspace"; labelMode = "none"; occupiedColor = "secondary"; pillSize = 0.6; showApplications = false; showBadge = true; showLabelsOnlyWhenOccupied = true; unfocusedIconsOpacity = 1; }
@@ -609,4 +609,3 @@
     };
   };
 }
-
