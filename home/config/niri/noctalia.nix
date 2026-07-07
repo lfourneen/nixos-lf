@@ -211,7 +211,7 @@
 
       # App Launcher
       appLauncher = {
-        enableClipboardHistory = false;
+        enableClipboardHistory = true;
         autoPasteClipboard = false;
         enableClipPreview = true;
         clipboardWrapText = true;
@@ -221,7 +221,7 @@
         pinnedApps = [];
         useApp2Unit = false;
         sortByMostUsed = true;
-        terminalCommand = "xterm -e";
+        terminalCommand = "kitty -e";
         customLaunchPrefixEnabled = false;
         customLaunchPrefix = "";
         viewMode = "list";
@@ -234,7 +234,7 @@
         ignoreMouseInput = false;
         screenshotAnnotationTool = "";
         overviewLayer = false;
-        density = "default";
+        density = "comfortable";
       };
 
       # Control Center
