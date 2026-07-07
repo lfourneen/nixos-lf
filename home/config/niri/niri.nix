@@ -352,7 +352,7 @@
 
     // Global window appearance
     window-rule {
-      geometry-corner-radius 20
+      geometry-corner-radius 16
       clip-to-geometry true
     }
 
