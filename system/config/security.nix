@@ -1,5 +1,11 @@
-{ lib, pkgs, ... }:
+{ inputs, lib, pkgs, ... }:
 
+let
+  unstable-pkgs = import inputs.nixpkgs-unstable {
+    system = pkgs.stdenv.hostPlatform.system;
+    config.allowUnfree = true;
+  };
+in
 {
   # Privilege authorization and authentication mechanisms
   security.sudo-rs = {
@@ -52,17 +58,21 @@
   programs.firejail = {
     enable = true;
     wrappedBinaries = {
-      #firefox = {
-        #executable = "${lib.getBin pkgs.firefox}/bin/firefox";
-        #profile = "${pkgs.firejail}/etc/firejail/firefox.profile";
-      #};
-      #google-chrome = {
-        #executable = "${lib.getBin pkgs.google-chrome}/bin/google-chrome";
-        #profile = "${pkgs.firejail}/etc/firejail/google-chrome.profile";
-      #};
+      media-downloader = {
+        executable = "${lib.getBin pkgs.media-downloader}/bin/media-downloader";
+        profile = "${pkgs.firejail}/etc/firejail/default.profile";
+      };
       mpv = {
         executable = "${lib.getBin pkgs.mpv}/bin/mpv";
         profile = "${pkgs.firejail}/etc/firejail/mpv.profile";
+      };
+      wine = {
+        executable = "${lib.getBin unstable-pkgs.wineWow64Packages.waylandFull}/bin/wine";
+        profile = "${pkgs.firejail}/etc/firejail/default.profile";
+      };
+      yt-dlp = {
+        executable = "${lib.getBin pkgs.yt-dlp}/bin/yt-dlp";
+        profile = "${pkgs.firejail}/etc/firejail/default.profile";
       };
     };
   };
@@ -118,4 +128,3 @@
     lynis osslsigncode
   ];
 }
-
