@@ -71,6 +71,7 @@ in
       "com.qq.QQ"
       "com.spotify.Client"
       "com.tencent.WeChat"
+      "com.usebottles.bottles"
       "com.tencent.wemeet"
       "com.vysp3r.ProtonPlus"
       "md.obsidian.Obsidian"
@@ -146,4 +147,3 @@ in
     sysprof
   ];
 }
-
