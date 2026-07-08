@@ -8,7 +8,9 @@ let
 in
 {
   home.packages = with pkgs;[
+    airi
     bilibili
+    mangohud
     #minecraft-server
     sillytavern
   ];
