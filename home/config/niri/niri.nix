@@ -368,7 +368,7 @@
       open-floating true
     }
 
-    // Unkown apps
+    // Unknown apps
     window-rule {
       match app-id=r#"^null$"#
       open-floating true
