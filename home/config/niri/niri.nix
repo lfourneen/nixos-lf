@@ -335,6 +335,12 @@
     // Wechat
     window-rule {
       match app-id=r#"^wechat$"#
+      match app-id=r#"^Weixin$"#
+      match title=r#"(?i)wechat"#
+      match title=r#"(?i)weixin"#
+      match title=r#"微信"#
+      match title=r#"^Official Accounts$"#
+      match title=r#"^Service Accounts$"#
       open-floating true
     }
 
@@ -359,6 +365,12 @@
     // Lutris apps
     window-rule {
       match app-id=r#"^steam_app_default$"#
+      open-floating true
+    }
+
+    // Unkown apps
+    window-rule {
+      match app-id=r#"^null$"#
       open-floating true
     }
 
