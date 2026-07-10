@@ -1,4 +1,4 @@
-{ ... }:
+{ pkgs, ... }:
 {
   xdg.configFile."nushell/config.nu".text = ''
     # Set theme
@@ -78,6 +78,34 @@
       let reset = (ansi reset)
       $"($ayu_yellow)[($user)@($host)|($path)]-($ayu_red)>($ayu_green)>($reset)"
     }
+
+    # GTK-FileChooser schema
+    let gtk3_schema = "${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}"
+    let gtk4_schema = "${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}"
+
+    $env.XDG_DATA_DIRS = ($env.XDG_DATA_DIRS?
+      | default ""
+      | split row (char esep)
+      | where ($it | is-empty) == false
+      | append $gtk3_schema
+      | append $gtk4_schema
+      | uniq
+      | str join (char esep)
+    )
+
+    # GStreamer appsink
+    let gst_base = "${pkgs.gst_all_1.gst-plugins-base}/lib/gstreamer-1.0"
+    let gst_good = "${pkgs.gst_all_1.gst-plugins-good}/lib/gstreamer-1.0"
+
+    $env.GST_PLUGIN_SYSTEM_PATH_1_0 = ($env.GST_PLUGIN_SYSTEM_PATH_1_0?
+      | default ""
+      | split row (char esep)
+      | where ($it | is-empty) == false
+      | append $gst_base
+      | append $gst_good
+      | uniq
+      | str join (char esep)
+    )
 
     # Update config
     def update [--flake: string = "/etc/nixos#lfour"] {
