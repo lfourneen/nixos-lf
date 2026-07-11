@@ -54,7 +54,13 @@
   };
 
   environment.systemPackages = with pkgs; [
+    adwaita-icon-theme
     kdePackages.fcitx5-configtool
+    libayatana-appindicator
+    libappindicator
+    libappindicator-gtk2
+    libappindicator-gtk3
+    hicolor-icon-theme
   ];
 }
 
