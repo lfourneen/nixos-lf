@@ -12,12 +12,13 @@
     // Environment Variables
     environment {
       CLUTTER_BACKEND "wayland"
-      GDK_BACKEND "wayland,x11"
+      GDK_BACKEND "wayland"
       MOZ_ENABLE_WAYLAND "1"
       NIXOS_OZONE_WL "1"
       QT_QPA_PLATFORM "wayland"
       QT_WAYLAND_DISABLE_WINDOWDECORATION "1"
-      ELECTRON_OZONE_PLATFORM_HINT "auto"
+      ELECTRON_OZONE_PLATFORM_HINT "wayland"
+      _JAVA_AWT_WM_NONREPARENTING "1"
 
       XDG_SESSION_TYPE "wayland"
       XDG_CURRENT_DESKTOP "niri"
@@ -341,6 +342,13 @@
       match title=r#"微信"#
       match title=r#"^Official Accounts$"#
       match title=r#"^Service Accounts$"#
+      open-floating true
+    }
+
+    // STM32CubeMX flatpak
+    window-rule {
+      match app-id=r#"^com-st-microxplorer-maingui-STM32CubeMX$"#
+      match title=r#"STM32CubeMX Untitled"#
       open-floating true
     }
 
