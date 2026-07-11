@@ -345,7 +345,7 @@
       open-floating true
     }
 
-    // STM32CubeMX flatpak
+    // STM32CubeMX
     window-rule {
       match app-id=r#"^com-st-microxplorer-maingui-STM32CubeMX$"#
       match title=r#"STM32CubeMX Untitled"#
