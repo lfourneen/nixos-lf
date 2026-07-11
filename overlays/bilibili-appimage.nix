@@ -50,7 +50,7 @@ pkgs.appimageTools.wrapType2 {
 
         # Change Exec=AppRun to Exec=bilibili
         substituteInPlace $out/share/applications/$desktopname \
-          --replace-fail 'Exec=AppRun' 'Exec=bash -lc "exec ${pname} --no-sandbox"'
+          --replace-fail 'Exec=AppRun' 'Exec=bash -lc "exec ${pname} --no-sandbox --ozone-platform=x11"'
       fi
     done
 
