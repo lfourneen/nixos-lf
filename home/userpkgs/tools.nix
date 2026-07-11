@@ -14,7 +14,6 @@ in
     mpv
     unstable-pkgs.motrix-next
     unstable-pkgs.pince
-    unstable-pkgs.warp-terminal
     video-downloader
     scrcpy
     speedtest-go
