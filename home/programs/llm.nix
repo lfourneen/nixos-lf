@@ -10,6 +10,9 @@ in
   services.ollama = {
     enable = true;
     acceleration = "cuda";
+    environmentVariables = {
+      OLLAMA_ORIGINS = "*";
+    };
   };
 
   home.packages = with pkgs; [
