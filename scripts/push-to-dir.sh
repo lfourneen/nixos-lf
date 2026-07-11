@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 DEST_DIR="/etc/nixos"
 
-echo "📂 Pushing config to $DEST_DIR..."
+echo "📂 Cleaning old config and copying new files to $DEST_DIR..."
 
 # Clear all old config files before copying new ones
 sudo rm -rf "$DEST_DIR"/*
