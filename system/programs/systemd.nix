@@ -70,66 +70,72 @@
     };
   };
 
-  # Network PAC
-  systemd.services.pacproxy = {
-    description = "PAC Proxy for Nix";
+# Network PAC (Fail-Open Architecture with Gost)
+  systemd.services.gost-pac = {
+    description = "Gost PAC High-Availability Proxy Daemon";
     after = [ "network.target" ];
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       User = "lfour";
       Group = "users";
-      StateDirectory = "pacproxy";
+      StateDirectory = "gost";
       
-      # Internal implementation of persistent loop monitoring
-      ExecStart = "${pkgs.writeShellScript "pacproxy-launcher" ''
+      # Internal implementation of persistent loop monitoring and hot-reloading
+      ExecStart = "${pkgs.writeShellScript "gost-launcher" ''
         current_status="none"
-        pacproxy_pid=""
+        proxy_pid=""
 
-        # When the service is stopped (systemctl stop), ensure that the background pacproxy core process is cleanly killed.
+        # Cleanup handler to ensure child processes are terminated on service stop
         cleanup() {
-          echo "Stopping pacproxy supervisor..."
-          if [ -n "$pacproxy_pid" ]; then
-            kill "$pacproxy_pid"
+          echo "Stopping proxy supervisor..."
+          if [ -n "$proxy_pid" ]; then
+            kill "$proxy_pid"
           fi
           exit 0
         }
         trap cleanup TERM INT
 
-        # Entering an infinite health check loop
+        # Infinite keepalive and health-check loop
         while true; do
-          # Attempting to probe Clash-Verge's PAC
-          if ${pkgs.curl}/bin/curl -sf -m 2 http://127.0.0.1:33331/commands/pac > /var/lib/pacproxy/original.pac; then
+          # Use --noproxy "*" to bypass global env variables and avoid Nftables/Zapret interference during probing
+          if ${pkgs.curl}/bin/curl -sf -m 2 --noproxy "*" http://127.0.0.1:33331/commands/pac > /dev/null; then
             new_status="proxy"
-            ${pkgs.gnused}/bin/sed 's/SOCKS5[^;]*;//g' /var/lib/pacproxy/original.pac > /var/lib/pacproxy/filtered.pac
-          # If Clash is not enabled, dynamically generate a pseudo-PAC file with a pure direct connection.
           else
             new_status="direct"
-            echo 'function FindProxyForURL(url, host) { return "DIRECT"; }' > /var/lib/pacproxy/filtered.pac
           fi
 
-          # If the agent status changes are detected
+          # Trigger hot-reload only when backend state changes
           if [ "$new_status" != "$current_status" ]; then
-            echo "Proxy status changed from [$current_status] to [$new_status]. Reloading pacproxy..."
+            echo "Proxy status changed from [$current_status] to [$new_status]. Reloading..."
             
-            # If the old pacproxy is still running, kill it first.
-            if [ -n "$pacproxy_pid" ]; then
-              kill "$pacproxy_pid"
-              wait "$pacproxy_pid" 2>/dev/null
+            # Terminate the active gost instance cleanly before spawning a new one
+            if [ -n "$proxy_pid" ]; then
+              kill "$proxy_pid"
+              wait "$proxy_pid" 2>/dev/null
             fi
 
-            # Start pacproxy in the background with the new PAC rules
-            ${pkgs.pacproxy}/bin/pacproxy -l 127.0.0.1:33332 -c /var/lib/pacproxy/filtered.pac -v &
-            pacproxy_pid=$!
+            # Explicitly strip proxy env variables prior to execution to prevent infinite loop regressions
+            if [ "$new_status" = "proxy" ]; then
+              # Clash Online: Listen on 33332 and forward traffic to Clash core at 7897
+              env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
+              ${pkgs.gost}/bin/gost -L=http://127.0.0.1:33332 -F=http://127.0.0.1:7897 &
+            else
+              # Clash Offline: Listen on 33332 and act as a standalone HTTP proxy for direct fallback
+              env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
+              ${pkgs.gost}/bin/gost -L=http://127.0.0.1:33332 &
+            fi
             
+            proxy_pid=$!
             current_status="$new_status"
           fi
 
-          # Check every 5 seconds
+          # Health check interval (seconds)
           sleep 5
         done
       ''
       }";
 
+      # Sandbox the supervisor process environment
       Environment = [
         "no_proxy=127.0.0.1,localhost,::1"
         "NO_PROXY=127.0.0.1,localhost,::1"
@@ -145,7 +151,7 @@
     };
   };
 
-  # Flatpak
+ # Flatpak
   systemd.services.flatpak-mirror = {
     description = "Configure Flathub USTC Mirror";
     wantedBy = [ "multi-user.target" ];
@@ -173,7 +179,7 @@
   environment.systemPackages = with pkgs; [ 
     curl
     gnused
-    pacproxy 
+    gost
   ];
 }
 
