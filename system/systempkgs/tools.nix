@@ -13,6 +13,7 @@ in
     unstable-pkgs.glibc
 
     # Base cli
+    age
     bat
     duf
     fd
