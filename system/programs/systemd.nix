@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ lib, pkgs, ... }:
 
 {
     # SystemD initrd
@@ -175,6 +175,11 @@
     LoadCredential = "";
     LoadCredentialEncrypted = "";
   };
+
+  # Tmpfiles
+  systemd.tmpfiles.rules = [
+  "d /var/tmp 1777 root root 7d"
+  ];
 
   environment.systemPackages = with pkgs; [ 
     curl
