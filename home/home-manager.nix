@@ -2,7 +2,13 @@
 
 {
   # Let Home-Manager install and manage itself.
-  programs.home-manager.enable = true;
+  programs.home-manager = {
+    enable = true;
+    autoExpire = {
+      enable = true;
+      frequency = "weekly";
+    };
+  };
   
   # Users settings
   home = {
@@ -18,6 +24,9 @@
     GDK_BACKEND = "wayland";
     _JAVA_AWT_WM_NONREPARENTING = "1";
   };
+
+  # Font
+  fonts.fontconfig.enable = true;
 
   # Home-Manager version
   home.stateVersion = "26.05";
