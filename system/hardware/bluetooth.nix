@@ -19,7 +19,9 @@
   services.blueman.enable = true;
   boot.kernelModules = [ "btusb" "bluetooth" ];
   environment.systemPackages = with pkgs; [
-    blueman bluez bluez-tools
+    blueman 
+    bluez 
+    bluez-tools
   ];
 }
 
