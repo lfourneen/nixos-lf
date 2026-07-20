@@ -238,6 +238,11 @@
     }
 
     window-rule {
+      match title=r#"org\.gnome\.Console"#
+      open-floating true
+    }
+
+    window-rule {
       match title=r#".*Sign in - Google Accounts — Mozilla Firefox"#
       open-floating true
     }
@@ -344,6 +349,16 @@
       match title=r#"^Service Accounts$"#
       open-floating true
     }
+
+    // DingTalk
+    window-rule {
+      match app-id=r#"^com.alibabainc.dingtalk$"#
+      match app-id=r#"^Com.alibabainc.dingtalk$"#
+      match title=r#"钉钉"#
+      match title=r#"保存"#
+      open-floating true
+    }
+
 
     // STM32CubeMX
     window-rule {
