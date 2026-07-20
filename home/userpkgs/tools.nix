@@ -19,6 +19,11 @@ in
     speedtest-go
     yazi
     yt-dlp
+
+    # CLean Tools
+    bleachbit
+    czkawka-full
+    ncdu
   ];
 }
 
