@@ -24,12 +24,6 @@
   # BCC
   programs.bcc.enable = true;
 
-  # Magic DNS on Tailscale
-  services.tailscale = {
-    enable = true;
-    useRoutingFeatures = "both";
-  };
-
   # Resolved
   services.resolved = {
     enable = true;
@@ -81,9 +75,6 @@
 
             # mDNS / Avahi
             udp dport 5353 accept
-
-            # Tailscale
-            udp dport 41641 accept
 
             # P2P
             tcp dport 53317 accept

@@ -25,9 +25,6 @@ in
   # Force Nix to use the system CA bundle
   nix.settings.ssl-cert-file = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
 
-  #Tailscale
-  services.tailscale.enable = true;
-
   # AppArmor
   services.dbus.apparmor = "enabled";
   security.apparmor = {
@@ -104,12 +101,20 @@ in
   ];
 
   # OOM Protection
-  systemd.oomd.enable = true;
-  services.earlyoom = {
+  systemd.oomd = {
     enable = true;
-    freeMemThreshold = 10;
-    freeSwapThreshold = 10;
+    enableUserSlices = true;
+    settings.OOM = {
+      SwapUsedLimit = "90%";
+      DefaultMemoryPressureLimit = "50%";
+      DefaultMemoryPressureDurationSec = "15s";
+    };
   };
+  #services.earlyoom = {
+    #enable = true;
+    #freeMemThreshold = 10;
+    #freeSwapThreshold = 10;
+  #};
 
   # Removable media / desktop integration
   services.gvfs.enable = true;
@@ -128,3 +133,4 @@ in
     lynis osslsigncode
   ];
 }
+
