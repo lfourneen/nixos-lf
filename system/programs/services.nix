@@ -38,8 +38,13 @@ let
   '';
 in
 {
-  # DBUS && XDG
-  services.dbus.enable = true;
+  # DBUS
+  services.dbus = {
+    enable = true;
+    implementation = "broker";
+  };
+
+  # XDG
   xdg.portal = {
     enable = true;
     wlr.enable = true;
@@ -59,6 +64,18 @@ in
   # Profiling (with sysprof)
   services.sysprof.enable = true;
 
+  # Fstrim
+  services.fstrim = {
+    enable = true;
+    interval = "weekly";
+  };
+
+  # Ananicy
+  services.ananicy = {
+    enable = true;
+    package = pkgs.ananicy-cpp;
+  };
+
   # Flatpak
   services.flatpak = {
     enable = true;
@@ -66,9 +83,11 @@ in
       "app.zen_browser.zen"
       "cn.lceda.LCEDAPro"
       "com.baidu.NetDisk"
+      "com.dingtalk.DingTalk"
       "com.github.tchx84.Flatseal"
       "com.jgraph.drawio.desktop"
       "com.qq.QQ"
+      "com.ranfdev.DistroShelf"
       "com.spotify.Client"
       "com.tencent.WeChat"
       "com.usebottles.bottles"
@@ -147,3 +166,4 @@ in
     sysprof
   ];
 }
+
