@@ -27,6 +27,9 @@
     };
 
     nix-flatpak.url = "github:gmodena/nix-flatpak";
+
+    hermes-agent.url = "github:NousResearch/hermes-agent";
+
   };
 
   outputs = { self, nixpkgs, disko, impermanence, home-manager, ... }@inputs:
@@ -76,6 +79,9 @@
 
         # Flatpak
         inputs.nix-flatpak.nixosModules.nix-flatpak
+
+        # Hermes Agent
+        inputs.hermes-agent.nixosModules.default
       ];
     };
   };

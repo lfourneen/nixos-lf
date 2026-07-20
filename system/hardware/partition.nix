@@ -19,6 +19,7 @@
       "/var/lib/AccountsService"
       "/var/lib/bluetooth"
       "/var/lib/cups"
+      "/var/lib/hermes"
       "/var/lib/NetworkManager"
       "/var/lib/nixos"
       "/var/lib/systemd/backlight"

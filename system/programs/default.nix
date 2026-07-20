@@ -4,6 +4,7 @@
     ./fhs
 
     # Files
+    ./hermes.nix
     #./llm.nix
     ./programs.nix
     ./services.nix

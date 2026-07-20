@@ -88,6 +88,7 @@ A declarative NixOS system configuration using Nix flakes, featuring a customize
 - Disko
 - Impermanence
 - Nix-Flake
+- Hermes Agent
 
 ## License
 
