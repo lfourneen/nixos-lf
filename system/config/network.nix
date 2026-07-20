@@ -54,47 +54,47 @@
     ruleset = ''
       table inet filter {
         chain input {
-            type filter hook input priority 0; policy drop;
+          type filter hook input priority 0; policy drop;
 
-            # Loopback interface
-            iif lo accept
+          # Loopback interface
+          iif lo accept
 
-            # Established and related connections
-            ct state established,related accept
+          # Established and related connections
+          ct state established,related accept
 
-            # ICMP / ICMPv6
-            ip protocol icmp accept
-            ip6 nexthdr icmpv6 accept
+          # ICMP / ICMPv6
+          ip protocol icmp accept
+          ip6 nexthdr icmpv6 accept
 
-            # DHCP server (required for hotspot)
-            udp dport 67 accept
+          # DHCP server (required for hotspot)
+          udp dport 67 accept
 
-            # DNS server (required by hotspot clients)
-            udp dport 53 accept
-            tcp dport 53 accept
+          # DNS server (required by hotspot clients)
+          udp dport 53 accept
+          tcp dport 53 accept
 
-            # mDNS / Avahi
-            udp dport 5353 accept
+          # mDNS / Avahi
+          udp dport 5353 accept
 
-            # P2P
-            tcp dport 53317 accept
-            udp dport 53317 accept
+          # P2P
+          tcp dport 53317 accept
+          udp dport 53317 accept
 
-            # Remote desktop protocols
-            tcp dport { 3389, 5900, 47989 } accept  # RDP, VNC, Sunshine WebUI
-            udp dport { 47998, 47999, 48000, 48010 } accept  # Sunshine streaming ports
+          # Remote desktop protocols
+          tcp dport { 3389, 5900, 47989 } accept  # RDP, VNC, Sunshine WebUI
+          udp dport { 47998, 47999, 48000, 48010 } accept  # Sunshine streaming ports
 
-            # SSH (uncomment if needed)
-            # tcp dport 22 accept
+          # SSH (uncomment if needed)
+          # tcp dport 22 accept
 
-            # Libvirt
-            iifname "virbr0" accept
+          # Libvirt
+          iifname "virbr0" accept
 
-            # Minecraft-Server
-            tcp dport 25565 accept
+          # Minecraft-Server
+          tcp dport 25565 accept
 
-            # Default reject
-            reject with icmpx type admin-prohibited
+          # Default reject
+          reject with icmpx type admin-prohibited
         }
 
         chain forward {
@@ -194,6 +194,7 @@
   services.avahi = {
     enable = true;
     nssmdns4 = true;
+    nssmdns6 = true;
   };
 
   # Zapret
