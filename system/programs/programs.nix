@@ -15,6 +15,16 @@
   };
   programs.command-not-found.enable = false;
 
+  # NH
+  programs.nh = {
+    package = pkgs.nh;
+    enable = true;
+    clean = {
+      enable = true;
+      dates = "weekly";
+    };
+  };
+
   # FZF
   programs.fzf.fuzzyCompletion = true;
 
@@ -50,6 +60,5 @@
     extest.enable = true;
     protontricks.enable = true;
   };
-  hardware.steam-hardware.enable = true;
 }
 

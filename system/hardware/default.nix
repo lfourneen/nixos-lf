@@ -6,6 +6,7 @@
     ./bootloader.nix
     ./cpu.nix
     ./disko.nix
+    ./driver-opt.nix
     ./partition.nix
     ./nvidia.nix
   ];

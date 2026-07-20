@@ -32,17 +32,18 @@
   fonts = {
     fontDir.enable = true;
     packages = with pkgs; [
+      font-awesome
       maple-mono.NF
       maple-mono.NF-CN
-      nerd-fonts.jetbrains-mono
-      nerd-fonts.ubuntu-mono
-      nerd-fonts.ubuntu
       noto-fonts
       noto-fonts-cjk-sans
       noto-fonts-cjk-serif
-      font-awesome
       noto-fonts-color-emoji
+      nerd-fonts.jetbrains-mono
+      nerd-fonts.ubuntu
+      nerd-fonts.ubuntu-mono
       twitter-color-emoji
+      times-newer-roman
     ];
   };
 
@@ -57,8 +58,6 @@
   # NixOS Version
   system.stateVersion = "26.05";
 
-  environment.systemPackages = with pkgs; [
-    nh
-  ];
+  environment.systemPackages = with pkgs; [];
 }
 
