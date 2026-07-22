@@ -19,10 +19,6 @@
   programs.nh = {
     package = pkgs.nh;
     enable = true;
-    clean = {
-      enable = true;
-      dates = "weekly";
-    };
   };
 
   # FZF
