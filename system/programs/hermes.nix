@@ -5,7 +5,7 @@
     enable = true;
     addToSystemPackages = true;
     environmentFiles = [ "/etc/nixos/system/programs/secrets/hermes.env" ];
-    extraArgs = [ "--verbose" ];
+    #extraArgs = [ "--verbose" ];
     restart = "always";
     restartSec = 5;
     documents = {
