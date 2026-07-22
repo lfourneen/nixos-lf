@@ -7,7 +7,7 @@
     brillo.enable = true;
     parallels.enable = true;
     ksm.enable = true;
-    sensor.hddtemp.enable
+    sensor.hddtemp.enable = true;
     steam-hardware.enable = true;
   };
 }
