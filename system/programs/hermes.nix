@@ -1,51 +1,62 @@
-{ config, lib, ... }: 
+{ config, lib, pkgs, ... }: 
 
+let
+  hermesUserProfile = ''
+    # User Profile
+    Name: lfour
+    Preferred Language: Chinese
+    Role: NixOS Power User
+  '';
+  userMdFile = pkgs.writeText "USER.md" hermesUserProfile;
+in
 {
   services.hermes-agent = {
     enable = true;
     addToSystemPackages = true;
-    environmentFiles = [ "/etc/nixos/system/programs/secrets/hermes.env" ];
-    #extraArgs = [ "--verbose" ];
+    environmentFiles = [ "/var/lib/hermes/secrets/hermes.env" ];
+    #extraArgs = [ "" ];
     restart = "always";
     restartSec = 5;
     documents = {
-      "USER.md" = "/home/lfour/Documents/Hermes/USER.md";
+      "USER.md" = "/var/lib/hermes/config/USER.md";
     };
-    #container = {
-      #enable = true;
-      #image = "ubuntu:24.04";
-      #backend = "docker";
-      #hostUsers = [ "lfour" ];
-      #extraVolumes = [ "/home/user/Hermes:/Hermes:rw" ];
-      #extraOptions = [ "--gpus" "all" ];
-    #};
+
     settings = {
       model = {
-        base_url = "https://api.deepseek.com";
-        default = "deepseek/deepseek-v4-pro";
+        provider = "deepseek";
+        default = "deepseek-v4-pro";
       };
       toolsets = [ "all" ];
-      terminal = { 
+      terminal = {
         backend = "local";
-	cwd = "/var/lib/hermes";
-	timeout = 180; 
+        cwd = "/var/lib/hermes";
+        timeout = 180; 
       };
       compression = {
         enabled = true;
         threshold = 0.85;
-        summary_model = "deepseek/deepseek-v4-flash";
+        summary_model = "deepseek-v4-flash";
       };
       display = {
         compact = false; 
-	personality = "kawaii"; 
+        personality = "kawaii"; 
       };
       memory = { 
         memory_enabled = true; 
-	user_profile_enabled = true;
+        user_profile_enabled = true;
       };
       agent = { 
         max_turns = 60; 
-	verbose = false; 
+        verbose = true;
+      };
+      gateway = {
+        web = {
+          enabled = true;
+          bind = "127.0.0.1:8080";
+        };
+      };
+      security = {
+        allowed_users = [ "lfour" ];
       };
       plugins.enabled = [
         "hermes-lcm"
@@ -54,13 +65,22 @@
     };
   };
 
+  systemd.tmpfiles.rules = [
+    "d /var/lib/hermes/workspace 0750 hermes hermes - -"
+    "d /var/lib/hermes/config 0750 hermes hermes - -"
+    "C /var/lib/hermes/config/USER.md 0640 hermes hermes - ${userMdFile}"
+    "d /var/lib/hermes/secrets 0700 hermes hermes - -"
+    "z /var/lib/hermes/secrets/hermes.env 0600 hermes hermes - -"
+  ];
+
   systemd.services.hermes-agent.serviceConfig = {
     User = "hermes";
     Group = "hermes";
+    EnvironmentFile = "/var/lib/hermes/secrets/hermes.env";
     ProtectSystem = "strict";
     ProtectHome = lib.mkForce false;
     SupplementaryGroups = [ "users" ];
-    ReadWritePaths = [ "/home/lfour/Hermes" ];
+    ReadWritePaths = [ "/home/lfour/Hermes" "/var/lib/hermes" ];
     PrivateTmp = true;
     ProtectControlGroups = true;
     ProtectKernelModules = true;
