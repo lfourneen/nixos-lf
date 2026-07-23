@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }: 
+{ config, lib, pkgs, ... }:
 
 let
   hermesUserProfile = ''
@@ -8,19 +8,36 @@ let
     Role: NixOS Power User
   '';
   userMdFile = pkgs.writeText "USER.md" hermesUserProfile;
+
 in
 {
+  sops = {
+    defaultSopsFile = ./secrets/secrets.yaml;
+    age.keyFile = "/home/lfour/.config/sops/age/keys.txt";
+
+    secrets = {
+      "hermes_api_key" = {};
+    };
+
+    templates."hermes.env" = {
+      content = ''
+        DEEPSEEK_API_KEY="${config.sops.placeholder."hermes_api_key"}"
+      '';
+      owner = "hermes";
+      group = "hermes";
+      mode = "0600";
+    };
+  };
+
   services.hermes-agent = {
     enable = true;
     addToSystemPackages = true;
-    environmentFiles = [ "/var/lib/hermes/secrets/hermes.env" ];
-    #extraArgs = [ "" ];
+    environmentFiles = [ config.sops.templates."hermes.env".path ];
     restart = "always";
     restartSec = 5;
     documents = {
       "USER.md" = "/var/lib/hermes/config/USER.md";
     };
-
     settings = {
       model = {
         provider = "deepseek";
@@ -66,21 +83,20 @@ in
   };
 
   systemd.tmpfiles.rules = [
-    "d /var/lib/hermes/workspace 0750 hermes hermes - -"
-    "d /var/lib/hermes/config 0750 hermes hermes - -"
+    "d /var/lib/hermes 0770 hermes hermes - -"
+    "d /var/lib/hermes/workspace 0770 hermes hermes - -"
+    "d /var/lib/hermes/config 0770 hermes hermes - -"
     "C /var/lib/hermes/config/USER.md 0640 hermes hermes - ${userMdFile}"
-    "d /var/lib/hermes/secrets 0700 hermes hermes - -"
-    "z /var/lib/hermes/secrets/hermes.env 0600 hermes hermes - -"
   ];
 
   systemd.services.hermes-agent.serviceConfig = {
     User = "hermes";
     Group = "hermes";
-    EnvironmentFile = "/var/lib/hermes/secrets/hermes.env";
+    EnvironmentFile = config.sops.templates."hermes.env".path;
     ProtectSystem = "strict";
-    ProtectHome = lib.mkForce false;
+    ProtectHome = lib.mkForce true;
     SupplementaryGroups = [ "users" ];
-    ReadWritePaths = [ "/home/lfour/Hermes" "/var/lib/hermes" ];
+    ReadWritePaths = [ "/var/lib/hermes" ];
     PrivateTmp = true;
     ProtectControlGroups = true;
     ProtectKernelModules = true;

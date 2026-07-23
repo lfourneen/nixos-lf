@@ -89,6 +89,7 @@ A declarative NixOS system configuration using Nix flakes, featuring a customize
 - Impermanence
 - Nix-Flake
 - Hermes Agent
+- Sops-Nix
 
 ## License
 

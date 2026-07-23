@@ -24,6 +24,7 @@ in
     lsof
     pciutils
     psutils
+    sops
     ripgrep-all
     tree
     usbutils

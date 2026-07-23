@@ -51,11 +51,11 @@
         "uv2nix": "uv2nix"
       },
       "locked": {
-        "lastModified": 1784675116,
-        "narHash": "sha256-idhEEX6hOnyIJtb2c1adv27I/yWb2Aumj+SLdFEROwE=",
+        "lastModified": 1784764848,
+        "narHash": "sha256-099VYacgZ2BYGh89vISf5iXW48EVq4vdMv5mM8CmQ8Y=",
         "owner": "NousResearch",
         "repo": "hermes-agent",
-        "rev": "8208fc52701332f213e6c51ebc0b610be00300de",
+        "rev": "3651627d88858912e8460e6f949b7125725600c3",
         "type": "github"
       },
       "original": {
@@ -315,7 +315,28 @@
         "nix-flatpak": "nix-flatpak",
         "nixpkgs": "nixpkgs_2",
         "nixpkgs-unstable": "nixpkgs-unstable",
-        "noctalia": "noctalia"
+        "noctalia": "noctalia",
+        "sops-nix": "sops-nix"
+      }
+    },
+    "sops-nix": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1783174389,
+        "narHash": "sha256-aCWC8ngycU7OdJrU2+Je3qf+1a2ykuBvpPhZT/9tXMc=",
+        "owner": "Mic92",
+        "repo": "sops-nix",
+        "rev": "f1406619a3884cd5c47992a70b8b35c9c0fcb4c9",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Mic92",
+        "repo": "sops-nix",
+        "type": "github"
       }
     },
     "systems": {

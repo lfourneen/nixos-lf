@@ -26,13 +26,18 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     nix-flatpak.url = "github:gmodena/nix-flatpak";
 
     hermes-agent.url = "github:NousResearch/hermes-agent";
 
   };
 
-  outputs = { self, nixpkgs, disko, impermanence, home-manager, ... }@inputs:
+  outputs = { self, nixpkgs, home-manager, ... }@inputs:
   let
     system = "x86_64-linux";
   in {
@@ -74,8 +79,10 @@
         }
 
         # File System
-        disko.nixosModules.default
-        impermanence.nixosModules.impermanence
+        inputs.disko.nixosModules.default
+        inputs.impermanence.nixosModules.impermanence
+
+	      inputs.sops-nix.nixosModules.sops
 
         # Flatpak
         inputs.nix-flatpak.nixosModules.nix-flatpak

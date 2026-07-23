@@ -20,7 +20,7 @@ in
         isNormalUser = true;
         hashedPasswordFile = "/persist/passwords/lfour";
         description = "LFour";
-        extraGroups = [ "networkmanager" "wheel" "dialout"  "libvirtd" "video" "audio" "adbusers" "plugdev" "docker" "resolvconf" ];
+        extraGroups = [ "networkmanager" "wheel" "dialout"  "libvirtd" "video" "audio" "adbusers" "plugdev" "docker" "resolvconf" "hermes" ];
         shell = unstable-pkgs.nushell;
       };
     };

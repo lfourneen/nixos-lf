@@ -14,3 +14,4 @@
     steam-hardware.enable = true;
   };
 }
+
