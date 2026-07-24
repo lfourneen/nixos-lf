@@ -326,6 +326,12 @@
       open-floating true
     }
 
+    // Imv
+    window-rule {
+      match app-id=r#"^imv$"#
+      open-floating true
+    }
+
     // Bilibili
     window-rule {
       match app-id=r#"^bilibili$"#
