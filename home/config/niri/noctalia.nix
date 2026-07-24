@@ -173,7 +173,7 @@
       wallpaper = {
         enabled = true;
         overviewEnabled = false;
-        directory = "${config.home.homeDirectory}/Pictures/Wallpapers";
+        directory = "${config.home.homeDirectory}/Pictures/wallpapers";
         monitorDirectories = [];
         enableMultiMonitorDirectories = false;
         showHiddenFiles = false;
