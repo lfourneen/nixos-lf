@@ -238,7 +238,12 @@
     }
 
     window-rule {
-      match title=r#"org\.gnome\.Console"#
+      match app-id=r#"org\.gnome\.Console"#
+      open-floating true
+    }
+
+    window-rule {
+      match app-id=r#"org\.gnome\.Loupe"#
       open-floating true
     }
 
