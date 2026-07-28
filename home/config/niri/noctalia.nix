@@ -601,10 +601,10 @@
   # State File
   home.file.".cache/noctalia/wallpapers.json" = {
     text = builtins.toJSON {
-      defaultWallpaper = "${../../wallpapers/Kafuu-Chino.png}";
+      #defaultWallpaper = "${../../wallpapers/Kafuu-Chino.png}";
       wallpapers = {
-        "eDP-1" = "${../../wallpapers/Kafuu-Chino.png}";
-	"HDMI-A-1" = "${../../wallpapers/cocoa.png}";
+        #"eDP-1" = "${../../wallpapers/Kafuu-Chino.png}";
+	      #"HDMI-A-1" = "${../../wallpapers/cocoa.png}";
       };
     };
   };

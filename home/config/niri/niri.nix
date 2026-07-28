@@ -115,14 +115,13 @@
       default-column-width { proportion 0.5; }
       // default-column-width {}
 
-      // Focus ring (active window highlight)
+      // Focus ring
       focus-ring {
         width 1
-	      active-color "#9DCAFF"
+	      active-color "#8CBD8C"    // Change windows border (active)
 	      inactive-color "#0A0E14"
       }
 
-      // Window border
       border {
         off
         width 1
@@ -413,13 +412,23 @@
       geometry-corner-radius 16
       clip-to-geometry true
     }
-
-    // Inactive window transparency
+    window-rule {
+      geometry-corner-radius 16
+      clip-to-geometry true
+      opacity 0.9
+      background-effect {
+        blur true
+      }
+    }
     window-rule {
       match is-active=false
-      opacity 0.9
+      opacity 0.8
+      background-effect {
+        blur true
+      }
     }
 
+    // Keyboard binds
     binds {
       Mod+Shift+Slash { show-hotkey-overlay; }
       Mod+Z hotkey-overlay-title="Open a Terminal: kitty" { spawn "kitty"; }
