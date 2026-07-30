@@ -117,6 +117,8 @@ in
     gnomeExtensions.emoji-copy
     gnomeExtensions.force-quit
     gnomeExtensions.just-perfection
+    gnomeExtensions.kiwi-is-not-apple
+    gnomeExtensions.kiwi-menu
     gnomeExtensions.proxy-switcher
     gnomeExtensions.quick-settings-audio-devices-renamer
     gnomeExtensions.user-themes

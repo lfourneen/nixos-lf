@@ -247,6 +247,11 @@
     }
 
     window-rule {
+      match app-id=r#"org\.gnome\.Calendar"#
+      open-floating true
+    }
+
+    window-rule {
       match title=r#".*Sign in - Google Accounts — Mozilla Firefox"#
       open-floating true
     }
