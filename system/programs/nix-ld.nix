@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ config, pkgs, ... }:
 
 {
   environment.extraInit = ''
@@ -144,6 +144,9 @@
 
       # Filesystem Utilities
       e2fsprogs
+
+      # Driver
+      config.boot.kernelPackages.nvidia_x11
 
       # 32-bit
       pkgsi686Linux.glibc
