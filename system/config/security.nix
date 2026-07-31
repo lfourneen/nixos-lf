@@ -104,16 +104,20 @@ in
   systemd.oomd = {
     enable = true;
     enableUserSlices = true;
+    enableSystemSlice = true;
     settings.OOM = {
       SwapUsedLimit = "90%";
-      DefaultMemoryPressureLimit = "50%";
-      DefaultMemoryPressureDurationSec = "15s";
+      DefaultMemoryPressureLimit = "80%";
+      DefaultMemoryPressureDurationSec = "20s";
     };
   };
   #services.earlyoom = {
     #enable = true;
-    #freeMemThreshold = 10;
+    #freeMemThreshold = 5;
     #freeSwapThreshold = 10;
+    #enableNotifications = true;
+    #avoidRegex = "(niri|kitty|Xwayland|wireplumber|pipewire)";
+    #preferRegex = "(python|ComfyUI)";
   #};
 
   # Removable media / desktop integration
