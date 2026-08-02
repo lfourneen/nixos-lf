@@ -20,7 +20,7 @@
               };
             };
             swap = {
-              size = "16G";
+              size = "32G";
               content = {
                 type = "luks";
                 name = "enc-swap";
