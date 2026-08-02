@@ -33,7 +33,7 @@
 
     nix-flatpak.url = "github:gmodena/nix-flatpak";
 
-    hermes-agent.url = "github:NousResearch/hermes-agent";
+    hermes-agent.url = "github:NousResearch/hermes-agent/v2026.7.30";
 
   };
 
