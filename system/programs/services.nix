@@ -112,7 +112,7 @@ in
     openFirewall = false;
     settings = {
       music_directory = "/home/lfour/Music";
-      bind_to_address = "any";
+      bind_to_address = "127.0.0.1";
       audio_output = [
         {
           type = "pipewire";
