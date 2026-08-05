@@ -2,7 +2,7 @@
 
 let
   pname = "airi";
-  version = "0.11.0";
+  version = "0.11.3";
   src = ./local-apps/AIRI-${version}-linux-x86_64.AppImage;
   appimageContents = pkgs.appimageTools.extract { inherit pname version src; };
 in
