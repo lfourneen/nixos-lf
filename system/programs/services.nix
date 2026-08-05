@@ -89,6 +89,7 @@ in
       "com.qq.QQ"
       "com.ranfdev.DistroShelf"
       "com.spotify.Client"
+      "com.st.STM32CubeMX"
       "com.tencent.WeChat"
       "com.usebottles.bottles"
       "com.tencent.wemeet"
