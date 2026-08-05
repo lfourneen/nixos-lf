@@ -79,7 +79,7 @@ in
       gateway = {
         web = {
           enabled = true;
-          bind = "127.0.0.1:8080";
+          bind = "127.0.0.1:18432";
         };
       };
       security = {
@@ -116,3 +116,4 @@ in
     RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
   };
 }
+
