@@ -94,11 +94,12 @@ in
 
   systemd.tmpfiles.rules = [
     "d /var/lib/hermes 0770 hermes hermes - -"
-    "d /var/lib/hermes/workspace 0770 hermes hermes - -"
     "d /var/lib/hermes/.hermes 0770 hermes hermes - -"
+    "d /var/lib/hermes/home 0770 hermes hermes - -"
     "d /var/lib/hermes/.local 0770 hermes hermes - -"
-    "C+ /var/lib/hermes/.hermes/USER.md 0640 hermes hermes - ${userMdFile}"
+    "d /var/lib/hermes/workspace 0770 hermes hermes - -"
     "C+ /var/lib/hermes/.hermes/SOUL.md 0640 hermes hermes - ${soulMdFile}"
+    "C+ /var/lib/hermes/.hermes/USER.md 0640 hermes hermes - ${userMdFile}"
   ];
 
   systemd.services.hermes-agent.serviceConfig = {
