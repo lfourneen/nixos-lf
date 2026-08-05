@@ -4,7 +4,7 @@
   # Nix settings 
   nix.settings = {
     experimental-features = [ "nix-command" "flakes" ];
-    system-features = [ "gccarch-znver3" "gccarch-x86-64-v3" "gccarch-x86-64-v2" "gccarch-x86-64" ];
+    system-features = [ "gccarch-znver4" "gccarch-znver3" "gccarch-x86-64-v3" "gccarch-x86-64-v2" "gccarch-x86-64" ];
     trusted-users = [ "root" "lfour" ];
     auto-optimise-store = true;
     max-jobs = 16;
