@@ -22,6 +22,7 @@ sudo cp -r "$REPO_DIR/overlays" "$DEST_DIR/"
 sudo cp -r "$REPO_DIR/system" "$DEST_DIR/"
 sudo cp "$REPO_DIR/flake.nix" "$DEST_DIR/"
 sudo cp "$REPO_DIR/flake.lock" "$DEST_DIR/"
+sudo cp "$REPO_DIR/.sops.yaml" "$DEST_DIR/"
 
 echo "🔒 Setting secure permissions..."
 
