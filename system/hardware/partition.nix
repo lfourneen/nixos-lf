@@ -28,7 +28,6 @@
       "/var/lib/systemd/credentials"
       "/var/lib/systemd/linger"
       "/var/lib/systemd/random-seed"
-      "/var/lib/tailscale"
       "/var/log"
     ];
     files = [
