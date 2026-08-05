@@ -6,6 +6,7 @@
     hostName = "nixos";
     networkmanager = {
       enable = true;
+      dns = "systemd-resolved";   # Pin NM to resolved
       #dhcp = "internal";
       wifi.powersave = false;
       settings = {
@@ -17,7 +18,7 @@
     resolvconf.enable = false;
     proxy = {
       default = "http://127.0.0.1:33332/";
-      noProxy = "127.0.0.1,localhost,::1,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12,192.168.1.1,*.local";
+      noProxy = "127.0.0.1,localhost,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,192.168.1.1,*.local";
     };
   };
 
@@ -30,8 +31,10 @@
     settings = {
       Resolve = {
         Domains = ["~."];
+        MulticastDNS = "no";
         #DNS = [ "1.1.1.1" "1.0.0.1" ];
-        DNSStubListenerExtra = "udp:0.0.0.0:53";
+        LLMNR = "no";   # Disable LLMNR (LAN poisoning surface)
+        DNSStubListenerExtra = "udp:0.0.0.0:53";  # gated by firewall (hotspot only)
       };
     };
   };
@@ -56,49 +59,60 @@
         chain input {
           type filter hook input priority 0; policy drop;
 
+          # Drop untrackable packets
+          ct state invalid drop
+
           # Loopback interface
           iif lo accept
 
-          # Established and related connections
+          # Established and related connections (our outbound replies)
           ct state established,related accept
 
-          # ICMP / ICMPv6
-          ip protocol icmp accept
-          ip6 nexthdr icmpv6 accept
+          # ICMPv6 essentials (NDP + PMTUD + ping + traceroute) before the public-IPv6 drop
+          ip6 nexthdr icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert, packet-too-big, echo-request, destination-unreachable, time-exceeded } accept
 
-          # DHCP server (required for hotspot)
-          udp dport 67 accept
+          # Block all public IPv6 inbound (link-local/ULA unaffected)
+          ip6 saddr != { ::1, fe80::/10, fc00::/7 } drop
 
-          # DNS server (required by hotspot clients)
-          udp dport 53 accept
-          tcp dport 53 accept
+          # ICMP essentials (ping / traceroute)
+          ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } accept
 
-          # mDNS / Avahi
+          # DHCP server (hotspot only)
+          iifname "wlo1" udp dport 67 accept
+
+          # DNS server (hotspot clients only)
+          iifname "wlo1" ip saddr 10.42.0.0/24 udp dport 53 accept
+
+          # mDNS / Avahi (local discovery)
           udp dport 5353 accept
 
-          # P2P
+          # P2P (LocalSend)
           tcp dport 53317 accept
           udp dport 53317 accept
 
-          # Remote desktop protocols
-          tcp dport { 3389, 5900, 47989 } accept  # RDP, VNC, Sunshine WebUI
-          udp dport { 47998, 47999, 48000, 48010 } accept  # Sunshine streaming ports
+          # Remote desktop protocols (LAN-only)
+          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 3389, 5900, 47989 } accept  # RDP, VNC, Sunshine WebUI
+          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport { 47998, 47999, 48000, 48010 } accept  # Sunshine streaming ports
 
           # SSH (uncomment if needed)
           # tcp dport 22 accept
 
-          # Libvirt
+          # Libvirt VMs (trusted local)
           iifname "virbr0" accept
 
-          # Minecraft-Server
-          tcp dport 25565 accept
+          # Minecraft-Server (LAN-only)
+          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 25565 accept
 
-          # Default reject
-          reject with icmpx type admin-prohibited
+          # Everything else: silent drop
+          drop
         }
 
         chain forward {
           type filter hook forward priority 0; policy drop;
+
+          # Global conntrack for all forwarded flows
+          ct state established,related accept
+          ct state invalid drop
 
           # Hotspot
           iifname "wlo1" ip saddr 10.42.0.0/24 accept
@@ -109,18 +123,15 @@
           oifname "virbr0" ct state established,related accept
           iifname "virbr0" oifname { "enp4s0", "wlo1" } accept
 
-          # Default Reject
-          reject with icmpx type admin-prohibited
+          # Default drop
+          drop
         }
 
         chain output {
           type filter hook output priority 0; policy accept;
 
-          # Direct to router
-          ip daddr 192.168.1.1 accept
-        
-          # All private networks
-          ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } accept
+          # All private networks (incl. CGNAT)
+          ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } accept
           ip6 daddr { fe80::/10, fc00::/7 } accept
 
           # Localhost and link-local
@@ -128,8 +139,8 @@
           ip6 daddr ::1 accept
 
           # Zapret diversion ONLY for real internet traffic
-          ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } tcp dport { 80, 443 } counter queue num 200 bypass
-          ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } udp dport 443 counter queue num 200 bypass
+          ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 80, 443 } counter queue num 200 bypass
+          ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 443 counter queue num 200 bypass
           ip6 daddr != { fe80::/10, fc00::/7 } tcp dport { 80, 443 } counter queue num 200 bypass
           ip6 daddr != { fe80::/10, fc00::/7 } udp dport 443 counter queue num 200 bypass
         }
@@ -139,9 +150,9 @@
       table ip nat {
         chain postrouting {
           type nat hook postrouting priority 100;
-          oifname "enp4s0" ip saddr 192.168.122.0/24 masquerade
-          oifname "wlo1"  ip saddr 192.168.122.0/24 masquerade
-          oifname "enp4s0" masquerade   # hotspot clients
+          oifname "enp4s0" ip saddr 192.168.122.0/24 masquerade   # libvirt VM
+          oifname "wlo1"  ip saddr 192.168.122.0/24 masquerade    # libvirt VM
+          oifname != "wlo1" ip saddr 10.42.0.0/24 masquerade      # hotspot clients (wired or WiFi uplink)
         }
       }
     '';
@@ -224,15 +235,15 @@
 
   # Kernel settings
   boot.kernelModules = [ "tcp_bbr" ];
-  
+
   boot.kernelParams = [
     # Disable Active State Power Management (ASPM) for the onboard wired network card (PCIe)
     "pcie_aspm=off"
-  
+
     # Disable USB auto-suspend
     "usbcore.autosuspend=-1"
   ];
-  
+
   boot.kernel.sysctl = {
     # BBR + fq for better throughput on lossy links
     "net.core.default_qdisc" = "fq";
@@ -264,7 +275,7 @@
     # Netdev
     "net.core.netdev_max_backlog" = 16384;
     "net.core.netdev_budget" = 600;
-    
+
     # Optmem
     "net.core.optmem_max" = 65536;
   };
