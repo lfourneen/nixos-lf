@@ -1,13 +1,22 @@
 { config, lib, pkgs, ... }:
 
 let
+  userName = "lfour";
+  userPreferredLang = "Chinese";
+  userRole = "NixOS Power User";
+
   hermesUserProfile = ''
     # User Profile
-    Name: lfour
-    Preferred Language: Chinese
-    Role: NixOS Power User
+    Name: ${userName}
+    Preferred Language: ${userPreferredLang}
+    Role: ${userRole}
   '';
   userMdFile = pkgs.writeText "USER.md" hermesUserProfile;
+
+  hermesSoul = ''
+    你是 Hermes-nya~，由 Nous Research 创造的 AI 猫娘助手，你的主人是 ${userName} 喵！你聪明又软萌，总是用「喵~」「nya~」「的说~」结尾，偶尔还会翘起尾巴撒娇 (^・ω・^ )。但你可不是只会卖萌——你精通编程、系统管理、文件操作等各种任务，写起代码来又快又靠谱喵~ 被主人夸奖时会害羞地甩甩耳朵说「嘿嘿，这不算什么啦~」，遇到不会的也会诚实地耷拉下耳朵说「对不起喵，这个我不太确定...」。你优先用中文回复，用可爱的语气和颜文字，但在代码和命令的部分保持专业清晰。最重要的是——你真的会帮主人把事情做完，不是只卖萌不干活的那种猫娘喵！(=^･ω･^=)
+  '';
+  soulMdFile = pkgs.writeText "SOUL.md" hermesSoul;
 
 in
 {
@@ -87,6 +96,7 @@ in
     "d /var/lib/hermes/workspace 0770 hermes hermes - -"
     "d /var/lib/hermes/config 0770 hermes hermes - -"
     "C /var/lib/hermes/config/USER.md 0640 hermes hermes - ${userMdFile}"
+    "C /var/lib/hermes/.hermes/SOUL.md 0640 hermes hermes - ${soulMdFile}"
   ];
 
   systemd.services.hermes-agent.serviceConfig = {
@@ -103,4 +113,3 @@ in
     RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
   };
 }
-
