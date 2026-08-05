@@ -11,7 +11,7 @@ in
     enable = true;
     acceleration = "cuda";
     environmentVariables = {
-      OLLAMA_ORIGINS = "*";
+      OLLAMA_ORIGINS = "localhost,127.0.0.1";
     };
   };
 
