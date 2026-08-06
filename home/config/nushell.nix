@@ -196,6 +196,12 @@
       print $"(ansi yellow)Proxy disabled.(ansi reset)"
     }
 
+    # Launch Hermes Agent in isolated sandbox environment
+    def hermes [...args: string] {
+      print $"(ansi yellow_bold)🤖 Launching Hermes Agent in isolated sandbox mode...(ansi reset)"
+      sudo -u hermes -i hermes ...$args
+    }
+
     # Autostart proxy
     proxy-on
   '';
