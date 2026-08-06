@@ -3,7 +3,6 @@
     # floder
     ./gnome
     ./kde
-    #./labwc
     ./niri
 
     # file
