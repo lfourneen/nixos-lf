@@ -3,20 +3,27 @@
 let
   unstable-pkgs = import inputs.nixpkgs-unstable {
     system = pkgs.stdenv.hostPlatform.system;
-    config.allowUnfree = true;
+    config = {
+      allowUnfree = true;
+      cudaSupport = true;
+    };
   };
+
 in
 {
   services.ollama = {
     enable = true;
+    package = pkgs.ollama;
     acceleration = "cuda";
+    host = "127.0.0.1";
+    port = 11434;
     environmentVariables = {
-      OLLAMA_ORIGINS = "localhost,127.0.0.1";
+      OLLAMA_ORIGINS = "http://localhost,http://127.0.0.1,https://localhost,https://127.0.0.1";
     };
   };
 
   home.packages = with pkgs; [
-    unstable-pkgs.llama-cpp 
+    llama-cpp
     unstable-pkgs.lmstudio
   ];
 }
