@@ -51,24 +51,6 @@ in
     ];
   };
 
-  # Notice
-  services.mako = {
-    enable = false;
-    settings = {
-      anchor = "top-right";
-      width =350;
-      default-timeout = 5000; # ms
-      background-color="#FBD0B5";
-      text-color="#5C4A1D";
-      border-color="#272939";
-      progress-color="over #5FA8A0";
-      border-size = 2;
-      border-radius = 8;
-      padding = 12;
-      font = "Maple Mono NF 10";
-    };
-  };
-
   # GIt
   programs.git = {
     enable = true;
