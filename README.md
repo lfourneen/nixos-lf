@@ -24,6 +24,8 @@ A declarative NixOS system configuration using Nix flakes, featuring a customize
 * **Security**: SSH, firewall, and security hardening
 * **Virtualization**: Docker and other virtualization tools
 
+---
+
 ## Usage
 
 1. Clone this repository:
@@ -32,7 +34,6 @@ git clone https://github.com/yourusername/nixos-lf.git
 cd nixos-lf/scripts/ && ./push-to-dir.sh
 
 ```
-
 
 2. Update the config files as needed, for example:
 * In `system/config/user.nix`, change `"lfour"` to your username.
@@ -44,8 +45,9 @@ sudo nixos-rebuild switch --flake .#yourname
 
 ```
 
-
 *(Replace `yourname` with your actual hostname or the flake output you wish to deploy.)*
+
+---
 
 ## Directory Structure
 
@@ -63,8 +65,8 @@ sudo nixos-rebuild switch --flake .#yourname
 │   └── local_apps/         # Custom local applications
 │
 ├── scripts/                # Utility scripts
-│   ├── sync-to-git.sh     # Copy /etc/nixos to ~/Downloads/nixos with relaxed permissions
-│   └── push-to-dir.sh     # Push repo config back to /etc/nixos with secure permissions
+│   ├── sync-to-git.sh      # Copy /etc/nixos to ~/Downloads/nixos with relaxed permissions
+│   └── push-to-dir.sh      # Push repo config back to /etc/nixos with secure permissions
 │
 └── system/                 # System-wide configuration
     ├── config/             # System configs
@@ -75,10 +77,14 @@ sudo nixos-rebuild switch --flake .#yourname
 
 ```
 
+---
+
 ## Scripts
 
 * **`scripts/sync-to-git.sh`** — Copies `/etc/nixos` to `~/Downloads/nixos`, changes ownership to the current user, and sets permissive permissions (dirs 755 / files 644) so the config can be committed to Git.
 * **`scripts/push-to-dir.sh`** — Reverse of the above. Copies `home/`, `overlays/`, `system/`, and `flake.nix` from the repo into `/etc/nixos` and applies secure permissions (dirs 700 / files 600). Must be run with `sudo`.
+
+---
 
 ## Hermes / Sops-Nix
 
@@ -149,6 +155,8 @@ sudo -u hermes -i hermes
 
 ```
 
+---
+
 ## Customization
 
 * **System Config**: Edit files in `system/config/`
@@ -156,6 +164,8 @@ sudo -u hermes -i hermes
 * **Programs**: Modify `system/programs/` and `home/programs/`
 * **Hardware**: Adjust settings in `system/hardware/`
 * **Applications**: See `home/userpkgs/`, `overlays/` and `system/systempkgs/`
+
+---
 
 ## Dependencies
 
@@ -168,7 +178,8 @@ sudo -u hermes -i hermes
 * Hermes Agent
 * Sops-Nix
 
+---
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
