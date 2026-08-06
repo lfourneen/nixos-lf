@@ -5,7 +5,6 @@
 
     # Files
     ./hermes.nix
-    #./llm.nix
     ./programs.nix
     ./services.nix
     ./nix-ld.nix
