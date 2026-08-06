@@ -22,7 +22,6 @@ in
       ms-vscode.cpptools
       ms-vscode.cmake-tools
       ms-vscode-remote.vscode-remote-extensionpack
-      ms-vscode-remote.remote-wsl
       ms-vscode-remote.remote-ssh-edit
       ms-vscode-remote.remote-ssh
       ms-vscode-remote.remote-containers
@@ -32,6 +31,15 @@ in
       ms-python.pylint
       ms-python.vscode-pylance
       platformio.platformio-vscode-ide
+      ms-dotnettools.vscode-dotnet-runtime
+      ms-dotnettools.csharp
+      ms-dotnettools.csdevkit
+      jnoortheen.nix-ide
+      mesonbuild.mesonbuild
+      pkief.material-icon-theme
+      mhutchie.git-graph
+      donjayamanne.githistory
+      shd101wyy.markdown-preview-enhanced
     ];
   };
 
