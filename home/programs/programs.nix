@@ -36,10 +36,11 @@ in
       ms-dotnettools.csdevkit
       jnoortheen.nix-ide
       mesonbuild.mesonbuild
-      pkief.material-icon-theme
       mhutchie.git-graph
       donjayamanne.githistory
       shd101wyy.markdown-preview-enhanced
+      vscode-extensions.github.github-vscode-theme
+      pkief.material-icon-theme
     ];
   };
 
