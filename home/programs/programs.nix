@@ -27,9 +27,9 @@ in
       ms-vscode-remote.remote-containers
       vadimcn.vscode-lldb
       ms-python.python
-      ms-python.debugpy
       ms-python.pylint
       ms-python.vscode-pylance
+      ms-python.debugpy
       platformio.platformio-vscode-ide
       ms-dotnettools.vscode-dotnet-runtime
       ms-dotnettools.csharp
@@ -39,7 +39,8 @@ in
       mhutchie.git-graph
       donjayamanne.githistory
       shd101wyy.markdown-preview-enhanced
-      vscode-extensions.github.github-vscode-theme
+      alefragnani.project-manager
+      github.github-vscode-theme
       pkief.material-icon-theme
     ];
   };
