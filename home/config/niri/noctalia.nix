@@ -46,7 +46,7 @@
             { id = "plugin:mini-docker"; }
             { id = "Bluetooth"; displayMode = "onhover"; iconColor = "none"; textColor = "none"; }
             { id = "plugin:usb-drive-manager"; terminalCommand = "kitty"; iconColor = "none"; fileBrowser = "nautilus"; autoMount = true; hideWhenEmpty = false; showBadge = true; showNotifications = true; }
-            { id = "plugin:linux-wallpaperengine-controller"; }
+            { id = "plugin:linux-wallpaperengine-controller"; defaultFps = 60; }
             { id = "plugin:screen-toolkit"; }
             { id = "plugin:color-scheme-creator"; }
             { id = "Tray"; chevronColor = "none"; colorizeIcons = false; drawerEnabled = true; hidePassive = true; pinned = []; blacklist = [ "Fcitx*" ]; }
@@ -63,8 +63,7 @@
             { id = "plugin:clipper"; }
             { id = "plugin:timer"; }
             { clockColor = "none"; customFont = ""; formatHorizontal = "yyyy-MM-dd, HH:mm ddd"; formatVertical = "HH mm - dd MM"; id = "Clock"; tooltipFormat = "yyyy-MM-dd, HH:mm ddd"; useCustomFont = false; }
-            #{ deviceNativePath = ""; displayMode = "onhover"; hideIfIdle = false; hideIfNotDetected = true; id = "Battery"; showNoctaliaPerformance = false; showPowerProfiles = false; }
-            { id = "plugin:battery-monitor-plus"; }
+            { id = "plugin:battery-monitor-plus"; displayMode = "graphic-clean"; hideIfIdle = false; hideIfNotDetected = true; refreshIntervalSeconds = 5; showNoctaliaPerformance = true; showPowerInBar = true; showPowerProfiles = true; showTimeInBar = true; }
           ];
         };
         mouseWheelAction = "none";
@@ -601,7 +600,7 @@
   # State File
   home.file.".cache/noctalia/wallpapers.json" = {
     text = builtins.toJSON {
-      #defaultWallpaper = "${../../wallpapers/Kafuu-Chino.png}";
+      defaultWallpaper = "${../../wallpapers/muzimi.webp}";
       wallpapers = {
         #"eDP-1" = "${../../wallpapers/Kafuu-Chino.png}";
 	      #"HDMI-A-1" = "${../../wallpapers/cocoa.png}";
