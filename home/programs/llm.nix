@@ -8,7 +8,6 @@ let
       cudaSupport = true;
     };
   };
-
 in
 {
   services.ollama = {
