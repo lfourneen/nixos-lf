@@ -110,7 +110,7 @@
     # Update config
     def update [--flake: string = "/etc/nixos#lfour"] {
       print $"(ansi yellow_bold)Rebuilding system with nh...(ansi reset)"
-      sudo nh os switch --ask --bypass-root-check $flake
+      sudo nh os switch --ask --bypass-root-check $flake -- --verbose
       let exit_code = ($env.LAST_EXIT_CODE | into string)
       if $exit_code == "0" {
         print $"(ansi green_bold)System updated successfully ✓(ansi reset)"
@@ -134,7 +134,7 @@
       }
       
       print $"(ansi yellow)Rebuilding system with nh...(ansi reset)"
-      sudo nh os switch --ask --bypass-root-check $flake
+      sudo nh os switch --ask --bypass-root-check $flake -- --verbose
       let switch_exit = ($env.LAST_EXIT_CODE | into string)
       
       if $switch_exit == "0" {
