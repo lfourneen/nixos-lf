@@ -40,60 +40,109 @@ in
 
   services.hermes-agent = {
     enable = true;
+
     addToSystemPackages = true;
-    environmentFiles = [ config.sops.templates."hermes.env".path ];
+
     restart = "always";
     restartSec = 5;
+
+    environmentFiles = [ config.sops.templates."hermes.env".path ];
+
     documents = {
       "USER.md" = "/var/lib/hermes/.hermes/USER.md";
       "SOUL.md" = "/var/lib/hermes/.hermes/SOUL.md";
     };
+
     settings = {
+      file_read_max_chars = 200000;
+
       model = {
         provider = "deepseek";
         default = "deepseek-v4-pro";
       };
-      toolsets = [ "all" ];
+
       terminal = {
         backend = "local";
         cwd = "/var/lib/hermes";
         timeout = 180; 
       };
+
       compression = {
         enabled = true;
         threshold = 0.85;
         summary_model = "deepseek-v4-flash";
       };
+
       display = {
         compact = false; 
         personality = "kawaii"; 
       };
+
       memory = { 
         memory_enabled = true; 
         user_profile_enabled = true;
       };
+
       agent = { 
         max_turns = 60; 
         verbose = true;
       };
+
       mcp_servers = {
+        fetch = {
+          command = "${pkgs.nodejs}/bin/npx";
+          args = [ "-y" "@modelcontextprotocol/server-fetch" ];
+        };
+       
+       filesystem = {
+          command = "${pkgs.nodejs}/bin/npx";
+          args = [ 
+            "-y" 
+            "@modelcontextprotocol/server-filesystem" 
+            "/var/lib/hermes/workspace" 
+            "/var/lib/hermes/home" 
+            "/tmp" 
+          ];
+        };
+  
         nixos = {
           command = "${pkgs.mcp-nixos}/bin/mcp-nixos";
           args = [];
         };
+
+        sequential-thinking = {
+          command = "${pkgs.nodejs}/bin/npx";
+          args = [ "-y" "@modelcontextprotocol/server-sequential-thinking" ];
+        };
+
+        time = {
+          command = "${pkgs.nodejs}/bin/npx";
+          args = [ "-y" "@modelcontextprotocol/server-time" ];
+        };
       };
+
       gateway = {
         web = {
           enabled = true;
           bind = "127.0.0.1:18432";
         };
       };
+
       security = {
         allowed_users = [ "lfour" ];
       };
+
+      toolsets = [ "all" ];
+
       plugins.enabled = [
         "hermes-lcm"
         "rtk-rewrite"
+        "terminal-exec"
+        "web-scraper"
+        "auto-coder"
+        "git-ops"
+        "cron-tasks"
+        "code-analyzer"
       ];
     };
   };
@@ -107,34 +156,54 @@ in
     "d /nix/var/nix/profiles/per-user/hermes 0755 hermes hermes - -"
     "C+ /var/lib/hermes/.hermes/SOUL.md 0640 hermes hermes - ${soulMdFile}"
     "C+ /var/lib/hermes/.hermes/USER.md 0640 hermes hermes - ${userMdFile}"
+    "f+ /var/lib/hermes/.gitconfig 0640 hermes hermes - [user]\n\tname = Hermes Agent\n\temail = hermes@local.domain\n"
   ];
 
-  systemd.services.hermes-agent.serviceConfig = {
-    User = "hermes";
-    Group = "hermes";
-    EnvironmentFile = config.sops.templates."hermes.env".path;
-    ProtectSystem = "strict";
-    ProtectHome = lib.mkForce true;
-    SupplementaryGroups = [ "users" ];
-    
-    ReadWritePaths = [ 
-      "/var/lib/hermes"
-      "/nix/var/nix/profiles/per-user/hermes"
+  systemd.services.hermes-agent = {
+    path = with pkgs; [
+      bash
+      coreutils
+      git
+      ripgrep
+      fd
+      jq
+      gh
+      nh
+      nix-tree
+      nodejs
+      powertop
     ];
+    serviceConfig = {
+      User = "hermes";
+      Group = "hermes";
+      EnvironmentFile = config.sops.templates."hermes.env".path;
+      ProtectSystem = "strict";
+      ProtectHome = lib.mkForce true;
+      SupplementaryGroups = [ "users" ];
     
-    ReadOnlyPaths = [
-      "/nix/store"
-      "-/etc/nix"
-    ];
-    RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+      ReadWritePaths = [ 
+        "/var/lib/hermes"
+        "/nix/var/nix/profiles/per-user/hermes"
+      ];
+    
+      ReadOnlyPaths = [
+        "/nix/store"
+        "-/etc/nix"
+      ];
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
    
-    PrivateTmp = true;
-    ProtectControlGroups = true;
-    ProtectKernelModules = true;
+      PrivateTmp = true;
+      ProtectControlGroups = true;
+      ProtectKernelModules = true;
+    };
   };
 
   environment.systemPackages = with pkgs; [
+    mcp-server-fetch
+    mcp-server-filesystem
     mcp-nixos
+    mcp-server-sequential-thinking
+    mcp-server-time
   ];
 }
 
