@@ -76,6 +76,12 @@ in
         max_turns = 60; 
         verbose = true;
       };
+      mcp_servers = {
+        nixos = {
+          command = "${pkgs.mcp-nixos}/bin/mcp-nixos";
+          args = [];
+        };
+      };
       gateway = {
         web = {
           enabled = true;
@@ -98,6 +104,7 @@ in
     "d /var/lib/hermes/home 0770 hermes hermes - -"
     "d /var/lib/hermes/.local 0770 hermes hermes - -"
     "d /var/lib/hermes/workspace 0770 hermes hermes - -"
+    "d /nix/var/nix/profiles/per-user/hermes 0755 hermes hermes - -"
     "C+ /var/lib/hermes/.hermes/SOUL.md 0640 hermes hermes - ${soulMdFile}"
     "C+ /var/lib/hermes/.hermes/USER.md 0640 hermes hermes - ${userMdFile}"
   ];
@@ -109,11 +116,25 @@ in
     ProtectSystem = "strict";
     ProtectHome = lib.mkForce true;
     SupplementaryGroups = [ "users" ];
-    ReadWritePaths = [ "/var/lib/hermes" ];
+    
+    ReadWritePaths = [ 
+      "/var/lib/hermes"
+      "/nix/var/nix/profiles/per-user/hermes"
+    ];
+    
+    ReadOnlyPaths = [
+      "/nix/store"
+      "-/etc/nix"
+    ];
+    RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+   
     PrivateTmp = true;
     ProtectControlGroups = true;
     ProtectKernelModules = true;
-    RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
   };
+
+  environment.systemPackages = with pkgs; [
+    mcp-nixos
+  ];
 }
 

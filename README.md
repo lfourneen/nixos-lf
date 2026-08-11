@@ -177,6 +177,7 @@ sudo -u hermes -i hermes
 * Nix-Flake
 * Hermes Agent
 * Sops-Nix
+* MCP-NixOS
 
 ---
 
