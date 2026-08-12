@@ -40,12 +40,12 @@ in
 
   services.hermes-agent = {
     enable = true;
-
+    
     addToSystemPackages = true;
-
+    
     restart = "always";
     restartSec = 5;
-
+    
     environmentFiles = [ config.sops.templates."hermes.env".path ];
 
     documents = {
@@ -55,7 +55,7 @@ in
 
     settings = {
       file_read_max_chars = 200000;
-
+      
       model = {
         provider = "deepseek";
         default = "deepseek-v4-pro";
@@ -90,48 +90,47 @@ in
 
       mcp_servers = {
         fetch = {
-          command = "${pkgs.nodejs}/bin/npx";
-          args = [ "-y" "@modelcontextprotocol/server-fetch" ];
+          command = "${pkgs.mcp-server-fetch}/bin/mcp-server-fetch";
+          args = [];
+          env = { 
+            HTTP_PROXY = "http://127.0.0.1:33332"; 
+            HTTPS_PROXY = "http://127.0.0.1:33332"; 
+          };
         };
-       
-       filesystem = {
-          command = "${pkgs.nodejs}/bin/npx";
-          args = [ 
-            "-y" 
-            "@modelcontextprotocol/server-filesystem" 
-            "/var/lib/hermes/workspace" 
-            "/var/lib/hermes/home" 
-            "/tmp" 
-          ];
+        filesystem = {
+          command = "${pkgs.mcp-server-filesystem}/bin/mcp-server-filesystem";
+          args = [ "/var/lib/hermes/workspace" "/var/lib/hermes/home" "/tmp" ];
         };
-  
         nixos = {
           command = "${pkgs.mcp-nixos}/bin/mcp-nixos";
           args = [];
         };
-
         sequential-thinking = {
-          command = "${pkgs.nodejs}/bin/npx";
-          args = [ "-y" "@modelcontextprotocol/server-sequential-thinking" ];
+          command = "${pkgs.mcp-server-sequential-thinking}/bin/mcp-server-sequential-thinking";
+          args = [];
         };
-
         time = {
-          command = "${pkgs.nodejs}/bin/npx";
-          args = [ "-y" "@modelcontextprotocol/server-time" ];
+          command = "${pkgs.mcp-server-time}/bin/mcp-server-time";
+          args = [];
         };
-      };
-
-      gateway = {
-        web = {
-          enabled = true;
-          bind = "127.0.0.1:18432";
+        playwright = {
+          command = "${pkgs.playwright-mcp}/bin/playwright-mcp";
+          args = [
+            "--executable-path"
+            "${pkgs.playwright-driver.browsers}/chromium-${pkgs.playwright-driver.passthru.browsersJSON.chromium.revision}/chrome-linux64/chrome"
+            "--proxy-server"
+            "http://127.0.0.1:33332"
+          ];
+          env = {
+            PWMCP_PROFILES_DIR_FOR_TEST = "/var/lib/hermes/.playwright-profiles";
+          };
         };
       };
 
       security = {
         allowed_users = [ "lfour" ];
       };
-
+      
       toolsets = [ "all" ];
 
       plugins.enabled = [
@@ -154,6 +153,7 @@ in
     "d /var/lib/hermes/.local 0770 hermes hermes - -"
     "d /var/lib/hermes/workspace 0770 hermes hermes - -"
     "d /nix/var/nix/profiles/per-user/hermes 0755 hermes hermes - -"
+    "d /var/lib/hermes/.playwright-profiles 0770 hermes hermes - -"
     "C+ /var/lib/hermes/.hermes/SOUL.md 0640 hermes hermes - ${soulMdFile}"
     "C+ /var/lib/hermes/.hermes/USER.md 0640 hermes hermes - ${userMdFile}"
     "f+ /var/lib/hermes/.gitconfig 0640 hermes hermes - [user]\n\tname = Hermes Agent\n\temail = hermes@local.domain\n"
@@ -190,11 +190,32 @@ in
         "/nix/store"
         "-/etc/nix"
       ];
-      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" "AF_NETLINK" ];
    
       PrivateTmp = true;
       ProtectControlGroups = true;
       ProtectKernelModules = true;
+    };
+  };
+
+  systemd.services.hermes-dashboard = {
+    description = "Hermes Web Dashboard";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+
+    environment = {
+      HERMES_HOME = "/var/lib/hermes/.hermes";
+      HOME = "/var/lib/hermes";
+    };
+
+    serviceConfig = {
+      User = "hermes";
+      Group = "hermes";
+      WorkingDirectory = "/var/lib/hermes/workspace";
+      ExecStart = "${config.services.hermes-agent.package}/bin/hermes dashboard --host 127.0.0.1 --port 18432 --no-open";
+      Restart = "always";
+      RestartSec = 5;
     };
   };
 
@@ -204,6 +225,7 @@ in
     mcp-nixos
     mcp-server-sequential-thinking
     mcp-server-time
+    playwright-mcp
   ];
 }
 
