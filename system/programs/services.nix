@@ -95,6 +95,7 @@ in
       "com.usebottles.bottles"
       "com.tencent.wemeet"
       "com.vysp3r.ProtonPlus"
+      "io.github.screwys.Rufin"
       "md.obsidian.Obsidian"
       "net.lutris.Lutris"
       "org.onlyoffice.desktopeditors"
