@@ -82,6 +82,7 @@ in
     packages = [
       "app.zen_browser.zen"
       "cn.lceda.LCEDAPro"
+      "cn.wps.wps_365"
       "com.baidu.NetDisk"
       "com.dingtalk.DingTalk"
       "com.github.tchx84.Flatseal"
@@ -96,6 +97,7 @@ in
       "com.vysp3r.ProtonPlus"
       "md.obsidian.Obsidian"
       "net.lutris.Lutris"
+      "org.onlyoffice.desktopeditors"
       "org.prismlauncher.PrismLauncher"
     ];
     update.auto = {
