@@ -1,7 +1,9 @@
 {
   imports = [
+    ./git.nix
     ./llm.nix
-    ./programs.nix
+    ./vscode.nix
+    ./zed-editor.nix
   ];
 }
 

@@ -44,26 +44,4 @@ in
       pkief.material-icon-theme
     ];
   };
-
-  programs.zed-editor = {
-    package = unstable-pkgs.zed-editor;
-    enable = true;
-    extensions = [ 
-      "nix"
-    ];
-  };
-
-  # GIt
-  programs.git = {
-    enable = true;
-    lfs.enable = true;
-    settings = {
-      user = {
-        name  = "LFour86";
-        email = "LFour86@example.com";
-      };
-      init.defaultBranch = "main";
-    };
-  };
 }
-
