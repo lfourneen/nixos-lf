@@ -56,7 +56,7 @@
     cursor {
       hide-when-typing
       hide-after-inactive-ms 5000
-      xcursor-theme "M200"
+      xcursor-theme "Default"
       xcursor-size 48
     }
 
