@@ -5,11 +5,14 @@
     ./systemd
 
     # Files
+    ./flatpak.nix
     ./hermes.nix
-    ./programs.nix
-    ./services.nix
+    ./misc.nix
+    ./mpd.nix
     ./nix-ld.nix
+    ./prgs.nix
     #./ssh.nix
+    ./udev.nix
     ./virtualisation.nix
   ];
 }
