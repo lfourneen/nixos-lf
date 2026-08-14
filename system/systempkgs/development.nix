@@ -51,9 +51,11 @@ in
     # Python
     python313
     uv
+    python313Packages.pip
 
     # Node.js
     nodejs_24
+    pnpm
 
     # Rust
     cargo
