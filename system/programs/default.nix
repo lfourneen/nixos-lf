@@ -2,6 +2,7 @@
   imports = [
     # Folders
     ./fhs
+    ./systemd
 
     # Files
     ./hermes.nix
@@ -9,7 +10,6 @@
     ./services.nix
     ./nix-ld.nix
     #./ssh.nix
-    ./systemd.nix
     ./virtualisation.nix
   ];
 }
