@@ -54,11 +54,14 @@ in
     python313Packages.pip
 
     # Node.js
+    bun
+    just
     nodejs_24
     pnpm
 
     # Rust
     cargo
+    cargo-tauri
     rustc
     rustfmt
 
