@@ -15,6 +15,7 @@ in
     # Base cli
     age
     bat
+    dig
     duf
     fd
     file
