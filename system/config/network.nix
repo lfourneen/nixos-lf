@@ -37,9 +37,11 @@
         Domains = ["~."];
         MulticastDNS = "no";
         DNS = [ "127.0.0.1:1053" ];
-        # Fail-open fallbacks: 223.5.5.5 DoT verified reachable; 1.0.0.1 DoT is blocked (UDP53 only)
+        # Fail-open fallbacks: 223.5.5.5 plain UDP53 is reliable; DoT to IP-form fallbacks FAILS
+        # cert validation (alidns cert has no IP SAN) -> fallback all dead when Clash is off
         FallbackDNS = [ "223.5.5.5" "1.1.1.1" "1.0.0.1" ];
-        DNSOverTLS = "opportunistic";
+        # Must be "no": opportunistic DoT kills the fallback path (cert validation against IPs)
+        DNSOverTLS = "no";
         # DNSSEC MUST be off: mihomo fake-ip answers carry no DNSSEC signature; even
         # allow-downgrade fails validation -> SERVFAIL for ALL system DNS (only proxy apps survive)
         DNSSEC = "no";
