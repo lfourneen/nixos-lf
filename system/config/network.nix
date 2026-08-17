@@ -37,9 +37,12 @@
         Domains = ["~."];
         MulticastDNS = "no";
         DNS = [ "127.0.0.1:1053" ];
-        FallbackDNS = [ "1.1.1.1" "1.0.0.1" ];
+        # Fail-open fallbacks: 223.5.5.5 DoT verified reachable; 1.0.0.1 DoT is blocked (UDP53 only)
+        FallbackDNS = [ "223.5.5.5" "1.1.1.1" "1.0.0.1" ];
         DNSOverTLS = "opportunistic";
-        DNSSEC = "allow-downgrade";
+        # DNSSEC MUST be off: mihomo fake-ip answers carry no DNSSEC signature; even
+        # allow-downgrade fails validation -> SERVFAIL for ALL system DNS (only proxy apps survive)
+        DNSSEC = "no";
         LLMNR = "no";   # Disable LLMNR (LAN poisoning surface)
         DNSStubListenerExtra = "udp:0.0.0.0:53";  # gated by firewall (hotspot only)
       };

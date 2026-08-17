@@ -17,6 +17,16 @@
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
+      # systemd service has no login-session env; without proxy, dl.flathub.org is
+      # GFW-blocked (DNS poisoned) -> "Could not resolve hostname". Route via gost-pac.
+      Environment = [
+        "http_proxy=http://127.0.0.1:33332"
+        "https_proxy=http://127.0.0.1:33332"
+        "HTTP_PROXY=http://127.0.0.1:33332"
+        "HTTPS_PROXY=http://127.0.0.1:33332"
+        "ALL_PROXY=http://127.0.0.1:33332"
+        "all_proxy=http://127.0.0.1:33332"
+      ];
     };
   };
 }
