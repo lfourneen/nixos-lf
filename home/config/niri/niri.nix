@@ -25,10 +25,9 @@
       DISPLAY ":0"
 
       // Proxy
-      //http_proxy "http://127.0.0.1:7890"
-      //https_proxy "http://127.0.0.1:7890"
-      //all_proxy "socks5://127.0.0.1:7890"
-      auto_proxy "http://127.0.0.1:33331/commands/pac"
+      http_proxy "http://127.0.0.1:33332"
+      https_proxy "http://127.0.0.1:33332"
+      all_proxy "http://127.0.0.1:33332"
     }
 
     input {

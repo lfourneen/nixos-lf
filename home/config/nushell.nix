@@ -170,23 +170,10 @@
       nix-collect-garbage --delete-older-than $age
     }
 
-    # Fetch the PAC file and set the environment variables
+    # Set proxy to the system-wide gost-pac port
     def --env proxy-on [] {
-      let pac_url = "http://127.0.0.1:33331/commands/pac"
-      let content = (try {
-        http get --max-time 1sec $pac_url
-      } catch {
-        ""
-      })
-      if ($content | is-empty) == false {
-        let parsed = ($content | parse --regex 'PROXY\s+(?<addr>[\d\.]+:\d+)')
-        if ($parsed | is-empty) == false {
-          let proxy_addr = ($parsed | get 0.addr)
-          let proxy_url = $"http://($proxy_addr)"
-          $env.http_proxy = $proxy_url
-          $env.https_proxy = $proxy_url
-        }
-      }
+      $env.http_proxy = "http://127.0.0.1:33332"
+      $env.https_proxy = "http://127.0.0.1:33332"
     }
     
     # Clear the proxy environment variables

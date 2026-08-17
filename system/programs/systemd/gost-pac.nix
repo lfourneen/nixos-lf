@@ -43,6 +43,14 @@
             if [ -n "$proxy_pid" ]; then
               kill "$proxy_pid"
               wait "$proxy_pid" 2>/dev/null
+
+              # Wait for port 33332 to be released (bounded to avoid infinite loop)
+              i=0
+              while ${pkgs.iproute2}/bin/ss -tuln | grep -q ":33332 "; do
+                i=$((i+1))
+                [ "$i" -ge 10 ] && break
+                sleep 0.2
+              done
             fi
 
             # Explicitly strip proxy env variables prior to execution to prevent infinite loop regressions

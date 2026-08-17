@@ -6,12 +6,16 @@
     hostName = "nixos";
     networkmanager = {
       enable = true;
+      dhcp = "internal";
       dns = "systemd-resolved";   # Pin NM to resolved
-      #dhcp = "internal";
       wifi.powersave = false;
       settings = {
         connectivity = {
           interval = 0;
+        };
+        connection = {
+          "ipv4.ignore-auto-dns" = true;
+          "ipv6.ignore-auto-dns" = true;
         };
       };
     };
@@ -32,7 +36,10 @@
       Resolve = {
         Domains = ["~."];
         MulticastDNS = "no";
-        #DNS = [ "1.1.1.1" "1.0.0.1" ];
+        DNS = [ "127.0.0.1:1053" ];
+        FallbackDNS = [ "1.1.1.1" "1.0.0.1" ];
+        DNSOverTLS = "opportunistic";
+        DNSSEC = "allow-downgrade";
         LLMNR = "no";   # Disable LLMNR (LAN poisoning surface)
         DNSStubListenerExtra = "udp:0.0.0.0:53";  # gated by firewall (hotspot only)
       };
@@ -141,6 +148,13 @@
           # Localhost and link-local
           ip daddr 127.0.0.0/8 accept
           ip6 daddr ::1 accept
+
+          # Prevent Direct WebRTC STUN/TURN Requests Without a Proxy
+          udp dport { 3478, 5349 } drop
+
+          # Allow traffic from proxy software to the node server to bypass the Zapret queue
+          tcp dport { 7897 } accept
+          udp dport { 7897 } accept
 
           # Zapret diversion ONLY for real internet traffic
           ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 80, 443 } counter queue num 200 bypass
