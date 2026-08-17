@@ -8,22 +8,10 @@ let
 in
 {
   home.packages = with pkgs;[
-    aria2
-    imv
-    media-downloader
-    mpv
-    unstable-pkgs.motrix-next
-    unstable-pkgs.pince
-    video-downloader
-    scrcpy
-    speedtest-go
-    yazi
-    yt-dlp
-
-    # CLean Tools
-    bleachbit
-    czkawka-full
     ncdu
+    unstable-pkgs.wineWow64Packages.waylandFull
+    unstable-pkgs.winetricks
+    yazi
   ];
 }
 

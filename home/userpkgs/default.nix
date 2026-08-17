@@ -1,11 +1,7 @@
 {
   imports = [
-    ./chat.nix 
-    ./development.nix 
-    ./entertainment.nix 
-    ./misc.nix 
-    ./network.nix 
-    ./qt.nix
+    ./media.nix
+    ./net.nix
     ./tools.nix
   ];
 }

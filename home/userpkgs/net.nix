@@ -8,19 +8,13 @@ let
 in
 {
   home.packages = with pkgs;[
-    # Wine
-    unstable-pkgs.wineWow64Packages.waylandFull
-    unstable-pkgs.winetricks
-
-    # Image
-    gimp
-    krita
-    inkscape
-
-    # Video
-    kdePackages.kdenlive
-    shotcut
-    obs-studio
+    aria2
+    clash-verge-rev
+    media-downloader
+    unstable-pkgs.motrix-next
+    speedtest-go
+    video-downloader
+    yt-dlp
   ];
 }
 

@@ -8,8 +8,12 @@ let
 in
 {
   home.packages = with pkgs;[
-    qtcreator
-    kdePackages.qtbase
+    bilibili
+    imv
+    mangohud
+    mpv
+    scrcpy
+    sillytavern
   ];
 }
 
