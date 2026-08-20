@@ -6,6 +6,7 @@
     ./gost-pac.nix  
     ./initrd.nix  
     ./libvirtd.nix  
+    ./nix-daemon.nix
     ./ntsync.nix  
     ./nvidia-powerd.nix
   ];
