@@ -9,6 +9,7 @@
       "com.dingtalk.DingTalk"
       "com.discordapp.Discord"
       "com.qq.QQ"
+      "im.riot.Riot"
       "com.tencent.WeChat"
       "com.tencent.wemeet"
       "org.telegram.desktop"
