@@ -7,6 +7,7 @@
       "app.zen_browser.zen"
       "com.baidu.NetDisk"
       "com.dingtalk.DingTalk"
+      "com.discordapp.Discord"
       "com.qq.QQ"
       "com.tencent.WeChat"
       "com.tencent.wemeet"
