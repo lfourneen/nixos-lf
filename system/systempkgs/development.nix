@@ -54,10 +54,12 @@ in
     python313Packages.pip
 
     # Node.js
+    corepack
     bun
     just
     nodejs_24
     pnpm
+    yarn
 
     # Rust
     cargo
