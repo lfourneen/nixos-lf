@@ -20,7 +20,7 @@ let
             enabled = true;
             fill = "surface_variant";
             id = "g1";
-            members = [ "network" "toggle_2" "indicator" ];
+            members = [ "network" "indicator" ];
             opacity = 1.0;
             padding = 6.0;
           }
@@ -158,7 +158,6 @@ let
         "nightwatch75/todo"
         "tadomika_ari/w-engine"
         "rxtsel/portctl"
-        "cleboost/hotspot"
       ];
     };
     shell = {
@@ -220,7 +219,6 @@ let
       notifications = { anchor = true; capsule = true; };
       ram = { capsule = true; };
       session = { anchor = true; capsule = true; };
-      toggle_2 = { type = "cleboost/hotspot:toggle"; };
       tray = { drawer = true; drawer_columns = 5; };
       volume = { anchor = true; capsule = true; };
       w-engine-widget = { type = "tadomika_ari/w-engine:w-engine-widget"; };
