@@ -1,611 +1,260 @@
-{ pkgs, inputs, config, ... }:
+{ inputs, pkgs, ... }:
 
+let
+  # Define the Noctalia config as a Nix attrset
+  noctaliaConfigObj = {
+    audio = { enable_sounds = true; };
+    backdrop = { enabled = true; };
+    bar = {
+      default = {
+        capsule = true;
+        center = [ "group:g3" ];
+        end = [ "tray" "notifications" "clipboard" "group:g1" "bluetooth" "volume" "brightness" "battery" "session" ];
+        padding = 16;
+        start = [ "control-center" "w-engine-widget" "mini-docker" "group:g2" "workspaces" ];
+        widget_spacing = 8;
+        capsule_group = [
+          {
+            accordion = false;
+            accordion_direction = "end";
+            enabled = true;
+            fill = "surface_variant";
+            id = "g1";
+            members = [ "network" "toggle_2" "indicator" ];
+            opacity = 1.0;
+            padding = 6.0;
+          }
+          {
+            accordion = false;
+            accordion_direction = "end";
+            enabled = true;
+            fill = "surface_variant";
+            id = "g2";
+            members = [ "cpu" "temp" "ram" ];
+            opacity = 1.0;
+            padding = 6.0;
+          }
+          {
+            accordion = false;
+            accordion_direction = "end";
+            enabled = true;
+            fill = "surface_variant";
+            id = "g3";
+            members = [ "clock" "media" "audio_visualizer" ];
+            opacity = 1.0;
+            padding = 6.0;
+          }
+        ];
+      };
+    };
+    brightness = {
+      enable_ddcutil = true;
+      minimum_brightness = 0.09999999776482582;
+    };
+    calendar = { enabled = true; };
+    control_center = { calendar = { show_week_numbers = true; }; };
+    desktop_widgets = {
+      schema_version = 2;
+      widget_order = [ ];
+      grid = {
+        cell_size = 16;
+        major_interval = 4;
+        visible = true;
+      };
+      widget = { };
+    };
+    dock = {
+      enabled = true;
+      icon_size = 32;
+      launcher_position = "start";
+      monitors = [ "eDP-1" "HDMI-A-1" ];
+      reserve_space = false;
+      show_dots = true;
+      smart_auto_hide = true;
+    };
+    hot_corners = { enabled = true; };
+    idle = {
+      behavior_order = [ "lock" "screen-off" "lock-and-suspend" ];
+      behavior = {
+        lock = { action = "lock"; enabled = true; timeout = 3600.0; };
+        lock-and-suspend = { action = "lock_and_suspend"; enabled = false; timeout = 900.0; };
+        screen-off = { action = "screen_off"; enabled = true; timeout = 3660.0; };
+      };
+    };
+    location = { address = "Chengdu, China"; };
+    lockscreen = { monitors = [ "eDP-1" "HDMI-A-1" ]; };
+    lockscreen_widgets = {
+      schema_version = 2;
+      widget_order = [ "lockscreen-login-box@HDMI-A-1" "lockscreen-login-box@eDP-1" ];
+      grid = {
+        cell_size = 16;
+        major_interval = 4;
+        visible = true;
+      };
+      widget = {
+        "lockscreen-login-box@HDMI-A-1" = {
+          box_height = 196.0;
+          box_width = 810.0;
+          cx = 960.0;
+          cy = 898.0;
+          output = "HDMI-A-1";
+          placement_height = 1080.0;
+          placement_width = 1920.0;
+          rotation = 0.0;
+          type = "login_box";
+          settings = {
+            background_color = "surface_variant";
+            background_opacity = 0.88;
+            background_radius = 12.0;
+            center_password_text = false;
+            input_opacity = 1.0;
+            input_radius = 6.0;
+            layout = "regular";
+            show_caps_lock = true;
+            show_keyboard_layout = true;
+            show_login_button = true;
+            show_media = true;
+            show_session_buttons = true;
+            show_unlock_hint = true;
+            show_weather = true;
+          };
+        };
+        "lockscreen-login-box@eDP-1" = {
+          box_height = 196.0;
+          box_width = 810.0;
+          cx = 960.0;
+          cy = 898.0;
+          output = "eDP-1";
+          placement_height = 1080.0;
+          placement_width = 1920.0;
+          rotation = 0.0;
+          type = "login_box";
+          settings = {
+            background_color = "surface_variant";
+            background_opacity = 0.88;
+            background_radius = 12.0;
+            center_password_text = false;
+            input_opacity = 1.0;
+            input_radius = 6.0;
+            layout = "regular";
+            show_caps_lock = true;
+            show_keyboard_layout = true;
+            show_login_button = true;
+            show_media = true;
+            show_session_buttons = true;
+            show_unlock_hint = true;
+            show_weather = true;
+          };
+        };
+      };
+    };
+    nightlight = { enabled = true; };
+    notification = { monitors = [ "eDP-1" "HDMI-A-1" ]; };
+    osd = { monitors = [ "eDP-1" "HDMI-A-1" ]; };
+    plugins = {
+      enabled = [
+        "noctalia/notes"
+        "8bury/mini-docker"
+        "nightwatch75/todo"
+        "tadomika_ari/w-engine"
+        "rxtsel/portctl"
+        "cleboost/hotspot"
+      ];
+    };
+    shell = {
+      external_ip_enabled = true;
+      font_family = "Maple Mono NF CN";
+      lang = "";
+      niri_overview_type_to_launch_enabled = true;
+      password_style = "random";
+      screen_time_enabled = true;
+      launcher = { show_app_actions = true; };
+      panel = {
+        clipboard_placement = "attached";
+        launcher_placement = "attached";
+        polkit_placement = "attached";
+        transparency_mode = "glass";
+      };
+      screen_corners = { enabled = true; };
+      screenshot = { directory = "/home/lfour/Pictures/Screenshots"; };
+    };
+    theme = {
+      source = "wallpaper";
+      templates = {
+        builtin_ids = [ "niri" ];
+        community_ids = [
+          "opencode"
+          "zen-browser"
+          "discord"
+          "telegram"
+          "gimp"
+          "vscode"
+          "zed"
+          "prismlauncher"
+          "steam"
+          "zellij"
+          "yazi"
+        ];
+      };
+    };
+    wallpaper = {
+      default = { path = "/nix/store/wy0x418wf086z01lbfk2jag1cl099vq5-noctalia-5.0.0/share/noctalia/assets/noctalia-wallpaper.png"; };
+      last = { path = "/home/lfour/.local/share/Steam/steamapps/workshop/content/431960/3689822347/preview.gif"; };
+      monitors = {
+        HDMI-A-1 = { path = "/home/lfour/.local/share/Steam/steamapps/workshop/content/431960/3689822347/preview.gif"; };
+        eDP-1 = { path = "/home/lfour/.local/share/Steam/steamapps/workshop/content/431960/3689822347/preview.gif"; };
+      };
+    };
+    widget = {
+      battery = { anchor = true; capsule = true; display_mode = "graphic"; };
+      bluetooth = { anchor = true; capsule = true; show_label = true; };
+      brightness = { anchor = true; capsule = true; };
+      clipboard = { anchor = true; capsule = true; };
+      clock = { anchor = false; capsule = true; format = "{:%Y-%m-%d %H:%M %a}"; };
+      control-center = { anchor = true; };
+      cpu = { capsule = true; };
+      indicator = { type = "rxtsel/portctl:indicator"; };
+      media = { anchor = false; hide_when_no_media = true; max_length = 40; min_length = 0; };
+      mini-docker = { anchor = true; capsule = true; type = "8bury/mini-docker:mini-docker"; };
+      network = { capsule = true; show_vpn_label = true; vpn_status = "both"; };
+      notifications = { anchor = true; capsule = true; };
+      ram = { capsule = true; };
+      session = { anchor = true; capsule = true; };
+      toggle_2 = { type = "cleboost/hotspot:toggle"; };
+      tray = { drawer = true; drawer_columns = 5; };
+      volume = { anchor = true; capsule = true; };
+      w-engine-widget = { type = "tadomika_ari/w-engine:w-engine-widget"; };
+      wallpaper = { anchor = true; capsule = true; };
+      workspaces = { focused_output_only = true; hide_when_empty = true; style = "focus_hint"; };
+    };
+  };
+
+  # Generate a read-only TOML file in the Nix store
+  noctaliaTomlFile = (pkgs.formats.toml {}).generate "noctalia-config.toml" noctaliaConfigObj;
+
+in
 {
   # Install package
-  home.packages = with pkgs; [
+  home.packages = [
     inputs.noctalia.packages.${pkgs.stdenv.hostPlatform.system}.default
   ];
 
-  # Configure options
-  programs.noctalia-shell = {
-    enable = true;
-    settings = {
-      settingsVersion = 57;
-      # Bar Configuration
-      bar = {
-        barType = "framed";
-        position = "top";
-        monitors = [];
-        density = "standard";
-        showOutline = false;
-        showCapsule = false;
-        capsuleOpacity = 1;
-        capsuleColorKey = "none";
-        widgetSpacing = 6;
-        contentPadding = 2;
-        fontScale = 1;
-        backgroundOpacity = 0.8;
-        useSeparateOpacity = true;
-        floating = false;
-        marginVertical = 6;
-        marginHorizontal = 4;
-        frameThickness = 8;
-        frameRadius = 12;
-        outerCorners = true;
-        hideOnOverview = false;
-        displayMode = "always_visible";
-        autoHideDelay = 500;
-        autoShowDelay = 150;
-        showOnWorkspaceSwitch = true;
-        widgets = {
-          left = [
-            { colorizeDistroLogo = false; colorizeSystemIcon = "none"; customIconPath = ""; enableColorization = false; icon = "noctalia"; id = "ControlCenter"; useDistroLogo = true; }
-            { id = "plugin:network-indicator"; }
-            { id = "Network"; displayMode = "onhover"; iconColor = "none"; textColor = "none"; }
-            { id = "plugin:port-monitor"; hideSystemPorts = true; hideWhenEmpty = false; }
-            { id = "plugin:mini-docker"; }
-            { id = "Bluetooth"; displayMode = "onhover"; iconColor = "none"; textColor = "none"; }
-            { id = "plugin:usb-drive-manager"; terminalCommand = "kitty"; iconColor = "none"; fileBrowser = "nautilus"; autoMount = true; hideWhenEmpty = false; showBadge = true; showNotifications = true; }
-            { id = "plugin:linux-wallpaperengine-controller"; defaultFps = 60; }
-            { id = "plugin:screen-toolkit"; }
-            { id = "plugin:color-scheme-creator"; }
-            { id = "Tray"; chevronColor = "none"; colorizeIcons = false; drawerEnabled = true; hidePassive = true; pinned = []; blacklist = [ "Fcitx*" ]; }
-          ];
-          center = [
-            { characterCount = 2; colorizeIcons = false; emptyColor = "secondary"; enableScrollWheel = true; focusedColor = "primary"; followFocusedScreen = false; fontWeight = "bold"; groupedBorderOpacity = 1; hideUnoccupied = false; iconScale = 1; id = "Workspace"; labelMode = "none"; occupiedColor = "secondary"; pillSize = 0.6; showApplications = false; showBadge = true; showLabelsOnlyWhenOccupied = true; unfocusedIconsOpacity = 1; }
-          ];
-          right = [
-            { id = "plugin:catwalk"; }
-            { id = "plugin:privacy-indicator"; }
-            { id = "plugin:assistant-panel"; }
-            { id = "plugin:simple-notes"; }
-            { id = "plugin:todo"; }
-            { id = "plugin:clipper"; }
-            { id = "plugin:timer"; }
-            { clockColor = "none"; customFont = ""; formatHorizontal = "yyyy-MM-dd, HH:mm ddd"; formatVertical = "HH mm - dd MM"; id = "Clock"; tooltipFormat = "yyyy-MM-dd, HH:mm ddd"; useCustomFont = false; }
-            { id = "plugin:battery-monitor-plus"; displayMode = "graphic-clean"; hideIfIdle = false; hideIfNotDetected = true; refreshIntervalSeconds = 5; showNoctaliaPerformance = true; showPowerInBar = true; showPowerProfiles = true; showTimeInBar = true; }
-          ];
-        };
-        mouseWheelAction = "none";
-        reverseScroll = false;
-        mouseWheelWrap = true;
-        middleClickAction = "none";
-        middleClickFollowMouse = false;
-        middleClickCommand = "";
-        rightClickAction = "controlCenter";
-        rightClickFollowMouse = true;
-        rightClickCommand = "";
-        screenOverrides = [];
-      };
+  # Deploy a writable default config
+  home.activation.setupNoctaliaConfig = inputs.home-manager.lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    TARGET_DIR="$HOME/.config/noctalia"
+    TARGET_FILE="$TARGET_DIR/config.toml"
 
-      # General Settings
-      general = {
-        avatarImage = "${config.home.homeDirectory}/.face";
-        dimmerOpacity = 0.2;
-        showScreenCorners = false;
-        forceBlackScreenCorners = false;
-        scaleRatio = 1;
-        radiusRatio = 0.2;
-        iRadiusRatio = 1;
-        boxRadiusRatio = 1;
-        screenRadiusRatio = 1;
-        animationSpeed = 1;
-        animationDisabled = false;
-        compactLockScreen = false;
-        lockScreenAnimations = true;
-        lockOnSuspend = true;
-        showSessionButtonsOnLockScreen = true;
-        showHibernateOnLockScreen = false;
-        enableLockScreenMediaControls = false;
-        enableShadows = true;
-        enableBlurBehind = true;
-        shadowDirection = "bottom_right";
-        shadowOffsetX = 2;
-        shadowOffsetY = 3;
-        language = "";
-        allowPanelsOnScreenWithoutBar = true;
-        showChangelogOnStartup = true;
-        telemetryEnabled = true;
-        enableLockScreenCountdown = true;
-        lockScreenCountdownDuration = 30000;
-        autoStartAuth = false;
-        allowPasswordWithFprintd = false;
-        clockStyle = "custom";
-        clockFormat = "hh\\nmm";
-        passwordChars = true;
-        lockScreenMonitors = [];
-        lockScreenBlur = 0.5;
-        lockScreenTint = 0.5;
-        keybinds = {
-          keyUp = [ "Up" ];
-          keyDown = [ "Down" ];
-          keyLeft = [ "Left" ];
-          keyRight = [ "Right" ];
-          keyEnter = [ "Return" "Enter" ];
-          keyEscape = [ "Esc" ];
-          keyRemove = [ "Del" ];
-        };
-        reverseScroll = false;
-      };
+    $DRY_RUN_CMD mkdir -p "$TARGET_DIR"
 
-      # UI Settings
-      ui = {
-        fontDefault = "Maple Mono NF CN";
-        fontFixed = "Maple Mono NF CN";
-        fontDefaultScale = 1;
-        fontFixedScale = 1;
-        tooltipsEnabled = true;
-        boxBorderEnabled = false;
-        panelBackgroundOpacity = 0.8;
-        panelsAttachedToBar = true;
-        settingsPanelMode = "attached";
-        settingsPanelSideBarCardStyle = false;
-      };
+    # Deploy the default only if the file does not exist
+    if [ ! -f "$TARGET_FILE" ]; then
+      $DRY_RUN_CMD cp "${noctaliaTomlFile}" "$TARGET_FILE"
+      $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
+    fi
 
-      # Location & Weather
-      location = {
-        name = "Chengdu, China";
-        weatherEnabled = true;
-        weatherShowEffects = true;
-        useFahrenheit = false;
-        use12hourFormat = false;
-        showWeekNumberInCalendar = false;
-        showCalendarEvents = true;
-        showCalendarWeather = true;
-        analogClockInCalendar = false;
-        firstDayOfWeek = -1;
-        hideWeatherTimezone = false;
-        hideWeatherCityName = false;
-        autoLocate = false;
-      };
-
-      # Calendar Cards
-      calendar = {
-        cards = [
-          { enabled = true; id = "calendar-header-card"; }
-          { enabled = true; id = "calendar-month-card"; }
-          { enabled = true; id = "weather-card"; }
-        ];
-      };
-
-      # Wallpaper Configuration
-      wallpaper = {
-        enabled = true;
-        overviewEnabled = false;
-        directory = "${config.home.homeDirectory}/Pictures/wallpapers";
-        monitorDirectories = [];
-        enableMultiMonitorDirectories = false;
-        showHiddenFiles = false;
-        viewMode = "single";
-        setWallpaperOnAllMonitors = true;
-        fillMode = "crop";
-        fillColor = "#000000";
-        useSolidColor = false;
-        solidColor = "#1a1a2e";
-        automationEnabled = false;
-        wallpaperChangeMode = "random";
-        randomIntervalSec = 300;
-        transitionDuration = 1500;
-        transitionType = "random";
-        skipStartupTransition = false;
-        transitionEdgeSmoothness = 0.05;
-        panelPosition = "follow_bar";
-        hideWallpaperFilenames = false;
-        overviewBlur = 0.4;
-        overviewTint = 0.6;
-        useWallhaven = false;
-        wallhavenQuery = "";
-        wallhavenSorting = "relevance";
-        wallhavenOrder = "desc";
-        wallhavenCategories = "111";
-        wallhavenPurity = "100";
-        wallhavenRatios = "";
-        wallhavenApiKey = "";
-        wallhavenResolutionMode = "atleast";
-        wallhavenResolutionWidth = "";
-        wallhavenResolutionHeight = "";
-        sortOrder = "name";
-        favorites = [];
-      };
-
-      # App Launcher
-      appLauncher = {
-        enableClipboardHistory = true;
-        autoPasteClipboard = false;
-        enableClipPreview = true;
-        clipboardWrapText = true;
-        clipboardWatchTextCommand = "wl-paste --type text --watch cliphist store";
-        clipboardWatchImageCommand = "wl-paste --type image --watch cliphist store";
-        position = "center";
-        pinnedApps = [];
-        useApp2Unit = false;
-        sortByMostUsed = true;
-        terminalCommand = "kitty -e";
-        customLaunchPrefixEnabled = false;
-        customLaunchPrefix = "";
-        viewMode = "list";
-        showCategories = true;
-        iconMode = "tabler";
-        showIconBackground = false;
-        enableSettingsSearch = true;
-        enableWindowsSearch = true;
-        enableSessionSearch = true;
-        ignoreMouseInput = false;
-        screenshotAnnotationTool = "";
-        overviewLayer = false;
-        density = "comfortable";
-      };
-
-      # Control Center
-      controlCenter = {
-        position = "close_to_bar_button";
-        diskPath = "/";
-        shortcuts = {
-          left = [
-            { id = "Network"; }
-            { id = "Bluetooth"; }
-            { id = "WallpaperSelector"; }
-            { id = "NoctaliaPerformance"; }
-          ];
-          right = [
-            { id = "Notifications"; }
-            { id = "PowerProfile"; }
-            { id = "KeepAwake"; }
-            { id = "NightLight"; }
-          ];
-        };
-        cards = [
-          { enabled = true; id = "profile-card"; }
-          { enabled = true; id = "shortcuts-card"; }
-          { enabled = true; id = "audio-card"; }
-          { enabled = true; id = "brightness-card"; }
-          { enabled = true; id = "weather-card"; }
-          { enabled = true; id = "media-sysmon-card"; }
-        ];
-      };
-
-      # System Monitor
-      systemMonitor = {
-        cpuWarningThreshold = 80;
-        cpuCriticalThreshold = 90;
-        tempWarningThreshold = 80;
-        tempCriticalThreshold = 90;
-        gpuWarningThreshold = 80;
-        gpuCriticalThreshold = 90;
-        memWarningThreshold = 80;
-        memCriticalThreshold = 90;
-        swapWarningThreshold = 80;
-        swapCriticalThreshold = 90;
-        diskWarningThreshold = 80;
-        diskCriticalThreshold = 90;
-        diskAvailWarningThreshold = 20;
-        diskAvailCriticalThreshold = 10;
-        batteryWarningThreshold = 20;
-        batteryCriticalThreshold = 5;
-        enableDgpuMonitoring = false;
-        useCustomColors = false;
-        warningColor = "";
-        criticalColor = "";
-        externalMonitor = "resources || missioncenter || jdsystemmonitor || corestats || system-monitoring-center || gnome-system-monitor || plasma-systemmonitor || mate-system-monitor || ukui-system-monitor || deepin-system-monitor || pantheon-system-monitor";
-      };
-
-      # Performance Options
-      noctaliaPerformance = {
-        disableWallpaper = true;
-        disableDesktopWidgets = true;
-      };
-
-      # Dock Settings
-      dock = {
-        enabled = true;
-        position = "bottom";
-        displayMode = "auto_hide";
-        dockType = "floating";
-        backgroundOpacity = 1;
-        floatingRatio = 1;
-        size = 1.5;
-        onlySameOutput = true;
-        monitors = [ "eDP-1" "HDMI-A-1" ];
-        pinnedApps = [];
-        colorizeIcons = false;
-        showLauncherIcon = true;
-        launcherPosition = "start";
-        launcherUseDistroLogo = true;
-        launcherIcon = "";
-        launcherIconColor = "none";
-        pinnedStatic = true;
-        inactiveIndicators = true;
-        groupApps = false;
-        groupContextMenuMode = "extended";
-        groupClickAction = "cycle";
-        groupIndicatorStyle = "dots";
-        deadOpacity = 0.6;
-        animationSpeed = 1;
-        sitOnFrame = false;
-        showDockIndicator = true;
-        indicatorThickness = 6;
-        indicatorColor = "primary";
-        indicatorOpacity = 0.5;
-      };
-
-      # Network Configuration
-      network = {
-        wifiEnabled = true;
-        airplaneModeEnabled = false;
-        bluetoothRssiPollingEnabled = false;
-        bluetoothRssiPollIntervalMs = 10000;
-        networkPanelView = "wifi";
-        wifiDetailsViewMode = "grid";
-        bluetoothDetailsViewMode = "grid";
-        bluetoothHideUnnamedDevices = false;
-        disableDiscoverability = false;
-        bluetoothAutoConnect = true;
-      };
-
-      # Session Menu
-      sessionMenu = {
-        enableCountdown = true;
-        countdownDuration = 10000;
-        position = "center";
-        showHeader = true;
-        showKeybinds = true;
-        largeButtonsStyle = false;
-        largeButtonsLayout = "grid";
-        powerOptions = [
-          { action = "lock"; command = ""; countdownEnabled = true; enabled = true; keybind = "1"; }
-          { action = "suspend"; command = ""; countdownEnabled = true; enabled = true; keybind = "2"; }
-          { action = "hibernate"; command = ""; countdownEnabled = true; enabled = true; keybind = "3"; }
-          { action = "reboot"; command = ""; countdownEnabled = true; enabled = true; keybind = "4"; }
-          { action = "logout"; command = ""; countdownEnabled = true; enabled = true; keybind = "5"; }
-          { action = "shutdown"; command = ""; countdownEnabled = true; enabled = true; keybind = "6"; }
-          { action = "userspaceReboot"; command = ""; countdownEnabled = true; enabled = false; keybind = ""; }
-          { action = "rebootToUefi"; command = ""; countdownEnabled = true; enabled = true; keybind = "7"; }
-        ];
-      };
-
-      # Notifications
-      notifications = {
-        enabled = true;
-        enableMarkdown = false;
-        density = "default";
-        monitors = [];
-        location = "top_right";
-        overlayLayer = true;
-        backgroundOpacity = 1;
-        respectExpireTimeout = false;
-        lowUrgencyDuration = 3;
-        normalUrgencyDuration = 8;
-        criticalUrgencyDuration = 15;
-        clearDismissed = true;
-        saveToHistory = {
-          low = true;
-          normal = true;
-          critical = true;
-        };
-        sounds = {
-          enabled = false;
-          volume = 0.5;
-          separateSounds = false;
-          criticalSoundFile = "";
-          normalSoundFile = "";
-          lowSoundFile = "";
-          excludedApps = "discord,firefox,chrome,chromium,edge";
-        };
-        enableMediaToast = false;
-        enableKeyboardLayoutToast = true;
-        enableBatteryToast = true;
-      };
-
-      # OSD Settings
-      osd = {
-        enabled = true;
-        location = "top_right";
-        autoHideMs = 2000;
-        overlayLayer = true;
-        backgroundOpacity = 1;
-        enabledTypes = [ 0 1 2 ];
-        monitors = [ "eDP-1" ];
-      };
-
-      # Audio Settings
-      audio = {
-        volumeStep = 5;
-        volumeOverdrive = false;
-        spectrumFrameRate = 30;
-        visualizerType = "linear";
-        mprisBlacklist = [];
-        preferredPlayer = "";
-        volumeFeedback = false;
-        volumeFeedbackSoundFile = "";
-      };
-
-      # Brightness Settings
-      brightness = {
-        brightnessStep = 5;
-        enforceMinimum = true;
-        enableDdcSupport = false;
-        backlightDeviceMappings = [];
-      };
-
-      # Color Schemes
-      colorSchemes = {
-        useWallpaperColors = true;
-        predefinedScheme = "Ayu";
-        darkMode = true;
-        schedulingMode = "off";
-        manualSunrise = "06:30";
-        manualSunset = "18:30";
-        generationMethod = "tonal-spot";
-        monitorForColors = "";
-      };
-
-      # Templates
-      templates = {
-        activeTemplates = [];
-        enableUserTheming = false;
-      };
-
-      # Night Light
-      nightLight = {
-        enabled = false;
-        forced = false;
-        autoSchedule = true;
-        nightTemp = "4000";
-        dayTemp = "6500";
-        manualSunrise = "06:30";
-        manualSunset = "18:30";
-      };
-
-      # Hooks
-      hooks = {
-        enabled = false;
-        wallpaperChange = "";
-        darkModeChange = "";
-        screenLock = "";
-        screenUnlock = "";
-        performanceModeEnabled = "";
-        performanceModeDisabled = "";
-        startup = "";
-        session = "";
-      };
-
-      # Plugin Internal Settings
-      plugins = {
-        autoUpdate = true;
-      };
-
-      # Idle Management
-      idle = {
-        enabled = true;
-        screenOffTimeout = 3600;
-        lockTimeout = 3900;
-        suspendTimeout = 0;
-        fadeDuration = 5;
-        screenOffCommand = "";
-        lockCommand = "";
-        suspendCommand = "";
-        resumeScreenOffCommand = "";
-        resumeLockCommand = "";
-        resumeSuspendCommand = "";
-        customCommands = "[]";
-      };
-
-      # Desktop Widgets
-      desktopWidgets = {
-        enabled = false;
-        overviewEnabled = true;
-        gridSnap = false;
-        monitorWidgets = [];
-      };
-    };
-
-    # Plugin Configuration
-    plugins = {
-      sources = [
-        {
-          enabled = true;
-          name = "Official Noctalia Plugins";
-          url = "https://github.com/noctalia-dev/noctalia-plugins";
-        }
-      ];
-      states = {
-        catwalk = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        network-indicator = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        timer = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        simple-notes = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        todo = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        clipper = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        weather-indicator = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        assistant-panel = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        screen-toolkit = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        color-scheme-creator = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        usb-drive-manager = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        ip-monitor = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        privacy-indicator = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        port-monitor = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        air-quality = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        linux-wallpaperengine-controller = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        latency-monitor = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        mini-docker = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-        battery-monitor-plus = {
-          enabled = true;
-          sourceUrl = "https://github.com/noctalia-dev/noctalia-plugins";
-        };
-      };
-      version = 1;
-    };
-
-    pluginSettings = {
-      catwalk = {
-        minimumThreshold = 25;
-        hideBackground = true;
-      };
-    };
-  };
-
-  # State File
-  home.file.".cache/noctalia/wallpapers.json" = {
-    text = builtins.toJSON {
-      defaultWallpaper = "${../../wallpapers/muzimi.webp}";
-      wallpapers = {
-        #"eDP-1" = "${../../wallpapers/Kafuu-Chino.png}";
-	      #"HDMI-A-1" = "${../../wallpapers/cocoa.png}";
-      };
-    };
-  };
+    # Alternative: reset to default on every update (overwrites local edits)
+    # $DRY_RUN_CMD cp -f "${noctaliaTomlFile}" "$TARGET_FILE"
+    # $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
+  '';
 }
 

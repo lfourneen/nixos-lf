@@ -1,9 +1,12 @@
-{
-  xdg.configFile."niri/config.kdl".text = ''
+{ pkgs, lib, ... }:
+
+let
+  # Define the Niri config as raw KDL text
+  niriConfigContent = ''
     // niri config
 
     // Autostart
-    spawn-at-startup "noctalia-shell"
+    spawn-at-startup "noctalia"
 
     // General Settings
     prefer-no-csd
@@ -67,12 +70,7 @@
       }
     }
 
-    //layer-rule {
-      //match namespace="^swww-daemon$"
-      //place-within-backdrop true
-    //}
-
-    // Wallpaper layer (noctalia-shell)
+    // Wallpaper layer (noctalia)
     layer-rule {
       match namespace="^noctalia-wallpaper*"
       place-within-backdrop true
@@ -110,22 +108,20 @@
         proportion 0.66667
         fixed 1920
       }
-      // preset-window-heights { }
       default-column-width { proportion 0.5; }
-      // default-column-width {}
 
       // Focus ring
       focus-ring {
         width 1
-	      active-color "#8CBD8C"    // Change windows border (active)
-	      inactive-color "#0A0E14"
+        active-color "#8CBD8C"    // Change windows border (active)
+        inactive-color "#0A0E14"
       }
 
       border {
         off
         width 1
-	      inactive-color "#0A0E14"
-	      urgent-color "#9b0000"
+        inactive-color "#0A0E14"
+        urgent-color "#9b0000"
       }
 
       // Window shadow
@@ -373,7 +369,6 @@
       open-floating true
     }
 
-
     // STM32CubeMX
     window-rule {
       match app-id=r#"^com-st-microxplorer-maingui-STM32CubeMX$"#
@@ -413,10 +408,12 @@
 
     // Global window appearance
     window-rule {
+      exclude app-id=r#"^dafeiyu-pet$"#
       geometry-corner-radius 16
       clip-to-geometry true
     }
     window-rule {
+      exclude app-id=r#"^dafeiyu-pet$"#
       geometry-corner-radius 16
       clip-to-geometry true
       opacity 0.9
@@ -426,9 +423,24 @@
     }
     window-rule {
       match is-active=false
+      exclude app-id=r#"^dafeiyu-pet$"#
       opacity 0.8
       background-effect {
         blur true
+      }
+    }
+    window-rule {
+      match app-id=r#"^dafeiyu-pet$"#
+      open-floating true
+      open-focused false
+      geometry-corner-radius 0
+      opacity 1.0
+      draw-border-with-background false
+      focus-ring {
+        off
+      }
+      shadow {
+        off
       }
     }
 
@@ -436,8 +448,8 @@
     binds {
       Mod+Shift+Slash { show-hotkey-overlay; }
       Mod+Z hotkey-overlay-title="Open a Terminal: kitty" { spawn "kitty"; }
-      Mod+Space hotkey-overlay-title="Run ..." { spawn "noctalia-shell" "ipc" "call" "launcher" "toggle"; }
-      Super+Alt+L hotkey-overlay-title="Lock the Screen" { spawn "noctalia-shell" "ipc" "call" "lockScreen" "lock"; }
+      Mod+Space hotkey-overlay-title="Run ..." { spawn "noctalia" "msg" "panel-toggle" "launcher"; }
+      Super+Alt+L hotkey-overlay-title="Lock the Screen" { spawn "noctalia" "msg" "session" "lock"; }
 
       Super+Alt+S allow-when-locked=true hotkey-overlay-title=null { spawn-sh "pkill orca || exec orca"; }
 
@@ -561,6 +573,29 @@
       Ctrl+Alt+Delete { quit; }
       Mod+Shift+P { power-off-monitors; }
     }
+  '';
+
+  # Generate a read-only config file in the Nix store
+  niriConfigFile = pkgs.writeText "niri-config.kdl" niriConfigContent;
+
+in
+{
+  # Deploy a writable default config
+  home.activation.setupNiriConfig = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    TARGET_DIR="$HOME/.config/niri"
+    TARGET_FILE="$TARGET_DIR/config.kdl"
+
+    $DRY_RUN_CMD mkdir -p "$TARGET_DIR"
+
+    # Deploy the default only if the file does not exist
+    if [ ! -f "$TARGET_FILE" ]; then
+      $DRY_RUN_CMD cp "${niriConfigFile}" "$TARGET_FILE"
+      $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
+    fi
+
+    # Alternative: reset to default on every update (overwrites local edits)
+    # $DRY_RUN_CMD cp -f "${niriConfigFile}" "$TARGET_FILE"
+    # $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
   '';
 }
 
