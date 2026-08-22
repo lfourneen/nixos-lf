@@ -36,19 +36,19 @@
 
         # RIME engine
         fcitx5-rime
-	      librime-lua
-	      librime
-
-	      # Chinese pinyin input method
-	      libpinyin
-	      rime-ice
+        librime-lua
+        librime
+        
+        # Chinese pinyin input method
+        libpinyin
+        rime-ice
 
         # Yunpinyin / extended dictionaries
         fcitx5-pinyin-moegirl
         qt6Packages.fcitx5-chinese-addons   # (optional) more engines and schemas
-	      rime-zhwiki
-	      rime-moegirl
-	      rime-wanxiang
+        rime-zhwiki
+        rime-moegirl
+        rime-wanxiang
       ];
     };
   };

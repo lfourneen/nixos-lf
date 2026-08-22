@@ -1,11 +1,5 @@
-{ inputs, pkgs, ... }:
+{ pkgs, ... }:
 
-let
-  unstable-pkgs = import inputs.nixpkgs-unstable {
-    system = pkgs.stdenv.hostPlatform.system;
-    config.allowUnfree = true;
-  };
-in
 {
   # Dconf
   programs.dconf.enable = true;
@@ -44,20 +38,8 @@ in
       #plasma-login-manager = {
         #enable = true;
       #};
-
-      # SDDM
-      #sddm = {
-        #enable = true;
-        #wayland.enable = true;
-      #};
     };
   };
-
-  # LabWC Desktop
-  #programs.labwc = {
-    #enable = true;
-    #package = unstable-pkgs.labwc;
-  #};
 
   xdg.portal = {
     enable = true;
@@ -82,24 +64,6 @@ in
   # Niri
   programs.niri.enable = true;
   programs.xwayland.enable = true;
-  #services.greetd = {
-    #enable = true;
-    #settings = {
-      #default_session = {
-        #command = ''
-          #${pkgs.tuigreet}/bin/tuigreet \
-            #--time \
-            #--remember \
-            #--remember-user-session
-        #'';
-        #user = "greeter";
-      #};
-    #};
-  #};
-
-  #environment.cosmic.excludePackages = with pkgs; [
-    #cosmic-player
-  #];
 
   environment.systemPackages = with pkgs; [ 
     # Gnome extensions

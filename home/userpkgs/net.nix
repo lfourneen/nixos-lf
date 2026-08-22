@@ -5,6 +5,7 @@ let
     system = pkgs.stdenv.hostPlatform.system;
     config.allowUnfree = true;
   };
+
 in
 {
   home.packages = with pkgs;[

@@ -1,7 +1,7 @@
 {
   imports = [
     # Folders
-    ./fhs
+    #./fhs
     ./systemd
 
     # Files

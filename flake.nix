@@ -40,9 +40,12 @@
   };
 
   outputs = { self, nixpkgs, home-manager, ... }@inputs:
+
   let
     system = "x86_64-linux";
-  in {
+
+  in 
+  {
     nixosConfigurations.lfour = nixpkgs.lib.nixosSystem {
       inherit system;
 

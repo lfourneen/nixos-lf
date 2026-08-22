@@ -51,7 +51,9 @@
   };
 
   environment.systemPackages = with pkgs; [
-    btrfs-progs disko tpm2-tools
+    btrfs-progs 
+    disko 
+    tpm2-tools
   ];
 }
 

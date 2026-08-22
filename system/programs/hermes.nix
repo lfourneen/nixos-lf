@@ -22,7 +22,7 @@ in
 {
   sops = {
     defaultSopsFile = ./secrets/secrets.yaml;
-    age.keyFile = "/home/lfour/.config/sops/age/keys.txt";
+    age.keyFile = "${config.users.users.lfour.home}/.config/sops/age/keys.txt";
 
     secrets = {
       "hermes_api_key" = {};

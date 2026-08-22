@@ -1,4 +1,4 @@
-{ ... }:
+{ config, ... }:
 
 {
   # Music Player Daemon
@@ -8,7 +8,7 @@
     startWhenNeeded = true;
     openFirewall = false;
     settings = {
-      music_directory = "/home/lfour/Music";
+      music_directory = "${config.users.users.lfour.home}/Music";
       bind_to_address = "127.0.0.1";
       audio_output = [
         {
@@ -28,3 +28,4 @@
     XDG_RUNTIME_DIR = "/run/user/1000";
   };
 }
+

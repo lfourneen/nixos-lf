@@ -1,6 +1,9 @@
-{ inputs, pkgs, ... }:
+{ config, inputs, pkgs, ... }:
 
 let
+  homeDir = config.home.homeDirectory;
+  noctaliaPackage = inputs.noctalia.packages.${pkgs.stdenv.hostPlatform.system}.default;
+
   # Define the Noctalia config as a Nix attrset
   noctaliaConfigObj = {
     audio = { enable_sounds = true; };
@@ -175,7 +178,7 @@ let
         transparency_mode = "glass";
       };
       screen_corners = { enabled = true; };
-      screenshot = { directory = "/home/lfour/Pictures/Screenshots"; };
+      screenshot = { directory = "${homeDir}/Pictures/Screenshots"; };
     };
     theme = {
       source = "wallpaper";
@@ -197,11 +200,11 @@ let
       };
     };
     wallpaper = {
-      default = { path = "/nix/store/wy0x418wf086z01lbfk2jag1cl099vq5-noctalia-5.0.0/share/noctalia/assets/noctalia-wallpaper.png"; };
-      last = { path = "/home/lfour/.local/share/Steam/steamapps/workshop/content/431960/3689822347/preview.gif"; };
+      default = { path = "${noctaliaPackage}/share/noctalia/assets/noctalia-wallpaper.png"; };
+      last = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3689822347/preview.gif"; };
       monitors = {
-        HDMI-A-1 = { path = "/home/lfour/.local/share/Steam/steamapps/workshop/content/431960/3689822347/preview.gif"; };
-        eDP-1 = { path = "/home/lfour/.local/share/Steam/steamapps/workshop/content/431960/3689822347/preview.gif"; };
+        HDMI-A-1 = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3689822347/preview.gif"; };
+        eDP-1 = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3689822347/preview.gif"; };
       };
     };
     widget = {
@@ -234,7 +237,7 @@ in
 {
   # Install package
   home.packages = [
-    inputs.noctalia.packages.${pkgs.stdenv.hostPlatform.system}.default
+    noctaliaPackage
   ];
 
   # Deploy a writable default config

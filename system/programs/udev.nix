@@ -1,4 +1,5 @@
 { pkgs, ... }:
+
 let
   # Embedded development udev rules (high priority)
   embeddedRules = pkgs.writeTextDir "lib/udev/rules.d/50-embedded-devices.rules" ''
@@ -36,6 +37,7 @@ let
     # ADB
     SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", MODE="0666", GROUP="plugdev"
   '';
+
 in
 {
   # Udev rules
@@ -53,3 +55,4 @@ in
     SUBSYSTEM=="hwmon", KERNEL=="pwm*", MODE="0444"
   '';
 }
+

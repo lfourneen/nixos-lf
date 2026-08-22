@@ -5,6 +5,7 @@ let
     system = pkgs.stdenv.hostPlatform.system;
     config.allowUnfree = true;
   };
+
 in
 {
   # Define user account.
@@ -18,6 +19,7 @@ in
       lfour = {
         uid = 1000;
         isNormalUser = true;
+        home = "/home/lfour";
         hashedPasswordFile = "/persist/passwords/lfour";
         description = "LFour";
         extraGroups = [ "networkmanager" "wheel" "dialout"  "input" "tty" "i2c" "libvirtd" "video" "audio" "adbusers" "plugdev" "docker" "resolvconf" "hermes" ];

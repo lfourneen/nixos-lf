@@ -5,6 +5,7 @@ let
     system = pkgs.stdenv.hostPlatform.system;
     config.allowUnfree = true;
   };
+
 in
 {
   # Privilege authorization and authentication mechanisms
@@ -131,8 +132,10 @@ in
   environment.systemPackages = with pkgs; [
     # CA / TLS
     cacert
+    
     # ClamAV
     clamav clamtk 
+    
     # Scanner
     lynis osslsigncode
   ];

@@ -1,7 +1,8 @@
 { config, libs, pkgs, ... }:
 
 let
-  tdRoot = "/home/lfour/FHS/TD_4.6.7_Linux";
+  tdRoot = "${config.users.users.lfour.home}/FHS/TD_4.6.7_Linux";
+
 in
 {
   environment.systemPackages = with pkgs; [
@@ -41,7 +42,7 @@ in
       extraBwrapArgs = [
         "--bind" "/run/udev" "/run/udev"
         "--bind-try" "/var/run/dbus" "/var/run/dbus"
-	"--dev-bind" "/dev" "/dev"
+	      "--dev-bind" "/dev" "/dev"
       ];
       runScript = "bash";
       profile = ''

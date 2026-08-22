@@ -3,6 +3,7 @@
 with lib;
 let
   cfg = config.drivers.amdgpu;
+
 in
 {
   options.drivers.amdgpu = {
@@ -11,7 +12,7 @@ in
 
   config = mkIf cfg.enable {
     systemd.tmpfiles.rules = [ "L+    /opt/rocm/hip   -    -    -     -    ${pkgs.rocmPackages.clr}" ];
-    #services.xserver.videoDrivers = [ "amdgpu" ];
+    services.xserver.videoDrivers = [ "amdgpu" ];
 
     # OpenGL
     hardware.graphics = {
@@ -20,10 +21,5 @@ in
         ];
     };
   };
-
-  # GUI tools
-  #environment.systemPackages = with pkgs; [ lact ];
-  #systemd.packages = with pkgs; [ lact ];
-  #systemd.services.lactd.wantedBy = ["multi-user.target"];
 }
 

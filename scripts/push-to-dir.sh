@@ -32,3 +32,4 @@ sudo find "$DEST_DIR" -type d -exec chmod 700 {} +
 sudo find "$DEST_DIR" -type f -exec chmod 600 {} +
 
 echo "✅ Done! Config pushed to $DEST_DIR with permissions (dirs 700 / files 600)."
+

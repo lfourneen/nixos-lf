@@ -2,6 +2,7 @@
 
 let
   mkUint = lib.hm.gvariant.mkUint32;
+
 in
 {
   dconf.settings = {

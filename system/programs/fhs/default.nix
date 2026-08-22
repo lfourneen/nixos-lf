@@ -1,9 +1,8 @@
 {
   imports = [
     ./matlab.nix  
-    #./td.nix  
+    ./td.nix  
     ./xilinx.nix
   ];
-
 }
 

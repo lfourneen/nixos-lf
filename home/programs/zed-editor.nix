@@ -5,6 +5,7 @@ let
     system = pkgs.stdenv.hostPlatform.system;
     config.allowUnfree = true;
   };
+
 in
 {
   programs.zed-editor = {
@@ -15,3 +16,4 @@ in
     ];
   };
 }
+

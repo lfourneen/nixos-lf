@@ -1,7 +1,8 @@
 { config, libs, pkgs, ... }:
 
 let
-  MatlabRoot = "/home/lfour/FHS/MATLAB";
+  MatlabRoot = "${config.users.users.lfour.home}/FHS/MATLAB";
+
 in
 {
   environment.systemPackages = with pkgs; [

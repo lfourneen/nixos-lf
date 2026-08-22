@@ -1,7 +1,8 @@
 { config, libs, pkgs, ... }:
 
 let
-  XilinxRoot = "/home/lfour/FHS/Xilinx";
+  XilinxRoot = "${config.users.users.lfour.home}/FHS/Xilinx";
+
 in
 {
   environment.systemPackages = with pkgs; [
