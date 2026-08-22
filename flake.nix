@@ -61,7 +61,7 @@
             overlays = [
               (import ./overlays)
               (final: prev: {
-                mcp-nixos = inputs.mcp-nixos.packages.${prev.system}.default;
+                mcp-nixos = inputs.mcp-nixos.packages.${prev.stdenv.hostPlatform.system}.default;
               })
             ];
             config.allowUnfree = true;
