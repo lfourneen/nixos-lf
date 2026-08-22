@@ -48,6 +48,8 @@ in
     
     environmentFiles = [ config.sops.templates."hermes.env".path ];
 
+    workingDirectory = "/var/lib/hermes/workspace";
+
     documents = {
       "USER.md" = "/var/lib/hermes/.hermes/USER.md";
       "SOUL.md" = "/var/lib/hermes/.hermes/SOUL.md";
@@ -58,7 +60,7 @@ in
       
       model = {
         provider = "deepseek";
-        default = "deepseek-v4-pro";
+        default = "deepseek-v4-flash";
       };
 
       terminal = {
