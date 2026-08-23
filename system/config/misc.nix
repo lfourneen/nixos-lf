@@ -20,15 +20,20 @@
     options = "--delete-older-than 3d";
   };
 
-  # Systemd service: optimise
+  # Optimise
   nix.optimise = {
     automatic = true;
     dates = ["daily"];
   };
 
-  time.timeZone = "Asia/Shanghai";
+  time = {
+    timeZone = "Asia/Shanghai";
+    # Windows stores local time in hardware RTC; NixOS stores UTC by default.
+    # Set local RTC so both OSes agree on the hardware clock (dual-boot fix).
+    hardwareClockInLocalTime = true;
+  };
 
-  # Valid font config for Chinese + English + Nerd Fonts
+  # Valid font config
   fonts = {
     fontDir.enable = true;
     packages = with pkgs; [
