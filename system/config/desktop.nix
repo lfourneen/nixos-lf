@@ -1,5 +1,12 @@
-{ pkgs, ... }:
+{ inputs, pkgs, ... }:
 
+let
+  unstable-pkgs = import inputs.nixpkgs-unstable {
+    system = pkgs.stdenv.hostPlatform.system;
+    config.allowUnfree = true;
+  };
+
+in
 {
   # Dconf
   programs.dconf.enable = true;
@@ -110,16 +117,11 @@
     wayland-utils # Wayland utilities
 
     # Niri
-    #fuzzel
     kitty
-    linux-wallpaperengine
     lswt
     mpvpaper
-    #nemo
+    unstable-pkgs.linux-wallpaperengine
     xwayland-satellite # xwayland support
-    #swayidle
-    #swww
-    #tuigreet
     wl-clipboard
     clipman
     wlr-randr
