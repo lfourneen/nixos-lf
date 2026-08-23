@@ -54,6 +54,7 @@
       "io.github.screwys.Rufin"
       "org.bleachbit.BleachBit"
       "org.octave.Octave"
+      "org.videolan.VLC"
     ];
     update.auto = {
       enable = true;
