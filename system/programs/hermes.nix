@@ -60,7 +60,7 @@ in
       
       model = {
         provider = "deepseek";
-        default = "deepseek-v4-flash";
+        default = "deepseek-v4-flash-vision-exp";
       };
 
       terminal = {
@@ -72,7 +72,7 @@ in
       compression = {
         enabled = true;
         threshold = 0.85;
-        summary_model = "deepseek-v4-flash";
+        summary_model = "deepseek-v4-flash-vision-exp";
       };
 
       display = {
