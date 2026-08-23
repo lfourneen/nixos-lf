@@ -32,6 +32,7 @@
       "com.vysp3r.ProtonPlus"
       "net.lutris.Lutris"
       "org.prismlauncher.PrismLauncher"
+      "com.spotify.Client"
 
       # Multimedia & creativity
       "com.obsproject.Studio"
