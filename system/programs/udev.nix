@@ -8,6 +8,7 @@ let
     KERNEL=="hidraw*", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="572a", MODE="0666", GROUP="plugdev", TAG+="uaccess"
 
     # ST-Link / V2 / V2-1 / V3
+    SUBSYSTEM=="block", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5720", TAG+="uaccess", GROUP="plugdev", MODE="0660"
     ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3748", TAG+="uaccess"
     ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", TAG+="uaccess"
     ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3752", TAG+="uaccess"
