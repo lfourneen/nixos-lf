@@ -15,6 +15,7 @@ in
   services = {
     # Gnome
     gnome.gnome-keyring.enable = true;
+    
     desktopManager = {
       # GNOME 
       gnome.enable = true;
@@ -29,6 +30,7 @@ in
         #xwayland.enable = true;
       #};
     };
+    
     displayManager = {
       defaultSession = "niri";
 
@@ -48,8 +50,16 @@ in
     };
   };
 
+  # DBUS
+  services.dbus = {
+    enable = true;
+    implementation = "broker";
+  };
+
+  # XDG
   xdg.portal = {
     enable = true;
+    wlr.enable = true;
     extraPortals = [
       pkgs.xdg-desktop-portal
       pkgs.xdg-desktop-portal-gtk
@@ -57,6 +67,17 @@ in
       pkgs.kdePackages.xdg-desktop-portal-kde 
       pkgs.xdg-desktop-portal-gnome
     ];
+  };
+  
+  # Logind
+  services.logind = {
+    settings = {
+      Login = {
+        HandleLidSwitch = "lock";
+        HandleLidSwitchExternalPower = "lock";
+        HandleLidSwitchDocked = "ignore";
+      };
+    };
   };
 
   services.udev.packages = with pkgs; [ 

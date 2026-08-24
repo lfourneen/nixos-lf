@@ -11,6 +11,7 @@
     ./mpd.nix
     ./nix-ld.nix
     ./prgs.nix
+    ./rustdesk.nix
     #./ssh.nix
     ./udev.nix
     ./virtualisation.nix

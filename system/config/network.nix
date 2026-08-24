@@ -116,6 +116,10 @@
           ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 3389, 5900, 47989 } accept  # RDP, VNC, Sunshine WebUI
           ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport { 47998, 47999, 48000, 48010 } accept  # Sunshine streaming ports
 
+          # RustDesk server (LAN-only): 21115 NAT-type test, 21116 TCP rendezvous, 21117 relay, 21118-21119 web client
+          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 21115, 21116, 21117, 21118, 21119 } accept
+          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 21116 accept
+
           # SSH (uncomment if needed)
           # tcp dport 22 accept
 

@@ -1,11 +1,16 @@
-{ ... }:
+{ pkgs, ... }:
 
 {
-  # RustDesk self-hosted server (signal + relay)
+  # RustDesk self-hosted server
   services.rustdesk-server = {
     enable = true;
-    openFirewall = false;  # 本机不用 iptables 防火墙(networking.firewall 已关闭),端口由 config/network.nix 的 nftables 规则开放
+    openFirewall = false;
     signal.enable = true;
     relay.enable = true;
   };
+  
+  environment.systemPackages = with pkgs; [
+    rustdesk
+  ];
 }
+
