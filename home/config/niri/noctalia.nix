@@ -203,10 +203,10 @@ let
     };
     wallpaper = {
       default = { path = "${noctaliaPackage}/share/noctalia/assets/noctalia-wallpaper.png"; };
-      last = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3689822347/preview.gif"; };
+      last = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3408595448/preview.gif"; };
       monitors = {
-        HDMI-A-1 = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3689822347/preview.gif"; };
-        eDP-1 = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3689822347/preview.gif"; };
+        HDMI-A-1 = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3408595448/preview.gif"; };
+        eDP-1 = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3408595448/preview.gif"; };
       };
     };
     widget = {
