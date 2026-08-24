@@ -26,8 +26,52 @@
     };
   };
 
-  # BCC
-  programs.bcc.enable = true;
+  # Substituters mirrors
+  nix = {
+    settings = {
+      substituters = [
+        #"https://mirror.tuna.tsinghua.edu.cn/nix-channels/store"
+        "https://mirrors.ustc.edu.cn/nix-channels/store"
+        "https://cache.nixos.org"
+        "https://cache.nixos-cuda.org"
+        "https://noctalia.cachix.org"
+      ];
+      trusted-public-keys = [
+        "cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M="
+        "noctalia.cachix.org-1:pCOR47nnMEo5thcxNDtzWpOxNFQsBRglJzxWPp3dkU4="
+      ];
+    };
+  };
+
+  # Tailscale (encrypted tailnet; run `sudo tailscale up` once after install to login)
+  services.tailscale.enable = true;
+
+  # Avahi / mDNS (local discovery)
+  services.avahi = {
+    enable = true;
+    nssmdns4 = true;
+    nssmdns6 = true;
+  };
+
+  # Zapret
+  services.zapret = {
+    enable = true;
+    configureFirewall = false;
+    httpSupport = true;
+    udpSupport = true;
+    udpPorts = [ "443" ];
+    params = [
+      # Minimal DPI bypass, less aggressive
+      "--dpi-desync=fake"
+      "--dpi-desync-ttl=4"
+      "--dpi-desync-split-pos=1,midsld"
+
+      # --- risky options (can cause lag/packet loss) ---
+      # "--dpi-desync=fake,multisplit"
+      # "--dpi-desync-fooling=badseq"
+      # "--dpi-desync-repeats=5"
+    ];
+  };
 
   # Resolved
   services.resolved = {
@@ -55,23 +99,6 @@
   # nixos-rebuild reloads resolved (incomplete, "Reload operation timed out"); restart it instead
   systemd.services.systemd-resolved.restartIfChanged = true;
 
-  # Substituters mirrors
-  nix = {
-    settings = {
-      substituters = [
-        #"https://mirror.tuna.tsinghua.edu.cn/nix-channels/store"
-        "https://mirrors.ustc.edu.cn/nix-channels/store"
-        "https://cache.nixos.org"
-        "https://cache.nixos-cuda.org"
-        "https://noctalia.cachix.org"
-      ];
-      trusted-public-keys = [
-        "cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M="
-        "noctalia.cachix.org-1:pCOR47nnMEo5thcxNDtzWpOxNFQsBRglJzxWPp3dkU4="
-      ];
-    };
-  };
-
   # Nftables (FireWall)
   networking.firewall.enable = false;
   networking.nftables = {
@@ -89,6 +116,10 @@
 
           # Established and related connections (our outbound replies)
           ct state established,related accept
+
+          # Tailscale tailnet: encrypted, ACL-gated at tailscaled level; ONLY RustDesk ports pass
+          iifname "tailscale0" tcp dport { 21115, 21116, 21117, 21118, 21119 } accept
+          iifname "tailscale0" udp dport 21116 accept
 
           # ICMPv6 essentials (NDP + PMTUD + ping + traceroute) before the public-IPv6 drop
           ip6 nexthdr icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert, packet-too-big, echo-request, destination-unreachable, time-exceeded } accept
@@ -116,9 +147,10 @@
           ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 3389, 5900, 47989 } accept  # RDP, VNC, Sunshine WebUI
           ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport { 47998, 47999, 48000, 48010 } accept  # Sunshine streaming ports
 
-          # RustDesk server (LAN-only): 21115 NAT-type test, 21116 TCP rendezvous, 21117 relay, 21118-21119 web client
-          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 21115, 21116, 21117, 21118, 21119 } accept
-          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 21116 accept
+          # RustDesk server (LAN-only, RFC1918; CGNAT 100.64/10 excluded — that pool is operator-wide):
+          # 21115 NAT-type test, 21116 TCP rendezvous, 21117 relay, 21118-21119 web client
+          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } tcp dport { 21115, 21116, 21117, 21118, 21119 } accept
+          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } udp dport 21116 accept
 
           # SSH (uncomment if needed)
           # tcp dport 22 accept
@@ -234,32 +266,8 @@
     #};
   #};
 
-  # Avahi / mDNS (local discovery)
-  services.avahi = {
-    enable = true;
-    nssmdns4 = true;
-    nssmdns6 = true;
-  };
-
-  # Zapret
-  services.zapret = {
-    enable = true;
-    configureFirewall = false;
-    httpSupport = true;
-    udpSupport = true;
-    udpPorts = [ "443" ];
-    params = [
-      # Minimal DPI bypass, less aggressive
-      "--dpi-desync=fake"
-      "--dpi-desync-ttl=4"
-      "--dpi-desync-split-pos=1,midsld"
-
-      # --- risky options (can cause lag/packet loss) ---
-      # "--dpi-desync=fake,multisplit"
-      # "--dpi-desync-fooling=badseq"
-      # "--dpi-desync-repeats=5"
-    ];
-  };
+  # BCC
+  programs.bcc.enable = true;
 
   # Kernel modules
   boot.extraModprobeConfig = ''
