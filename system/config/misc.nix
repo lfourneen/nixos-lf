@@ -37,6 +37,7 @@
   fonts = {
     fontDir.enable = true;
     packages = with pkgs; [
+      google-fonts
       font-awesome
       maple-mono.NF
       maple-mono.NF-CN
