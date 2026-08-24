@@ -1,5 +1,12 @@
-{ pkgs, ... }:
+{ inputs, pkgs, ... }:
 
+let
+  unstable-pkgs = import inputs.nixpkgs-unstable {
+    system = pkgs.stdenv.hostPlatform.system;
+    config.allowUnfree = true;
+  };
+
+in
 {
   # RustDesk self-hosted server
   services.rustdesk-server = {
@@ -15,7 +22,7 @@
   };
   
   environment.systemPackages = with pkgs; [
-    rustdesk
+    unstable-pkgs.rustdesk
   ];
 }
 
