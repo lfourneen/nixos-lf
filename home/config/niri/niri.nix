@@ -70,14 +70,18 @@ let
       }
     }
 
-    // Wallpaper layer (noctalia)
+    // Wallpaper layer (noctalia) — stationary wallpaper drawn in the backdrop
     layer-rule {
       match namespace="^noctalia-wallpaper*"
       place-within-backdrop true
     }
 
+    // Linux Wallpaper Engine (w-engine plugin → linux-wallpaperengine): draw the
+    // live wallpaper in the backdrop so the overview shows it once at full size
+    // instead of cloning it into every workspace capsule. Requires the plugin's
+    // engine setting "Wayland layer: background".
     layer-rule {
-      match namespace="^noctalia-overview*"
+      match namespace="linux-wallpaperengine"
       place-within-backdrop true
     }
 

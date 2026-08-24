@@ -7,7 +7,9 @@ let
   # Define the Noctalia config as a Nix attrset
   noctaliaConfigObj = {
     audio = { enable_sounds = true; };
-    backdrop = { enabled = true; };
+    # Disabled: the blurred/tinted "noctalia-backdrop" copy would otherwise
+    # show in the overview; the Wallpaper Engine wallpaper itself is the backdrop.
+    backdrop = { enabled = false; };
     bar = {
       default = {
         capsule = true;
