@@ -32,6 +32,7 @@
       "com.vysp3r.ProtonPlus"
       "net.lutris.Lutris"
       "org.prismlauncher.PrismLauncher"
+      "io.github.screwys.Rufin"
       "com.spotify.Client"
 
       # Multimedia & creativity
@@ -52,7 +53,6 @@
 
       # Utilities & system tools
       "com.github.tchx84.Flatseal"
-      "io.github.screwys.Rufin"
       "org.bleachbit.BleachBit"
       "org.octave.Octave"
       "org.videolan.VLC"
