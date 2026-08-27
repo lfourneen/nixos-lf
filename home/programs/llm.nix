@@ -22,6 +22,8 @@ in
     };
   };
 
+  systemd.user.services.ollama.serviceConfig.TimeoutStopSec = "10s";
+
   home.packages = with pkgs; [
     llama-cpp
     unstable-pkgs.lmstudio
