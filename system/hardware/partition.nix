@@ -13,7 +13,9 @@
       "/etc/nixos"
       "/etc/waydroid-extra"
 
-      # If use SSH
+      # If use SSH: ONLY if host keys are persisted instead of sops-managed
+      # (default with ssh.nix = sops host key, so nothing here is needed;
+      #  "/etc/ssh" recursively persists all host keys — no extra file entries)
       #"/etc/ssh"
 
       "/var/lib/AccountsService"
@@ -32,10 +34,6 @@
     ];
     files = [
       "/etc/machine-id"
-
-      # If use SSH
-      # "/etc/ssh/ssh_host_rsa_key"
-      # "/etc/ssh/ssh_host_ed25519_key"
     ];
   };
 

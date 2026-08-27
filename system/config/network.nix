@@ -174,8 +174,9 @@
           ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } tcp dport { 47984, 47989, 47990, 48010 } accept
           ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } udp dport { 47998, 47999, 48000, 48002, 48010 } accept
 
-          # SSH (uncomment if needed)
-          # tcp dport 22 accept
+          # SSH — enable together with system/programs/ssh.nix (LAN + tailnet only, never public)
+          # ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 22 accept
+          # iifname "tailscale0" tcp dport 22 accept
 
           # Libvirt VMs (trusted local)
           iifname "virbr0" accept
@@ -245,15 +246,13 @@
     '';
   };
 
-  # CrowdSec
+  # CrowdSec — SSH brute-force protection (needs ssh.nix + the SSH rules above)
   #services.crowdsec = {
     #enable = true;
-    #hub = {
-      #collections = [
-        #"crowdsecurity/sshd"
-        #"crowdsecurity/linux"
-      #];
-    #};
+    #hub.collections = [
+      #"crowdsecurity/sshd"
+      #"crowdsecurity/linux"
+    #];
     #localConfig.acquisitions = [
       #{
         #source = "journald";
@@ -262,29 +261,24 @@
       #}
     #];
   #};
-
   #services.crowdsec-firewall-bouncer = {
     #enable = true;
     #registerBouncer.enable = true;
-    #settings = {
-      #mode = "nftables";
-    #};
+    #settings.mode = "nftables";
   #};
 
-  # Fail2ban: intended for exposed SSH / servers
+  # Fail2ban — simpler alternative to CrowdSec. NOTE: our input chain (priority 0,
+  # policy drop) runs FIRST, so bans can only affect the ACCEPTED rules (i.e. the
+  # SSH rules) — which is exactly what we want; verify chain order with `nft list ruleset`.
   #services.fail2ban = {
     #enable = true;
-    #jails = {
-      #sshd = {
-        #filter = "sshd";
-        #action = "nftables-allports";
-        #maxretry = 3;
-        #bantime = 3600;
-        #findtime = 600;
-        #settings = {
-          #backend = "systemd";
-        #};
-      #};
+    #jails.sshd = {
+      #filter = "sshd";
+      #action = "nftables-allports";
+      #maxretry = 3;
+      #bantime = 3600;
+      #findtime = 600;
+      #settings.backend = "systemd";
     #};
   #};
 
