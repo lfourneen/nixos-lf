@@ -94,6 +94,22 @@ in
     "net.ipv6.conf.all.accept_redirects" = 0;
     "net.ipv4.conf.all.send_redirects" = 0;
     "net.ipv4.ip_forward" = 1;
+
+    # Log spoofed packets with invalid/martian source addresses
+    "net.ipv4.conf.all.log_martians" = 1;
+    "net.ipv4.conf.default.log_martians" = 1;
+
+    # Mitigate TCP TIME-WAIT assassination attacks (RFC 1337)
+    "net.ipv4.tcp_rfc1337" = 1;
+
+    # Drop source-routed packets (prevents IPv4/IPv6 spoofing and filter bypass)
+    "net.ipv4.conf.all.accept_source_route" = 0;
+    "net.ipv4.conf.default.accept_source_route" = 0;
+    "net.ipv6.conf.all.accept_source_route" = 0;
+
+    # Disable ICMP redirects on default interfaces (enforce no-redirect policy for new devices)
+    "net.ipv4.conf.default.accept_redirects" = 0;
+    "net.ipv6.conf.default.accept_redirects" = 0;
   };
 
   # PAM Hardening
