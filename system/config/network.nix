@@ -6,16 +6,24 @@
     hostName = "nixos";
     networkmanager = {
       enable = true;
-      dhcp = "internal";
+      # "internal"/"dhclient" use UDP sockets and never get the broadcast DHCP
+      # offers (dst 255.255.255.255) this LAN's server (100.67.0.1) sends:
+      # the kernel drops them as martian while the iface has no IP, so NM's
+      # connection dies at every cold boot until `dhcpcd` is run manually
+      # (dhcpcd reads them via packet socket). Using dhcpcd as the NM backend
+      # fixes it without changing anything else.
+      dhcp = "dhcpcd";
       dns = "systemd-resolved";   # Pin NM to resolved
       wifi.powersave = false;
       settings = {
         connectivity = {
           interval = 0;
         };
-        connection = {
-          "ipv4.ignore-auto-dns" = true;
-          "ipv6.ignore-auto-dns" = true;
+        ipv4 = {
+          "ignore-auto-dns" = true;
+        };
+        ipv6 = {
+          "ignore-auto-dns" = true;
         };
       };
     };
@@ -98,6 +106,13 @@
 
   # nixos-rebuild reloads resolved (incomplete, "Reload operation timed out"); restart it instead
   systemd.services.systemd-resolved.restartIfChanged = true;
+
+  # Shutdown: stop NetworkManager BEFORE the user session (user@1000). With a
+  # hotspot/shared connection active, NM's deactivation takes a while and user
+  # apps (nm-applet, etc.) block in D-Bus calls to it, which makes the user
+  # manager spin in "Stopping User Manager" for its full 90s stop timeout.
+  # Reverse start-order => unit in After= stops first.
+  systemd.services.NetworkManager.after = [ "user@1000.service" ];
 
   # Nftables (FireWall)
   networking.firewall.enable = false;
@@ -186,7 +201,7 @@
           # Libvirt
           iifname "virbr0" accept
           oifname "virbr0" ct state established,related accept
-          iifname "virbr0" oifname { "enp4s0", "wlo1" } accept
+          iifname "virbr0" oifname { "ens1", "enp4s0", "wlo1" } accept
 
           # Default drop
           drop
@@ -222,7 +237,7 @@
       table ip nat {
         chain postrouting {
           type nat hook postrouting priority 100;
-          oifname "enp4s0" ip saddr 192.168.122.0/24 masquerade   # libvirt VM
+          oifname { "ens1", "enp4s0" } ip saddr 192.168.122.0/24 masquerade   # libvirt VM (interface renamed to ens1 by newer kernel)
           oifname "wlo1"  ip saddr 192.168.122.0/24 masquerade    # libvirt VM
           oifname != "wlo1" ip saddr 10.42.0.0/24 masquerade      # hotspot clients (wired or WiFi uplink)
         }

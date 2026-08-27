@@ -33,6 +33,12 @@
     hardwareClockInLocalTime = true;
   };
 
+  # User services that ignore SIGTERM (or block on a dying NetworkManager)
+  # only get cleaned up after the user manager's 90s default stop timeout,
+  # which is what the "Stopping User Manager" hang is. Kill them 10s after
+  # SIGTERM instead.
+  systemd.user.extraConfig = "DefaultTimeoutStopSec=10s";
+
   # Valid font config
   fonts = {
     fontDir.enable = true;
@@ -64,6 +70,5 @@
   # NixOS Version
   system.stateVersion = "26.05";
 
-  environment.systemPackages = with pkgs; [];
 }
 
