@@ -6,13 +6,14 @@
     hostName = "nixos";
     networkmanager = {
       enable = true;
-      # "internal"/"dhclient" use UDP sockets and never get the broadcast DHCP
-      # offers (dst 255.255.255.255) this LAN's server (100.67.0.1) sends:
-      # the kernel drops them as martian while the iface has no IP, so NM's
-      # connection dies at every cold boot until `dhcpcd` is run manually
-      # (dhcpcd reads them via packet socket). Using dhcpcd as the NM backend
-      # fixes it without changing anything else.
-      dhcp = "dhcpcd";
+      # The LAN's DHCP server (100.67.0.1) answers with broadcast offers
+      # (dst 255.255.255.255). Proven on this machine across all three NM
+      # clients: internal/dhclient never see them (kernel drops as "martian
+      # source" while the iface has no IP), and the dhcpcd backend gets the
+      # lease but its nm-dhcp-helper exits 1 (WEXITSTATUS 1) so NM never
+      # applies the config. Standalone dhcpcd works every single time.
+      # => wired NIC is owned by dhcpcd (below); NM leaves it alone.
+      unmanaged = [ "interface-name:ens1" ];
       dns = "systemd-resolved";   # Pin NM to resolved
       wifi.powersave = false;
       settings = {
@@ -28,6 +29,20 @@
       };
     };
     resolvconf.enable = false;
+
+    # dhcpcd owns ens1 at boot (same binary that has always fixed the network
+    # when run manually; it reads the router's broadcast offers via packet
+    # socket). DNS stays with systemd-resolved, so keep dhcpcd's hooks out of
+    # /etc/resolv.conf.
+    interfaces.ens1.useDHCP = true;
+    dhcpcd = {
+      enable = true;
+      extraConfig = ''
+        nohook resolv.conf
+        nohook ntp.conf
+      '';
+    };
+
     proxy = {
       default = "http://127.0.0.1:33332/";
       noProxy = "127.0.0.1,localhost,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,192.168.1.1,*.local";
