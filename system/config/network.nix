@@ -6,13 +6,10 @@
     hostName = "nixos";
     networkmanager = {
       enable = true;
-      # The LAN's DHCP server (100.67.0.1) answers with broadcast offers
-      # (dst 255.255.255.255). Proven on this machine across all three NM
-      # clients: internal/dhclient never see them (kernel drops as "martian
-      # source" while the iface has no IP), and the dhcpcd backend gets the
-      # lease but its nm-dhcp-helper exits 1 (WEXITSTATUS 1) so NM never
-      # applies the config. Standalone dhcpcd works every single time.
-      # => wired NIC is owned by dhcpcd (below); NM leaves it alone.
+      # The LAN's DHCP server answers with broadcast offers which NM's
+      # clients can't handle (internal/dhclient lose them to the kernel's
+      # martian filter; the dhcpcd backend's nm-dhcp-helper exits 1). dhcpcd
+      # standalone always works => dhcpcd owns the wired NIC, NM skips it.
       unmanaged = [ "interface-name:ens1" ];
       dns = "systemd-resolved";   # Pin NM to resolved
       wifi.powersave = false;
@@ -30,10 +27,7 @@
     };
     resolvconf.enable = false;
 
-    # dhcpcd owns ens1 at boot (same binary that has always fixed the network
-    # when run manually; it reads the router's broadcast offers via packet
-    # socket). DNS stays with systemd-resolved, so keep dhcpcd's hooks out of
-    # /etc/resolv.conf.
+    # dhcpcd owns ens1; keep its hooks out of resolv.conf (resolved owns DNS).
     interfaces.ens1.useDHCP = true;
     dhcpcd = {
       enable = true;
@@ -122,11 +116,8 @@
   # nixos-rebuild reloads resolved (incomplete, "Reload operation timed out"); restart it instead
   systemd.services.systemd-resolved.restartIfChanged = true;
 
-  # Shutdown: stop NetworkManager BEFORE the user session (user@1000). With a
-  # hotspot/shared connection active, NM's deactivation takes a while and user
-  # apps (nm-applet, etc.) block in D-Bus calls to it, which makes the user
-  # manager spin in "Stopping User Manager" for its full 90s stop timeout.
-  # Reverse start-order => unit in After= stops first.
+  # Shutdown: stop NM before the user session, else user apps block on its
+  # D-Bus and "Stopping User Manager" spins out its 90s timeout.
   systemd.services.NetworkManager.after = [ "user@1000.service" ];
 
   # Nftables (FireWall)

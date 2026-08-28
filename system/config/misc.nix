@@ -33,10 +33,8 @@
     hardwareClockInLocalTime = true;
   };
 
-  # User services that ignore SIGTERM (or block on a dying NetworkManager)
-  # only get cleaned up after the user manager's 90s default stop timeout,
-  # which is what the "Stopping User Manager" hang is. Kill them 10s after
-  # SIGTERM instead.
+  # Stop stuck user services 10s after SIGTERM instead of the 90s default
+  # (was the "Stopping User Manager" hang).
   systemd.user.extraConfig = "DefaultTimeoutStopSec=10s";
 
   # Valid font config
