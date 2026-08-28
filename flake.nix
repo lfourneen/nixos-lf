@@ -89,8 +89,8 @@
         # File System
         inputs.disko.nixosModules.default
         inputs.impermanence.nixosModules.impermanence
-
-	      inputs.sops-nix.nixosModules.sops
+        
+        inputs.sops-nix.nixosModules.sops
 
         # Flatpak
         inputs.nix-flatpak.nixosModules.nix-flatpak
