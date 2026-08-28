@@ -13,22 +13,27 @@
       unmanaged = [ "interface-name:ens1" ];
       dns = "systemd-resolved";   # Pin NM to resolved
       wifi.powersave = false;
+
       settings = {
         connectivity = {
           interval = 0;
         };
+
         ipv4 = {
           "ignore-auto-dns" = true;
         };
+
         ipv6 = {
           "ignore-auto-dns" = true;
         };
       };
     };
+
     resolvconf.enable = false;
 
     # dhcpcd owns ens1; keep its hooks out of resolv.conf (resolved owns DNS).
     interfaces.ens1.useDHCP = true;
+
     dhcpcd = {
       enable = true;
       extraConfig = ''
@@ -53,6 +58,7 @@
         "https://cache.nixos-cuda.org"
         "https://noctalia.cachix.org"
       ];
+
       trusted-public-keys = [
         "cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M="
         "noctalia.cachix.org-1:pCOR47nnMEo5thcxNDtzWpOxNFQsBRglJzxWPp3dkU4="
@@ -77,6 +83,7 @@
     httpSupport = true;
     udpSupport = true;
     udpPorts = [ "443" ];
+
     params = [
       # Minimal DPI bypass, less aggressive
       "--dpi-desync=fake"
@@ -93,21 +100,27 @@
   # Resolved
   services.resolved = {
     enable = true;
+
     settings = {
       Resolve = {
         Domains = ["~."];
+
         MulticastDNS = "no";
+
         # 223.5.5.5 in PRIMARY list: resolved's FallbackDNS list is BROKEN when a primary
         # DNS exists (verified: clash-off -> "All attempts failed" even though 223.5.5.5
         # answers fine; works only as primary). Same-list failover is reliable.
         DNS = [ "127.0.0.1:1053" "223.5.5.5" ];
         FallbackDNS = [ "1.1.1.1" "1.0.0.1" ];
+
         # Must be "no": opportunistic DoT tries cert validation against IPs and kills fallback
         DNSOverTLS = "no";
+
         # DNSSEC MUST be off: mihomo fake-ip answers carry no DNSSEC signature; even
         # allow-downgrade fails validation -> SERVFAIL for ALL system DNS (only proxy apps survive)
         DNSSEC = "no";
         LLMNR = "no";   # Disable LLMNR (LAN poisoning surface)
+
         DNSStubListenerExtra = "udp:0.0.0.0:53";  # gated by firewall (hotspot only)
       };
     };
@@ -122,8 +135,10 @@
 
   # Nftables (FireWall)
   networking.firewall.enable = false;
+  
   networking.nftables = {
     enable = true;
+
     ruleset = ''
       table inet filter {
         chain input {
@@ -255,10 +270,12 @@
   # CrowdSec — SSH brute-force protection (needs ssh.nix + the SSH rules above)
   #services.crowdsec = {
     #enable = true;
+
     #hub.collections = [
       #"crowdsecurity/sshd"
       #"crowdsecurity/linux"
     #];
+
     #localConfig.acquisitions = [
       #{
         #source = "journald";
@@ -267,6 +284,7 @@
       #}
     #];
   #};
+
   #services.crowdsec-firewall-bouncer = {
     #enable = true;
     #registerBouncer.enable = true;
@@ -278,6 +296,7 @@
   # SSH rules) — which is exactly what we want; verify chain order with `nft list ruleset`.
   #services.fail2ban = {
     #enable = true;
+
     #jails.sshd = {
       #filter = "sshd";
       #action = "nftables-allports";

@@ -16,6 +16,7 @@
   # Tlp
   services.tlp = {
       enable = false;
+
       settings = {
         TLP_DEFAULT_MODE = "BAT";
         TLP_PERSISTENT_DEFAULT = 1;
@@ -36,11 +37,13 @@
    #Auto-cpufreq
    services.auto-cpufreq = {
      enable = false;
+     
      settings = {
        battery = {
          governor = "powersave";
          turbo = "never";
        };
+       
        charger = {
          governor = "performance";
          turbo = "auto";

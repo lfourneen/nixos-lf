@@ -5,12 +5,14 @@
   programs.git = {
     enable = true;
     lfs.enable = true;
+
     settings = {
+      init.defaultBranch = "main";
+      
       user = {
         name  = "LFour86";
-        email = "LFour86@example.com";
+        email = "lfourneen@qq.com";
       };
-      init.defaultBranch = "main";
     };
   };
 }

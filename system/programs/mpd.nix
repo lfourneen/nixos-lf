@@ -7,14 +7,17 @@
     user = "lfour";
     startWhenNeeded = true;
     openFirewall = false;
+
     settings = {
       music_directory = "${config.users.users.lfour.home}/Music";
       bind_to_address = "127.0.0.1";
+
       audio_output = [
         {
           type = "pipewire";
           name = "PipeWire Output";
         }
+        
         {
           type = "fifo";
           name = "FIFO";

@@ -32,6 +32,7 @@ in
     enable = true;
     enableCache = true;
     killUnconfinedConfinables = true;
+
     packages = with pkgs; [
       apparmor-utils
       apparmor-profiles
@@ -55,19 +56,23 @@ in
   # Firejail
   programs.firejail = {
     enable = true;
+
     wrappedBinaries = {
       media-downloader = {
         executable = "${lib.getBin pkgs.media-downloader}/bin/media-downloader";
         profile = "${pkgs.firejail}/etc/firejail/default.profile";
       };
+
       mpv = {
         executable = "${lib.getBin pkgs.mpv}/bin/mpv";
         profile = "${pkgs.firejail}/etc/firejail/mpv.profile";
       };
+
       wine = {
         executable = "${lib.getBin unstable-pkgs.wineWow64Packages.waylandFull}/bin/wine";
         profile = "${pkgs.firejail}/etc/firejail/default.profile";
       };
+
       yt-dlp = {
         executable = "${lib.getBin pkgs.yt-dlp}/bin/yt-dlp";
         profile = "${pkgs.firejail}/etc/firejail/default.profile";
@@ -122,12 +127,14 @@ in
     enable = true;
     enableUserSlices = true;
     enableSystemSlice = true;
+
     settings.OOM = {
       SwapUsedLimit = "90%";
       DefaultMemoryPressureLimit = "80%";
       DefaultMemoryPressureDurationSec = "20s";
     };
   };
+  
   #services.earlyoom = {
     #enable = true;
     #freeMemThreshold = 5;

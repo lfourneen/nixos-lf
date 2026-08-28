@@ -13,6 +13,7 @@
     enableFishIntegration = true;
     enableBashIntegration = true;
   };
+
   programs.command-not-found.enable = false;
 
   # NH
@@ -42,19 +43,22 @@
   # Steam
   programs.steam = {
     enable = true;
+    extest.enable = true;
+    protontricks.enable = true;
+
     extraPackages = with pkgs; [
       cef-binary
       fontconfig
     ];
+
     extraCompatPackages = with pkgs; [
       proton-ge-bin
       dwproton-bin
     ];
+
     fontPackages = with pkgs; [
       maple-mono.NF-CN
     ];
-    extest.enable = true;
-    protontricks.enable = true;
   };
 }
 

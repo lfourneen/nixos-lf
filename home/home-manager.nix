@@ -10,7 +10,10 @@
   home = {
     username = "lfour";
     homeDirectory = "/home/lfour";
-    sessionPath = [ "$HOME/.local/bin" ];
+
+    sessionPath = [ 
+      "$HOME/.local/bin" 
+    ];
   };
 
   home.sessionVariables = {

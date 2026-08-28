@@ -4,6 +4,7 @@
   # Some programs need SUID wrappers, can be configured further or are
   # started in user sessions.
    programs.mtr.enable = true;
+
    programs.gnupg.agent = {
      enable = true;
      enableSSHSupport = true;
@@ -29,11 +30,13 @@
   services.openssh = {
     enable = true;
     ports = [ 22 ];
+
     # Ed25519 host key from sops (modern only; add a rsa/ecdsa entry here if
     # you must support ancient clients)
     hostKeys = [
       { path = config.sops.secrets."ssh_host_ed25519_key".path; type = "ed25519"; }
     ];
+
     settings = {
       # Key-based auth ONLY (authorized keys come from sops)
       PasswordAuthentication = false;
@@ -61,6 +64,7 @@
       group = "sshd";
       mode = "0640";
     };
+    
     ssh_authorized_keys = {
       owner = "root";
       group = "root";

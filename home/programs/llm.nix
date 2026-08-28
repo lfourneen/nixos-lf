@@ -15,8 +15,10 @@ in
     enable = true;
     package = pkgs.ollama;
     acceleration = "cuda";
+
     host = "127.0.0.1";
     port = 11434;
+
     environmentVariables = {
       OLLAMA_ORIGINS = "http://localhost,http://127.0.0.1,https://localhost,https://127.0.0.1,chrome-extension://*,moz-extension://*,app://*";
     };

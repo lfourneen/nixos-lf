@@ -3,11 +3,28 @@
 {
   # Nix settings 
   nix.settings = {
-    experimental-features = [ "nix-command" "flakes" ];
-    system-features = [ "gccarch-znver4" "gccarch-znver3" "gccarch-x86-64-v4" "gccarch-x86-64-v3" "gccarch-x86-64-v2" "gccarch-x86-64" ];
-    trusted-users = [ "root" "lfour" "hermes" ];
     auto-optimise-store = true;
     max-jobs = 16;
+    
+    experimental-features = [ 
+      "nix-command" 
+      "flakes" 
+    ];
+
+    system-features = [ 
+      "gccarch-znver4"
+      "gccarch-znver3" 
+      "gccarch-x86-64-v4" 
+      "gccarch-x86-64-v3" 
+      "gccarch-x86-64-v2" 
+      "gccarch-x86-64" 
+    ];
+
+    trusted-users = [ 
+      "root" 
+      "lfour" 
+      "hermes" 
+    ];
   };
 
   # Linux kernel
@@ -40,6 +57,7 @@
   # Valid font config
   fonts = {
     fontDir.enable = true;
+
     packages = with pkgs; [
       google-fonts
       font-awesome

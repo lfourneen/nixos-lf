@@ -4,11 +4,12 @@
   # File system
   fileSystems."/persist".neededForBoot = true;
 
-  # impermanence
+  # Impermanence
   environment.persistence."/persist" = {
     hideMounts = true;
+    
     directories = [
-      # suggested subdirectory breakdown
+      # Suggested subdirectory breakdown
       "/etc/NetworkManager/system-connections"
       "/etc/nixos"
       "/etc/waydroid-extra"
@@ -32,6 +33,7 @@
       "/var/lib/systemd/random-seed"
       "/var/log"
     ];
+    
     files = [
       "/etc/machine-id"
     ];

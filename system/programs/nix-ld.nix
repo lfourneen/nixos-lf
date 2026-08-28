@@ -9,6 +9,7 @@
   programs.nix-ld = {
     enable = true;
     package = pkgs.nix-ld;
+    
     libraries = with pkgs; [
       # Core Runtime and Base C Libraries
       glib

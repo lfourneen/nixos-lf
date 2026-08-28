@@ -3,6 +3,7 @@
 {
   services.flatpak = {
     enable = true;
+    
     packages = [
       # Communication tools
       "app.zen_browser.zen"

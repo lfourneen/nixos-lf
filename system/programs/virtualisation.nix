@@ -12,11 +12,11 @@ in
   programs.virt-manager.enable = true;
   virtualisation = {
     waydroid.enable = true;
-    
     spiceUSBRedirection.enable = true;
     
     libvirtd = {
       enable = true;
+
       qemu = {
         package = pkgs.qemu_kvm;
         runAsRoot = true;
@@ -31,13 +31,16 @@ in
     # Enable Docker
     docker = {
       package = unstable-pkgs.docker;
+      
       # Disable the system ROOT dockerd - rootless docker is the ONLY daemon now
       enable = false;
       storageDriver = "btrfs";
     };
+
     docker.rootless = {
       enable = true;
       setSocketVariable = true;
+
       daemon.settings = {
         registry-mirrors = [
           "https://docker.m.daocloud.io"

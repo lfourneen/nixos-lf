@@ -10,6 +10,7 @@
   hardware.graphics = {
     enable = true;
     enable32Bit = true;
+
     extraPackages = with pkgs; [
       libva 
       libva-utils
@@ -31,13 +32,14 @@
     modesetting.enable = true;
     dynamicBoost.enable = true;
     gsp.enable = true;
+    open = true;
+    nvidiaSettings = true;
+    videoAcceleration = true;
+    
     powerManagement = {
       enable = true;
       finegrained = false;
     };
-    open = true;
-    nvidiaSettings = true;
-    videoAcceleration = true;
   };
 
   hardware.nvidia-container-toolkit = {
@@ -45,12 +47,21 @@
   };
  
   # Bootloader
-  boot.initrd.kernelModules = [ "nvidia" "nvidiafb" "nvidia_drm" "nvidia_uvm" "nvidia-modeset" ];
+  boot.initrd.kernelModules = [ 
+    "nvidia" 
+    "nvidiafb" 
+    "nvidia_drm" 
+    "nvidia_uvm" 
+    "nvidia-modeset" 
+  ];
   
   # Fixed
   #boot.extraModulePackages = [ config.boot.kernelPackages.nvidia_x11 ];
 
-  boot.blacklistedKernelModules = [ "nouveau" "amdgpu" ];
+  boot.blacklistedKernelModules = [ 
+    "nouveau" 
+    "amdgpu" 
+  ];
     
   # KernelParams
   boot.kernelParams = [ 

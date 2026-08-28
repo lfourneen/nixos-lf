@@ -9,8 +9,9 @@ let
 in
 {
   programs.zed-editor = {
-    package = unstable-pkgs.zed-editor;
     enable = true;
+    package = unstable-pkgs.zed-editor;
+
     extensions = [ 
       "nix"
     ];

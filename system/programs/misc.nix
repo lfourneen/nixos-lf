@@ -20,6 +20,7 @@
   services.kmscon = {
     enable = true;
     fonts = [ { name = "Maple Mono NF CN"; package = pkgs.maple-mono.NF-CN; } ];
+    
     extraConfig = ''
       font-engine=pango
       font-size=12

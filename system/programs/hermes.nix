@@ -95,35 +95,43 @@ in
         fetch = {
           command = "${pkgs.mcp-server-fetch}/bin/mcp-server-fetch";
           args = [];
+
           env = { 
             HTTP_PROXY = "http://127.0.0.1:33332"; 
             HTTPS_PROXY = "http://127.0.0.1:33332"; 
           };
         };
+
         filesystem = {
           command = "${pkgs.mcp-server-filesystem}/bin/mcp-server-filesystem";
           args = [ "/var/lib/hermes/workspace" "/var/lib/hermes/home" "/tmp" ];
         };
+
         nixos = {
           command = "${pkgs.mcp-nixos}/bin/mcp-nixos";
           args = [];
         };
+
         sequential-thinking = {
           command = "${pkgs.mcp-server-sequential-thinking}/bin/mcp-server-sequential-thinking";
           args = [];
         };
+
         time = {
           command = "${pkgs.mcp-server-time}/bin/mcp-server-time";
           args = [];
         };
+
         playwright = {
           command = "${pkgs.playwright-mcp}/bin/playwright-mcp";
+
           args = [
             "--executable-path"
             "${pkgs.playwright-driver.browsers}/chromium-${pkgs.playwright-driver.passthru.browsersJSON.chromium.revision}/chrome-linux64/chrome"
             "--proxy-server"
             "http://127.0.0.1:33332"
           ];
+
           env = {
             PWMCP_PROFILES_DIR_FOR_TEST = "/var/lib/hermes/.playwright-profiles";
           };
@@ -176,6 +184,7 @@ in
       nodejs
       powertop
     ];
+    
     serviceConfig = {
       User = "hermes";
       Group = "hermes";

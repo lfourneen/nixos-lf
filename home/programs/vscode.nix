@@ -10,6 +10,7 @@ in
 {
   programs.vscode = {
     enable = true;
+    
     package = unstable-pkgs.vscode.override {
       commandLineArgs = [
         "--ozone-platform=wayland"
@@ -17,6 +18,7 @@ in
         "--wayland-text-input-version=3"
       ];
     };
+
     profiles.default.extensions = with pkgs.vscode-extensions; [
       ms-vscode.makefile-tools
       ms-vscode.cpptools-extension-pack
