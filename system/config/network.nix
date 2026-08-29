@@ -1,5 +1,12 @@
-{ pkgs, ... }:
+{ inputs, pkgs, ... }:
 
+let
+  unstable-pkgs = import inputs.nixpkgs-unstable {
+    system = pkgs.stdenv.hostPlatform.system;
+    config.allowUnfree = true;
+  };
+
+in
 {
   # Networking
   networking = {
@@ -67,7 +74,10 @@
   };
 
   # Tailscale (encrypted tailnet; run `sudo tailscale up` once after install to login)
-  services.tailscale.enable = true;
+  services.tailscale = {
+    enable = true;
+    package = unstable-pkgs.tailscale;
+  };
 
   # Avahi / mDNS (local discovery)
   services.avahi = {
