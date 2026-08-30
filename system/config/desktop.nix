@@ -141,8 +141,8 @@ in
     # Niri
     kitty
     lswt
-    mpvpaper
     unstable-pkgs.linux-wallpaperengine
+    unstable-pkgs.mpvpaper
     xwayland-satellite # xwayland support
     wl-clipboard
     clipman

@@ -167,6 +167,9 @@ let
     plugin_settings = {
       "noctalia/mpvpaper" = {
         video_directory = "${homeDir}/Videos";
+        run_as_systemd = true;
+        cpu_quota = 300;
+        memory_max = "2048M";
       };
     };
     plugins = {

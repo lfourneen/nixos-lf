@@ -17,6 +17,7 @@
     lshw
     lsof
     pciutils
+    procps
     psutils
     sops
     ripgrep-all
