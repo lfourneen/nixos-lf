@@ -85,6 +85,13 @@ let
       place-within-backdrop true
     }
 
+    // Video wallpaper via mpvpaper: same treatment, otherwise the overview
+    // clones the video into every workspace capsule and the backdrop stays black.
+    layer-rule {
+      match namespace="mpvpaper"
+      place-within-backdrop true
+    }
+
     // Monitors
     // Left（1080p@100Hz）
     output "HDMI-A-1" {

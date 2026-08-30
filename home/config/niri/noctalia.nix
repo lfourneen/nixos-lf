@@ -16,7 +16,7 @@ let
         center = [ "group:g3" ];
         end = [ "tray" "notifications" "clipboard" "group:g1" "bluetooth" "volume" "brightness" "battery" "session" ];
         padding = 16;
-        start = [ "control-center" "w-engine-widget" "mini-docker" "group:g2" "workspaces" ];
+        start = [ "control-center" "group:g4" "mini-docker" "group:g2" "workspaces" ];
         widget_spacing = 8;
         capsule_group = [
           {
@@ -48,6 +48,14 @@ let
             members = [ "clock" "media" "audio_visualizer" ];
             opacity = 1.0;
             padding = 6.0;
+          }
+          {
+            accordion = false;
+            accordion_direction = "end";
+            enabled = true;
+            fill = "surface_variant";
+            id = "g4";
+            members = [ "mpvpaper" "w-engine-widget" ];
           }
         ];
       };
@@ -156,6 +164,11 @@ let
     nightlight = { enabled = true; };
     notification = { monitors = [ "eDP-1" "HDMI-A-1" ]; };
     osd = { monitors = [ "eDP-1" "HDMI-A-1" ]; };
+    plugin_settings = {
+      "noctalia/mpvpaper" = {
+        video_directory = "${homeDir}/Videos";
+      };
+    };
     plugins = {
       enabled = [
         "noctalia/notes"
@@ -163,6 +176,7 @@ let
         "nightwatch75/todo"
         "tadomika_ari/w-engine"
         "rxtsel/portctl"
+        "noctalia/mpvpaper"
       ];
     };
     shell = {
@@ -220,6 +234,7 @@ let
       indicator = { type = "rxtsel/portctl:indicator"; };
       media = { anchor = false; hide_when_no_media = true; max_length = 40; min_length = 0; };
       mini-docker = { anchor = true; capsule = true; type = "8bury/mini-docker:mini-docker"; };
+      mpvpaper = { capsule = true; glyph = "photo-video"; type = "noctalia/mpvpaper:mpvpaper"; };
       network = { capsule = true; show_vpn_label = true; vpn_status = "both"; };
       notifications = { anchor = true; capsule = true; };
       ram = { capsule = true; };
@@ -234,6 +249,19 @@ let
 
   # Generate a read-only TOML file in the Nix store
   noctaliaTomlFile = (pkgs.formats.toml {}).generate "noctalia-config.toml" noctaliaConfigObj;
+
+  # The tadomika_ari/w-engine plugin (community repo, materialized in ~/.local/state)
+  # doesn't remember the panel's monitor view/multi-select across reboots; this
+  # idempotent patch persists them (default: output=All, multi-select off).
+  wenginePatchPy = pkgs.writeText "wengine-state-patch.py" (builtins.readFile ./wengine-state-patch.py);
+  noctaliaWenginePatch = pkgs.writeShellScript "noctalia-wengine-state-patch" ''
+    DIR="$HOME/.local/state/noctalia/plugins/materialized/community/w-engine"
+    if [ -d "$DIR" ]; then
+      ${pkgs.python3}/bin/python3 ${wenginePatchPy} "$DIR"
+    else
+      echo "W Engine plugin not materialized yet; patch will apply on the next login"
+    fi
+  '';
 
 in
 {
@@ -259,5 +287,25 @@ in
     # $DRY_RUN_CMD cp -f "${noctaliaTomlFile}" "$TARGET_FILE"
     # $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
   '';
+
+  # Patch the materialized W Engine plugin so the panel remembers its state
+  home.activation.setupNoctaliaWEngineState = inputs.home-manager.lib.hm.dag.entryAfter [ "writeBoundary" "setupNoctaliaConfig" ] ''
+    $DRY_RUN_CMD ${noctaliaWenginePatch}
+  '';
+
+  # Re-apply on every login in case the plugin manager re-materialized the plugin
+  systemd.user.services.noctalia-wengine-state-patch = {
+    Unit = {
+      Description = "Patch noctalia W Engine plugin to persist panel state";
+      After = [ "graphical-session.target" ];
+    };
+    Service = {
+      Type = "oneshot";
+      ExecStart = noctaliaWenginePatch;
+    };
+    Install = {
+      WantedBy = [ "graphical-session.target" ];
+    };
+  };
 }
 
