@@ -21,7 +21,7 @@ let
 in
 {
   sops = {
-    defaultSopsFile = ./secrets/secrets.yaml;
+    defaultSopsFile = ../secrets/secrets.yaml;
     age.keyFile = "${config.users.users.lfour.home}/.config/sops/age/keys.txt";
     useSystemdActivation = true;  # render secrets at every boot (/run is tmpfs; activation-script mode loses secrets on reboot)
 

@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, config, ... }:
 
 {
   # Nix settings 
@@ -26,6 +26,32 @@
       "hermes" 
     ];
   };
+
+  # GitHub token from sops (rendered by sops-install-secrets, never inlined).
+  # `!include` tolerates a missing file before the first render.
+  nix.extraOptions = ''
+    !include /run/secrets/rendered/nix-tokens.conf
+  '';
+
+  sops = {
+    secrets.github_token = {
+      owner = "root";
+      group = "root";
+      mode = "0600";
+    };
+
+    templates."nix-tokens.conf" = {
+      content = ''
+        access-tokens = github.com=${config.sops.placeholder."github_token"}
+      '';
+      owner = "root";
+      group = "root";
+      mode = "0600";
+    };
+  };
+
+  # Render the token file before nix-daemon loads nix.conf on boot.
+  systemd.services.nix-daemon.after = [ "sops-install-secrets.service" ];
 
   # Linux kernel
   boot.kernelPackages = pkgs.linuxPackages_xanmod_latest;

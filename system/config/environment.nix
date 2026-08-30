@@ -1,4 +1,4 @@
-{ ... }:
+{ config, ... }:
 
 {
   environment.sessionVariables = {
@@ -28,7 +28,13 @@
     #NO_PROXY = "";
   };
   
-  environment.variables.EDITOR = "nvim";
+  environment.variables = {
+    EDITOR = "nvim";
+    
+    # sops CLI age identity: /etc/environment is not $HOME-expanded, so use an
+    # absolute path. Works even in root shells (sops set under /etc/nixos).
+    SOPS_AGE_KEY_FILE = "${config.users.users.lfour.home}/.config/sops/age/keys.txt";
+  };
 
   environment.extraOutputsToInstall = [ "dev" ];
 }

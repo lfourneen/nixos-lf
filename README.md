@@ -1,5 +1,7 @@
 # NixOS Configuration
 
+[English](README.md) | [简体中文](README_CN.md)
+
 A declarative NixOS system configuration using Nix flakes, featuring a customized desktop environment and various productivity tools.
 
 ---
@@ -73,6 +75,7 @@ sudo nixos-rebuild switch --flake .#yourname
     ├── hardware/           # Hardware-specific configurations
     ├── modules/            # Kernel modules configurations
     ├── programs/           # System programs and services
+    ├── secrets/            # Encrypted secrets (sops)
     └── systempkgs/         # System packages
 
 ```
@@ -135,12 +138,34 @@ creation_rules:
 
 4. Create and edit your encrypted secret file:
 ```bash
-cd /etc/nixos/system/programs/secrets
+cd /etc/nixos/system/secrets
 sops secrets.yaml
 
 ```
 
 Add your API keys in YAML format (e.g., `hermes_api_key: "sk-proj-1234567890abcdef"`). Upon saving, the file contents will be automatically encrypted.
+
+> Adding a new key later (all keys are top-level YAML entries):
+
+```bash
+cd /etc/nixos/system/secrets
+
+# From the command line. Key uses bracket/index syntax, value must be
+# a valid JSON string (extra quotes around it):
+sops set secrets.yaml '["github_token"]' '"ghp_xxx"'
+
+# From a file (long values, e.g. ssh private key)
+sops set --value-file secrets.yaml '["ssh_host_ed25519_key"]' /tmp/key
+
+# Or from stdin
+echo -n 'ghp_xxx' | sops set --value-stdin secrets.yaml '["github_token"]'
+
+# Interactive: opens the decrypted file in your editor, save to re-encrypt
+sops secrets.yaml
+
+# Verify
+sops -d secrets.yaml
+```
 
 ### 2. Running Hermes
 

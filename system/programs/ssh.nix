@@ -13,7 +13,7 @@
   # Enable the OpenSSH daemon. DEPENDS ON:
   #  - network.nix: uncomment the LAN/tailnet `tcp dport 22` firewall rules
   #  - secrets.yaml already holds ssh_host_ed25519_key + ssh_authorized_keys
-  #    (add/rotate with: sops set system/programs/secrets/secrets.yaml).
+  #    (add/rotate with: sops set system/secrets/secrets.yaml).
   #    btrfs-rollback wipes /etc every boot, so host keys MUST come from sops
   #    (rendered into /run/secrets by sops-install-secrets in sysinit) —
   #    keep the "/etc/ssh" impermanence entries in partition.nix commented.
@@ -21,7 +21,7 @@
   # ---- KEY REGENERATION (short steps) ----
   #  1. Client keypair:  ssh-keygen -t ed25519 -C "lfour@nixos" -f ~/.ssh/id_ed25519
   #  2. Host key:        ssh-keygen -t ed25519 -N "" -C "ssh_host_ed25519_key" -f /tmp/ssh_host_ed25519_key
-  #  3. Into sops:       sops system/programs/secrets/secrets.yaml
+  #  3. Into sops:       sops system/secrets/secrets.yaml
   #      -> paste /tmp/ssh_host_ed25519_key into  ssh_host_ed25519_key
   #      -> paste ~/.ssh/id_ed25519.pub into     ssh_authorized_keys
   #  4. Rebuild:         sudo nixos-rebuild switch --flake .#lfour
