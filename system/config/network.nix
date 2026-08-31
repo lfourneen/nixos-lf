@@ -118,6 +118,7 @@ in
       no-resolv = true;       # upstream only from conf-file
       no-hosts = true;
       cache-size = 4096;
+      "neg-ttl" = "30";       # cap negative caching (e.g. mihomo's empty AAAA) to 30s
       conf-file = "/run/dns-pac/servers.conf";  # written by dns-pac.service
     };
   };
@@ -198,12 +199,13 @@ in
           # DNS server (hotspot clients only)
           iifname "wlo1" ip saddr 10.42.0.0/24 udp dport 53 accept
 
-          # mDNS / Avahi (local discovery)
-          udp dport 5353 accept
+          # mDNS / Avahi (local discovery) — LAN-only (incl. link-local v6)
+          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 5353 accept
+          ip6 saddr { fe80::/10, fc00::/7 } udp dport 5353 accept
 
-          # P2P (LocalSend)
-          tcp dport 53317 accept
-          udp dport 53317 accept
+          # P2P (LocalSend) — LAN-only
+          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 53317 accept
+          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 53317 accept
 
           # Remote desktop protocols (LAN-only)
           ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 3389, 5900, 47989 } accept  # RDP, VNC, Sunshine WebUI
