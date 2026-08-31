@@ -41,16 +41,13 @@
         }
 
         mkdir -p /run/dns-pac
-        current="none"
 
-        # Initial state (must exist before dnsmasq reads conf-file)
-        if probe; then
-          write_state proxy
-          current="proxy"
-        else
-          write_state direct
-          current="direct"
-        fi
+        # SAFE DEFAULT: start in direct (public DNS) unconditionally — the file
+        # must exist and point at a live, clash-independent upstream before
+        # dnsmasq starts. The loop upgrades to mihomo within <=5s if the probe
+        # succeeds; a false-positive "proxy" state at boot is now impossible.
+        write_state direct
+        current="direct"
 
         while true; do
           if probe; then
@@ -76,8 +73,11 @@
     };
   };
 
-  # dnsmasq starts after dns-pac writes the initial conf-file (on-failure retry
-  # covers the parallel-boot race).
+  # dnsmasq must never start before dns-pac: order (after) plus hard ordering
+  # (requires). dns-pac's initial write_state also runs `systemctl restart
+  # dnsmasq`, which on an inactive unit simply STARTS it — so the conf-file is
+  # guaranteed to exist at dnsmasq's first exec regardless of boot order.
+  systemd.services.dnsmasq.requires = [ "dns-pac.service" ];
   systemd.services.dnsmasq.after = [ "dns-pac.service" ];
 }
 
