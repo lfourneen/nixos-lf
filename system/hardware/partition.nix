@@ -30,12 +30,12 @@
       "/var/lib/systemd/credential"
       "/var/lib/systemd/credentials"
       "/var/lib/systemd/linger"
-      "/var/lib/systemd/random-seed"
       "/var/log"
     ];
     
     files = [
       "/etc/machine-id"
+      "/var/lib/systemd/random-seed"
     ];
   };
 
