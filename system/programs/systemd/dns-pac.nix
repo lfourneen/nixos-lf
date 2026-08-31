@@ -1,11 +1,9 @@
 { pkgs, ... }:
 
 {
-  # DNS PAC (fail-open, mirrors gost-pac): clash up -> dnsmasq forwards to mihomo
-  # (1053, hidden DoH DNS); clash down -> public DNS. resolved sees only the
-  # always-up dnsmasq gateway, so no dead-1053 hang; switch <= 6s, caches flushed.
-  # Probe = real CN-domain resolution through mihomo, so "up but DNS chain dead"
-  # also fails over to public DNS.
+  # DNS PAC: clash up -> dnsmasq forwards to mihomo's DNS (1053); down -> public
+  # DNS. Probe requires the mihomo core port (7897) AND a 1053 answer, plus 2
+  # consecutive probes (hysteresis), so a ghost listener can never flip state.
   systemd.services.dns-pac = {
     description = "DNS PAC: mihomo-only DNS when clash is up, public DNS otherwise";
     after = [ "network.target" ];
@@ -19,7 +17,7 @@
               printf 'server=127.0.0.1#1053\n' > /run/dns-pac/servers.conf
               ;;
             direct)
-              printf 'server=223.5.5.5\nserver=119.29.29.29\n' > /run/dns-pac/servers.conf
+              printf 'server=223.5.5.5\nserver=119.29.29.29\nserver=1.1.1.1\n' > /run/dns-pac/servers.conf
               ;;
           esac
 
@@ -29,10 +27,12 @@
         }
 
         probe() {
-          # geosite:cn names: mihomo must drain them through its policy DoH
-          # (doh.pub/alidns) to answer; timeout/SERVFAIL/refused -> dead.
-          # www.baidu.com = de-facto CN connectivity probe + www.qq.com 
-          # as second stable anchor.
+          # mihomo core port (same probe as gost-pac): a 1053 answer without a
+          # live 7897 means no working clash.
+          ${pkgs.coreutils}/bin/timeout 2 ${pkgs.bash}/bin/bash -c \
+            'echo > /dev/tcp/127.0.0.1/7897' 2>/dev/null || return 1
+
+          # CN names through mihomo's policy DoH: answers prove the chain works.
           for name in www.baidu.com www.qq.com; do
             ${pkgs.dnsutils}/bin/dig +time=1 +tries=1 +short @127.0.0.1 -p 1053 \
               "$name" 2>/dev/null | ${pkgs.gnugrep}/bin/grep -q . && return 0
@@ -42,25 +42,35 @@
 
         mkdir -p /run/dns-pac
 
-        # SAFE DEFAULT: start in direct (public DNS) unconditionally — the file
-        # must exist and point at a live, clash-independent upstream before
-        # dnsmasq starts. The loop upgrades to mihomo within <=5s if the probe
-        # succeeds; a false-positive "proxy" state at boot is now impossible.
+        # Start direct: the file must point at a clash-independent upstream
+        # before dnsmasq starts. Upgrade to mihomo only after 2 consecutive wins.
         write_state direct
         current="direct"
+        hits=0
+        misses=0
 
         while true; do
           if probe; then
-            new_status="proxy"
+            hits=$((hits+1))
+            misses=0
           else
+            misses=$((misses+1))
+            hits=0
+          fi
+
+          new_status="$current"
+          if [ "$hits" -ge 2 ]; then
+            new_status="proxy"
+          elif [ "$misses" -ge 2 ]; then
             new_status="direct"
           fi
 
-          # Switch only on backend state change
           if [ "$new_status" != "$current" ]; then
             echo "DNS upstream changed from [$current] to [$new_status]. Switching..."
             write_state "$new_status"
             current="$new_status"
+            hits=0
+            misses=0
           fi
 
           sleep 5
@@ -73,10 +83,8 @@
     };
   };
 
-  # dnsmasq must never start before dns-pac: order (after) plus hard ordering
-  # (requires). dns-pac's initial write_state also runs `systemctl restart
-  # dnsmasq`, which on an inactive unit simply STARTS it — so the conf-file is
-  # guaranteed to exist at dnsmasq's first exec regardless of boot order.
+  # dnsmasq must not start before dns-pac's initial write (conf-file exists at
+  # its first exec); the restart inside write_state starts it if inactive.
   systemd.services.dnsmasq.requires = [ "dns-pac.service" ];
   systemd.services.dnsmasq.after = [ "dns-pac.service" ];
 }

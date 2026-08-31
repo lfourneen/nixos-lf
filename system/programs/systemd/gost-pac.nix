@@ -28,8 +28,10 @@
 
         # Infinite keepalive and health-check loop
         while true; do
-          # Use --noproxy "*" to bypass global env variables and avoid Nftables/Zapret interference during probing
-          if ${pkgs.curl}/bin/curl -sf -m 2 --noproxy "*" http://127.0.0.1:33331/commands/pac > /dev/null; then
+          # Probe the mihomo CORE port (7897), not the clash-verge GUI port
+          # (33331): GUI alive + kernel stopped must still flip gost to direct,
+          # or every proxied request gets forwarded into a dead port.
+          if ${pkgs.coreutils}/bin/timeout 2 ${pkgs.bash}/bin/bash -c 'echo > /dev/tcp/127.0.0.1/7897' 2>/dev/null; then
             new_status="proxy"
           else
             new_status="direct"
