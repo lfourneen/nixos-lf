@@ -14,8 +14,12 @@
         enable: true
         listen: 127.0.0.1:1053
         ipv6: false
-        enhanced-mode: fake-ip
-        fake-ip-range: 198.18.0.1/16
+        # redir-host (NOT fake-ip): every query gets a REAL answer, resolved
+        # through mihomo's encrypted DoH chain, so DNS stays hidden from the ISP
+        # while CN domains (geosite:cn -> doh.pub) return real CN IPs that are
+        # dialable directly — no TUN needed. fake-ip would hand out unroutable
+        # 198.18.x.x to every direct (non-proxied) process.
+        enhanced-mode: redir-host
         use-hosts: true
         default-nameserver:
           - 223.5.5.5

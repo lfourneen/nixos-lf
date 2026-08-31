@@ -76,6 +76,9 @@
     hardwareClockInLocalTime = true;
   };
 
+  # NTP servers
+  networking.timeServers = [ "ntp.aliyun.com" "ntp.tencent.com" "cn.pool.ntp.org" ];
+
   # Stop stuck user services 10s after SIGTERM instead of the 90s default
   # (was the "Stopping User Manager" hang).
   systemd.user.extraConfig = "DefaultTimeoutStopSec=10s";

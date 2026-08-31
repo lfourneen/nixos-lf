@@ -107,6 +107,21 @@ in
     ];
   };
 
+  # DNS PAC: dnsmasq (1054, always up) forwards to mihomo (1053) when clash is up,
+  # public DNS otherwise; upstream switched by dns-pac.service (see dns-pac.nix).
+  services.dnsmasq = {
+    enable = true;
+    settings = {
+      port = 1054;
+      bind-interfaces = true;
+      interface = "lo";
+      no-resolv = true;       # upstream only from conf-file
+      no-hosts = true;
+      cache-size = 4096;
+      conf-file = "/run/dns-pac/servers.conf";  # written by dns-pac.service
+    };
+  };
+
   # Resolved
   services.resolved = {
     enable = true;
@@ -117,17 +132,14 @@ in
 
         MulticastDNS = "no";
 
-        # 223.5.5.5 in PRIMARY list: resolved's FallbackDNS list is BROKEN when a primary
-        # DNS exists (verified: clash-off -> "All attempts failed" even though 223.5.5.5
-        # answers fine; works only as primary). Same-list failover is reliable.
-        DNS = [ "127.0.0.1:1053" "223.5.5.5" ];
-        FallbackDNS = [ "1.1.1.1" "1.0.0.1" ];
+        # One always-alive gateway; public DNS is only a safety net if it dies.
+        DNS = [ "127.0.0.1:1054" ];
+        FallbackDNS = [ "223.5.5.5" "119.29.29.29" "1.1.1.1" ];
 
         # Must be "no": opportunistic DoT tries cert validation against IPs and kills fallback
         DNSOverTLS = "no";
 
-        # DNSSEC MUST be off: mihomo fake-ip answers carry no DNSSEC signature; even
-        # allow-downgrade fails validation -> SERVFAIL for ALL system DNS (only proxy apps survive)
+        # DNSSEC off: mihomo answers carry no DNSSEC signature -> SERVFAIL otherwise
         DNSSEC = "no";
         LLMNR = "no";   # Disable LLMNR (LAN poisoning surface)
 
