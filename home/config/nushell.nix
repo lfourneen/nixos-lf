@@ -66,6 +66,8 @@
     $env.PATH = ($env.PATH | split row (char esep) | prepend ($env.HOME | path join ".local/bin"))
     $env.EDITOR = "nvim"
     $env.VISUAL = "nvim"
+    # Rootless Docker socket (daemon runs as this user)
+    $env.DOCKER_HOST = $"unix://($env.XDG_RUNTIME_DIR)/docker.sock"
     $env.PROMPT_COMMAND_RIGHT = { "" }
 
     $env.PROMPT_COMMAND = { ||
