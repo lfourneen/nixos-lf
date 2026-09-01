@@ -22,6 +22,7 @@
     ELECTRON_OZONE_PLATFORM_HINT = "wayland";
     GDK_BACKEND = "wayland";
     _JAVA_AWT_WM_NONREPARENTING = "1";
+    DOCKER_HOST = "unix:///run/user/1000/docker.sock";
   };
 
   # Font
