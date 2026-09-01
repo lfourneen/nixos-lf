@@ -9,7 +9,11 @@ let
     audio = { enable_sounds = true; };
     # Disabled: the blurred/tinted "noctalia-backdrop" copy would otherwise
     # show in the overview; the Wallpaper Engine wallpaper itself is the backdrop.
-    backdrop = { enabled = false; };
+    backdrop = {
+      enabled = false;
+      blur_intensity = 0.7;
+      tint_intensity = 0.5;
+    };
     bar = {
       default = {
         capsule = true;
@@ -65,7 +69,12 @@ let
       minimum_brightness = 0.09999999776482582;
     };
     calendar = { enabled = true; };
-    control_center = { calendar = { show_week_numbers = true; }; };
+    control_center = {
+      calendar = {
+        show_events_card = false;
+        show_week_numbers = true;
+      };
+    };
     desktop_widgets = {
       schema_version = 2;
       widget_order = [ ];
@@ -179,7 +188,6 @@ let
         "nightwatch75/todo"
         "tadomika_ari/w-engine"
         "rxtsel/portctl"
-        "noctalia/mpvpaper"
       ];
     };
     shell = {
@@ -200,9 +208,11 @@ let
       screenshot = { directory = "${homeDir}/Pictures/Screenshots"; };
     };
     theme = {
-      source = "wallpaper";
+      mode = "dark";
+      builtin = "Noctalia";
+      wallpaper_scheme = "m3-content";
       templates = {
-        builtin_ids = [ "niri" ];
+        builtin_ids = [ "helix" "niri" ];
         community_ids = [
           "opencode"
           "zen-browser"
@@ -213,17 +223,20 @@ let
           "zed"
           "prismlauncher"
           "steam"
+          "fuzzel"
+          "fastfetch"
           "zellij"
           "yazi"
         ];
       };
     };
     wallpaper = {
+      enabled = false;
       default = { path = "${noctaliaPackage}/share/noctalia/assets/noctalia-wallpaper.png"; };
-      last = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3408595448/preview.gif"; };
+      last = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3408595448/preview.jpg"; };
       monitors = {
-        HDMI-A-1 = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3408595448/preview.gif"; };
-        eDP-1 = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3408595448/preview.gif"; };
+        HDMI-A-1 = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3408595448/preview.jpg"; };
+        eDP-1 = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3408595448/preview.jpg"; };
       };
     };
     widget = {
@@ -232,14 +245,14 @@ let
       brightness = { anchor = true; capsule = true; };
       clipboard = { anchor = true; capsule = true; };
       clock = { anchor = false; capsule = true; format = "{:%Y-%m-%d %H:%M %a}"; };
-      control-center = { anchor = true; };
+      control-center = { anchor = true; glyph = "topology-star-ring-3"; };
       cpu = { capsule = true; };
       indicator = { type = "rxtsel/portctl:indicator"; };
       media = { anchor = false; hide_when_no_media = true; max_length = 40; min_length = 0; };
       mini-docker = { anchor = true; capsule = true; type = "8bury/mini-docker:mini-docker"; };
       mpvpaper = { capsule = true; glyph = "photo-video"; type = "noctalia/mpvpaper:mpvpaper"; };
       network = { capsule = true; show_vpn_label = true; vpn_status = "both"; };
-      notifications = { anchor = true; capsule = true; };
+      notifications = { anchor = true; capsule = true; hide_when_no_unread = true; };
       ram = { capsule = true; };
       session = { anchor = true; capsule = true; };
       tray = { drawer = true; drawer_columns = 5; };
