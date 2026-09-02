@@ -182,7 +182,7 @@ in
 
           # Tailscale tailnet: encrypted, ACL-gated at tailscaled level; ONLY Moonlight/Sunshine ports pass
           iifname "tailscale0" tcp dport { 47984, 47989, 47990, 48010 } accept
-          iifname "tailscale0" udp dport { 47998, 47999, 48000, 48002, 48010 } accept
+          iifname "tailscale0" udp dport 47998-48010 accept
 
           # ICMPv6 essentials (NDP + PMTUD + ping + traceroute) before the public-IPv6 drop
           ip6 nexthdr icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert, packet-too-big, echo-request, destination-unreachable, time-exceeded } accept
@@ -209,7 +209,7 @@ in
 
           # Remote desktop protocols (LAN-only)
           ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 3389, 5900, 47989 } accept  # RDP, VNC, Sunshine WebUI
-          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport { 47998, 47999, 48000, 48010 } accept  # Sunshine streaming ports
+          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 47998-48010 accept  # Sunshine streaming ports
 
           # RustDesk server (DISABLED, keep uncommented only when services.rustdesk-server is re-enabled)
           # ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } tcp dport { 21115, 21116, 21117, 21118, 21119 } accept
@@ -217,7 +217,7 @@ in
 
           # Sunshine (LAN-only, RFC1918): 47984-47989 control/pairing, 47990 web UI, 48010 HTTPS streaming, 47998-48010 UDP A/V+WebRTC
           ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } tcp dport { 47984, 47989, 47990, 48010 } accept
-          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } udp dport { 47998, 47999, 48000, 48002, 48010 } accept
+          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } udp dport 47998-48010 accept
 
           # SSH — enable together with system/programs/ssh.nix (LAN + tailnet only, never public)
           # ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 22 accept
