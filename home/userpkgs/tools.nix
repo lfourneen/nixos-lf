@@ -9,6 +9,7 @@ let
 in
 {
   home.packages = with pkgs;[
+    gh
     ncdu
     unstable-pkgs.wineWow64Packages.waylandFull
     unstable-pkgs.winetricks
