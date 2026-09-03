@@ -343,9 +343,6 @@ in
   boot.kernelModules = [ "tcp_bbr" ];
 
   boot.kernelParams = [
-    # Disable Active State Power Management (ASPM) for the onboard wired network card (PCIe)
-    "pcie_aspm=off"
-
     # Disable USB auto-suspend
     "usbcore.autosuspend=-1"
   ];

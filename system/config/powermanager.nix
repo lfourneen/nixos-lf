@@ -15,8 +15,9 @@
     };
   };
 
-  # amd_pstate active (EPP); ondemand is invalid there
-  boot.kernelParams = [ "amd_pstate=active" ];
+  # amd_pstate active (EPP); ondemand is invalid there.
+  # amd_dynamic_epp: driver auto-switches EPP by AC/battery & platform profile (PPD)
+  boot.kernelParams = [ "amd_pstate=active" "amd_dynamic_epp=enable" ];
 
   # PPD
   services.power-profiles-daemon.enable = true;
