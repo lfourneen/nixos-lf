@@ -216,6 +216,9 @@ in
       PrivateTmp = true;
       ProtectControlGroups = true;
       ProtectKernelModules = true;
+      ProtectKernelTunables = true;
+      ProtectKernelLogs = true;
+      ProtectClock = true;
     };
   };
 
