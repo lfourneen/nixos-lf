@@ -21,6 +21,7 @@
 
       "/var/lib/AccountsService"
       "/var/lib/bluetooth"
+      "/var/lib/comfyui"
       "/var/lib/cups"
       "/var/lib/hermes"
       "/var/lib/NetworkManager"

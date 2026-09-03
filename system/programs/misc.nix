@@ -1,5 +1,12 @@
-{ pkgs, ... }:
+{ inputs, pkgs, ... }:
 
+let
+  unstable-pkgs = import inputs.nixpkgs-unstable {
+    system = pkgs.stdenv.hostPlatform.system;
+    config.allowUnfree = true;
+  };
+
+in
 {
   # Profiling (with sysprof)
   services.sysprof.enable = true;
@@ -26,6 +33,14 @@
       font-size=12
     '';
   };
+
+  #services.comfyui = {
+    #enable = true;
+    #package = unstable-pkgs.comfyui;
+    #listen = [ "127.0.0.1" "::1" ];
+    #port = 8188;
+    #dataDir = "/var/lib/comfyui";
+  #};
 
   # Firmware Updates
   services.fwupd.enable = true;
