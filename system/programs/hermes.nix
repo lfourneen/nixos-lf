@@ -27,11 +27,15 @@ in
 
     secrets = {
       "hermes_api_key" = {};
+      "qq_app_id" = {};
+      "qq_client_secret" = {};
     };
 
     templates."hermes.env" = {
       content = ''
         DEEPSEEK_API_KEY="${config.sops.placeholder."hermes_api_key"}"
+        QQ_APP_ID="${config.sops.placeholder."qq_app_id"}"
+        QQ_CLIENT_SECRET="${config.sops.placeholder."qq_client_secret"}"
       '';
       owner = "hermes";
       group = "hermes";
@@ -46,6 +50,9 @@ in
     
     restart = "always";
     restartSec = 5;
+
+    # QQ Bot adapter needs aiohttp (and httpx, already a core dep).
+    extraDependencyGroups = [ "messaging" ];
     
     environmentFiles = [ config.sops.templates."hermes.env".path ];
 
@@ -141,6 +148,8 @@ in
       security = {
         allowed_users = [ "lfour" ];
       };
+
+      platforms.qqbot.enabled = true;
       
       toolsets = [ "all" ];
 
