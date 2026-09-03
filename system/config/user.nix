@@ -38,7 +38,6 @@ in
           "audio" 
           "adbusers" 
           "plugdev" 
-          "docker" 
           "resolvconf" 
           "hermes" 
         ];

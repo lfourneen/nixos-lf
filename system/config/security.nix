@@ -8,14 +8,7 @@ let
 
 in
 {
-  # Privilege authorization and authentication mechanisms
-  security.sudo-rs = {
-    enable = true;
-    wheelNeedsPassword = true;
-    execWheelOnly = true;
-  };
-  security.sudo.enable = false;
-
+  # Trust & licensing
   # Allow unfree packages
   nixpkgs.config.allowUnfree = true;
 
@@ -26,7 +19,54 @@ in
   # Force Nix to use the system CA bundle
   nix.settings.ssl-cert-file = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
 
-  # AppArmor
+  # Privilege authorization
+  security.sudo-rs = {
+    enable = true;
+    wheelNeedsPassword = true;
+    execWheelOnly = true;
+  };
+  security.sudo.enable = false;
+
+  security.polkit.enable = true;
+
+  # PAM hardening
+  security.pam.loginLimits = [
+    { domain = "*"; item = "maxlogins"; type = "hard"; value = "10"; }
+  ];
+
+  # Kernel & network hardening
+  boot.kernel.sysctl = {
+    # Restrict kernel pointer exposure (non-root)
+    "kernel.kptr_restrict" = 1;
+
+    # Allow dmesg access (required for GPU / DRM debugging)
+    "kernel.dmesg_restrict" = 0;
+
+    # Disable core dumps for setuid binaries
+    "fs.suid_dumpable" = 0;
+
+    # Network layer hardening
+    "net.ipv4.conf.all.accept_redirects" = 0;
+    "net.ipv6.conf.all.accept_redirects" = 0;
+    "net.ipv4.conf.default.accept_redirects" = 0;
+    "net.ipv6.conf.default.accept_redirects" = 0;
+    "net.ipv4.conf.all.send_redirects" = 0;
+    "net.ipv4.ip_forward" = 1;
+
+    # Log spoofed packets with invalid/martian source addresses
+    "net.ipv4.conf.all.log_martians" = 1;
+    "net.ipv4.conf.default.log_martians" = 1;
+
+    # Mitigate TCP TIME-WAIT assassination attacks (RFC 1337)
+    "net.ipv4.tcp_rfc1337" = 1;
+
+    # Drop source-routed packets (prevents IPv4/IPv6 spoofing and filter bypass)
+    "net.ipv4.conf.all.accept_source_route" = 0;
+    "net.ipv4.conf.default.accept_source_route" = 0;
+    "net.ipv6.conf.all.accept_source_route" = 0;
+  };
+
+  # Mandatory access control (AppArmor)
   services.dbus.apparmor = "enabled";
   security.apparmor = {
     enable = true;
@@ -39,21 +79,7 @@ in
     ];
   };
 
-  # ClamAV
-  services.clamav = {
-    daemon.enable = false;
-    scanner.enable = false;
-    updater.enable = true;
-    updater.interval = "daily";
-    #fangfrisch.enable = true;
-    #clamonacc.enable = true;
-    #daemon.settings = {
-      #OnAccessPrevention = true;
-      #OnAccessIncludePath = "/home/lfour/Downloads";
-    #};
-  };
-
-  # Firejail
+  # Sandboxing (Firejail)
   programs.firejail = {
     enable = true;
 
@@ -80,49 +106,32 @@ in
     };
   };
 
-  # Polkit
-  security.polkit.enable = true;
-
-  # Kernel Sysctl
-  boot.kernel.sysctl = {
-    # Restrict kernel pointer exposure (non-root)
-    "kernel.kptr_restrict" = 1;
-
-    # Allow dmesg access (required for GPU / DRM debugging)
-    "kernel.dmesg_restrict" = 0;
-
-    # Disable core dumps for setuid binaries
-    "fs.suid_dumpable" = 0;
-
-    # Network layer hardening
-    "net.ipv4.conf.all.accept_redirects" = 0;
-    "net.ipv6.conf.all.accept_redirects" = 0;
-    "net.ipv4.conf.all.send_redirects" = 0;
-    "net.ipv4.ip_forward" = 1;
-
-    # Log spoofed packets with invalid/martian source addresses
-    "net.ipv4.conf.all.log_martians" = 1;
-    "net.ipv4.conf.default.log_martians" = 1;
-
-    # Mitigate TCP TIME-WAIT assassination attacks (RFC 1337)
-    "net.ipv4.tcp_rfc1337" = 1;
-
-    # Drop source-routed packets (prevents IPv4/IPv6 spoofing and filter bypass)
-    "net.ipv4.conf.all.accept_source_route" = 0;
-    "net.ipv4.conf.default.accept_source_route" = 0;
-    "net.ipv6.conf.all.accept_source_route" = 0;
-
-    # Disable ICMP redirects on default interfaces (enforce no-redirect policy for new devices)
-    "net.ipv4.conf.default.accept_redirects" = 0;
-    "net.ipv6.conf.default.accept_redirects" = 0;
+  # Antivirus (ClamAV)
+  services.clamav = {
+    daemon.enable = false;
+    scanner.enable = false;
+    updater.enable = true;
+    updater.interval = "daily";
+    #fangfrisch.enable = true;
+    #clamonacc.enable = true;
+    #daemon.settings = {
+      #OnAccessPrevention = true;
+      #OnAccessIncludePath = "/home/lfour/Downloads";
+    #};
   };
 
-  # PAM Hardening
-  security.pam.loginLimits = [
-    { domain = "*"; item = "maxlogins"; type = "hard"; value = "10"; }
+  # Audit
+  security.auditd.enable = true;
+
+  security.audit.rules = [
+    # Log every execve where the resulting process is root (sudo, daemons, scripts)
+    "-a always,exit -F arch=b64 -S execve -F euid=0 -k root_exec"
+
+    # Log any open of files under /sys/devices/system/cpu (CPU freq/state tampering)
+    "-a always,exit -F arch=b64 -S openat -F dir=/sys/devices/system/cpu -k sysfs_cpu"
   ];
 
-  # OOM Protection
+  # OOM protection
   systemd.oomd = {
     enable = true;
     enableUserSlices = true;
@@ -134,7 +143,7 @@ in
       DefaultMemoryPressureDurationSec = "20s";
     };
   };
-  
+
   #services.earlyoom = {
     #enable = true;
     #freeMemThreshold = 5;
@@ -149,18 +158,15 @@ in
   services.udisks2.enable = true;
   services.devmon.enable = true;
 
-  # Auditd: noisy and unnecessary for desktop usage
-  security.auditd.enable = false;
-
+  # Security tooling
   environment.systemPackages = with pkgs; [
     # CA / TLS
     cacert
-    
+
     # ClamAV
-    clamav clamtk 
-    
+    clamav clamtk
+
     # Scanner
     lynis osslsigncode
   ];
 }
-
