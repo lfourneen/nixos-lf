@@ -56,6 +56,9 @@
   # Linux kernel
   boot.kernelPackages = pkgs.linuxPackages_xanmod_latest;
 
+  # Zram (but no hibernate)
+  zramSwap.enable = true;
+
   # GC
   nix.gc = {
     automatic = true;
