@@ -169,11 +169,11 @@ in
   systemd.tmpfiles.rules = [
     "d /var/lib/hermes 0770 hermes hermes - -"
     "d /var/lib/hermes/.hermes 0770 hermes hermes - -"
-    "d /var/lib/hermes/home 0770 hermes hermes - -"
     "d /var/lib/hermes/.local 0770 hermes hermes - -"
-    "d /var/lib/hermes/workspace 0770 hermes hermes - -"
     "d /nix/var/nix/profiles/per-user/hermes 0755 hermes hermes - -"
     "d /var/lib/hermes/.playwright-profiles 0770 hermes hermes - -"
+    "Z /var/lib/hermes/home 0770 hermes hermes - -"
+    "Z /var/lib/hermes/workspace 0770 hermes hermes - -"
     "C+ /var/lib/hermes/.hermes/SOUL.md 0640 hermes hermes - ${soulMdFile}"
     "C+ /var/lib/hermes/.hermes/USER.md 0640 hermes hermes - ${userMdFile}"
     "f+ /var/lib/hermes/.gitconfig 0640 hermes hermes - [user]\n\tname = Hermes Agent\n\temail = hermes@local.domain\n"
