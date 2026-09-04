@@ -28,10 +28,11 @@
 
         # Infinite keepalive and health-check loop
         while true; do
-          # Probe the mihomo CORE port (7897), not the clash-verge GUI port
-          # (33331): GUI alive + kernel stopped must still flip gost to direct,
-          # or every proxied request gets forwarded into a dead port.
-          if ${pkgs.coreutils}/bin/timeout 2 ${pkgs.bash}/bin/bash -c 'echo > /dev/tcp/127.0.0.1/7897' 2>/dev/null; then
+          # Link-level probe: core port must answer AND a proxied request must
+          # actually reach the internet. Port-open alone is not enough, the
+          # captive-portal phase would flip traffic into a not-ready backend.
+          if ${pkgs.coreutils}/bin/timeout 2 ${pkgs.bash}/bin/bash -c 'echo > /dev/tcp/127.0.0.1/7897' 2>/dev/null \
+            && ${pkgs.curl}/bin/curl -x http://127.0.0.1:7897 --max-time 4 -fsS https://www.google.com -o /dev/null 2>/dev/null; then
             new_status="proxy"
           else
             new_status="direct"
