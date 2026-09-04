@@ -2,6 +2,7 @@
   imports = [
     ./btrfs-rollback.nix  
     ./cpufreq-restrict.nix  
+    ./coredump.nix
     ./dns-pac.nix  
     ./flatpak-mirror.nix  
     ./gost-pac.nix  

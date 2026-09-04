@@ -24,17 +24,18 @@
       "/var/lib/comfyui"
       "/var/lib/cups"
       "/var/lib/hermes"
+      "/var/lib/lastlog"
       "/var/lib/NetworkManager"
       "/var/lib/nixos"
+      "/var/lib/power-profiles-daemon"
       "/var/lib/systemd/backlight"
       "/var/lib/systemd/coredump"
-      "/var/lib/systemd/credential"
-      "/var/lib/systemd/credentials"
       "/var/lib/systemd/linger"
       "/var/lib/tailscale"
+      "/var/lib/upower"
       "/var/log"
     ];
-    
+
     files = [
       "/etc/machine-id"
       "/var/lib/systemd/random-seed"
