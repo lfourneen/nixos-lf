@@ -6,6 +6,7 @@
     ./flatpak-mirror.nix  
     ./gost-pac.nix  
     ./initrd.nix  
+    ./journald.nix
     ./libvirtd.nix  
     ./nix-daemon.nix
     ./ntsync.nix  
