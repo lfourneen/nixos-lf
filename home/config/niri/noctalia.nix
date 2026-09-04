@@ -511,7 +511,7 @@ let
       };
     };
     wallpaper = {
-      enabled = false;
+      enabled = true;
       default = { path = "${noctaliaPackage}/share/noctalia/assets/noctalia-wallpaper.png"; };
       last = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3408595448/preview.jpg"; };
       monitors = {
