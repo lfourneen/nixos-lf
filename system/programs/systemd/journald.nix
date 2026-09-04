@@ -5,7 +5,7 @@
   services.journald = {
     storage = "persistent";
     extraConfig = ''
-      SystemMaxUse=500M
+      SystemMaxUse=512M
     '';
   };
 
