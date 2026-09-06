@@ -30,25 +30,21 @@
       waylandFrontend = true;
 
       addons = with pkgs; [
-        # Input method modules
+        # IM frontends
         fcitx5-gtk
         kdePackages.fcitx5-qt
 
-        # RIME engine
-        fcitx5-rime
-        librime-lua
-        librime
-        
-        # Chinese pinyin input method
-        libpinyin
-        rime-ice
-
-        # Yunpinyin / extended dictionaries
-        fcitx5-pinyin-moegirl
-        qt6Packages.fcitx5-chinese-addons   # (optional) more engines and schemas
-        rime-zhwiki
-        rime-moegirl
-        rime-wanxiang
+        # Rime engine + Ice data
+        (fcitx5-rime.override {
+          rimeDataPkgs = [
+            (pkgs.rime-ice.overrideAttrs (old: {
+              postInstall = ''
+                mv $out/share/rime-data/rime_ice_suggestion.yaml \
+                   $out/share/rime-data/default.yaml
+              '';
+            }))
+          ];
+        })
       ];
     };
   };
