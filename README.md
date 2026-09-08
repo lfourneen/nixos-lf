@@ -67,7 +67,7 @@ sudo nixos-rebuild switch --flake .#yourname
 │   └── local_apps/         # Custom local applications
 │
 ├── scripts/                # Utility scripts
-│   ├── sync-to-git.sh      # Copy /etc/nixos to ~/Downloads/nixos with relaxed permissions
+│   ├── sync-to-git.sh      # Copy /etc/nixos to ~/Projects/Nix/nixos with relaxed permissions
 │   └── push-to-dir.sh      # Push repo config back to /etc/nixos with secure permissions
 │
 └── system/                 # System-wide configuration
@@ -84,7 +84,7 @@ sudo nixos-rebuild switch --flake .#yourname
 
 ## Scripts
 
-* **`scripts/sync-to-git.sh`** — Copies `/etc/nixos` to `~/Downloads/nixos`, changes ownership to the current user, and sets permissive permissions (dirs 755 / files 644) so the config can be committed to Git.
+* **`scripts/sync-to-git.sh`** — Copies `/etc/nixos` to `~/Projects/Nix/nixos` (creating `~/Projects/Nix` if needed), changes ownership to the current user, and sets permissive permissions (dirs 755 / files 644) so the config can be committed to Git.
 * **`scripts/push-to-dir.sh`** — Reverse of the above. Copies `home/`, `overlays/`, `system/`, and `flake.nix` from the repo into `/etc/nixos` and applies secure permissions (dirs 700 / files 600). Must be run with `sudo`.
 
 ---

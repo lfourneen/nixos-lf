@@ -10,8 +10,10 @@ DEST_DIR="/etc/nixos"
 
 echo "📂 Cleaning old config and copying new files to $DEST_DIR..."
 
-# Clear all old config files before copying new ones
-sudo rm -rf "$DEST_DIR"/*
+# Delete every existing file/dir (incl. dotfiles) as root.
+# Do not use "$DEST_DIR/*" here: the glob expands in the caller's shell before
+# sudo, and /etc/nixos is left 700/root-owned, so it silently matches nothing.
+sudo find "$DEST_DIR" -mindepth 1 -delete
 
 # Lock down /etc/nixos itself before writing into it
 sudo chmod 700 "$DEST_DIR"

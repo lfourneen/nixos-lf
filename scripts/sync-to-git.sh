@@ -5,11 +5,15 @@ set -e
 
 # Source and destination directories
 SRC_DIR="/etc/nixos"
-DEST_DIR="$HOME/Downloads/nixos"
+DEST_BASE="$HOME/Projects/Nix"
+DEST_DIR="$DEST_BASE/nixos"
 
 echo "📂 Copying $SRC_DIR to $DEST_DIR..."
 
-# Remove existing destination directory
+# Ensure the parent directory exists
+mkdir -p "$DEST_BASE"
+
+# Remove existing destination directory to keep a fresh mirror
 if [ -d "$DEST_DIR" ]; then
     rm -rf "$DEST_DIR"
 fi

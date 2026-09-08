@@ -67,7 +67,7 @@ sudo nixos-rebuild switch --flake .#yourname
 │   └── local_apps/         # 自定义本地应用
 │
 ├── scripts/                # 工具脚本
-│   ├── sync-to-git.sh      # 将 /etc/nixos 复制到 ~/Downloads/nixos，宽松权限
+│   ├── sync-to-git.sh      # 将 /etc/nixos 复制到 ~/Projects/Nix/nixos，宽松权限
 │   └── push-to-dir.sh      # 将仓库配置推回 /etc/nixos，安全权限
 │
 └── system/                 # 系统级配置
@@ -84,7 +84,7 @@ sudo nixos-rebuild switch --flake .#yourname
 
 ## 脚本
 
-* **`scripts/sync-to-git.sh`** — 将 `/etc/nixos` 复制到 `~/Downloads/nixos`，把所有权改为当前用户并设置宽松权限（目录 755 / 文件 644），以便提交到 Git。
+* **`scripts/sync-to-git.sh`** — 将 `/etc/nixos` 复制到 `~/Projects/Nix/nixos`（如 `~/Projects/Nix` 不存在则自动创建），把所有权改为当前用户并设置宽松权限（目录 755 / 文件 644），以便提交到 Git。
 * **`scripts/push-to-dir.sh`** — 上面脚本的逆操作。将仓库中的 `home/`、`overlays/`、`system/` 和 `flake.nix` 复制到 `/etc/nixos` 并应用安全权限（目录 700 / 文件 600）。必须使用 `sudo` 运行。
 
 ---
