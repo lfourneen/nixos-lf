@@ -35,8 +35,7 @@
     
     nix-flatpak.url = "github:gmodena/nix-flatpak";
 
-    hermes-agent.url = "github:NousResearch/hermes-agent/v2026.8.31";
-
+    hermes-agent.url = "github:NousResearch/hermes-agent/v2026.9.7";
   };
 
   outputs = { self, nixpkgs, home-manager, ... }@inputs:
@@ -90,6 +89,7 @@
         inputs.disko.nixosModules.default
         inputs.impermanence.nixosModules.impermanence
         
+        # Sops(secrets managemnet)
         inputs.sops-nix.nixosModules.sops
 
         # Flatpak
