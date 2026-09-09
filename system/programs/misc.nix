@@ -23,6 +23,14 @@ in
     package = pkgs.ananicy-cpp;
   };
 
+  # Ling-long shop
+  services.linyaps = {
+    enable = true;
+    package = unstable-pkgs.linyaps;
+    boxPackage = unstable-pkgs.linyaps-box;
+    webStoreInstallerPackage = unstable-pkgs.linyaps-web-store-installer;
+  };
+
   # KMSCon
   services.kmscon = {
     enable = true;
