@@ -1,6 +1,6 @@
 # NixOS Configuration
 
-[English](README.md) | [简体中文](README_CN.md)
+English | [简体中文](README_CN.md)
 
 A declarative NixOS system configuration using Nix flakes, featuring a customized desktop environment and various productivity tools.
 

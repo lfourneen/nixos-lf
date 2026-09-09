@@ -1,6 +1,6 @@
 # NixOS 配置
 
-[English](README.md) | [简体中文](README_CN.md)
+[English](README.md) | 简体中文
 
 基于 Nix flakes 的声明式 NixOS 系统配置，包含定制化的桌面环境与各种生产力工具。
 
