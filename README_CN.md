@@ -193,12 +193,12 @@ sudo -u hermes -i hermes
 
 ## 依赖
 
-* NixOS 26.05 及 unstable
+* NixOS 26.05 及 Unstable
 * Home Manager
 * Noctalia shell
 * Disko
 * Impermanence
-* Nix-Flake
+* Nix-Flatpak
 * Hermes Agent
 * Sops-Nix
 * MCP-NixOS

@@ -194,12 +194,12 @@ sudo -u hermes -i hermes
 
 ## Dependencies
 
-* NixOS 26.05 and unstable
+* NixOS 26.05 && Unstable
 * Home Manager
 * Noctalia shell
 * Disko
 * Impermanence
-* Nix-Flake
+* Nix-Flatpak
 * Hermes Agent
 * Sops-Nix
 * MCP-NixOS
