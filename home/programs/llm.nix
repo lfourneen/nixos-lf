@@ -24,7 +24,8 @@ in
     };
   };
 
-  systemd.user.services.ollama.serviceConfig.TimeoutStopSec = "10s";
+  # home-manager uses the systemd section name directly (no `serviceConfig`)
+  systemd.user.services.ollama.Service.TimeoutStopSec = "10s";
 
   home.packages = with pkgs; [
     llama-cpp
