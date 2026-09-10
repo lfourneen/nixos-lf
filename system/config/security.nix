@@ -130,15 +130,36 @@
     #};
   };
 
-  # Audit
+  # Audit: low-noise / high-signal rules, one per concern (no broad `always`).
+  security.audit.enable = true;
   security.auditd.enable = true;
 
   security.audit.rules = [
-    # Log every execve where the resulting process is root (sudo, daemons, scripts)
-    "-a always,exit -F arch=b64 -S execve -F euid=0 -k root_exec"
+    # privilege escalation: exec of a root-granting setuid/setgid binary
+    "-a always,exit -F arch=b64 -S execve -C uid!=euid -F euid=0 -k setuid"
+    "-a always,exit -F arch=b64 -S execve -C gid!=egid -F egid=0 -k setgid"
 
-    # Log any open of files under /sys/devices/system/cpu (CPU freq/state tampering)
-    "-a always,exit -F arch=b64 -S openat -F dir=/sys/devices/system/cpu -k sysfs_cpu"
+    # kernel module load/unload, only user-session initiated (drop boot udev noise)
+    "-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -F auid>=1000 -F auid!=4294967295 -k modules"
+
+    # container escape (mount/umount2 omitted: flatpak/bwrap/docker churn)
+    "-a always,exit -F arch=b64 -S pivot_root -k pivot_root"
+
+    # clock / hostname changes (adjtimex omitted: NTP slews it constantly)
+    "-a always,exit -F arch=b64 -S settimeofday,clock_settime -k time"
+    "-a always,exit -F arch=b64 -S sethostname,setdomainname -k hostname"
+
+    # kexec / reboot / container escape
+    "-a always,exit -F arch=b64 -S kexec_load,kexec_file_load -k kexec"
+    "-a always,exit -F arch=b64 -S reboot -k reboot"
+    "-a always,exit -F arch=b64 -S open_by_handle_at -k handle"
+
+    # identity / auth file writes (syscall form, `-w` is deprecated)
+    "-a always,exit -F arch=b64 -F path=/etc/passwd -F perm=wa -k identity"
+    "-a always,exit -F arch=b64 -F path=/etc/group -F perm=wa -k identity"
+    "-a always,exit -F arch=b64 -F path=/etc/shadow -F perm=wa -k identity"
+    "-a always,exit -F arch=b64 -F path=/etc/sudoers -F perm=wa -k identity"
+    "-a always,exit -F arch=b64 -F dir=/etc/pam.d -F perm=wa -k identity"
   ];
 
   # OOM protection

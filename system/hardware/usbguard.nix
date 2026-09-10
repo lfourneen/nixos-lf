@@ -19,7 +19,8 @@
     insertedDevicePolicy = "apply-policy";
     implicitPolicyTarget = "block";
 
-    IPCAllowedUsers = [ "lfour" ];
+    # root is required for usbguard-dbus; lfour for interactive use.
+    IPCAllowedUsers = [ "root" "lfour" ];
 
     rules = ''
       allow id 1d6b:0002 serial "0000:06:00.3" name "xHCI Host Controller" hash "+0s5mKAEDBjZasKfFR9ExKfjpMr/J4C4yq4bgYdLJSM=" parent-hash "KTj0i1ONjkGo2CJx42BsIwl+RMi6YVks67qrDYNrwPo=" with-interface 09:00:00 with-connect-type ""

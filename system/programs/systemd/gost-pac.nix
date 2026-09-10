@@ -108,6 +108,8 @@
         "HTTP_PROXY="
         "HTTPS_PROXY="
         "ALL_PROXY="
+        # quieter gost: it logs every connection at info by default
+        "GOST_LOGGER_LEVEL=warn"
       ];
       Restart = "always";
       RestartSec = "5";
