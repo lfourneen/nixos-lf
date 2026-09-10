@@ -12,13 +12,13 @@
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = ''
-        ${pkgs.bash}/bin/bash -c '
-          for f in /sys/devices/system/cpu/cpu*/cpufreq/{scaling_governor,scaling_max_freq,scaling_min_freq,scaling_setspeed} /sys/devices/system/cpu/cpufreq/boost; do
-            [ -e "$f" ] && chmod 444 "$f"
-          done
-        '
-      '';
+      # Use a script file: a multi-line `bash -c '...'` inside ExecStart trips
+      # systemd's quote parsing ("Unbalanced quoting").
+      ExecStart = "${pkgs.writeShellScript "cpufreq-restrict" ''
+        for f in /sys/devices/system/cpu/cpu*/cpufreq/{scaling_governor,scaling_max_freq,scaling_min_freq,scaling_setspeed} /sys/devices/system/cpu/cpufreq/boost; do
+          [ -e "$f" ] && chmod 444 "$f"
+        done
+      ''}";
     };
   };
 }
