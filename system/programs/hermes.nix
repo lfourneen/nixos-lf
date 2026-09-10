@@ -193,7 +193,7 @@ in
     "Z /var/lib/hermes/workspace 0770 hermes hermes - -"
     "C+ /var/lib/hermes/.hermes/SOUL.md 0640 hermes hermes - ${soulMdFile}"
     "C+ /var/lib/hermes/.hermes/USER.md 0640 hermes hermes - ${userMdFile}"
-    "f+ /var/lib/hermes/.gitconfig 0640 hermes hermes - [user]\n\tname = Hermes Agent\n\temail = hermes@local.domain\n"
+    "f+ /var/lib/hermes/.gitconfig 0640 hermes hermes - [user]\\n\\tname = Hermes Agent\\n\\temail = hermes@local.domain\\n"
   ];
 
   systemd.services.hermes-agent = {
