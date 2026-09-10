@@ -73,9 +73,13 @@
 
   time = {
     timeZone = "Asia/Shanghai";
-    # Windows stores local time in hardware RTC; NixOS stores UTC by default.
-    # Set local RTC so both OSes agree on the hardware clock (dual-boot fix).
-    hardwareClockInLocalTime = true;
+
+    # Keep the hardware RTC in UTC (the systemd/NTP default). Local-time RTC is
+    # discouraged: it causes boot-time clock jumps and breaks on DST/timezone
+    # changes. For dual-boot Windows, set UTC there instead (admin cmd):
+    #   reg add "HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" /v RealTimeIsUniversal /t REG_DWORD /d 1 /f
+    # then: w32tm /resync  (and keep the w32time service enabled)
+    hardwareClockInLocalTime = false;
   };
 
   # NTP servers
