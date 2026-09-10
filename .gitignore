@@ -1,3 +1,5 @@
-# Local-only large assets (not tracked)
-home/wallpapers/
-overlays/local-apps/
+# Local-only large assets: ignore contents, keep README so the dir shows on GitHub
+home/wallpapers/*
+!home/wallpapers/README.md
+overlays/local-apps/*
+!overlays/local-apps/README.md
