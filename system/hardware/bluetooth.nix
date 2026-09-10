@@ -4,16 +4,16 @@
   #enable bluetooth
   hardware.bluetooth = {
     enable = true;
-    powerOnBoot = true;
+    # Off at boot; only on when explicitly enabled (AutoEnable follows this).
+    powerOnBoot = false;
 
     settings = {
       General = {
+        # Keep true for LE Audio; set false to cut experimental surface.
         Experimental = true;
-        FastConnectable = true;
-      };
-
-      Policy = {
-        AutoEnable = true;
+        FastConnectable = false;        # don't stay passively connectable
+        Privacy = "device";             # LE resolvable private addresses
+        JustWorksRepairing = "never";   # no silent re-pairing
       };
     };
   };
