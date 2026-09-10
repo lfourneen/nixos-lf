@@ -58,9 +58,22 @@
         {
           nixpkgs = {
             overlays = [
+              # Custom overlays
               (import ./overlays)
+
+              # MCP NixOS overlay
               (final: prev: {
                 mcp-nixos = inputs.mcp-nixos.packages.${prev.stdenv.hostPlatform.system}.default;
+              })
+
+              # Shared nixpkgs-unstable as pkgs.unstable.*
+              (final: prev: {
+                unstable = import inputs.nixpkgs-unstable {
+                  system = prev.stdenv.hostPlatform.system;
+                  config = prev.config // {
+                    allowUnfree = true;
+                  };
+                };
               })
             ];
             config.allowUnfree = true;
