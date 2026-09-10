@@ -88,9 +88,12 @@ in
         personality = "kawaii"; 
       };
 
-      memory = { 
-        memory_enabled = true; 
+      memory = {
+        memory_enabled = true;
         user_profile_enabled = true;
+        memory_char_limit = 8192;
+        user_char_limit = 2048;
+        provider = "holographic";
       };
 
       agent = { 
@@ -150,8 +153,22 @@ in
       };
 
       platforms.qqbot.enabled = true;
-      
+
       toolsets = [ "all" ];
+
+      plugins.hermes-memory-store = {
+        db_path = "/var/lib/hermes/.hermes/memory_store.db";
+        auto_extract = true;
+        default_trust = 0.5;
+        min_trust_threshold = 0.3;
+        hrr_dim = 1024;
+        hrr_weight = 0.3;
+      };
+
+      skills.disabled = [
+        "openhue"
+        "touchdesigner-mcp"
+      ];
 
       plugins.enabled = [
         "hermes-lcm"
