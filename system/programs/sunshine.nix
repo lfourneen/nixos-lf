@@ -4,7 +4,7 @@
   # Moonlight
   services.sunshine = {
     enable = true;
-    autoStart = true;
+    autoStart = false;
     # iptables-based option, useless here (networking.firewall is off) — nftables rules handle ports
     openFirewall = false;
     # Required for DRM/KMS screen capture on AMD (Wayland)
