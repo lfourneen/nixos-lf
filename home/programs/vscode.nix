@@ -1,17 +1,10 @@
-{ inputs, pkgs, ... }:
+{ pkgs, ... }:
 
-let
-  unstable-pkgs = import inputs.nixpkgs-unstable {
-    system = pkgs.stdenv.hostPlatform.system;
-    config.allowUnfree = true;
-  };
-
-in
 {
   programs.vscode = {
     enable = true;
     
-    package = unstable-pkgs.vscode.override {
+    package = pkgs.unstable.vscode.override {
       commandLineArgs = [
         "--ozone-platform=wayland"
         "--enable-wayland-ime"

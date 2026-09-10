@@ -1,12 +1,5 @@
-{ inputs, pkgs, ... }:
+{ pkgs, ... }:
 
-let
-  unstable-pkgs = import inputs.nixpkgs-unstable {
-    system = pkgs.stdenv.hostPlatform.system;
-    config.allowUnfree = true;
-  };
-
-in
 {
   # Define user account.
   users = {
@@ -24,7 +17,7 @@ in
         home = "/home/lfour";
         hashedPasswordFile = "/persist/passwords/lfour";
         description = "LFour";
-        shell = unstable-pkgs.nushell;
+        shell = pkgs.unstable.nushell;
 
         extraGroups = [ 
           "networkmanager" 

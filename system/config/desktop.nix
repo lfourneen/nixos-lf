@@ -1,12 +1,5 @@
-{ inputs, pkgs, ... }:
+{ pkgs, ... }:
 
-let
-  unstable-pkgs = import inputs.nixpkgs-unstable {
-    system = pkgs.stdenv.hostPlatform.system;
-    config.allowUnfree = true;
-  };
-
-in
 {
   # Dconf
   programs.dconf.enable = true;
@@ -141,8 +134,8 @@ in
     # Niri
     kitty
     lswt
-    unstable-pkgs.linux-wallpaperengine
-    unstable-pkgs.mpvpaper
+    pkgs.unstable.linux-wallpaperengine
+    pkgs.unstable.mpvpaper
     xwayland-satellite # xwayland support
     wl-clipboard
     clipman

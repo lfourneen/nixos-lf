@@ -1,12 +1,5 @@
-{ inputs, lib, pkgs, ... }:
+{ lib, pkgs, ... }:
 
-let
-  unstable-pkgs = import inputs.nixpkgs-unstable {
-    system = pkgs.stdenv.hostPlatform.system;
-    config.allowUnfree = true;
-  };
-
-in
 {
   # Trust & licensing
   # Allow unfree packages
@@ -97,7 +90,7 @@ in
       };
 
       wine = {
-        executable = "${lib.getBin unstable-pkgs.wineWow64Packages.waylandFull}/bin/wine";
+        executable = "${lib.getBin pkgs.unstable.wineWow64Packages.waylandFull}/bin/wine";
         profile = "${pkgs.firejail}/etc/firejail/default.profile";
       };
 

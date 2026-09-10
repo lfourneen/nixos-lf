@@ -1,12 +1,5 @@
-{ inputs, pkgs, ... }:
+{ pkgs, ... }:
 
-let
-  unstable-pkgs = import inputs.nixpkgs-unstable {
-    system = pkgs.stdenv.hostPlatform.system;
-    config.allowUnfree = true;
-  };
-
-in
 {
   # KVM
   programs.virt-manager.enable = true;
@@ -30,7 +23,7 @@ in
 
     # Enable Docker
     docker = {
-      package = unstable-pkgs.docker;
+      package = pkgs.unstable.docker;
       
       # Disable the system ROOT dockerd - rootless docker is the ONLY daemon now
       enable = false;
@@ -61,21 +54,30 @@ in
 
   environment.systemPackages = with pkgs; [
     # Docker container
-    unstable-pkgs.docker-client unstable-pkgs.docker-compose
+    pkgs.unstable.docker-client 
+    pkgs.unstable.docker-compose
     
     # Podman Container
-    unstable-pkgs.dive #podman podman-tui 
-    #podman-desktop podman-compose pods
+    pkgs.unstable.dive 
+    #pkgs.unstable.podman 
+    #pkgs.unstable.podman-tui 
+    #pkgs.unstable.podman-desktop 
+    #pkgs.unstable.podman-compose 
+    #pkgs.unstable.pods
 
     # Kubernetes
-    kubernetes kubectl kubernetes-helm-wrapped
-    kubernetes-validate
+    pkgs.unstable.kubernetes 
+    pkgs.unstable.kubectl 
+    pkgs.unstable.kubernetes-helm-wrapped
+    pkgs.unstable.kubernetes-validate
 
     # Linux to Android
-    unstable-pkgs.waydroid unstable-pkgs.waydroid-helper unstable-pkgs.nftables
+    pkgs.unstable.waydroid 
+    pkgs.unstable.waydroid-helper 
+    pkgs.unstable.nftables
 
     # Linux to Linux
-    unstable-pkgs.distrobox 
+    pkgs.unstable.distrobox 
   ];
 }
 

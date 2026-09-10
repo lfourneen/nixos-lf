@@ -1,12 +1,5 @@
-{ inputs, pkgs, ... }:
+{ pkgs, ... }:
 
-let
-  unstable-pkgs = import inputs.nixpkgs-unstable {
-    system = pkgs.stdenv.hostPlatform.system;
-    config.allowUnfree = true;
-  };
-
-in
 {
   # Profiling (with sysprof)
   services.sysprof.enable = true;
@@ -26,9 +19,9 @@ in
   # Ling-long shop
   services.linyaps = {
     enable = true;
-    package = unstable-pkgs.linyaps;
-    boxPackage = unstable-pkgs.linyaps-box;
-    webStoreInstallerPackage = unstable-pkgs.linyaps-web-store-installer;
+    package = pkgs.unstable.linyaps;
+    boxPackage = pkgs.unstable.linyaps-box;
+    webStoreInstallerPackage = pkgs.unstable.linyaps-web-store-installer;
   };
 
   # KMSCon
@@ -44,7 +37,7 @@ in
 
   #services.comfyui = {
     #enable = true;
-    #package = unstable-pkgs.comfyui;
+    #package = pkgs.unstable.comfyui;
     #listen = [ "127.0.0.1" "::1" ];
     #port = 8188;
     #dataDir = "/var/lib/comfyui";
