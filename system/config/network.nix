@@ -1,29 +1,56 @@
-{ inputs, pkgs, ... }:
+{ pkgs, config, lib, ... }:
 
 let
-  unstable-pkgs = import inputs.nixpkgs-unstable {
-    system = pkgs.stdenv.hostPlatform.system;
-    config.allowUnfree = true;
-  };
+  # Interfaces allowed to reach host services. Others still get internet
+  # (NM/NAT) but cannot open host services. Don't add broad globs
+  # ("wl*"/"usb*"): a rogue USB NIC would re-enter this trust set.
+  lanGuard = ''iifname { "ens1", "wlo1", "virbr0", "tailscale0" }'';
 
 in
 {
+  # Pin NIC names so they survive kernel naming changes. Wired matches by
+  # hardware MAC only: Path can change if PCIe bus numbers shift.
+  systemd.network.links."10-wired-ens1" = {
+    linkConfig.Name = "ens1";
+
+    matchConfig = {
+      MACAddress = "fc:5c:ee:c5:db:de";
+      Driver = "r8169";
+    };
+  };
+
+  systemd.network.links."10-wifi-wlo1" = {
+    linkConfig.Name = "wlo1";
+    
+    matchConfig = {
+      Path = "pci-0000:03:00.0";
+      Driver = "mt7921e";
+    };
+  };
+
   # Networking
   networking = {
     hostName = "nixos";
     networkmanager = {
       enable = true;
-      # The LAN's DHCP server answers with broadcast offers which NM's
-      # clients can't handle (internal/dhclient lose them to the kernel's
-      # martian filter; the dhcpcd backend's nm-dhcp-helper exits 1). dhcpcd
-      # standalone always works => dhcpcd owns the wired NIC, NM skips it.
-      unmanaged = [ "interface-name:ens1" ];
+      # LAN's DHCP offers are broadcast and NM's clients drop them, so dhcpcd
+      # owns the wired NIC. Match by name+MAC so NM can never grab it.
+      unmanaged = [ "interface-name:ens1" "mac:fc:5c:ee:c5:db:de" ];
       dns = "systemd-resolved";   # Pin NM to resolved
       wifi.powersave = false;
 
       settings = {
+        # Keep checking ON so GNOME can pop the captive-portal login page.
+        # response = "" expects an empty 204 body (Cloudflare probe).
         connectivity = {
-          interval = 0;
+          uri = "http://cp.cloudflare.com/";
+          response = "";
+          interval = 300;
+        };
+
+        # Opportunistic 802.11w default (mitigates rogue-AP deauth).
+        connection = {
+          "wifi-sec.pmf" = 2;
         };
 
         ipv4 = {
@@ -55,6 +82,14 @@ in
     };
   };
 
+  # Uppercase proxy vars for tools that ignore the lowercase *_proxy ones
+  environment.sessionVariables = {
+    HTTP_PROXY = "http://127.0.0.1:33332/";
+    HTTPS_PROXY = "http://127.0.0.1:33332/";
+    ALL_PROXY = "http://127.0.0.1:33332/";
+    NO_PROXY = "127.0.0.1,localhost,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,192.168.1.1,*.local";
+  };
+
   # Substituters mirrors
   nix = {
     settings = {
@@ -76,7 +111,7 @@ in
   # Tailscale (encrypted tailnet; run `sudo tailscale up` once after install to login)
   services.tailscale = {
     enable = true;
-    package = unstable-pkgs.tailscale;
+    package = pkgs.unstable.tailscale;
   };
 
   # Avahi / mDNS (local discovery)
@@ -117,11 +152,41 @@ in
       interface = "lo";
       no-resolv = true;       # upstream only from conf-file
       no-hosts = true;
+      strict-order = true;    # try DoT/mihomo first, plaintext only as last resort
       cache-size = 4096;
       "neg-ttl" = "30";       # cap negative caching (e.g. mihomo's empty AAAA) to 30s
       conf-file = "/run/dns-pac/servers.conf";  # written by dns-pac.service
     };
   };
+
+  # Encrypted fallback resolver (DoT via AliDNS) used while clash is down, so
+  # the "direct" DNS path is not plaintext. dns-pac points dnsmasq here.
+  services.unbound = {
+    enable = true;
+    resolveLocalQueries = false;
+    enableRootTrustAnchor = false;   # upstream DoT/TLS only, like mihomo's DoH
+    settings = {
+      server = {
+        interface = [ "127.0.0.1@1055" ];
+        "tls-upstream" = true;
+      };
+      "forward-zone" = [
+        {
+          name = ".";
+          "forward-addr" = [
+            "223.5.5.5@853#dns.alidns.com"
+            "223.6.6.6@853#dns.alidns.com"
+          ];
+        }
+      ];
+    };
+  };
+
+  # NixOS disables build-time checkconf when remote-control is present, so
+  # validate at start: a bad config fails fast with a clear error.
+  systemd.services.unbound.preStart = lib.mkAfter ''
+    ${config.services.unbound.package}/bin/unbound-checkconf /etc/unbound/unbound.conf
+  '';
 
   # Resolved
   services.resolved = {
@@ -149,8 +214,18 @@ in
     };
   };
 
+  # Extra TCP/53 listener for hotspot clients (one address per directive in resolved)
+  environment.etc."systemd/resolved.conf.d/10-tcp-stub.conf".text = ''
+    [Resolve]
+    DNSStubListenerExtra=tcp:0.0.0.0:53
+  '';
+
   # nixos-rebuild reloads resolved (incomplete, "Reload operation timed out"); restart it instead
   systemd.services.systemd-resolved.restartIfChanged = true;
+  # Restart (not reload) when the TCP/53 stub drop-in changes, for the same reason
+  systemd.services.systemd-resolved.restartTriggers = [
+    config.environment.etc."systemd/resolved.conf.d/10-tcp-stub.conf".source
+  ];
 
   # Shutdown: stop NM before the user session, else user apps block on its
   # D-Bus and "Stopping User Manager" spins out its 90s timeout.
@@ -167,111 +242,90 @@ in
         chain input {
           type filter hook input priority 0; policy drop;
 
-          # Drop untrackable packets
           ct state invalid drop
-
-          # Loopback interface
           iif lo accept
-
-          # Established and related connections (our outbound replies)
           ct state established,related accept
 
-          # Tailscale tailnet: encrypted, ACL-gated at tailscaled level; ONLY RustDesk ports pass (DISABLED)
-          # iifname "tailscale0" tcp dport { 21115, 21116, 21117, 21118, 21119 } accept
-          # iifname "tailscale0" udp dport 21116 accept
+          # Obvious spoofing on the wired WAN (loopback/multicast/reserved sources)
+          iifname "ens1" ip saddr { 127.0.0.0/8, 224.0.0.0/4, 240.0.0.0/4 } drop
 
-          # Tailscale tailnet: encrypted, ACL-gated at tailscaled level; ONLY Moonlight/Sunshine ports pass
+          # Tailscale WireGuard endpoint (direct connections; ts-input does ACLs)
+          udp dport 41641 accept
+
+          # Tailnet: only Moonlight/Sunshine ports
           iifname "tailscale0" tcp dport { 47984, 47989, 47990, 48010 } accept
           iifname "tailscale0" udp dport 47998-48010 accept
 
-          # ICMPv6 essentials (NDP + PMTUD + ping + traceroute) before the public-IPv6 drop
+          # ICMPv6 essentials before the public-IPv6 drop
           ip6 nexthdr icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert, packet-too-big, echo-request, destination-unreachable, time-exceeded } accept
 
-          # Block all public IPv6 inbound (link-local/ULA unaffected)
+          # Block all public IPv6 inbound
           ip6 saddr != { ::1, fe80::/10, fc00::/7 } drop
 
-          # ICMP essentials (ping / traceroute)
-          ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } accept
+          ip protocol icmp icmp type { destination-unreachable, time-exceeded } accept
+          ip protocol icmp icmp type echo-request limit rate 10/second accept
 
-          # DHCP server (hotspot only)
+          # Hotspot AP
           iifname "wlo1" udp dport 67 accept
-
-          # DNS server (hotspot clients only)
           iifname "wlo1" ip saddr 10.42.0.0/24 udp dport 53 accept
+          iifname "wlo1" ip saddr 10.42.0.0/24 tcp dport 53 accept
 
-          # mDNS / Avahi (local discovery) — LAN-only (incl. link-local v6)
-          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 5353 accept
-          ip6 saddr { fe80::/10, fc00::/7 } udp dport 5353 accept
+          # Host services: trusted interfaces only (see lanGuard)
+          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 5353 accept
+          ${lanGuard} ip6 saddr { fe80::/10, fc00::/7 } udp dport 5353 accept
 
-          # P2P (LocalSend) — LAN-only
-          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 53317 accept
-          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 53317 accept
+          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 53317 accept
+          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 53317 accept
 
-          # Remote desktop protocols (LAN-only)
-          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 3389, 5900, 47989 } accept  # RDP, VNC, Sunshine WebUI
-          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 47998-48010 accept  # Sunshine streaming ports
+          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 3389, 5900 } accept
+          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 47984, 47989, 47990, 48010 } accept   # Sunshine
+          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 47998-48010 accept
 
-          # RustDesk server (DISABLED, keep uncommented only when services.rustdesk-server is re-enabled)
-          # ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } tcp dport { 21115, 21116, 21117, 21118, 21119 } accept
-          # ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } udp dport 21116 accept
-
-          # Sunshine (LAN-only, RFC1918): 47984-47989 control/pairing, 47990 web UI, 48010 HTTPS streaming, 47998-48010 UDP A/V+WebRTC
-          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } tcp dport { 47984, 47989, 47990, 48010 } accept
-          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } udp dport 47998-48010 accept
-
-          # SSH — enable together with system/programs/ssh.nix (LAN + tailnet only, never public)
-          # ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 22 accept
+          # SSH — enable with system/programs/ssh.nix
+          # ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 22 accept
           # iifname "tailscale0" tcp dport 22 accept
 
-          # Libvirt VMs (trusted local)
           iifname "virbr0" accept
 
-          # Minecraft-Server (LAN-only)
-          ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 25565 accept
+          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 25565 accept   # Minecraft
 
-          # Everything else: silent drop
           drop
         }
 
         chain forward {
           type filter hook forward priority 0; policy drop;
 
-          # Global conntrack for all forwarded flows
           ct state established,related accept
           ct state invalid drop
 
-          # Hotspot
-          iifname "wlo1" ip saddr 10.42.0.0/24 accept
+          # Hotspot clients -> wired uplink only
+          iifname "wlo1" oifname "ens1" ip saddr 10.42.0.0/24 accept
           oifname "wlo1" ip daddr 10.42.0.0/24 ct state established,related accept
 
-          # Libvirt
-          iifname "virbr0" accept
+          # Libvirt VM egress -> real uplinks only
+          iifname "virbr0" oifname { "ens1", "wlo1" } accept
           oifname "virbr0" ct state established,related accept
-          iifname "virbr0" oifname { "ens1", "enp4s0", "wlo1" } accept
 
-          # Default drop
           drop
         }
 
         chain output {
           type filter hook output priority 0; policy accept;
 
-          # All private networks (incl. CGNAT)
           ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } accept
           ip6 daddr { fe80::/10, fc00::/7 } accept
-
-          # Localhost and link-local
           ip daddr 127.0.0.0/8 accept
           ip6 daddr ::1 accept
 
-          # Prevent Direct WebRTC STUN/TURN Requests Without a Proxy
-          udp dport { 3478, 5349 } drop
+          # Block WebRTC/STUN IP leaks from user apps. tailscaled runs as root,
+          # so its endpoint discovery (direct connections) still works.
+          meta skuid != 0 udp dport { 3478, 5349 } drop
+          meta skuid != 0 tcp dport { 3478, 5349 } drop
 
-          # Allow traffic from proxy software to the node server to bypass the Zapret queue
           tcp dport { 7897 } accept
           udp dport { 7897 } accept
 
-          # Zapret diversion ONLY for real internet traffic
+          # Zapret diversion for real internet traffic only
           ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 80, 443 } counter queue num 200 bypass
           ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 443 counter queue num 200 bypass
           ip6 daddr != { fe80::/10, fc00::/7 } tcp dport { 80, 443 } counter queue num 200 bypass
@@ -283,9 +337,12 @@ in
       table ip nat {
         chain postrouting {
           type nat hook postrouting priority 100;
-          oifname { "ens1", "enp4s0" } ip saddr 192.168.122.0/24 masquerade   # libvirt VM (interface renamed to ens1 by newer kernel)
-          oifname "wlo1"  ip saddr 192.168.122.0/24 masquerade    # libvirt VM
-          oifname != "wlo1" ip saddr 10.42.0.0/24 masquerade      # hotspot clients (wired or WiFi uplink)
+
+          # Libvirt VMs -> real uplinks
+          oifname { "ens1", "wlo1" } ip saddr 192.168.122.0/24 masquerade
+
+          # Hotspot clients -> wired uplink
+          oifname "ens1" ip saddr 10.42.0.0/24 masquerade
         }
       }
     '';
@@ -384,7 +441,6 @@ in
   };
 
   environment.systemPackages = with pkgs; [
-    crowdsec
     traceroute
   ];
 }
