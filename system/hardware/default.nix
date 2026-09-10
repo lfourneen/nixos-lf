@@ -8,6 +8,7 @@
     ./disko.nix
     ./driver-opt.nix
     ./partition.nix
+    ./usbguard.nix
     ./nvidia.nix
   ];
 }
