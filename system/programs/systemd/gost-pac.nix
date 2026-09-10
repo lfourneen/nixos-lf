@@ -6,6 +6,8 @@
     description = "Gost PAC High-Availability Proxy Daemon";
     after = [ "network.target" ];
     wantedBy = [ "multi-user.target" ];
+    # Never stop retrying (else a crash-loop leaves proxied apps without internet)
+    unitConfig.StartLimitIntervalSec = 0;
     serviceConfig = {
       User = "lfour";
       Group = "users";
@@ -15,63 +17,82 @@
       ExecStart = "${pkgs.writeShellScript "gost-launcher" ''
         current_status="none"
         proxy_pid=""
+        good=0
+        bad=0
 
-        # Cleanup handler to ensure child processes are terminated on service stop
+        stop_gost() {
+          if [ -n "$proxy_pid" ]; then
+            kill "$proxy_pid" 2>/dev/null
+            wait "$proxy_pid" 2>/dev/null
+            # Wait for port 33332 to be released (bounded)
+            i=0
+            while ${pkgs.iproute2}/bin/ss -tuln | ${pkgs.gnugrep}/bin/grep -q ":33332 "; do
+              i=$((i+1))
+              [ "$i" -ge 10 ] && break
+              sleep 0.2
+            done
+            proxy_pid=""
+          fi
+        }
+
+        start_gost() {
+          stop_gost
+          if [ "$1" = "proxy" ]; then
+            # Clash online: chain to the core at 7897
+            env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
+              ${pkgs.gost}/bin/gost -L=http://127.0.0.1:33332 -F=http://127.0.0.1:7897 &
+          else
+            # Clash offline: standalone direct proxy (fail-open)
+            env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
+              ${pkgs.gost}/bin/gost -L=http://127.0.0.1:33332 &
+          fi
+          proxy_pid=$!
+          current_status="$1"
+          echo "gost-pac status -> $1 (pid $proxy_pid)"
+        }
+
         cleanup() {
           echo "Stopping proxy supervisor..."
-          if [ -n "$proxy_pid" ]; then
-            kill "$proxy_pid"
-          fi
+          stop_gost
           exit 0
         }
         trap cleanup TERM INT
 
-        # Infinite keepalive and health-check loop
         while true; do
-          # Link-level probe: core port must answer AND a proxied request must
-          # actually reach the internet. Port-open alone is not enough, the
-          # captive-portal phase would flip traffic into a not-ready backend.
-          if ${pkgs.coreutils}/bin/timeout 2 ${pkgs.bash}/bin/bash -c 'echo > /dev/tcp/127.0.0.1/7897' 2>/dev/null \
-            && ${pkgs.curl}/bin/curl -x http://127.0.0.1:7897 --max-time 4 -fsS https://www.google.com -o /dev/null 2>/dev/null; then
-            new_status="proxy"
+          # Core port must answer AND a proxied request must actually work.
+          if ${pkgs.coreutils}/bin/timeout 2 ${pkgs.bash}/bin/bash -c 'echo > /dev/tcp/127.0.0.1/7897' 2>/dev/null; then
+            core_up=1
           else
+            core_up=0
+          fi
+
+          if [ "$core_up" = 1 ] && ${pkgs.curl}/bin/curl -x http://127.0.0.1:7897 --max-time 4 -fsS https://www.google.com/generate_204 -o /dev/null 2>/dev/null; then
+            good=$((good+1))
+            bad=0
+          else
+            bad=$((bad+1))
+            good=0
+          fi
+
+          new_status="$current_status"
+          if [ "$current_status" = "none" ]; then
+            # First tick: start now, fail-open to direct unless proxy is proven
+            if [ "$core_up" = 1 ] && [ "$bad" = 0 ]; then new_status="proxy"; else new_status="direct"; fi
+          elif [ "$core_up" = 0 ]; then
+            # Core gone: fall back immediately
+            new_status="direct"
+          elif [ "$good" -ge 2 ]; then
+            new_status="proxy"
+          elif [ "$bad" -ge 2 ]; then
             new_status="direct"
           fi
 
-          # Trigger hot-reload only when backend state changes
           if [ "$new_status" != "$current_status" ]; then
-            echo "Proxy status changed from [$current_status] to [$new_status]. Reloading..."
-            
-            # Terminate the active gost instance cleanly before spawning a new one
-            if [ -n "$proxy_pid" ]; then
-              kill "$proxy_pid"
-              wait "$proxy_pid" 2>/dev/null
-
-              # Wait for port 33332 to be released (bounded to avoid infinite loop)
-              i=0
-              while ${pkgs.iproute2}/bin/ss -tuln | grep -q ":33332 "; do
-                i=$((i+1))
-                [ "$i" -ge 10 ] && break
-                sleep 0.2
-              done
-            fi
-
-            # Explicitly strip proxy env variables prior to execution to prevent infinite loop regressions
-            if [ "$new_status" = "proxy" ]; then
-              # Clash Online: Listen on 33332 and forward traffic to Clash core at 7897
-              env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
-              ${pkgs.gost}/bin/gost -L=http://127.0.0.1:33332 -F=http://127.0.0.1:7897 &
-            else
-              # Clash Offline: Listen on 33332 and act as a standalone HTTP proxy for direct fallback
-              env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
-              ${pkgs.gost}/bin/gost -L=http://127.0.0.1:33332 &
-            fi
-            
-            proxy_pid=$!
-            current_status="$new_status"
+            start_gost "$new_status"
+            good=0
+            bad=0
           fi
 
-          # Health check interval (seconds)
           sleep 5
         done
       ''
