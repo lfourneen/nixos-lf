@@ -52,6 +52,21 @@
     "net.ipv4.conf.all.log_martians" = 1;
     "net.ipv4.conf.default.log_martians" = 1;
 
+    # Anti-spoofing: loose reverse-path filter + ARP hygiene
+    "net.ipv4.conf.all.rp_filter" = 2;
+    "net.ipv4.conf.default.rp_filter" = 2;
+    "net.ipv4.conf.all.arp_ignore" = 1;
+    "net.ipv4.conf.default.arp_ignore" = 1;
+    "net.ipv4.conf.all.arp_announce" = 2;
+    "net.ipv4.conf.default.arp_announce" = 2;
+
+    # Ignore broadcast pings and bogus ICMP error responses
+    "net.ipv4.icmp_echo_ignore_broadcasts" = 1;
+    "net.ipv4.icmp_ignore_bogus_error_responses" = 1;
+
+    # SYN flood protection
+    "net.ipv4.tcp_syncookies" = 1;
+
     # Mitigate TCP TIME-WAIT assassination attacks (RFC 1337)
     "net.ipv4.tcp_rfc1337" = 1;
 

@@ -23,7 +23,6 @@
     trusted-users = [ 
       "root" 
       "lfour" 
-      "hermes" 
     ];
   };
 
