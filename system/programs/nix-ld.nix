@@ -147,7 +147,7 @@
       e2fsprogs
 
       # Driver
-      config.boot.kernelPackages.nvidia_x11
+      config.hardware.nvidia.package
 
       # 32-bit
       pkgsi686Linux.glibc
