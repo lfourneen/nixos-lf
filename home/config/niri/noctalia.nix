@@ -109,24 +109,8 @@ let
       enabled = true;
       schema_version = 2;
       widget_order = [
-        "lockscreen-widget-0000000000000001"
-        "lockscreen-widget-0000000000000004"
-        "lockscreen-widget-0000000000000005"
-        "lockscreen-widget-0000000000000006"
-        "lockscreen-widget-0000000000000007"
-        "lockscreen-widget-0000000000000008"
-        "lockscreen-widget-000000000000000a"
-        "lockscreen-widget-0000000000000003"
-        "lockscreen-widget-0000000000000009"
         "lockscreen-widget-0000000000000001@HDMI-A-1"
-        "lockscreen-widget-0000000000000004@HDMI-A-1"
-        "lockscreen-widget-0000000000000005@HDMI-A-1"
-        "lockscreen-widget-0000000000000006@HDMI-A-1"
-        "lockscreen-widget-0000000000000007@HDMI-A-1"
-        "lockscreen-widget-0000000000000008@HDMI-A-1"
-        "lockscreen-widget-000000000000000a@HDMI-A-1"
-        "lockscreen-widget-0000000000000003@HDMI-A-1"
-        "lockscreen-widget-0000000000000009@HDMI-A-1"
+        "lockscreen-widget-0000000000000001"
         "lockscreen-login-box@eDP-1"
         "lockscreen-login-box@HDMI-A-1"
       ];
@@ -137,268 +121,42 @@ let
       };
       widget = {
         "lockscreen-widget-0000000000000001" = {
-          box_height = 224.0;
-          box_width = 544.0;
+          box_height = 336.0;
+          box_width = 896.0;
           cx = 960.0;
-          cy = 540.0;
+          cy = 452.0;
           output = "eDP-1";
           placement_height = 1080.0;
           placement_width = 1920.0;
           rotation = 0.0;
           type = "clock";
           settings = {
+            background_color = "shadow";
             clock_style = "digital";
+            format = "{:%H:%M}";
           };
-        };
-        "lockscreen-widget-0000000000000004" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 224.0;
-          cy = 108.0;
-          output = "eDP-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "sysmon";
-          settings = {
-            stat = "cpu_usage";
-            stat2 = "cpu_temp";
-          };
-        };
-        "lockscreen-widget-0000000000000005" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 714.6666666666667;
-          cy = 108.0;
-          output = "eDP-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "sysmon";
-          settings = {
-            stat = "gpu_usage";
-            stat2 = "gpu_temp";
-          };
-        };
-        "lockscreen-widget-0000000000000006" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 1205.3333333333333;
-          cy = 108.0;
-          output = "eDP-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "sysmon";
-          settings = {
-            stat = "ram_pct";
-            stat2 = "swap_pct";
-          };
-        };
-        "lockscreen-widget-0000000000000007" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 1696.0;
-          cy = 108.0;
-          output = "eDP-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "sysmon";
-          settings = {
-            stat = "net_rx";
-            stat2 = "net_tx";
-          };
-        };
-        "lockscreen-widget-0000000000000008" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 224.0;
-          cy = 972.0;
-          output = "eDP-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "audio_visualizer";
-          settings = {
-            bands = 32;
-            show_when_idle = true;
-          };
-        };
-        "lockscreen-widget-000000000000000a" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 224.0;
-          cy = 748.0;
-          output = "eDP-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "fancy_audio_visualizer";
-          settings = {
-            background = true;
-            visualization_mode = "all";
-          };
-        };
-        "lockscreen-widget-0000000000000003" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 1696.0;
-          cy = 972.0;
-          output = "eDP-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "media_player";
-          settings = {
-            layout = "vertical";
-          };
-        };
-        "lockscreen-widget-0000000000000009" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 1696.0;
-          cy = 748.0;
-          output = "eDP-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "volume";
         };
         "lockscreen-widget-0000000000000001@HDMI-A-1" = {
-          box_height = 224.0;
-          box_width = 544.0;
+          box_height = 336.0;
+          box_width = 896.0;
           cx = 960.0;
-          cy = 540.0;
+          cy = 452.0;
           output = "HDMI-A-1";
           placement_height = 1080.0;
           placement_width = 1920.0;
           rotation = 0.0;
           type = "clock";
           settings = {
+            background_color = "shadow";
             clock_style = "digital";
+            format = "{:%H:%M}";
           };
-        };
-        "lockscreen-widget-0000000000000004@HDMI-A-1" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 224.0;
-          cy = 108.0;
-          output = "HDMI-A-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "sysmon";
-          settings = {
-            stat = "cpu_usage";
-            stat2 = "cpu_temp";
-          };
-        };
-        "lockscreen-widget-0000000000000005@HDMI-A-1" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 714.6666666666667;
-          cy = 108.0;
-          output = "HDMI-A-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "sysmon";
-          settings = {
-            stat = "gpu_usage";
-            stat2 = "gpu_temp";
-          };
-        };
-        "lockscreen-widget-0000000000000006@HDMI-A-1" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 1205.3333333333333;
-          cy = 108.0;
-          output = "HDMI-A-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "sysmon";
-          settings = {
-            stat = "ram_pct";
-            stat2 = "swap_pct";
-          };
-        };
-        "lockscreen-widget-0000000000000007@HDMI-A-1" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 1696.0;
-          cy = 108.0;
-          output = "HDMI-A-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "sysmon";
-          settings = {
-            stat = "net_rx";
-            stat2 = "net_tx";
-          };
-        };
-        "lockscreen-widget-0000000000000008@HDMI-A-1" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 224.0;
-          cy = 972.0;
-          output = "HDMI-A-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "audio_visualizer";
-          settings = {
-            bands = 32;
-            show_when_idle = true;
-          };
-        };
-        "lockscreen-widget-000000000000000a@HDMI-A-1" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 224.0;
-          cy = 748.0;
-          output = "HDMI-A-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "fancy_audio_visualizer";
-          settings = {
-            background = true;
-            visualization_mode = "all";
-          };
-        };
-        "lockscreen-widget-0000000000000003@HDMI-A-1" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 1696.0;
-          cy = 972.0;
-          output = "HDMI-A-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "media_player";
-          settings = {
-            layout = "vertical";
-          };
-        };
-        "lockscreen-widget-0000000000000009@HDMI-A-1" = {
-          box_height = 160.0;
-          box_width = 304.0;
-          cx = 1696.0;
-          cy = 748.0;
-          output = "HDMI-A-1";
-          placement_height = 1080.0;
-          placement_width = 1920.0;
-          rotation = 0.0;
-          type = "volume";
         };
         "lockscreen-login-box@eDP-1" = {
           box_height = 196.0;
           box_width = 810.0;
           cx = 960.0;
-          cy = 958.0;
+          cy = 878.0;
           output = "eDP-1";
           placement_height = 1080.0;
           placement_width = 1920.0;
@@ -425,7 +183,7 @@ let
           box_height = 196.0;
           box_width = 810.0;
           cx = 960.0;
-          cy = 898.0;
+          cy = 878.0;
           output = "HDMI-A-1";
           placement_height = 1080.0;
           placement_width = 1920.0;
