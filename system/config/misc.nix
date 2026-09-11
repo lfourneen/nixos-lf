@@ -57,6 +57,9 @@
 
   # Zram (but no hibernate)
   zramSwap.enable = true;
+  # To enable hibernation, switch zram -> zswap (see partition.nix):
+  # zramSwap.enable = false;
+  # boot.zswap.enable = true;
 
   # GC
   nix.gc = {

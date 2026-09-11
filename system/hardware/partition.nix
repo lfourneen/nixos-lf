@@ -53,6 +53,16 @@
     tpm2_pcrread = "${pkgs.tpm2-tools}/bin/tpm2_pcrread";
   };
 
+  # ---------------------------------------------------------------------------
+  # Hibernation (suspend-to-disk) is currently DISABLED. To enable it later:
+  #   1) uncomment boot.resumeDevice below (LUKS swap mapper from disko.nix)
+  #   2) security.nix: security.protectKernelImage = false;  # it adds "nohibernate"
+  #   3) misc.nix: zramSwap.enable = false; boot.zswap.enable = true;
+  #      (zram lives in RAM and cannot hold a hibernation image; zswap can)
+  # Suspending to RAM (s2idle/S3) is already enabled and NOT affected by this.
+  # ---------------------------------------------------------------------------
+  # boot.resumeDevice = "/dev/mapper/enc-swap";
+
   environment.systemPackages = with pkgs; [
     btrfs-progs 
     disko 

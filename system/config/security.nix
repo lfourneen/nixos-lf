@@ -92,6 +92,8 @@
   # sets `nohibernate`. A 32G encrypted swap exists, but hibernation is not
   # used (zram is the swap of choice), so losing it is fine.
   security.protectKernelImage = true;
+  # This adds "nohibernate"; to allow hibernation, switch to:
+  # security.protectKernelImage = false;   # (see partition.nix for the rest)
 
   # Mandatory access control (AppArmor)
   services.dbus.apparmor = "enabled";
