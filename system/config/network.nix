@@ -1,9 +1,8 @@
 { pkgs, config, lib, ... }:
 
 let
-  # Host-service trust: a private/CGNAT IP is NOT trust (campus/guest nets
-  # hand those to everyone). Only tailnet, explicit CIDRs here, own hotspot,
-  # and libvirt VMs may reach host services. Add e.g. "192.168.1.0/24".
+  # Trusted LANs allowed to reach host services (private/CGNAT IP != trust).
+  # Empty = none; add e.g. "192.168.1.0/24". Tailnet/hotspot/VM are built in.
   trustedLanCidrs = [
   ];
 
@@ -24,18 +23,20 @@ let
   trustedLanSrc = ''iifname { "ens1", "wlo1" } ip saddr { ${lib.concatStringsSep ", " trustedLanCidrs} }'';
   trustedLanRules = lib.optionalString (trustedLanCidrs != []) (hostServices trustedLanSrc);
 
-  # ON: current path is a pinned VLESS (TCP) node, so UDP/443 drop is safe.
-  # Turn off if you switch to Hysteria2/TUIC or use the auto groups.
-  blockQuic = true;
+  # TUN captures all L3 traffic (mihomo owns DNS/QUIC); false = plain
+  # HTTP-proxy model. Toggles the per-app guards below.
+  tunMode = true;
+  tunDev = "Mihomo";   # GUI > TUN > Device Name
 
-  # Kill switch: unprivileged apps may only egress to loopback/LAN/DNS/NTP,
-  # so apps that ignore the proxy fail closed instead of leaking your real IP.
-  # REQUIRES Clash Verge Service Mode (core runs as root -> exempt via skuid 0),
-  # otherwise the core itself gets blocked and the proxy dies.
+  # Force QUIC-heavy apps off UDP/443. Non-TUN only (under TUN it breaks
+  # QUIC sites); kept for the fallback model.
+  blockQuic = !tunMode;
+
+  # Kill switch: non-root apps may only egress to loopback/LAN/DNS/NTP (fail
+  # closed). Needs Clash Verge Service Mode (root core exempt via skuid 0).
   proxyKillSwitch = false;
 
-  # UIDs fully exempt from the kill switch. Root (0) is always exempt; add a
-  # service user that must egress directly (`id -u <user>` to find it).
+  # Extra exempt UIDs (root 0 is always exempt).
   killSwitchExemptUids = [
     # 993
   ];
@@ -47,6 +48,31 @@ let
     meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } drop
     meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip6 daddr != { fe80::/10, fc00::/7 } drop
   '';
+
+  # TUN-bound packets must not be queued; zapret is for physical egress only.
+  zapretGuard = lib.optionalString tunMode ''oifname { "ens1", "wlo1" } '';
+
+  # Never queue mihomo's own packets for zapret: nfqws drops the auto-route
+  # fwmark on reinjection, so auto-route feeds them back into TUN (DIRECT loop).
+  mihomoMarkMask = "0xff0000";
+  mihomoMarkValue = "0x80000";
+  zapretMarkAccept = lib.optionalString tunMode ''
+    meta mark and ${mihomoMarkMask} == ${mihomoMarkValue} accept
+    meta skuid 0 accept'';
+
+  # TPROXY bridges whose egress goes through mihomo (tproxy-port 7896, see
+  # cvr-merge.nix). Empty = off; TUN only captures host output. Untested.
+  vmTransparentProxyIfaces = [
+    # "virbr0"
+    # "waydroid0"
+  ];
+  vmTproxy = vmTransparentProxyIfaces != [ ];
+  tproxyMark = "0x233";
+  tproxyPrerouting = lib.concatMapStrings (i: ''
+    iifname "${i}" ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 127.0.0.0/8, 224.0.0.0/4 } meta l4proto { tcp, udp } tproxy to :7896 meta mark set ${tproxyMark} accept
+  '') vmTransparentProxyIfaces;
+  tproxyInputAccept = lib.concatMapStrings (i: ''iifname "${i}" meta mark ${tproxyMark} accept
+  '') vmTransparentProxyIfaces;
 
 in
 {
@@ -156,8 +182,7 @@ in
     package = pkgs.unstable.tailscale;
   };
 
-  # Avahi / mDNS (local discovery). Don't advertise on the untrusted physical
-  # LAN (campus); own hotspot AP and the tailnet only.
+  # Avahi / mDNS. Skip the untrusted physical LAN (ens1); hotspot + tailnet only.
   services.avahi = {
     enable = true;
     nssmdns4 = true;
@@ -253,23 +278,15 @@ in
         DNSSEC = "no";
         LLMNR = "no";   # Disable LLMNR (LAN poisoning surface)
 
-        DNSStubListenerExtra = "udp:0.0.0.0:53";  # gated by firewall (hotspot only)
+        # Extra listeners for hotspot clients (firewall-gated). Both must live
+        # in the same file: resolved only honors one across drop-ins.
+        DNSStubListenerExtra = [ "udp:0.0.0.0:53" "tcp:0.0.0.0:53" ];
       };
     };
   };
 
-  # Extra TCP/53 listener for hotspot clients (one address per directive in resolved)
-  environment.etc."systemd/resolved.conf.d/10-tcp-stub.conf".text = ''
-    [Resolve]
-    DNSStubListenerExtra=tcp:0.0.0.0:53
-  '';
-
   # nixos-rebuild reloads resolved (incomplete, "Reload operation timed out"); restart it instead
   systemd.services.systemd-resolved.restartIfChanged = true;
-  # Restart (not reload) when the TCP/53 stub drop-in changes, for the same reason
-  systemd.services.systemd-resolved.restartTriggers = [
-    config.environment.etc."systemd/resolved.conf.d/10-tcp-stub.conf".source
-  ];
 
   # Shutdown: stop NM before the user session, else user apps block on its
   # D-Bus and "Stopping User Manager" spins out its 90s timeout.
@@ -288,7 +305,11 @@ in
 
           ct state invalid drop
           iif lo accept
+          # Clash Verge TUN device (local, root-owned): accept its replies.
+          iifname "${tunDev}" accept
           ct state established,related accept
+          # TPROXY'd bridge traffic, if enabled.
+          ${tproxyInputAccept}
 
           # Obvious spoofing on the wired WAN (loopback/multicast/reserved sources)
           iifname "ens1" ip saddr { 127.0.0.0/8, 224.0.0.0/4, 240.0.0.0/4 } drop
@@ -355,40 +376,42 @@ in
           ip daddr 127.0.0.0/8 accept
           ip6 daddr ::1 accept
 
-          # Block WebRTC/STUN IP leaks from user apps. tailscaled runs as root,
-          # so its endpoint discovery (direct connections) still works.
+          # WebRTC/STUN leak block (tailscaled is root, so unaffected).
           meta skuid != 0 udp dport { 3478, 5349 } drop
           meta skuid != 0 tcp dport { 3478, 5349 } drop
 
-          # Optional QUIC block (see blockQuic); off by default.
+          # QUIC drop (non-TUN only; see blockQuic).
           ${lib.optionalString blockQuic "meta skuid != 0 udp dport 443 drop"}
 
-          # Proxy kill switch (optional; see let).
+          # Proxy kill switch (see let).
           ${killSwitchRules}
 
-          # Bypass audit: `sudo tcpconnect` (ignore port 33332 / node IPs).
+          # Bypass audit: `egress-audit` (ignore :33332 / node IPs).
 
           tcp dport { 7897 } accept
           udp dport { 7897 } accept
 
-          # Zapret diversion for real internet traffic only
-          ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 80, 443 } counter queue num 200 bypass
-          ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 443 counter queue num 200 bypass
-          ip6 daddr != { fe80::/10, fc00::/7 } tcp dport { 80, 443 } counter queue num 200 bypass
-          ip6 daddr != { fe80::/10, fc00::/7 } udp dport 443 counter queue num 200 bypass
+          # Zapret diversion (mihomo's own packets exempt, see zapretMarkAccept).
+          ${zapretMarkAccept}
+          ${zapretGuard}ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 80, 443 } counter queue num 200 bypass
+          ${zapretGuard}ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 443 counter queue num 200 bypass
+          ${zapretGuard}ip6 daddr != { fe80::/10, fc00::/7 } tcp dport { 80, 443 } counter queue num 200 bypass
+          ${zapretGuard}ip6 daddr != { fe80::/10, fc00::/7 } udp dport 443 counter queue num 200 bypass
         }
       }
 
       # NAT
       table ip nat {
-        # Force app plaintext DNS to dnsmasq (1054) so hardcoded resolvers
-        # can't leak. Exempt MagicDNS + bootstrap resolvers used by
-        # mihomo (cvr-merge.nix) and unbound: 223.5.5.5, 223.6.6.6, 119.29.29.29.
+        # Non-TUN only: force plaintext DNS to dnsmasq (1054) so hardcoded
+        # resolvers can't leak. Under TUN, dns-hijack owns :53. Exempt MagicDNS
+        # and the mihomo/unbound bootstrap resolvers.
         chain output {
           type nat hook output priority -100; policy accept;
 
+          ${lib.optionalString (!tunMode) ''
           meta skuid != 0 ip daddr != { 127.0.0.0/8, 100.100.100.100, 223.5.5.5, 223.6.6.6, 119.29.29.29 } udp dport 53 redirect to :1054
           meta skuid != 0 ip daddr != { 127.0.0.0/8, 100.100.100.100, 223.5.5.5, 223.6.6.6, 119.29.29.29 } tcp dport 53 redirect to :1054
+          ''}
         }
 
         chain postrouting {
@@ -401,7 +424,37 @@ in
           oifname "ens1" ip saddr 10.42.0.0/24 masquerade
         }
       }
+
+      ${lib.optionalString vmTproxy ''
+      # Divert listed bridges' public TCP/UDP into mihomo's tproxy port.
+      table ip mangle {
+        chain prerouting {
+          type filter hook prerouting priority mangle; policy accept;
+          ${tproxyPrerouting}
+        }
+      }
+      ''}
     '';
+  };
+
+  # Deliver marked bridge packets locally to mihomo's tproxy socket.
+  systemd.services.vm-transparent-proxy = lib.mkIf vmTproxy {
+    description = "TPROXY routing for libvirt VMs";
+    after = [ "network.target" "nftables.service" ];
+    wants = [ "nftables.service" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      ExecStart = pkgs.writeShellScript "vm-tproxy-up" ''
+        ${pkgs.iproute2}/bin/ip rule add fwmark ${tproxyMark} lookup 100 2>/dev/null || true
+        ${pkgs.iproute2}/bin/ip route add local default dev lo table 100 2>/dev/null || true
+      '';
+      ExecStop = pkgs.writeShellScript "vm-tproxy-down" ''
+        ${pkgs.iproute2}/bin/ip rule del fwmark ${tproxyMark} lookup 100 2>/dev/null || true
+        ${pkgs.iproute2}/bin/ip route del local default dev lo table 100 2>/dev/null || true
+      '';
+    };
   };
 
   # CrowdSec — SSH brute-force protection (needs ssh.nix + the SSH rules above)
@@ -450,7 +503,7 @@ in
   '';
 
   # Kernel settings
-  boot.kernelModules = [ "tcp_bbr" ];
+  boot.kernelModules = [ "tcp_bbr" ] ++ lib.optionals vmTproxy [ "nft_tproxy" "nf_tproxy_ipv4" ];
 
   boot.kernelParams = [
     # Disable USB auto-suspend

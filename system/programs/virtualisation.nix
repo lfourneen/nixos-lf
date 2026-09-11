@@ -77,7 +77,11 @@
     pkgs.unstable.nftables
 
     # Linux to Linux
-    pkgs.unstable.distrobox 
+    pkgs.unstable.distrobox
+
+    # user-mode networking backend for libvirt VMs (egress becomes host
+    # sockets, so it is captured by TUN)
+    passt
   ];
 }
 
