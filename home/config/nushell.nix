@@ -185,6 +185,23 @@
       print $"(ansi yellow)Proxy disabled.(ansi reset)"
     }
 
+    # Proxied vs fail-open (direct) egress state.
+    def proxy-status [] {
+      let read = {|p|
+        try { open --raw $p | str trim } catch { "unknown" }
+      }
+      let g = (do $read "/run/gost-pac/status")
+      let d = (do $read "/run/dns-pac/status")
+      let color = if $g == "proxy" { "green" } else { "red" }
+      print $"(ansi $color)egress: ($g)(ansi reset)  DNS: ($d)"
+    }
+
+    # Live outbound TCP audit (needs root); non-33332/node = proxy bypass.
+    # bpftrace (BTF) works on new kernels where bcc's headers fail.
+    def egress-audit [...args] {
+      sudo bpftrace /run/current-system/sw/share/bpftrace/tools/tcpconnect.bt ...$args
+    }
+
     # Launch Hermes Agent in isolated sandbox environment
     def hermes [...args: string] {
       print $"(ansi yellow_bold)🤖 Launching Hermes Agent in isolated sandbox mode...(ansi reset)"
