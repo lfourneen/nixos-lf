@@ -75,7 +75,7 @@
   };
 
   time = {
-    timeZone = "Asia/Shanghai";
+    timeZone = "Asia/Singapore";
 
     # Keep the hardware RTC in UTC (the systemd/NTP default). Local-time RTC is
     # discouraged: it causes boot-time clock jumps and breaks on DST/timezone
@@ -86,7 +86,7 @@
   };
 
   # NTP servers
-  networking.timeServers = [ "ntp.aliyun.com" "ntp.tencent.com" "cn.pool.ntp.org" ];
+  networking.timeServers = [ "sg.pool.ntp.org" "0.sg.pool.ntp.org" "1.sg.pool.ntp.org" "2.sg.pool.ntp.org" ];
 
   # Stop stuck user services 10s after SIGTERM instead of the 90s default
   # (was the "Stopping User Manager" hang).
