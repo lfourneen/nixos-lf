@@ -1,10 +1,52 @@
 { pkgs, config, lib, ... }:
 
 let
-  # Interfaces allowed to reach host services. Others still get internet
-  # (NM/NAT) but cannot open host services. Don't add broad globs
-  # ("wl*"/"usb*"): a rogue USB NIC would re-enter this trust set.
-  lanGuard = ''iifname { "ens1", "wlo1", "virbr0", "tailscale0" }'';
+  # Host-service trust: a private/CGNAT IP is NOT trust (campus/guest nets
+  # hand those to everyone). Only tailnet, explicit CIDRs here, own hotspot,
+  # and libvirt VMs may reach host services. Add e.g. "192.168.1.0/24".
+  trustedLanCidrs = [
+  ];
+
+  # Ports a trusted peer may reach.
+  hostServices = src: ''
+    ${src} udp dport 5353 accept                            # mDNS/Avahi
+    ${src} tcp dport 53317 accept                           # LocalSend
+    ${src} udp dport 53317 accept
+    ${src} tcp dport { 3389, 5900 } accept                  # RDP / VNC
+    ${src} tcp dport { 47984, 47989, 47990, 48010 } accept  # Sunshine
+    ${src} udp dport 47998-48010 accept
+    ${src} tcp dport 25565 accept                           # Minecraft
+    # ${src} tcp dport 22 accept                            # SSH (ssh.nix)
+  '';
+
+  hotspoSrc = ''iifname "wlo1" ip saddr 10.42.0.0/24'';
+  vmSrc = ''iifname "virbr0" ip saddr 192.168.122.0/24'';  # libvirt default net
+  trustedLanSrc = ''iifname { "ens1", "wlo1" } ip saddr { ${lib.concatStringsSep ", " trustedLanCidrs} }'';
+  trustedLanRules = lib.optionalString (trustedLanCidrs != []) (hostServices trustedLanSrc);
+
+  # ON: current path is a pinned VLESS (TCP) node, so UDP/443 drop is safe.
+  # Turn off if you switch to Hysteria2/TUIC or use the auto groups.
+  blockQuic = true;
+
+  # Kill switch: unprivileged apps may only egress to loopback/LAN/DNS/NTP,
+  # so apps that ignore the proxy fail closed instead of leaking your real IP.
+  # REQUIRES Clash Verge Service Mode (core runs as root -> exempt via skuid 0),
+  # otherwise the core itself gets blocked and the proxy dies.
+  proxyKillSwitch = false;
+
+  # UIDs fully exempt from the kill switch. Root (0) is always exempt; add a
+  # service user that must egress directly (`id -u <user>` to find it).
+  killSwitchExemptUids = [
+    # 993
+  ];
+  killSwitchUidSet = "{ ${lib.concatStringsSep ", " (map toString ([ 0 ] ++ killSwitchExemptUids))} }";
+
+  killSwitchRules = lib.optionalString proxyKillSwitch ''
+    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } udp dport { 53, 123 } accept
+    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } tcp dport { 53, 853 } accept
+    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } drop
+    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip6 daddr != { fe80::/10, fc00::/7 } drop
+  '';
 
 in
 {
@@ -114,11 +156,13 @@ in
     package = pkgs.unstable.tailscale;
   };
 
-  # Avahi / mDNS (local discovery)
+  # Avahi / mDNS (local discovery). Don't advertise on the untrusted physical
+  # LAN (campus); own hotspot AP and the tailnet only.
   services.avahi = {
     enable = true;
     nssmdns4 = true;
     nssmdns6 = true;
+    allowInterfaces = [ "lo" "wlo1" "tailscale0" ];
   };
 
   # Zapret
@@ -198,9 +242,9 @@ in
 
         MulticastDNS = "no";
 
-        # One always-alive gateway; public DNS is only a safety net if it dies.
+        # Fallback is encrypted (unbound DoT); no plaintext leak.
         DNS = [ "127.0.0.1:1054" ];
-        FallbackDNS = [ "223.5.5.5" "119.29.29.29" "1.1.1.1" ];
+        FallbackDNS = [ "127.0.0.1:1055" ];
 
         # Must be "no": opportunistic DoT tries cert validation against IPs and kills fallback
         DNSOverTLS = "no";
@@ -270,24 +314,18 @@ in
           iifname "wlo1" ip saddr 10.42.0.0/24 udp dport 53 accept
           iifname "wlo1" ip saddr 10.42.0.0/24 tcp dport 53 accept
 
-          # Host services: trusted interfaces only (see lanGuard)
-          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 5353 accept
-          ${lanGuard} ip6 saddr { fe80::/10, fc00::/7 } udp dport 5353 accept
+          # Tailnet is authenticated -> trust it (covers SSH too).
+          iifname "tailscale0" accept
 
-          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 53317 accept
-          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 53317 accept
+          # Own devices on the local hotspot AP.
+          ${hostServices hotspoSrc}
+          iifname "wlo1" ip6 saddr fe80::/10 udp dport 5353 accept
 
-          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 3389, 5900 } accept
-          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 47984, 47989, 47990, 48010 } accept   # Sunshine
-          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 47998-48010 accept
+          # Explicitly trusted LAN prefixes (empty by default).
+          ${trustedLanRules}
 
-          # SSH — enable with system/programs/ssh.nix
-          # ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 22 accept
-          # iifname "tailscale0" tcp dport 22 accept
-
-          iifname "virbr0" accept
-
-          ${lanGuard} ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport 25565 accept   # Minecraft
+          # libvirt VMs -> host only.
+          ${hostServices vmSrc}
 
           drop
         }
@@ -322,6 +360,14 @@ in
           meta skuid != 0 udp dport { 3478, 5349 } drop
           meta skuid != 0 tcp dport { 3478, 5349 } drop
 
+          # Optional QUIC block (see blockQuic); off by default.
+          ${lib.optionalString blockQuic "meta skuid != 0 udp dport 443 drop"}
+
+          # Proxy kill switch (optional; see let).
+          ${killSwitchRules}
+
+          # Bypass audit: `sudo tcpconnect` (ignore port 33332 / node IPs).
+
           tcp dport { 7897 } accept
           udp dport { 7897 } accept
 
@@ -335,6 +381,16 @@ in
 
       # NAT
       table ip nat {
+        # Force app plaintext DNS to dnsmasq (1054) so hardcoded resolvers
+        # can't leak. Exempt MagicDNS + bootstrap resolvers used by
+        # mihomo (cvr-merge.nix) and unbound: 223.5.5.5, 223.6.6.6, 119.29.29.29.
+        chain output {
+          type nat hook output priority -100; policy accept;
+
+          meta skuid != 0 ip daddr != { 127.0.0.0/8, 100.100.100.100, 223.5.5.5, 223.6.6.6, 119.29.29.29 } udp dport 53 redirect to :1054
+          meta skuid != 0 ip daddr != { 127.0.0.0/8, 100.100.100.100, 223.5.5.5, 223.6.6.6, 119.29.29.29 } tcp dport 53 redirect to :1054
+        }
+
         chain postrouting {
           type nat hook postrouting priority 100;
 
@@ -388,9 +444,6 @@ in
     #};
   #};
 
-  # BCC
-  programs.bcc.enable = true;
-
   # Kernel modules
   boot.extraModprobeConfig = ''
     options mt7921e disable_aspm=1
@@ -441,6 +494,7 @@ in
   };
 
   environment.systemPackages = with pkgs; [
+    bpftrace
     traceroute
   ];
 }
