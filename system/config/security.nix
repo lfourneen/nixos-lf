@@ -38,6 +38,10 @@
     # Disable core dumps for setuid binaries
     "fs.suid_dumpable" = 0;
 
+    # Kernel attack-surface reductions
+    "dev.tty.ldisc_autoload" = 0;
+    "net.core.bpf_jit_harden" = 2;
+
     # Network layer hardening
     "net.ipv4.conf.all.accept_redirects" = 0;
     "net.ipv6.conf.all.accept_redirects" = 0;
@@ -75,6 +79,19 @@
     "net.ipv4.conf.default.accept_source_route" = 0;
     "net.ipv6.conf.all.accept_source_route" = 0;
   };
+
+  # Boot-time kernel hardening
+  boot.kernelParams = [
+    "slab_nomerge"
+    "randomize_kstack_offset=on"
+    "vsyscall=none"
+    "init_on_alloc=1"
+  ];
+
+  # Prevent replacing the running kernel image at runtime (kexec). This also
+  # sets `nohibernate`. A 32G encrypted swap exists, but hibernation is not
+  # used (zram is the swap of choice), so losing it is fine.
+  security.protectKernelImage = true;
 
   # Mandatory access control (AppArmor)
   services.dbus.apparmor = "enabled";
