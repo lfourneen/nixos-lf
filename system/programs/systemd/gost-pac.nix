@@ -12,6 +12,7 @@
       User = "lfour";
       Group = "users";
       StateDirectory = "gost";
+      RuntimeDirectory = "gost-pac";
       
       # Internal implementation of persistent loop monitoring and hot-reloading
       ExecStart = "${pkgs.writeShellScript "gost-launcher" ''
@@ -48,6 +49,8 @@
           fi
           proxy_pid=$!
           current_status="$1"
+          # State for proxy-status.
+          printf '%s\n' "$1" > /run/gost-pac/status
           echo "gost-pac status -> $1 (pid $proxy_pid)"
         }
 

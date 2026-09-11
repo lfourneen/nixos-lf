@@ -10,6 +10,7 @@
     wantedBy = [ "multi-user.target" ];
     unitConfig.StartLimitIntervalSec = 0;
     serviceConfig = {
+      RuntimeDirectory = "dns-pac";
       ExecStart = "${pkgs.writeShellScript "dns-pac-loop" ''
 
         write_state() {
@@ -18,10 +19,13 @@
               printf 'server=127.0.0.1#1053\n' > /run/dns-pac/servers.conf
               ;;
             direct)
-              # Encrypted DoT (unbound) first, plaintext only as last resort
-              printf 'server=127.0.0.1#1055\nserver=223.5.5.5\n' > /run/dns-pac/servers.conf
+              # Encrypted DoT only; no plaintext fallback.
+              printf 'server=127.0.0.1#1055\n' > /run/dns-pac/servers.conf
               ;;
           esac
+
+          # State for proxy-status.
+          printf '%s\n' "$1" > /run/dns-pac/status
 
           # Flush dnsmasq and resolved caches on upstream change.
           ${pkgs.systemd}/bin/systemctl restart dnsmasq.service

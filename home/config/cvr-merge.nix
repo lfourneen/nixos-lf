@@ -9,6 +9,10 @@
       # Fix the mixed port to align with the probe and forwarding ports in gost-pac.nix.
       mixed-port: 7897
 
+      # Keep the proxy/controller on loopback regardless of the GUI toggle.
+      allow-lan: false
+      bind-address: 127.0.0.1
+
       # Enable and bind the DNS listening port for leak prevention, for systemd-resolved to access.
       dns:
         enable: true

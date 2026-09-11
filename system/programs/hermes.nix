@@ -210,7 +210,15 @@ in
       nodejs
       powertop
     ];
-    
+
+    # Route the agent's model/API calls through gost-pac so it keeps working
+    # under `proxyKillSwitch` (which blocks non-root direct egress).
+    environment = {
+      HTTP_PROXY = "http://127.0.0.1:33332/";
+      HTTPS_PROXY = "http://127.0.0.1:33332/";
+      NO_PROXY = "127.0.0.1,localhost,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10";
+    };
+
     serviceConfig = {
       User = "hermes";
       Group = "hermes";
