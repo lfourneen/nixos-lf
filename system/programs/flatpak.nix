@@ -51,6 +51,7 @@
       "com.jgraph.drawio.desktop"
       "md.obsidian.Obsidian"
       "org.onlyoffice.desktopeditors"
+      "org.texstudio.TeXstudio"
 
       # Utilities & system tools
       "com.github.tchx84.Flatseal"
