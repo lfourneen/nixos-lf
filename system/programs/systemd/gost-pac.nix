@@ -21,42 +21,53 @@
         good=0
         bad=0
 
-        stop_gost() {
+        stop_current() {
           if [ -n "$proxy_pid" ]; then
             kill "$proxy_pid" 2>/dev/null
             wait "$proxy_pid" 2>/dev/null
-            # Wait for port 33332 to be released (bounded)
-            i=0
-            while ${pkgs.iproute2}/bin/ss -tuln | ${pkgs.gnugrep}/bin/grep -q ":33332 "; do
-              i=$((i+1))
-              [ "$i" -ge 10 ] && break
-              sleep 0.2
-            done
             proxy_pid=""
           fi
         }
 
         start_gost() {
-          stop_gost
-          if [ "$1" = "proxy" ]; then
+          mode="$1"
+          # SO_REUSEPORT: new instance shares :33332 with the old one, so a
+          # mode flip never refuses a connection.
+          if [ "$mode" = "proxy" ]; then
             # Clash online: chain to the core at 7897
             env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
-              ${pkgs.gost}/bin/gost -L=http://127.0.0.1:33332 -F=http://127.0.0.1:7897 &
+              "${pkgs.gost}/bin/gost" "-L=http://127.0.0.1:33332?reuseport=true" -F=http://127.0.0.1:7897 &
           else
             # Clash offline: standalone direct proxy (fail-open)
             env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
-              ${pkgs.gost}/bin/gost -L=http://127.0.0.1:33332 &
+              "${pkgs.gost}/bin/gost" "-L=http://127.0.0.1:33332?reuseport=true" &
           fi
-          proxy_pid=$!
-          current_status="$1"
+          new_pid=$!
+
+          sleep 1
+          if ! kill -0 "$new_pid" 2>/dev/null; then
+            echo "gost failed to start in [$mode]; keeping current instance"
+            return 1
+          fi
+
+          old_pid="$proxy_pid"
+          proxy_pid="$new_pid"
+          current_status="$mode"
           # State for proxy-status.
-          printf '%s\n' "$1" > /run/gost-pac/status
-          echo "gost-pac status -> $1 (pid $proxy_pid)"
+          printf '%s\n' "$mode" > /run/gost-pac/status
+          echo "gost-pac status -> $mode (pid $new_pid)"
+
+          if [ -n "$old_pid" ]; then
+            # Drain in-flight connections, then retire the old instance.
+            sleep 2
+            kill "$old_pid" 2>/dev/null
+            wait "$old_pid" 2>/dev/null
+          fi
         }
 
         cleanup() {
           echo "Stopping proxy supervisor..."
-          stop_gost
+          stop_current
           exit 0
         }
         trap cleanup TERM INT
