@@ -1,6 +1,5 @@
 {
   imports = [
-    ./git.nix
     ./llm.nix
     ./opencode.nix
     ./vscode.nix

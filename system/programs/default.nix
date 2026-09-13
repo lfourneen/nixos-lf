@@ -6,6 +6,7 @@
 
     # Files
     ./clash-verge.nix
+    ./git.nix
     ./flatpak.nix
     ./hermes.nix
     ./misc.nix
