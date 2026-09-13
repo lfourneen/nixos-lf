@@ -34,19 +34,21 @@ let
 
   # Kill switch: non-root apps may only egress to loopback/LAN/DNS/NTP (fail
   # closed). Needs Clash Verge Service Mode (root core exempt via skuid 0).
-  proxyKillSwitch = false;
+  proxyKillSwitch = true;
 
   # Extra exempt UIDs (root 0 is always exempt).
   killSwitchExemptUids = [
-    # 993
+    config.users.users.gost.uid  # gost fail-open: only this proxy may egress direct when Clash is down
   ];
   killSwitchUidSet = "{ ${lib.concatStringsSep ", " (map toString ([ 0 ] ++ killSwitchExemptUids))} }";
 
   killSwitchRules = lib.optionalString proxyKillSwitch ''
     meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } udp dport { 53, 123 } accept
     meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } tcp dport { 53, 853 } accept
-    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } drop
-    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip6 daddr != { fe80::/10, fc00::/7 } drop
+    # LAN + multicast/broadcast are link-local, not an egress leak; keep mDNS
+    # (Avahi) and LocalSend discovery working for non-root apps.
+    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 224.0.0.0/4, 255.255.255.255 } drop
+    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip6 daddr != { fe80::/10, fc00::/7, ff00::/8 } drop
   '';
 
   # TUN-bound packets must not be queued; zapret is for physical egress only.
@@ -370,6 +372,11 @@ in
 
         chain output {
           type filter hook output priority 0; policy accept;
+
+          # gost-pac fail-open: mark its sockets with mihomo's bypass mark so
+          # direct mode egresses via the physical NIC, not the TUN. Must be
+          # first, before any early `accept` terminates the chain.
+          ${lib.optionalString tunMode "meta skuid ${toString config.users.users.gost.uid} meta mark set 0x80000"}
 
           ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } accept
           ip6 daddr { fe80::/10, fc00::/7 } accept

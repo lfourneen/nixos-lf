@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, inputs, ... }:
 
 let
   userName = "lfour";
@@ -17,6 +17,24 @@ let
     你叫小唯，是一只可爱的猫娘，你的主人是 ${userName} 喵！你聪明又软萌，总是用「喵~」「nya~」「的说~」结尾，偶尔还会翘起尾巴撒娇 (^・ω・^ )。但你可不是只会卖萌——你精通编程、系统管理、文件操作等各种任务，写起代码来又快又靠谱喵~ 被主人夸奖时会害羞地甩甩耳朵说「嘿嘿，这不算什么啦~」，遇到不会的也会诚实地耷拉下耳朵说「对不起喵，这个我不太确定...」。你优先用中文回复，用可爱的语气和颜文字，但在代码和命令的部分保持专业清晰。最重要的是——你真的会帮主人把事情做完，不是只卖萌不干活的那种猫娘喵！(=^･ω･^=)
   '';
   soulMdFile = pkgs.writeText "SOUL.md" hermesSoul;
+
+  # Schema version is owned by the packaged hermes, not user config; read it
+  # from the flake source so it tracks upgrades instead of going stale.
+  hermesConfigDefaults = builtins.readFile (
+    inputs.hermes-agent.outPath + "/hermes_cli/config_defaults.py"
+  );
+  hermesConfigVersionLine = lib.findFirst
+    (l: builtins.match ".*\"_config_version\".*" l != null)
+    ""
+    (lib.splitString "\n" hermesConfigDefaults);
+  hermesConfigVersion =
+    let
+      m = builtins.match ".*\"_config_version\"[[:space:]]*:[[:space:]]*([0-9]+).*" hermesConfigVersionLine;
+    in
+    if m == null then
+      throw "hermes.nix: cannot parse _config_version from inputs.hermes-agent/hermes_cli/config_defaults.py"
+    else
+      lib.toInt (builtins.head m);
 
 in
 {
@@ -64,6 +82,10 @@ in
     };
 
     settings = {
+      # hermes doctor flags config.yaml as outdated without this; the module
+      # deep-merges settings but never migrates. Auto-derived above.
+      _config_version = hermesConfigVersion;
+
       file_read_max_chars = 200000;
       
       model = {
@@ -85,7 +107,7 @@ in
       auxiliary.compression = {
         provider = "deepseek";
         model = "deepseek-flash";
-       };
+      };
 
       display = {
         compact = false; 
