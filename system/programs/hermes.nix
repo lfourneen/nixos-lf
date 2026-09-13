@@ -283,7 +283,7 @@ in
 
     # Agent tools
     ripgrep-all
-    jp
+    jq
     gh
     nix-tree
   ];
