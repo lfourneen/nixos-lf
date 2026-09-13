@@ -257,6 +257,12 @@ let
       open-floating true
     }
 
+    // Calculator
+    window-rule {
+      match app-id=r#"^org\.gnome\.Calculator$"#
+      open-floating true
+    }
+
     window-rule {
       match title=r#".*Sign in - Google Accounts — Mozilla Firefox"#
       open-floating true
@@ -419,12 +425,10 @@ let
 
     // Global window appearance
     window-rule {
-      exclude app-id=r#"^dafeiyu-pet$"#
       geometry-corner-radius 16
       clip-to-geometry true
     }
     window-rule {
-      exclude app-id=r#"^dafeiyu-pet$"#
       geometry-corner-radius 16
       clip-to-geometry true
       opacity 0.9
@@ -434,24 +438,9 @@ let
     }
     window-rule {
       match is-active=false
-      exclude app-id=r#"^dafeiyu-pet$"#
       opacity 0.8
       background-effect {
         blur true
-      }
-    }
-    window-rule {
-      match app-id=r#"^dafeiyu-pet$"#
-      open-floating true
-      open-focused false
-      geometry-corner-radius 0
-      opacity 1.0
-      draw-border-with-background false
-      focus-ring {
-        off
-      }
-      shadow {
-        off
       }
     }
 
