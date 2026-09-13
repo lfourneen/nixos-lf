@@ -39,6 +39,10 @@ in
           - any:53
           - tcp://any:53
         mtu: 1500
+        # Keep gost-pac out of the TUN (fail-open egresses the physical NIC).
+        # UID must match the `gost` user in gost-pac.nix.
+        exclude-uid:
+          - 987
       ''}
       # Foreign DoH (1.1.1.1/8.8.8.8) is blocked when dialed directly, but
       # `respect-rules` sends it through the proxy, so ipleak sees the proxy's

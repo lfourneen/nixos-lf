@@ -54,13 +54,12 @@ let
   # TUN-bound packets must not be queued; zapret is for physical egress only.
   zapretGuard = lib.optionalString tunMode ''oifname { "ens1", "wlo1" } '';
 
-  # Never queue mihomo's own packets for zapret: nfqws drops the auto-route
-  # fwmark on reinjection, so auto-route feeds them back into TUN (DIRECT loop).
-  mihomoMarkMask = "0xff0000";
-  mihomoMarkValue = "0x80000";
+  # Keep engine-marked (mihomo) and gost packets out of the zapret queue:
+  # nfqws drops the fwmark on reinjection, looping DIRECT conns back into TUN.
   zapretMarkAccept = lib.optionalString tunMode ''
-    meta mark and ${mihomoMarkMask} == ${mihomoMarkValue} accept
-    meta skuid 0 accept'';
+    meta mark != 0 accept
+    meta skuid 0 accept
+    meta skuid ${toString config.users.users.gost.uid} accept'';
 
   # TPROXY bridges whose egress goes through mihomo (tproxy-port 7896, see
   # cvr-merge.nix). Empty = off; TUN only captures host output. Untested.
@@ -372,11 +371,6 @@ in
 
         chain output {
           type filter hook output priority 0; policy accept;
-
-          # gost-pac fail-open: mark its sockets with mihomo's bypass mark so
-          # direct mode egresses via the physical NIC, not the TUN. Must be
-          # first, before any early `accept` terminates the chain.
-          ${lib.optionalString tunMode "meta skuid ${toString config.users.users.gost.uid} meta mark set 0x80000"}
 
           ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } accept
           ip6 daddr { fe80::/10, fc00::/7 } accept

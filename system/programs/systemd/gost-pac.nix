@@ -1,8 +1,8 @@
 { pkgs, ... }:
 
 {
-  # Dedicated user so network.nix can match gost's sockets by UID (escape
-  # mihomo's TUN on fail-open) without touching the desktop user's traffic.
+  # Dedicated user so clash's tun.exclude-uid and network.nix nft rules can
+  # target the proxy by UID without touching the desktop user's traffic.
   users.groups.gost = { };
   users.users.gost = {
     isSystemUser = true;
@@ -49,8 +49,7 @@
             env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
               "${pkgs.gost}/bin/gost" "-L=http://127.0.0.1:33332?reuseport=true" -F=http://127.0.0.1:7897 &
           else
-            # Clash offline: direct proxy; network.nix marks this user's sockets
-            # so it egresses via the physical NIC (true fail-open).
+            # Clash offline: direct proxy (tun.exclude-uid keeps it out of TUN).
             env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
               "${pkgs.gost}/bin/gost" "-L=http://127.0.0.1:33332?reuseport=true" &
           fi
