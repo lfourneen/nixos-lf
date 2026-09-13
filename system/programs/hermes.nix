@@ -303,11 +303,33 @@ in
     mcp-server-time
     playwright-mcp
 
-    # Agent tools
+    # Search & files
+    ripgrep
     ripgrep-all
+
+    # Data processing
     jq
-    gh
+    sqlite
+    yq
+
+    # Document processing
+    pandoc
+    poppler-utils
+
+    # Nix tools
     nix-tree
+    nixfmt
+    nvd
+
+    # Git & GitHub
+    delta
+    gh
+
+    # System utilities
+    ncdu
+
+    # Image processing
+    imagemagick
   ];
 }
 
