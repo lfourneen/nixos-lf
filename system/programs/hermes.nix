@@ -80,8 +80,12 @@ in
       compression = {
         enabled = true;
         threshold = 0.85;
-        summary_model = "deepseek-flash";
       };
+
+      auxiliary.compression = {
+        provider = "deepseek";
+        model = "deepseek-flash";
+       };
 
       display = {
         compact = false; 
@@ -269,12 +273,19 @@ in
   };
 
   environment.systemPackages = with pkgs; [
+    # MCP servers
     mcp-server-fetch
     mcp-server-filesystem
     mcp-nixos
     mcp-server-sequential-thinking
     mcp-server-time
     playwright-mcp
+
+    # Agent tools
+    ripgrep-all
+    jp
+    gh
+    nix-tree
   ];
 }
 
