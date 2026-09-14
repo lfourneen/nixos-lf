@@ -1,10 +1,12 @@
 { ... }:
+
 {
   # GUI system proxy via gsettings ("Use system proxy settings" apps: Zen/Firefox, Electron, Qt)
   # Points at gost-pac 33332 (fail-open: Clash up -> 7897, down -> direct)
   # NOTE: keep Clash Verge "System Proxy" OFF or it overwrites these values with 7897
   dconf.settings = {
-    "org/gnome/system/proxy" = {
+    # org.gnome.system.proxy schema path is /system/proxy/ (not /org/gnome/).
+    "system/proxy" = {
       mode = "manual";
       "ignore-hosts" = [
         "localhost"
@@ -17,11 +19,13 @@
         "*.local"
       ];
     };
-    "org/gnome/system/proxy/http" = {
+
+    "system/proxy/http" = {
       host = "127.0.0.1";
       port = 33332;
     };
-    "org/gnome/system/proxy/https" = {
+
+    "system/proxy/https" = {
       host = "127.0.0.1";
       port = 33332;
     };
