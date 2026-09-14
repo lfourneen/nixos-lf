@@ -209,6 +209,11 @@ in
 
       security = {
         allowed_users = [ "lfour" ];
+
+        # Fail closed: a broken/timed-out scanner blocks instead of allowing.
+        tirith_fail_open = false;
+        # No on-demand pip/npm installs (supply-chain surface; Nix owns deps).
+        allow_lazy_installs = false;
       };
 
       platforms.qqbot.enabled = true;
@@ -279,6 +284,9 @@ in
 
       # Image processing
       imagemagick
+
+      # Security
+      tirith
 
       # Runtime
       nodejs
