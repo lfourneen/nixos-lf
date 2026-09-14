@@ -41,6 +41,8 @@
       allow id 05e3:0626 serial "" name "USB3.1 Hub" hash "15SBGsOo8K+JjtOKSCn7t0i6ifer4wmhzep1yEB5pLQ=" parent-hash "15SBGsOo8K+JjtOKSCn7t0i6ifer4wmhzep1yEB5pLQ=" via-port "2-2.1.2" with-interface 09:00:00 with-connect-type "unknown"
       allow id 3554:fa09 serial "" name "2.4G Wireless Receiver" hash "y06wIzkEZxKsXnv5jEWfKMHIY1cRecYI78733ZfXdZk=" parent-hash "CbRB9LX/JdGjNWCYSOcIwMVXE0UpOR03LCotWrTbuCM=" via-port "1-2.1.2.2" with-interface { 03:01:01 03:01:02 } with-connect-type "unknown"
       allow id 373b:11fe serial "541505796617" name "Wireless mouse 8k NANO dongle-L" hash "xfG6U24DoOJG/TDOY8ezuDfLtgZZROy+48YuyhWWgzA=" parent-hash "CbRB9LX/JdGjNWCYSOcIwMVXE0UpOR03LCotWrTbuCM=" with-interface { 03:01:02 03:00:00 03:01:01 } with-connect-type "unknown"
+      allow id 3535:0562 serial "000000002AC2" name "U393" hash "hFzwOc/qAUuFhCF2mDZbTXaEC5e9KrqDkbngFZ0qHwI=" parent-hash "15SBGsOo8K+JjtOKSCn7t0i6ifer4wmhzep1yEB5pLQ=" via-port "2-2.1.2.4" with-interface { 08:06:50 08:06:62 } with-connect-type "unknown"
+      allow id 24a9:205a serial "59280214" name "USB" hash "+H3IywfNGHrBlXdo+R9WMUiYoEFv8MCuQo/TqDoAzfM=" parent-hash "15SBGsOo8K+JjtOKSCn7t0i6ifer4wmhzep1yEB5pLQ=" via-port "2-2.1.1" with-interface 08:06:50 with-connect-type "unknown"
     '';
   };
 
