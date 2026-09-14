@@ -1,9 +1,11 @@
-{ lib, ... }:
+{ lib, osConfig, ... }:
 
 let
-  # Mirror `tunMode` in system/config/network.nix (keep both in sync). When
-  # true, adds the TUN-specific merge bits; false leaves the plain-proxy merge.
-  tunMode = true;
+  # Single source of truth in system/config/network.nix (my.proxy.tunMode).
+  tunMode = osConfig.my.proxy.tunMode;
+
+  # Same single source as gost-pac.nix; avoids a silent TUN loop on uid drift.
+  gostUid = osConfig.users.users.gost.uid;
 
 in
 {
@@ -40,9 +42,8 @@ in
           - tcp://any:53
         mtu: 1500
         # Keep gost-pac out of the TUN (fail-open egresses the physical NIC).
-        # UID must match the `gost` user in gost-pac.nix.
         exclude-uid:
-          - 987
+          - ${toString gostUid}
       ''}
       # Foreign DoH (1.1.1.1/8.8.8.8) is blocked when dialed directly, but
       # `respect-rules` sends it through the proxy, so ipleak sees the proxy's

@@ -7,6 +7,7 @@
     ./powermanager.nix
     ./security.nix
     ./user.nix
+    ./proxy-options.nix
     ./network.nix
   ];
 }

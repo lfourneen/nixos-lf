@@ -24,8 +24,9 @@ let
   trustedLanRules = lib.optionalString (trustedLanCidrs != []) (hostServices trustedLanSrc);
 
   # TUN captures all L3 traffic (mihomo owns DNS/QUIC); false = plain
-  # HTTP-proxy model. Toggles the per-app guards below.
-  tunMode = true;
+  # HTTP-proxy model. Toggles the per-app guards below. Single source of
+  # truth (my.proxy.tunMode) -- home/cvr-merge.nix reads it via osConfig.
+  tunMode = config.my.proxy.tunMode;
   tunDev = "Mihomo";   # GUI > TUN > Device Name
 
   # Force QUIC-heavy apps off UDP/443. Non-TUN only (under TUN it breaks
