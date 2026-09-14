@@ -2,14 +2,15 @@
 
 let
   userName = "lfour";
-  userPreferredLang = "Chinese";
-  userRole = "NixOS Power User";
+  userPreferredLang = "中文";
+  userRole = "NixOS 高级用户";
 
+  # Seed for memories/USER.md; installed only if absent.
   hermesUserProfile = ''
-    # User Profile
-    Name: ${userName}
-    Preferred Language: ${userPreferredLang}
-    Role: ${userRole}
+    # 用户档案
+    姓名：${userName}
+    首选语言：${userPreferredLang}
+    角色：${userRole}
   '';
   userMdFile = pkgs.writeText "USER.md" hermesUserProfile;
 
@@ -82,8 +83,8 @@ in
     };
 
     hermesHomeFiles = {
+      # Nix owns SOUL.md; memories/USER.md is Hermes runtime state.
       "SOUL.md" = soulMdFile;
-      "memories/USER.md" = userMdFile;
 
       # SKILL example. Skills are indexed into the system prompt (name +
       # description only) and their body loads on demand via skill_view.
@@ -303,6 +304,18 @@ in
     "Z /var/lib/hermes/workspace 0770 hermes hermes - -"
     "f+ /var/lib/hermes/.gitconfig 0640 hermes hermes - [user]\\n\\tname = Hermes Agent\\n\\temail = hermes@local.domain\\n"
   ];
+
+  # Seed memories/USER.md only if missing; Hermes owns it after.
+  systemd.services.hermes-user-profile-seed = {
+    description = "Seed Hermes memories/USER.md if missing";
+    wantedBy = [ "multi-user.target" ];
+    before = [ "hermes-agent.service" ];
+    unitConfig.ConditionPathExists = "!/var/lib/hermes/.hermes/memories/USER.md";
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.coreutils}/bin/install -D -o hermes -g hermes -m 0640 ${userMdFile} /var/lib/hermes/.hermes/memories/USER.md";
+    };
+  };
 
   systemd.services.hermes-agent = {
     # Route the agent's model/API calls through gost-pac so it keeps working
