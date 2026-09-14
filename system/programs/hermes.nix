@@ -152,7 +152,7 @@ in
         memory_enabled = true;
         user_profile_enabled = true;
         memory_char_limit = 8192;
-        user_char_limit = 2048;
+        user_char_limit = 8192;
         provider = "holographic";
       };
 
