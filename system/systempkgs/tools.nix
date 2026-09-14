@@ -23,6 +23,12 @@
     tree
     usbutils
 
+    # Search & files
+    ripgrep-all
+
+    # Git & GitHub
+    gh
+
     # Archives
     p7zip
     peazip

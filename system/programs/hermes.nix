@@ -71,14 +71,47 @@ in
 
     # QQ Bot adapter needs aiohttp (and httpx, already a core dep).
     extraDependencyGroups = [ "messaging" ];
-    
+
     environmentFiles = [ config.sops.templates."hermes.env".path ];
 
     workingDirectory = "/var/lib/hermes/workspace";
 
-    documents = {
-      "USER.md" = "/var/lib/hermes/.hermes/USER.md";
-      "SOUL.md" = "/var/lib/hermes/.hermes/SOUL.md";
+    backend = {
+      mode = "dashboard";
+      port = 18432;
+    };
+
+    hermesHomeFiles = {
+      "SOUL.md" = soulMdFile;
+      "memories/USER.md" = userMdFile;
+
+      # SKILL example. Skills are indexed into the system prompt (name +
+      # description only) and their body loads on demand via skill_view.
+      # Uncomment and edit to add one; keep description under 60 chars.
+      # "skills/research/web-research/SKILL.md" = pkgs.writeText "web-research-SKILL.md" ''
+      #   ---
+      #   name: web-research
+      #   description: "结构化网络调研：给定主题，产出带来源的简报。"
+      #   version: 1.0.0
+      #   platforms: [linux]
+      #   metadata:
+      #     hermes:
+      #       tags: [research, web]
+      #   ---
+      #
+      #   # Web Research
+      #
+      #   ## When to Use
+      #   - 用户要求调研某个主题并要来源
+      #
+      #   ## When NOT to Use
+      #   - 只是查一个概念 -> 直接回答
+      #
+      #   ## Steps
+      #   1. 拆解主题为 3-5 个子问题
+      #   2. 每个子问题用 fetch / 搜索工具取证
+      #   3. 汇总成简报，逐条附来源链接
+      # '';
     };
 
     settings = {
@@ -207,6 +240,49 @@ in
         "code-analyzer"
       ];
     };
+
+    extraPackages = with pkgs; [
+      # MCP servers
+      mcp-server-fetch
+      mcp-server-filesystem
+      mcp-nixos
+      mcp-server-sequential-thinking
+      mcp-server-time
+      playwright-mcp
+
+      # Search & files
+      ripgrep
+      fd
+
+      # Data processing
+      jq
+      sqlite
+      yq
+
+      # Document processing
+      pandoc
+      poppler-utils
+
+      # Nix tools
+      nh
+      nix-tree
+      nixfmt
+      nvd
+
+      # Git & GitHub
+      gh
+      delta
+
+      # System utilities
+      ncdu
+      powertop
+
+      # Image processing
+      imagemagick
+
+      # Runtime
+      nodejs
+    ];
   };
 
   systemd.tmpfiles.rules = [
@@ -217,26 +293,10 @@ in
     "d /var/lib/hermes/.playwright-profiles 0770 hermes hermes - -"
     "Z /var/lib/hermes/home 0770 hermes hermes - -"
     "Z /var/lib/hermes/workspace 0770 hermes hermes - -"
-    "C+ /var/lib/hermes/.hermes/SOUL.md 0640 hermes hermes - ${soulMdFile}"
-    "C+ /var/lib/hermes/.hermes/USER.md 0640 hermes hermes - ${userMdFile}"
     "f+ /var/lib/hermes/.gitconfig 0640 hermes hermes - [user]\\n\\tname = Hermes Agent\\n\\temail = hermes@local.domain\\n"
   ];
 
   systemd.services.hermes-agent = {
-    path = with pkgs; [
-      bash
-      coreutils
-      git
-      ripgrep
-      fd
-      jq
-      gh
-      nh
-      nix-tree
-      nodejs
-      powertop
-    ];
-
     # Route the agent's model/API calls through gost-pac so it keeps working
     # under `proxyKillSwitch` (which blocks non-root direct egress).
     environment = {
@@ -251,6 +311,12 @@ in
       EnvironmentFile = config.sops.templates."hermes.env".path;
       ProtectSystem = "strict";
       ProtectHome = lib.mkForce true;
+      PrivateTmp = true;
+      ProtectControlGroups = true;
+      ProtectKernelModules = true;
+      ProtectKernelTunables = true;
+      ProtectKernelLogs = true;
+      ProtectClock = true;
       SupplementaryGroups = [ "users" ];
     
       ReadWritePaths = [ 
@@ -262,74 +328,25 @@ in
         "/nix/store"
         "-/etc/nix"
       ];
-      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" "AF_NETLINK" ];
-   
-      PrivateTmp = true;
-      ProtectControlGroups = true;
-      ProtectKernelModules = true;
-      ProtectKernelTunables = true;
-      ProtectKernelLogs = true;
-      ProtectClock = true;
+
+      RestrictAddressFamilies = [ 
+        "AF_INET" 
+        "AF_INET6" 
+        "AF_UNIX" 
+        "AF_NETLINK" 
+      ];
     };
   };
 
-  systemd.services.hermes-dashboard = {
-    description = "Hermes Web Dashboard";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
+  systemd.services.hermes-backend.serviceConfig = {
+    ProtectHome = lib.mkForce true;
 
-    environment = {
-      HERMES_HOME = "/var/lib/hermes/.hermes";
-      HOME = "/var/lib/hermes";
-    };
-
-    serviceConfig = {
-      User = "hermes";
-      Group = "hermes";
-      WorkingDirectory = "/var/lib/hermes/workspace";
-      ExecStart = "${config.services.hermes-agent.package}/bin/hermes dashboard --host 127.0.0.1 --port 18432 --no-open";
-      Restart = "always";
-      RestartSec = 5;
-    };
+    RestrictAddressFamilies = [ 
+      "AF_INET" 
+      "AF_INET6" 
+      "AF_UNIX" 
+      "AF_NETLINK" 
+    ];
   };
-
-  environment.systemPackages = with pkgs; [
-    # MCP servers
-    mcp-server-fetch
-    mcp-server-filesystem
-    mcp-nixos
-    mcp-server-sequential-thinking
-    mcp-server-time
-    playwright-mcp
-
-    # Search & files
-    ripgrep
-    ripgrep-all
-
-    # Data processing
-    jq
-    sqlite
-    yq
-
-    # Document processing
-    pandoc
-    poppler-utils
-
-    # Nix tools
-    nix-tree
-    nixfmt
-    nvd
-
-    # Git & GitHub
-    delta
-    gh
-
-    # System utilities
-    ncdu
-
-    # Image processing
-    imagemagick
-  ];
 }
 
