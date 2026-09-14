@@ -196,7 +196,8 @@
       print $"(ansi $color)egress: ($g)(ansi reset)  DNS: ($d)"
     }
 
-    # Live outbound TCP audit (needs root); non-33332/node = proxy bypass.
+    # Live outbound TCP audit (needs root). connect(2) is pre-NAT, so
+    # redirected flows show their real public IP, not :33333.
     # bpftrace (BTF) works on new kernels where bcc's headers fail.
     def egress-audit [...args] {
       sudo bpftrace /run/current-system/sw/share/bpftrace/tools/tcpconnect.bt ...$args

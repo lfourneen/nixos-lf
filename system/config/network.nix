@@ -3,6 +3,8 @@
 let
   # Trusted LANs allowed to reach host services (private/CGNAT IP != trust).
   # Empty = none; add e.g. "192.168.1.0/24". Tailnet/hotspot/VM are built in.
+  # Empty also means the home LAN can't reach hostServices (Sunshine/RDP/VNC/
+  # Minecraft); only hotspot/VM/tailnet can.
   trustedLanCidrs = [
   ];
 
@@ -378,7 +380,8 @@ in
           ip daddr 127.0.0.0/8 accept
           ip6 daddr ::1 accept
 
-          # WebRTC/STUN leak block (tailscaled is root, so unaffected).
+          # WebRTC/STUN leak block -- unconditional (applies with/without TUN);
+          # tailscaled is root, so unaffected.
           meta skuid != 0 udp dport { 3478, 5349 } drop
           meta skuid != 0 tcp dport { 3478, 5349 } drop
 
@@ -388,8 +391,10 @@ in
           # Proxy kill switch (see let).
           ${killSwitchRules}
 
-          # Bypass audit: `egress-audit` (ignore :33332 / node IPs).
-
+          # Clash mixed-port (loopback-only; already accepted above, listed
+          # explicitly for auditing). NOTE: egress-audit uses connect(2)
+          # pre-NAT, so transparently redirected flows show their original
+          # public IP, not :33333 -- count those as proxied, not bypasses.
           tcp dport { 7897 } accept
           udp dport { 7897 } accept
 
