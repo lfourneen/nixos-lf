@@ -42,16 +42,25 @@
 
         start_gost() {
           mode="$1"
-          # SO_REUSEPORT lets the new instance share :33332, so a mode flip
-          # never refuses a connection (the old stop-then-start did).
+          # :33332 HTTP proxy for proxy-aware apps; :33333 redirect
+          # (transparent) for the rest (nftables sends their TCP here).
+          # Loopback-only, like :33332. SO_REUSEPORT keeps a mode flip
+          # from refusing connections.
           if [ "$mode" = "proxy" ]; then
             # Clash online: chain to the core at 7897
             env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
-              "${pkgs.gost}/bin/gost" "-L=http://127.0.0.1:33332?reuseport=true" -F=http://127.0.0.1:7897 &
+              "${pkgs.gost}/bin/gost" \
+                "-L=http://127.0.0.1:33332?reuseport=true" \
+                "-L=redirect://127.0.0.1:33333?reuseport=true" \
+                "-L=redirect://[::1]:33333?reuseport=true" \
+                -F=http://127.0.0.1:7897 &
           else
             # Clash offline: direct proxy (tun.exclude-uid keeps it out of TUN).
             env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
-              "${pkgs.gost}/bin/gost" "-L=http://127.0.0.1:33332?reuseport=true" &
+              "${pkgs.gost}/bin/gost" \
+                "-L=http://127.0.0.1:33332?reuseport=true" \
+                "-L=redirect://127.0.0.1:33333?reuseport=true" \
+                "-L=redirect://[::1]:33333?reuseport=true" &
           fi
           new_pid=$!
 

@@ -413,6 +413,12 @@ in
           meta skuid != 0 ip daddr != { 127.0.0.0/8, 100.100.100.100, 223.5.5.5, 223.6.6.6, 119.29.29.29 } udp dport 53 redirect to :1054
           meta skuid != 0 ip daddr != { 127.0.0.0/8, 100.100.100.100, 223.5.5.5, 223.6.6.6, 119.29.29.29 } tcp dport 53 redirect to :1054
           ''}
+
+          ${lib.optionalString proxyKillSwitch ''
+          # Funnel non-exempt TCP into gost's transparent listener
+          # (loopback/LAN/DNS and gost itself excluded).
+          meta skuid != ${killSwitchUidSet} ip daddr != { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } tcp dport != { 53, 853 } redirect to :33333
+          ''}
         }
 
         chain postrouting {
@@ -425,6 +431,17 @@ in
           oifname "ens1" ip saddr 10.42.0.0/24 masquerade
         }
       }
+
+      # IPv6 twin of the above.
+      ${lib.optionalString proxyKillSwitch ''
+      table ip6 nat {
+        chain output {
+          type nat hook output priority -100; policy accept;
+
+          meta skuid != ${killSwitchUidSet} ip6 daddr != { ::1, fe80::/10, fc00::/7, ff00::/8 } tcp dport != { 53, 853 } redirect to :33333
+        }
+      }
+      ''}
 
       ${lib.optionalString vmTproxy ''
       # Divert listed bridges' public TCP/UDP into mihomo's tproxy port.
