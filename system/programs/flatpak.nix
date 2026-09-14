@@ -4,6 +4,28 @@
   services.flatpak = {
     enable = true;
     
+    update.auto = {
+      enable = true;
+      onCalendar = "daily";
+    };
+
+    # Global override: route all Flatpak apps through gost (127.0.0.1:33332),
+    # since the killswitch only exempts uid 0 and gost and sandboxes can't
+    # read the host dconf proxy settings.
+    overrides.settings.global = {
+      Environment = {
+        HTTP_PROXY = "http://127.0.0.1:33332";
+        HTTPS_PROXY = "http://127.0.0.1:33332";
+        NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10";
+      };
+      Context = {
+        filesystems = [ "xdg-run/dconf" ];
+      };
+      "Session Bus Policy" = {
+        "ca.desrt.dconf" = "talk";
+      };
+    };
+    
     packages = [
       # Communication tools
       "app.zen_browser.zen"
@@ -59,10 +81,6 @@
       "org.octave.Octave"
       "org.videolan.VLC"
     ];
-    update.auto = {
-      enable = true;
-      onCalendar = "daily";
-    };
   };
 }
 
