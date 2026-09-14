@@ -56,6 +56,9 @@
     neovim
     vim
 
+    # MCP
+    mcp-nixos
+
     # Media
     ffmpeg-full
     
