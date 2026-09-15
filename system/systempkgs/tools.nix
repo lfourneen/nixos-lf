@@ -59,6 +59,9 @@
     # MCP
     mcp-nixos
 
+    # Document
+    texliveFull
+
     # AI agents
     dsh
 
