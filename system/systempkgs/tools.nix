@@ -59,6 +59,9 @@
     # MCP
     mcp-nixos
 
+    # AI agents
+    dsh
+
     # Media
     ffmpeg-full
     

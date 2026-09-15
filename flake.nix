@@ -36,6 +36,8 @@
     nix-flatpak.url = "github:gmodena/nix-flatpak";
 
     hermes-agent.url = "github:NousResearch/hermes-agent/v2026.9.11";
+
+    llm-agents.url = "github:numtide/llm-agents.nix";
   };
 
   outputs = { self, nixpkgs, home-manager, ... }@inputs:
@@ -64,6 +66,11 @@
               # MCP NixOS overlay
               (final: prev: {
                 mcp-nixos = inputs.mcp-nixos.packages.${prev.stdenv.hostPlatform.system}.default;
+              })
+
+              # LLM agents overlay
+              (final: prev: {
+                dsh = inputs.llm-agents.packages.${prev.stdenv.hostPlatform.system}.dsh;
               })
 
               # Shared nixpkgs-unstable as pkgs.unstable.*

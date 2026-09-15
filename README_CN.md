@@ -202,6 +202,7 @@ sudo -u hermes -i hermes
 * Hermes Agent
 * Sops-Nix
 * MCP-NixOS
+* LLM-Agents
 
 ---
 
