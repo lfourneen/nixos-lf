@@ -306,6 +306,14 @@ in
     "f+ /var/lib/hermes/.gitconfig 0640 hermes hermes - [user]\\n\\tname = Hermes Agent\\n\\temail = hermes@local.domain\\n"
   ];
 
+  # Upstream forces home to 0750 and its activation script runs after tmpfiles,
+  # so re-enable group rw afterwards.
+  system.activationScripts.hermes-home-group-rw =
+    lib.stringAfter [ "hermes-agent-setup" ] ''
+      chmod 2770 /var/lib/hermes/home
+      find /var/lib/hermes/home \( -type f -o -type d \) -exec chmod g+rwX {} + 2>/dev/null || true
+    '';
+
   # Seed memories/USER.md only if missing; Hermes owns it after.
   systemd.services.hermes-user-profile-seed = {
     description = "Seed Hermes memories/USER.md if missing";
