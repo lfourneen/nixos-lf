@@ -64,6 +64,8 @@
 
     # AI agents
     dsh
+    oh-my-codex
+    oh-my-opencode
 
     # Media
     ffmpeg-full

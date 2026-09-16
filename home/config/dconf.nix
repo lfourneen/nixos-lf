@@ -24,7 +24,7 @@
       host = "127.0.0.1";
       port = 33332;
     };
-
+    
     "system/proxy/https" = {
       host = "127.0.0.1";
       port = 33332;

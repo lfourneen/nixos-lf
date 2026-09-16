@@ -8,7 +8,7 @@
       enable = true;
       onCalendar = "daily";
     };
-
+    
     # Global override: route all Flatpak apps through gost (127.0.0.1:33332),
     # since the killswitch only exempts uid 0 and gost and sandboxes can't
     # read the host dconf proxy settings.
@@ -25,7 +25,7 @@
         "ca.desrt.dconf" = "talk";
       };
     };
-    
+
     packages = [
       # Communication tools
       "app.zen_browser.zen"
