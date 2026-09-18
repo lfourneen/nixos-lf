@@ -33,6 +33,7 @@
           "plugdev" 
           "resolvconf" 
           "hermes" 
+          "wireshark" 
         ];
       };
     };
