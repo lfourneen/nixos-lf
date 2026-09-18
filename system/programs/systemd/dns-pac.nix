@@ -4,6 +4,7 @@
   # DNS PAC: clash up -> mihomo DNS (1053); down -> unbound DoT (1055).
   # Probe needs the mihomo core port (7897) + a real answer; a dead core falls
   # back immediately, other failures need 2 consecutive probes (anti ghost listener).
+  # 2s polling bounds the worst-case ghost-core window to ~4s (2 misses).
   systemd.services.dns-pac = {
     description = "DNS PAC: mihomo DNS when clash is up, DoT otherwise";
     after = [ "network.target" ];
@@ -16,19 +17,25 @@
         write_state() {
           case "$1" in
             proxy)
-              printf 'server=127.0.0.1#1053\n' > /run/dns-pac/servers.conf
+              upstream='server=127.0.0.1#1053'
               ;;
             direct)
               # Encrypted DoT only; no plaintext fallback.
-              printf 'server=127.0.0.1#1055\n' > /run/dns-pac/servers.conf
+              upstream='server=127.0.0.1#1055'
               ;;
           esac
+          printf '%s\n' "$upstream" > /run/dns-pac/servers.conf
 
           # State for proxy-status.
           printf '%s\n' "$1" > /run/dns-pac/status
 
-          # Flush dnsmasq and resolved caches on upstream change.
-          ${pkgs.systemd}/bin/systemctl restart dnsmasq.service
+          # Only restart when the upstream really changed: dnsmasq's StartLimit
+          # (5 per 10s) must not be hit by a flapping probe, and a redundant
+          # write needs no restart. The cache flush is cheap, so keep it.
+          if [ "$upstream" != "''${last_upstream:-}" ]; then
+            last_upstream="$upstream"
+            ${pkgs.systemd}/bin/systemctl restart --no-block dnsmasq.service || true
+          fi
           ${pkgs.systemd}/bin/resolvectl flush-caches
         }
 
@@ -91,7 +98,7 @@
             fi
           fi
 
-          sleep 5
+          sleep 2
         done
       ''
       }";
@@ -101,9 +108,16 @@
     };
   };
 
-  # dnsmasq must not start before dns-pac's initial write (conf-file exists at
-  # its first exec); the restart inside write_state starts it if inactive.
-  systemd.services.dnsmasq.requires = [ "dns-pac.service" ];
+  # dnsmasq must not start before dns-pac's initial write, but dns-pac's stop
+  # must not take it down: keep the ordering, use wants instead of requires.
+  systemd.services.dnsmasq.wants = [ "dns-pac.service" ];
   systemd.services.dnsmasq.after = [ "dns-pac.service" "unbound.service" ];
+
+  # Pre-seed servers.conf with the DoT default so dnsmasq can start even if
+  # dns-pac has not run yet; the script rewrites it at startup and on a switch.
+  systemd.tmpfiles.rules = [
+    "d /run/dns-pac 0755 root root -"
+    "f /run/dns-pac/servers.conf 0644 root root - server=127.0.0.1#1055"
+  ];
 }
 
