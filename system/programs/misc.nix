@@ -24,6 +24,14 @@
     webStoreInstallerPackage = pkgs.unstable.linyaps-web-store-installer;
   };
 
+  # WireShark
+  programs.wireshark = {
+    enable = true;
+    package = pkgs.unstable.wireshark;
+    dumpcap.enable = true;
+    usbmon.enable = true;
+  };
+
   # KMSCon
   services.kmscon = {
     enable = true;

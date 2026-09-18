@@ -8,3 +8,4 @@ overlays/local-apps/*
 # reviewable. They still exist on disk; to version them use `git add -f audit/...`.
 .agent-teams/
 audit/
+.omo
