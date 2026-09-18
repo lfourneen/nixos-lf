@@ -28,6 +28,44 @@ A declarative NixOS system configuration using Nix flakes, featuring a customize
 
 ---
 
+## Proxy Architecture
+
+Outbound traffic is handled by a chain of local components:
+
+| Component | Port / interface | Role |
+|---|---|---|
+| Clash Verge (mihomo) | `127.0.0.1:7897`, TUN device `Mihomo` | proxy core and DNS resolver |
+| `gost-pac` (uid 987) | `127.0.0.1:33332` (HTTP), `127.0.0.1:33333` (transparent redirect) | local relay; chains to mihomo while it answers, otherwise dials out directly |
+| `dnsmasq` | `127.0.0.1:1054` | single DNS entry point for the system |
+| `unbound` | `127.0.0.1:1055` | encrypted (DoT) resolver used while mihomo is unavailable |
+| nftables | — | kill switch, transparent redirect, zapret diversion |
+
+Applications that honour proxy settings are pointed at `127.0.0.1:33332` (session environment variables, GSettings, Flatpak overrides). TCP traffic from applications that ignore them is redirected to `127.0.0.1:33333` by nftables.
+
+### Failover
+
+`gost-pac` keeps the machine online when the proxy core is unavailable: once `127.0.0.1:7897` stops accepting connections it switches to dialing out directly, and it returns to the proxy when the core answers again. DNS behaves the same way — `dns-pac` repoints dnsmasq at the encrypted resolver while mihomo is down.
+
+`/run/gost-pac/status` and `/run/dns-pac/status` (shown by the `proxy-status` command in the Nushell config) report the mode the supervisors have selected; they describe the supervisors' state, not the path an individual connection takes.
+
+### DNS
+
+`systemd-resolved` uses dnsmasq on `127.0.0.1:1054` and falls back to unbound on `127.0.0.1:1055`. With the TUN device up, mihomo takes over port 53 and resolves through the DNS section of the Clash Verge merge profile; dnsmasq and unbound then serve the fallback window.
+
+### Notes and limitations
+
+* With the TUN device up, the nftables redirect to `:33333` is dormant: TCP is intercepted by mihomo's own auto-redirect rules first. The redirect carries traffic while the TUN is down.
+* Only `unbound` (DoT, tcp/853) and `systemd-timesyncd` (udp/123) may reach the network directly for DNS and NTP. Plain queries to other public resolvers are dropped for processes outside that exempt set.
+* The kill switch drops direct egress from non-root processes, except loopback, LAN addresses, DNS/NTP and multicast. `gost-pac` runs as uid 987 and is exempt so that it can dial out while the core is down; the exemption covers that whole uid and every port.
+* Returning from `direct` to `proxy` requires two consecutive successful HTTP responses through `127.0.0.1:7897`, so a process that merely listens on that port cannot attract traffic. While `gost-pac` is already in `proxy`, a local process that takes over `127.0.0.1:7897` before the next probe cannot be told apart from the real core; these ports are bound to loopback and the configuration assumes a single-user desktop.
+* The probe target is a domestic URL (`www.baidu.com`), so a failed probe means the core cannot carry traffic at all, rather than that a particular upstream node lacks foreign reachability.
+
+### Repository notes
+
+* `system/programs/ssh.nix` is not imported (`system/programs/default.nix`), so no sshd unit and no `:22` listener are deployed. Enabling it also requires the `tcp dport 22` rule in `system/config/network.nix`.
+* `gost` is installed into the initrd (`boot.initrd.systemd.extraBin`) instead of `environment.systemPackages`, so it is not on the main system PATH. `gost-pac` uses the store path directly; `curl` and `sed` are still provided by nixpkgs' default packages.
+
+---
 ## Usage
 
 1. Clone this repository:

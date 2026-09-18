@@ -28,6 +28,44 @@
 
 ---
 
+## 代理链路
+
+出站流量由一组本机组件串联处理：
+
+| 组件 | 端口 / 接口 | 作用 |
+|---|---|---|
+| Clash Verge (mihomo) | `127.0.0.1:7897`，TUN 设备 `Mihomo` | 代理内核与 DNS 解析器 |
+| `gost-pac`（uid 987） | `127.0.0.1:33332`（HTTP）、`127.0.0.1:33333`（透明重定向） | 本机中转；核心可用时链接到 mihomo，否则直接出网 |
+| `dnsmasq` | `127.0.0.1:1054` | 系统唯一的 DNS 入口 |
+| `unbound` | `127.0.0.1:1055` | mihomo 不可用时使用的加密（DoT）解析器 |
+| nftables | — | 断网保护（kill switch）、透明重定向、zapret 分流 |
+
+支持代理设置的应用被指向 `127.0.0.1:33332`（会话环境变量、GSettings、Flatpak 覆盖）；忽略代理设置的应用的 TCP 流量由 nftables 重定向到 `127.0.0.1:33333`。
+
+### 故障切换
+
+代理核心不可用时 `gost-pac` 让机器保持联网：一旦 `127.0.0.1:7897` 不再接受连接，它切换为直接出网，并在核心恢复应答后切回代理。DNS 同理——mihomo 不可用期间 `dns-pac` 把 dnsmasq 指向加密解析器。
+
+`/run/gost-pac/status` 与 `/run/dns-pac/status`（Nushell 配置中的 `proxy-status` 命令会显示）给出的是两个守护脚本选择的模式，描述脚本自身的状态，而不是某条连接实际走的路径。
+
+### DNS
+
+`systemd-resolved` 使用 `127.0.0.1:1054` 上的 dnsmasq，失败时回退到 `127.0.0.1:1055` 上的 unbound。TUN 设备启用时，mihomo 接管 53 端口并按 Clash Verge 合并配置中的 DNS 段解析；dnsmasq 与 unbound 服务于回退窗口。
+
+### 说明与限制
+
+* TUN 设备启用时，nftables 到 `:33333` 的透明重定向处于休眠状态：TCP 会先被 mihomo 自己的 auto-redirect 规则接管。该重定向在 TUN 关闭时才承载流量。
+* 只有 `unbound`（DoT，tcp/853）与 `systemd-timesyncd`（udp/123）可以直接出网做 DNS 与 NTP；其它公网解析器的明文查询，对豁免集合之外的进程会被丢弃。
+* 断网保护会丢弃非 root 进程的直接出站流量，回环、局域网地址、DNS/NTP 与组播除外。`gost-pac` 以 uid 987 运行并被豁免，以便核心掉线时直接出网；该豁免覆盖整个 uid 与全部端口。
+* 从 `direct` 回到 `proxy` 需要两次连续成功的 HTTP 应答（经 `127.0.0.1:7897`），因此仅在 7897 上监听、不转发请求的进程无法把流量引过去。当 `gost-pac` 已处于 `proxy` 时，若有本机进程在下次探测前占住 `127.0.0.1:7897`，它与真正的核心无法区分；这些端口只绑定在回环上，配置的前提是单用户桌面。
+* 探测目标使用国内 URL（`www.baidu.com`），因此探测失败表示核心完全无法承载流量，而不是某个上游节点缺少境外可达性。
+
+### 仓库说明
+
+* `system/programs/ssh.nix` 未被导入（见 `system/programs/default.nix`），因此不部署 sshd 单元与 `:22` 监听；启用时还需要放开 `system/config/network.nix` 里的 `tcp dport 22` 规则。
+* `gost` 安装进 initrd（`boot.initrd.systemd.extraBin`）而不是 `environment.systemPackages`，因此不在主系统 PATH 上。`gost-pac` 直接使用 store 路径；`curl` 与 `sed` 仍由 nixpkgs 默认包提供。
+
+---
 ## 使用方法
 
 1. 克隆本仓库：
