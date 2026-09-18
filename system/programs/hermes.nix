@@ -169,6 +169,9 @@ in
           env = { 
             HTTP_PROXY = "http://127.0.0.1:33332"; 
             HTTPS_PROXY = "http://127.0.0.1:33332"; 
+            # Lowercase twins: some clients read only these.
+            http_proxy = "http://127.0.0.1:33332"; 
+            https_proxy = "http://127.0.0.1:33332"; 
           };
         };
 
@@ -332,7 +335,12 @@ in
     environment = {
       HTTP_PROXY = "http://127.0.0.1:33332/";
       HTTPS_PROXY = "http://127.0.0.1:33332/";
-      NO_PROXY = "127.0.0.1,localhost,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10";
+      # Lowercase twins: python-requests/httpx and some Go/Rust tooling read
+      # only these. ALL_PROXY is deliberately absent - clients that treat it as
+      # a SOCKS URL break on an http:// value. NO_PROXY matches the host list.
+      http_proxy = "http://127.0.0.1:33332/";
+      https_proxy = "http://127.0.0.1:33332/";
+      NO_PROXY = "127.0.0.1,localhost,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,192.168.1.1,*.local";
     };
 
     serviceConfig = {
