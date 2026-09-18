@@ -29,7 +29,9 @@ let
   # HTTP-proxy model. Toggles the per-app guards below. Single source of
   # truth (my.proxy.tunMode) -- home/cvr-merge.nix reads it via osConfig.
   tunMode = config.my.proxy.tunMode;
-  tunDev = "Mihomo";   # GUI > TUN > Device Name
+  # TUN device name; home/cvr-merge.nix pins the same value via osConfig so the
+  # firewall rules and the clash Merge template can't drift apart.
+  tunDev = config.my.proxy.tunDev;
 
   # Force QUIC-heavy apps off UDP/443. Non-TUN only (under TUN it breaks
   # QUIC sites); kept for the fallback model.
@@ -41,17 +43,36 @@ let
 
   # Extra exempt UIDs (root 0 is always exempt).
   killSwitchExemptUids = [
-    config.users.users.gost.uid  # gost fail-open: only this proxy may egress direct when Clash is down
+    config.users.users.gost.uid  # gost fail-open needs any target:port; never narrow by port
   ];
   killSwitchUidSet = "{ ${lib.concatStringsSep ", " (map toString ([ 0 ] ++ killSwitchExemptUids))} }";
 
+  # The 53/853/123 channel is pinned per-process instead of opened to any
+  # destination: unbound needs DoT (tcp/853) to its two fixed upstreams -- the
+  # only resolver left when Clash is down -- and systemd-timesyncd needs
+  # udp/123, whose peers rotate. unbound is a dynamic user, so its eval-time
+  # null uid is pinned like gost's 987 below.
+  dnsDotUpstreams = "{ 223.5.5.5, 223.6.6.6 }";
+  unboundUid = 983;
+  timesyncUid = config.users.users."systemd-timesync".uid;
+
   killSwitchRules = lib.optionalString proxyKillSwitch ''
-    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } udp dport { 53, 123 } accept
-    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } tcp dport { 53, 853 } accept
+    # Per-process, per-destination: only unbound's DoT and timesyncd's NTP.
+    meta skuid ${toString unboundUid} oifname { "ens1", "wlo1" } ip daddr ${dnsDotUpstreams} tcp dport 853 accept
+    meta skuid ${toString timesyncUid} oifname { "ens1", "wlo1" } udp dport 123 accept
     # LAN + multicast/broadcast are link-local, not an egress leak; keep mDNS
     # (Avahi) and LocalSend discovery working for non-root apps.
-    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 224.0.0.0/4, 255.255.255.255 } drop
-    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip6 daddr != { fe80::/10, fc00::/7, ff00::/8 } drop
+    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 224.0.0.0/4, 255.255.255.255 } counter drop
+    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip6 daddr != { fe80::/10, fc00::/7, ff00::/8 } counter drop
+  '';
+
+  # Reverse default-deny: the drops above only cover the NICs pinned in
+  # systemd.network.links, so another interface or a tailnet exit-node route
+  # would egress unmetered. Keep the lo/TUN and multicast/broadcast exceptions:
+  # mDNS, DHCP and the TUN return path depend on them.
+  killSwitchTail = lib.optionalString proxyKillSwitch ''
+    meta skuid != ${killSwitchUidSet} oifname != { "lo", "${tunDev}" } ip daddr != { 224.0.0.0/4, 255.255.255.255 } counter drop
+    meta skuid != ${killSwitchUidSet} oifname != { "lo", "${tunDev}" } ip6 daddr != ff00::/8 counter drop
   '';
 
   # TUN-bound packets must not be queued; zapret is for physical egress only.
@@ -231,6 +252,10 @@ in
       cache-size = 4096;
       "neg-ttl" = "30";       # cap negative caching (e.g. mihomo's empty AAAA) to 30s
       conf-file = "/run/dns-pac/servers.conf";  # written by dns-pac.service
+      # dns-pac writes a single upstream line; pin a permanent encrypted second
+      # one (unbound's DoT) after conf-file so strict-order still tries its pick
+      # first (`all-servers` would double-send every query).
+      server = [ "127.0.0.1#1055" ];
     };
   };
 
@@ -284,9 +309,11 @@ in
         DNSSEC = "no";
         LLMNR = "no";   # Disable LLMNR (LAN poisoning surface)
 
-        # Extra listeners for hotspot clients (firewall-gated). Both must live
-        # in the same file: resolved only honors one across drop-ins.
-        DNSStubListenerExtra = [ "udp:0.0.0.0:53" "tcp:0.0.0.0:53" ];
+        # Extra listener for hotspot/tailnet clients (firewall-gated). UDP only:
+        # the TCP twin never bound (resolved already holds 127.0.0.53/54:53 and
+        # logs EADDRINUSE), so clients get no TCP DNS. Do not re-bind this to a
+        # concrete address, which only exists while the hotspot is up.
+        DNSStubListenerExtra = [ "udp:0.0.0.0:53" ];
       };
     };
   };
@@ -406,26 +433,33 @@ in
           ${zapretGuard}ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 443 counter queue num 200 bypass
           ${zapretGuard}ip6 daddr != { fe80::/10, fc00::/7 } tcp dport { 80, 443 } counter queue num 200 bypass
           ${zapretGuard}ip6 daddr != { fe80::/10, fc00::/7 } udp dport 443 counter queue num 200 bypass
+
+          # Chain-tail reverse default-deny (see killSwitchTail).
+          ${killSwitchTail}
         }
       }
 
       # NAT
       table ip nat {
         # Non-TUN only: force plaintext DNS to dnsmasq (1054) so hardcoded
-        # resolvers can't leak. Under TUN, dns-hijack owns :53. Exempt MagicDNS
-        # and the mihomo/unbound bootstrap resolvers.
+        # resolvers can't leak. Under TUN, dns-hijack owns :53. Exempt only
+        # loopback and MagicDNS 100.100.100.100 (dialed by non-root resolved, so
+        # the skuid prefix misses it); exempting a resolver just makes it time
+        # out against the killswitch while the others are redirected.
         chain output {
           type nat hook output priority -100; policy accept;
 
           ${lib.optionalString (!tunMode) ''
-          meta skuid != 0 ip daddr != { 127.0.0.0/8, 100.100.100.100, 223.5.5.5, 223.6.6.6, 119.29.29.29 } udp dport 53 redirect to :1054
-          meta skuid != 0 ip daddr != { 127.0.0.0/8, 100.100.100.100, 223.5.5.5, 223.6.6.6, 119.29.29.29 } tcp dport 53 redirect to :1054
+          meta skuid != 0 ip daddr != { 127.0.0.0/8, 100.100.100.100 } udp dport 53 redirect to :1054
+          meta skuid != 0 ip daddr != { 127.0.0.0/8, 100.100.100.100 } tcp dport 53 redirect to :1054
           ''}
 
           ${lib.optionalString proxyKillSwitch ''
-          # Funnel non-exempt TCP into gost's transparent listener
-          # (loopback/LAN/DNS and gost itself excluded).
-          meta skuid != ${killSwitchUidSet} ip daddr != { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } tcp dport != { 53, 853 } redirect to :33333
+          # Dormant while TUN is up (mihomo's auto-redirect claims the TCP path
+          # first), so this only carries traffic in the fail-open window. Its
+          # exclusion set must match the killswitch drop's set: 169.254.0.0/16 is
+          # deliberately absent, so link-local TCP reaches the device via gost.
+          meta skuid != ${killSwitchUidSet} ip daddr != { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 224.0.0.0/4, 255.255.255.255 } tcp dport != { 53, 853 } counter redirect to :33333
           ''}
         }
 
@@ -446,7 +480,7 @@ in
         chain output {
           type nat hook output priority -100; policy accept;
 
-          meta skuid != ${killSwitchUidSet} ip6 daddr != { ::1, fe80::/10, fc00::/7, ff00::/8 } tcp dport != { 53, 853 } redirect to :33333
+          meta skuid != ${killSwitchUidSet} ip6 daddr != { ::1, fe80::/10, fc00::/7, ff00::/8 } tcp dport != { 53, 853 } counter redirect to :33333
         }
       }
       ''}
@@ -461,6 +495,17 @@ in
       }
       ''}
     '';
+  };
+
+  # nftables is a oneshot with Restart=no, so a failed load would leave the host
+  # with no firewall at all (resolved holds udp/0.0.0.0:53). Retry on failure;
+  # on-failure is the only restart mode systemd allows for oneshot units.
+  systemd.services.nftables = {
+    serviceConfig = {
+      Restart = "on-failure";
+      RestartSec = "2s";
+    };
+    unitConfig.StartLimitBurst = 3;
   };
 
   # Deliver marked bridge packets locally to mihomo's tproxy socket.

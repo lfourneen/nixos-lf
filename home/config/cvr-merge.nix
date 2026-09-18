@@ -4,6 +4,10 @@ let
   # Single source of truth in system/config/network.nix (my.proxy.tunMode).
   tunMode = osConfig.my.proxy.tunMode;
 
+  # Same single source as the firewall rules; the template must pin the same
+  # device name or TUN traffic stops matching them.
+  tunDev = osConfig.my.proxy.tunDev;
+
   # Same single source as gost-pac.nix; avoids a silent TUN loop on uid drift.
   gostUid = osConfig.users.users.gost.uid;
 
@@ -34,6 +38,7 @@ in
       # `from ::/1 iif lo` rule otherwise lets locally-generated IPv6 bypass TUN.
       tun:
         stack: mixed
+        device: ${tunDev}
         auto-route: true
         auto-redirect: true
         strict-route: true
