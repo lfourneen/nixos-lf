@@ -16,7 +16,12 @@
       Environment = {
         HTTP_PROXY = "http://127.0.0.1:33332";
         HTTPS_PROXY = "http://127.0.0.1:33332";
-        NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10";
+        # Lowercase twins: Electron/Chromium and some Go/Rust tooling read only
+        # these. ALL_PROXY is deliberately absent - clients that treat it as a
+        # SOCKS URL break on an http:// value. NO_PROXY matches the host list.
+        http_proxy = "http://127.0.0.1:33332";
+        https_proxy = "http://127.0.0.1:33332";
+        NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,192.168.1.1,*.local";
       };
       Context = {
         filesystems = [ "xdg-run/dconf" ];
@@ -81,6 +86,13 @@
       "org.octave.Octave"
       "org.videolan.VLC"
     ];
+  };
+
+  # Runs as root, outside the killswitch and without any *_PROXY, so only order
+  # it behind gost-pac (wants, not requires: gost-pac is fail-open).
+  systemd.services.flatpak-managed-install = {
+    wants = [ "gost-pac.service" ];
+    after = [ "gost-pac.service" ];
   };
 }
 

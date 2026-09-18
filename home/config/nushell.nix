@@ -182,23 +182,40 @@
     def --env proxy-off [] {
       hide-env http_proxy
       hide-env https_proxy
+      # all_proxy comes from /etc/set-environment too; clear it as well so
+      # proxy-off is symmetric.
+      hide-env all_proxy
       print $"(ansi yellow)Proxy disabled.(ansi reset)"
     }
 
     # Proxied vs fail-open (direct) egress state.
+    # The status files are written only on a flip, so gost can be dead while
+    # they still say "proxy": require file + listener + a real 204 probe.
     def proxy-status [] {
       let read = {|p|
         try { open --raw $p | str trim } catch { "unknown" }
       }
       let g = (do $read "/run/gost-pac/status")
       let d = (do $read "/run/dns-pac/status")
-      let color = if $g == "proxy" { "green" } else { "red" }
-      print $"(ansi $color)egress: ($g)(ansi reset)  DNS: ($d)"
+      # 33332 = gost's HTTP listener (the port every proxy-aware consumer uses).
+      let listener = (try {
+        ss -H -tln | lines | any {|l| $l | str contains "127.0.0.1:33332" }
+      } catch { false })
+      # One real request through gost; 204 is the only success.
+      let probe = (try {
+        curl -s -o /dev/null -m 5 -x http://127.0.0.1:33332 -w '%{http_code}' https://www.gstatic.com/generate_204 | str trim
+      } catch { "000" })
+      let ok = (($g == "proxy") and $listener and ($probe == "204"))
+      let color = if $ok { "green" } else { "red" }
+      print $"(ansi $color)egress: ($g)(ansi reset)  DNS: ($d)  listener: (if $listener { 'up' } else { 'down' })  probe: ($probe)"
     }
 
     # Live outbound TCP audit (needs root). connect(2) is pre-NAT, so
     # redirected flows show their real public IP, not :33333.
     # bpftrace (BTF) works on new kernels where bcc's headers fail.
+    # A public daddr is therefore no proof of a leak: only call it one when no
+    # gost session matches, conntrack shows no :33333 redirect, and the uid is
+    # not exempt (0/987). Watch gost for the matching destination as a check.
     def egress-audit [...args] {
       sudo bpftrace /run/current-system/sw/share/bpftrace/tools/tcpconnect.bt ...$args
     }

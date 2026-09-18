@@ -6,8 +6,10 @@
     description = "Configure Flathub USTC Mirror";
     wantedBy = [ "multi-user.target" ];
     before = [ "flatpak-managed-install.service" ]; 
-    after = [ "network-online.target" "dbus.service" ]; 
-    wants = [ "network-online.target" ];
+    # This unit reaches the mirror through gost's proxy (see Environment below),
+    # so order after gost-pac too; soft only, it must still run if it fails.
+    after = [ "network-online.target" "dbus.service" "gost-pac.service" ]; 
+    wants = [ "network-online.target" "gost-pac.service" ];
     
     path = [ pkgs.flatpak ];
     script = ''

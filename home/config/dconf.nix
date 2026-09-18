@@ -18,6 +18,11 @@
         "100.64.0.0/10"
         "*.local"
       ];
+      # dconf is written once at activation, so runtime drift (Clash Verge,
+      # noctalia, GUI) is not corrected here: check `dconf dump /system/proxy/`.
+      # Keep the PAC pointer empty so apps cannot take a non-gost proxy path.
+      "use-same-proxy" = true;
+      "autoconfig-url" = "";
     };
 
     "system/proxy/http" = {
@@ -29,6 +34,11 @@
       host = "127.0.0.1";
       port = 33332;
     };
+
+    # SOCKS/FTP are separate child schemas; pinned empty because they are the
+    # keys the drift above writes with 127.0.0.1:7897.
+    "system/proxy/socks" = { host = ""; port = 0; };
+    "system/proxy/ftp" = { host = ""; port = 0; };
   };
 }
 

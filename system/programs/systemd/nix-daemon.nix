@@ -5,7 +5,9 @@
   # zapret breaking large TLS streams (onnxruntime/nccl mid-download drops)
   systemd.services.nix-daemon = {
     description = "Nix Daemon (downloads via gost-pac proxy)";
-    # Socket-activated: only orders boot-time startup; gost-pac is fail-open (direct when Clash down), so no hard dep
+    # Socket-activated: only orders boot-time startup; gost-pac is fail-open
+    # (direct when Clash down), so wants, not requires.
+    wants = [ "gost-pac.service" ];
     after = [ "gost-pac.service" ];
     environment = {
       HTTP_PROXY = "http://127.0.0.1:33332/";
