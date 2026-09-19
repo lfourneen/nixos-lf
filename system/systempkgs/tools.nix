@@ -57,6 +57,7 @@
     vim
 
     # MCP
+    context7-mcp
     mcp-nixos
 
     # Document
