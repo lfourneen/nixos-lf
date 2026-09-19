@@ -45,6 +45,7 @@
 
       # Development tools
       "cc.arduino.IDE2"
+      "cn.lceda.LCEDAPro"
       "com.jetbrains.CLion"
       "com.jetbrains.PyCharm-Professional"
       "com.st.STM32CubeMX"
