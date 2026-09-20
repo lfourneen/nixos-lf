@@ -1,12 +1,15 @@
-{ pkgs, ... }:
+{ pkgs, fallback, ... }:
 
 let
   pname = "bilibili";
-  version = "1.18.0";
+  version = "1.19.0";
   src = ./local-apps/bilibili-${version}-x86_64.AppImage;
   appimageContents = pkgs.appimageTools.extract { inherit pname version src; };
 
 in
+# Single source of truth for the local AppImage version. If the file is
+# absent, fall back to nixpkgs' bilibili so the build still succeeds.
+if !builtins.pathExists src then fallback else
 pkgs.appimageTools.wrapType2 {
   inherit pname version src;
   extraPkgs = pkgs: with pkgs; [

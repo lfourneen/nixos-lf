@@ -1,9 +1,8 @@
 final: prev:
-let
-  appimage = ./local-apps/bilibili-1.18.0-x86_64.AppImage;
-
-in
-prev.lib.optionalAttrs (builtins.pathExists appimage) {
-  bilibili = final.callPackage ./bilibili-appimage.nix { };
+{
+  # bilibili-appimage.nix owns the AppImage version and falls back to nixpkgs'
+  # bilibili when the local file is missing, so no version lives here.
+  bilibili = final.callPackage ./bilibili-appimage.nix {
+    fallback = prev.bilibili;
+  };
 }
-
