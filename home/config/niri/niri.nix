@@ -92,6 +92,14 @@ let
       place-within-backdrop true
     }
 
+    // waywallen layer-shell wallpaper: same treatment as the others, otherwise
+    // the overview clones it into every workspace capsule instead of showing the
+    // single backdrop wallpaper.
+    layer-rule {
+      match namespace="waywallen-wallpaper"
+      place-within-backdrop true
+    }
+
     // Monitors
     // Left（1080p@100Hz）
     output "HDMI-A-1" {
@@ -597,5 +605,23 @@ in
     # $DRY_RUN_CMD cp -f "${niriConfigFile}" "$TARGET_FILE"
     # $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
   '';
+
+  # The Flatpak waywallen daemon cannot obtain zwlr_layer_shell_v1 from inside
+  # the sandbox, so the host must run the layer-shell client. It connects to the
+  # daemon's socket at $XDG_RUNTIME_DIR/waywallen/display.sock (shared into the
+  # sandbox by the Flatpak manifest) and reconnects on failure.
+  systemd.user.services.waywallen-layer-shell = {
+    Unit = {
+      Description = "waywallen layer-shell wallpaper client";
+      PartOf = [ "graphical-session.target" ];
+      After = [ "graphical-session.target" ];
+    };
+    Service = {
+      ExecStart = "${pkgs.waywallen-layer-shell}/bin/waywallen-layer-shell";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "graphical-session.target" ];
+  };
 }
 

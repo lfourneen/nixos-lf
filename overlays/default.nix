@@ -5,4 +5,7 @@ final: prev:
   bilibili = final.callPackage ./bilibili-appimage.nix {
     fallback = prev.bilibili;
   };
+
+  waywallen-layer-shell = final.callPackage ./waywallen-layer-shell.nix { };
 }
+
