@@ -4,11 +4,11 @@
   programs.opencode = {
     enable = true;
     web.enable = true;
-    package = pkgs.opencode;
+    package = pkgs.unstable.opencode;
   };
 
   home.packages = with pkgs;[
-    #opencode-desktop
+    pkgs.unstable.opencode-desktop
   ];
 }
 
