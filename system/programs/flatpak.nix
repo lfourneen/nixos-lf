@@ -59,8 +59,10 @@
       "com.ranfdev.DistroShelf"
       "com.usebottles.bottles"
       "com.vysp3r.ProtonPlus"
+      "moe.kopuz.kopuz"
       "net.lutris.Lutris"
       "org.prismlauncher.PrismLauncher"
+      "org.waywallen.waywallen"
       "io.github.screwys.Rufin"
       "com.spotify.Client"
 
