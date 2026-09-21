@@ -6,6 +6,8 @@ final: prev:
     fallback = prev.bilibili;
   };
 
+  dsh-desktop = final.callPackage ./dsh-desktop-appimage.nix { };
+
   waywallen-layer-shell = final.callPackage ./waywallen-layer-shell.nix { };
 }
 

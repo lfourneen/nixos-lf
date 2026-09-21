@@ -2,18 +2,24 @@
 
 Put local-only binaries here (not tracked by git).
 
-Expected: a Bilibili Linux AppImage named `bilibili-<version>-x86_64.AppImage`,
-matching the `version`/`src` in `overlays/bilibili-appimage.nix`.
-If it is missing, the custom package is skipped (falls back to nixpkgs' bilibili) and the build still succeeds.
+Expected:
 
-These files are large and personal, so they are gitignored.
+- `bilibili-<version>-x86_64.AppImage` — version per `overlays/bilibili-appimage.nix`.
+  Missing → falls back to nixpkgs' bilibili.
+- `DSH-Desktop-<version>-x86_64.AppImage` — version per `overlays/dsh-desktop-appimage.nix`.
+  Missing → `pkgs.dsh-desktop` is simply not defined, so `nixos-rebuild` still succeeds.
+  Rebuild with `corepack yarn workspace dsh-plugin-desktop dist:linux` in the dsh-desktop
+  checkout, then copy `dsh-plugin-desktop/dist/linux/*.AppImage` here.
 
 ---
 
 本地大文件放这里（不纳入 git）。
 
-需要的文件：名为 `bilibili-<version>-x86_64.AppImage` 的哔哩哔哩 Linux AppImage，
-版本与路径以 `overlays/bilibili-appimage.nix` 里的 `version`/`src` 为准。
-缺失时会跳过该自定义包（回退到 nixpkgs 的 bilibili），不影响构建。
+需要的文件：
 
-这些文件体积大且属于个人使用，因此被 `.gitignore` 忽略。
+- `bilibili-<version>-x86_64.AppImage` — 版本以 `overlays/bilibili-appimage.nix` 为准。
+  缺失时回退到 nixpkgs 的 bilibili。
+- `DSH-Desktop-<version>-x86_64.AppImage` — 版本以 `overlays/dsh-desktop-appimage.nix` 为准。
+  缺失时只是不定义 `pkgs.dsh-desktop`，`nixos-rebuild` 照常成功。
+  在 dsh-desktop 仓库执行 `corepack yarn workspace dsh-plugin-desktop dist:linux` 重新构建，
+  再把 `dsh-plugin-desktop/dist/linux/*.AppImage` 拷到这里。

@@ -19,6 +19,7 @@
       libgcc
       libxml2
       libxslt
+      expat
       stdenv.cc.cc.lib
       zlib
       zlib-ng
