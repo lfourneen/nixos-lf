@@ -606,18 +606,20 @@ in
     # $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
   '';
 
-  # The Flatpak waywallen daemon cannot obtain zwlr_layer_shell_v1 from inside
-  # the sandbox, so the host must run the layer-shell client. It connects to the
-  # daemon's socket at $XDG_RUNTIME_DIR/waywallen/display.sock (shared into the
-  # sandbox by the Flatpak manifest) and reconnects on failure.
-  systemd.user.services.waywallen-layer-shell = {
+  # waywallen (AppImage) runs as a daemon and spawns its own layer-shell
+  # display client on niri, so this is the only service needed. `--no-ui` starts
+  # it silently in the tray (no GUI window); the window opens on demand from the
+  # tray icon. `--display-backend layer-shell` avoids relying on DE
+  # autodetection. The client still paints into the `waywallen-wallpaper`
+  # namespace matched by the layer-rule above.
+  systemd.user.services.waywallen = {
     Unit = {
-      Description = "waywallen layer-shell wallpaper client";
+      Description = "waywallen wallpaper daemon (tray, no GUI)";
       PartOf = [ "graphical-session.target" ];
       After = [ "graphical-session.target" ];
     };
     Service = {
-      ExecStart = "${pkgs.waywallen-layer-shell}/bin/waywallen-layer-shell";
+      ExecStart = "${pkgs.waywallen}/bin/waywallen --no-ui --display-backend layer-shell";
       Restart = "on-failure";
       RestartSec = 5;
     };

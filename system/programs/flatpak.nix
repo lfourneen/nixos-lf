@@ -62,7 +62,6 @@
       "moe.kopuz.kopuz"
       "net.lutris.Lutris"
       "org.prismlauncher.PrismLauncher"
-      "org.waywallen.waywallen"
       "io.github.screwys.Rufin"
       "com.spotify.Client"
 

@@ -10,6 +10,8 @@ Expected:
   Missing → `pkgs.dsh-desktop` is simply not defined, so `nixos-rebuild` still succeeds.
   Rebuild with `corepack yarn workspace dsh-plugin-desktop dist:linux` in the dsh-desktop
   checkout, then copy `dsh-plugin-desktop/dist/linux/*.AppImage` here.
+- `waywallen-<version>-x86_64.AppImage` — version per `overlays/waywallen-appimage.nix`.
+  Missing → hard error. Download from the upstream releases page and copy here.
 
 ---
 
@@ -23,3 +25,5 @@ Expected:
   缺失时只是不定义 `pkgs.dsh-desktop`，`nixos-rebuild` 照常成功。
   在 dsh-desktop 仓库执行 `corepack yarn workspace dsh-plugin-desktop dist:linux` 重新构建，
   再把 `dsh-plugin-desktop/dist/linux/*.AppImage` 拷到这里。
+- `waywallen-<version>-x86_64.AppImage` — 版本以 `overlays/waywallen-appimage.nix` 为准。
+  缺失时直接报错。从上游 releases 页面下载后拷到这里。

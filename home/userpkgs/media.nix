@@ -7,7 +7,7 @@
     mpv
     scrcpy
     sillytavern
-    waywallen-layer-shell
+    waywallen
   ] ++ pkgs.lib.optional (pkgs ? bilibili) pkgs.bilibili;
 }
 

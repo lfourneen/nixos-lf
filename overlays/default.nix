@@ -8,6 +8,6 @@ final: prev:
 
   dsh-desktop = final.callPackage ./dsh-desktop-appimage.nix { };
 
-  waywallen-layer-shell = final.callPackage ./waywallen-layer-shell.nix { };
+  waywallen = final.callPackage ./waywallen-appimage.nix { };
 }
 
