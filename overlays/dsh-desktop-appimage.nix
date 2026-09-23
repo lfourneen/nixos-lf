@@ -8,15 +8,17 @@ let
   # Single extraction, used both as the runtime AppDir and as the source for the
   # desktop entry and icons.
   #
-  # postExtract applies one vendor patch without which every plugin operation
-  # fails on Linux. `dsh-subprocess-local` launches its runner as `<electron>
-  # <runner.js>`, and the runner's entry guard is `if (import.meta.main)`.
-  # `import.meta.main` is a Node feature; in Electron's GUI main process it is
-  # falsy, so the runner exits 0 without consuming the launch request and the
-  # caller reports "subprocess scope exited before its bootstrap consumed the
-  # launch request" (exit 127). The package already forces
-  # ELECTRON_RUN_AS_NODE=1 for this reason, but only on win32, so the Linux
-  # desktop app can never install, update, or roll back a plugin.
+  # postExtract patches several vendor bugs. The first makes plugin
+  # operations possible at all on Linux: `dsh-subprocess-local` launches its
+  # runner as `<electron> <runner.js>`, and the runner's entry guard is
+  # `if (import.meta.main)`. `import.meta.main` is a Node feature; in
+  # Electron's GUI main process it is falsy, so the runner exits 0 without
+  # consuming the launch request and the caller reports "subprocess scope
+  # exited before its bootstrap consumed the launch request" (exit 127). The
+  # package already forces ELECTRON_RUN_AS_NODE=1 for this reason, but only on
+  # win32, so the Linux desktop app can never install, update, or roll back a
+  # plugin. The rest fix the market's git-hosted build approval and the inner
+  # `pnpm install` pnpm runs for such a dependency (below).
   #
   # `--replace-fail` is deliberate: if a future AppImage changes this line the
   # build fails loudly instead of silently shipping a broken market.
@@ -27,6 +29,79 @@ let
         --replace-fail \
         'if (selection === WINDOWS_RUNNER_SELECTION && process.platform === "win32" && process.versions.electron !== void 0) {' \
         'if (process.versions.electron !== void 0) {'
+
+      # dshmarket's one-click "allow build scripts and retry" button derives
+      # the allowBuilds key from the bare NAME pnpm reports. That is enough
+      # for the plain postinstall-block case, but not for a git-hosted plugin
+      # whose prepare script pnpm rejected in its FETCHER
+      # (ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED): there pnpm matches only the
+      # exact `name@<codeload tarball url>` key from its own hint, so the bare
+      # name authorizes nothing. The route then finds no anchor (not in
+      # node_modules, not in package.json, not in the curated catalog) and
+      # answers "no installed packages given".
+      #
+      # The bundled pnpm 11.8.0 prints the fetched tarball URL in the same
+      # error line, so the exact key can be rebuilt: keep it whole instead of
+      # stripping the version, and let the route pass a full codeload key
+      # straight through (setAllowBuilds already accepts that shape).
+      substituteInPlace $out/resources/app/node_modules/dshmarket/lib/install.js \
+        --replace-fail \
+        '    return at > 0 ? raw.slice(0, at) : raw;' \
+        '    const u = /Failed to prepare git-hosted package fetched from "([^"]+)"/.exec(text); return u === null ? (at > 0 ? raw.slice(0, at) : raw) : (at > 0 ? raw.slice(0, at) : raw) + "@" + u[1];'
+
+      substituteInPlace $out/resources/app/node_modules/dshmarket/lib/routes.js \
+        --replace-fail \
+        '                    const stripVersion = (name) => {' \
+        '                    const stripVersion = (name) => { if (/@(?:git\+https:\/\/|https:\/\/codeload\.github\.com\/)/.test(name)) return name;'
+
+      substituteInPlace $out/resources/app/node_modules/dshmarket/lib/routes.js \
+        --replace-fail \
+        '                        .filter(name => PKG_RE.test(name));' \
+        '                        .filter(name => PKG_RE.test(name) || /@(?:git\+https:\/\/|https:\/\/codeload\.github\.com\/)/.test(name));'
+
+      substituteInPlace $out/resources/app/node_modules/dshmarket/lib/routes.js \
+        --replace-fail \
+        '                    for (const name of requested) {' \
+        '                    for (const name of requested) { if (/@(?:git\+https:\/\/|https:\/\/codeload\.github\.com\/)/.test(name)) { packages.push(name); continue; }'
+
+      # A git-hosted plugin with a prepare script makes pnpm run its own
+      # `pnpm install` in the fetched repo BEFORE the prepare hook. Two things
+      # about that inner install break dsh plugins whose peers are host-
+      # provided (e.g. yjh051108/dsh-routing-suite, whose root declares
+      # @deepseek-ai/dsh-tools / cordis / schemastery):
+      #
+      #  1. preferredPM falls back to npm when the repo ships no root lockfile,
+      #     and npm (like pnpm) then tries to fetch the host peers from the
+      #     registry — 404, inner install exits 1, and the whole operation
+      #     dies with ERR_PNPM_PREPARE_PACKAGE. dsh is a pnpm ecosystem and
+      #     bundles pnpm, so the fallback is pnpm.
+      #  2. pnpm auto-installs peers by default (autoInstallPeers), which is
+      #     exactly what 404s. dsh profiles already set autoInstallPeers:
+      #     false; the inner install runs in a store temp dir and does not see
+      #     the profile, so the flag is forced here. This only affects the
+      #     `pnpm install` that pnpm itself runs for a git dependency.
+      substituteInPlace $out/resources/app/node_modules/pnpm/dist/pnpm.mjs \
+        --replace-fail \
+        '  const pm2 = (await preferredPM(gitRootDir))?.name ?? "npm";' \
+        '  const pm2 = (await preferredPM(gitRootDir))?.name ?? "pnpm";'
+
+      substituteInPlace $out/resources/app/node_modules/pnpm/dist/pnpm.mjs \
+        --replace-fail \
+        '    manifest.scripts[installScriptName] = `''${pm2} install`;' \
+        '    manifest.scripts[installScriptName] = `''${pm2} install''${pm2 === "pnpm" ? " --config.auto-install-peers=false" : ""}`;'
+
+      # hicolor's index.theme (hicolor-icon-theme) lists no 1024x1024
+      # directory, so the AppImage's lone 1024x1024 icon is invisible to every
+      # theme-based lookup: Qt/GTK launchers and Noctalia's app grid show the
+      # app without an icon even though the tray renders it from its own
+      # pixmap. Derive the standard sizes from that source icon.
+      for size in 512 256 128 64 48 32 16; do
+        mkdir -p "$out/usr/share/icons/hicolor/''${size}x''${size}/apps"
+        ${pkgs.imagemagick}/bin/magick \
+          "$out/usr/share/icons/hicolor/1024x1024/apps/dsh-desktop.png" \
+          -resize "''${size}x''${size}" \
+          "$out/usr/share/icons/hicolor/''${size}x''${size}/apps/dsh-desktop.png"
+      done
     '';
   };
 
