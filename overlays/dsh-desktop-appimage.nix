@@ -5,6 +5,30 @@ let
   version = "2.0.13";
   src = ./local-apps/DSH-Desktop-${version}-x86_64.AppImage;
 
+  # The AppImage bundles sharp 0.35.3, whose prebuilt libvips statically links
+  # its own glib and re-exports the g_* symbols. Electron's Linux binary links
+  # the system glib, so both copies land in the DSH Host (the node.mojom
+  # utility process) and glib's internal state is corrupted: the first image
+  # decode segfaults the whole host (SIGSEGV in g_object_unref). Every remote
+  # call after that fails with `client api: <endpoint> failed: Failed to fetch`,
+  # including `subagents/list` and `subagents/prompt`. This is the known
+  # electron/electron#46323 / lovell/sharp#4525 glib symbol collision.
+  #
+  # @janhapke/sharp-electron is a drop-in rebuild of exactly this sharp version
+  # that hides and renames the colliding glib symbols at the linker level (no
+  # env var or LD_PRELOAD fixes the stock build). `linux-x64/sharp` ships both
+  # the patched addon and the patched libvips-cpp side by side.
+  sharpElectronSrc = pkgs.fetchurl {
+    url = "https://registry.npmjs.org/@janhapke/sharp-electron/-/sharp-electron-0.35.3-electron.1.tgz";
+    hash = "sha512-ZDnFPMsKolANxS+RDjgxw6/jc6O0JfJ0msu6bgBdPCz6NFm4+K+cPurwXB+rdl5UY2/EQ5bzQ7ENYnRXtdprLQ==";
+  };
+  sharpElectron = pkgs.runCommand "sharp-electron-0.35.3-electron.1" {
+    nativeBuildInputs = [ pkgs.libarchive ];
+  } ''
+    mkdir -p $out
+    bsdtar -xf ${sharpElectronSrc} -C $out
+  '';
+
   # Single extraction, used both as the runtime AppDir and as the source for the
   # desktop entry and icons.
   #
@@ -102,6 +126,23 @@ let
           -resize "''${size}x''${size}" \
           "$out/usr/share/icons/hicolor/''${size}x''${size}/apps/dsh-desktop.png"
       done
+
+      # Swap the bundled sharp for the Electron-safe rebuild (see the
+      # sharpElectron comment above for why). Fail loudly if a future AppImage
+      # bumps sharp, because the swap is version-matched.
+      sharpDir=$out/resources/app/node_modules/sharp
+      if [ "$(${pkgs.jq}/bin/jq -r .version "$sharpDir/package.json")" != "0.35.3" ]; then
+        echo "dsh-desktop: bundled sharp is not 0.35.3; re-pin the sharp-electron swap" >&2
+        exit 1
+      fi
+      # The unpatched @img prebuilts carry a libvips-cpp with the same SONAME;
+      # if anything loads them first the patched addon would bind to the wrong
+      # glib again. Remove them so the co-located patched libvips always wins.
+      rm -rf "$sharpDir" \
+        $out/resources/app/node_modules/@img/sharp-linux-x64 \
+        $out/resources/app/node_modules/@img/sharp-libvips-linux-x64
+      cp -r ${sharpElectron}/package/linux-x64/sharp "$sharpDir"
+      chmod -R u+w "$sharpDir"
     '';
   };
 
