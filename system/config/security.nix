@@ -32,8 +32,8 @@
     # Restrict kernel pointer exposure (non-root)
     "kernel.kptr_restrict" = 1;
 
-    # Allow dmesg access (required for GPU / DRM debugging)
-    "kernel.dmesg_restrict" = 0;
+    # Root-only dmesg (kptr_restrict above is otherwise moot); use `journalctl -k`.
+    "kernel.dmesg_restrict" = 1;
 
     # Disable core dumps for setuid binaries
     "fs.suid_dumpable" = 0;
@@ -50,7 +50,6 @@
     "net.ipv4.conf.all.secure_redirects" = 0;
     "net.ipv4.conf.default.secure_redirects" = 0;
     "net.ipv4.conf.all.send_redirects" = 0;
-    "net.ipv4.ip_forward" = 1;
 
     # Log spoofed packets with invalid/martian source addresses
     "net.ipv4.conf.all.log_martians" = 1;
@@ -80,6 +79,9 @@
     "net.ipv6.conf.all.accept_source_route" = 0;
   };
 
+  # Forwarding (not a hardening knob): required by waydroid/libvirt/rootless-docker.
+  boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
+
   # Boot-time kernel hardening
   boot.kernelParams = [
     "slab_nomerge"
@@ -87,6 +89,9 @@
     "vsyscall=none"
     "init_on_alloc=1"
   ];
+
+  # module.sig_enforce / lockdown are unavailable here: xanmod ships without
+  # CONFIG_MODULE_SIG and CONFIG_SECURITY_LOCKDOWN_LSM.
 
   # Prevent replacing the running kernel image at runtime (kexec). This also
   # sets `nohibernate`. A 32G encrypted swap exists, but hibernation is not
@@ -102,9 +107,9 @@
     enableCache = true;
     killUnconfinedConfinables = true;
 
+    # `packages` only feeds the include path; enforced profiles come from `policies`.
     packages = with pkgs; [
       apparmor-utils
-      apparmor-profiles
     ];
   };
 
@@ -152,6 +157,8 @@
   # Audit: low-noise / high-signal rules, one per concern (no broad `always`).
   security.audit.enable = true;
   security.auditd.enable = true;
+  # 1024 (the default) overflowed and dropped audit events; raise the queue.
+  security.audit.backlogLimit = 8192;
 
   security.audit.rules = [
     # privilege escalation: exec of a root-granting setuid/setgid binary
@@ -187,8 +194,8 @@
     enableUserSlices = true;
     enableSystemSlice = true;
 
+    # No SwapUsedLimit: it cannot fire unless a cgroup sets ManagedOOMSwap=kill.
     settings.OOM = {
-      SwapUsedLimit = "90%";
       DefaultMemoryPressureLimit = "80%";
       DefaultMemoryPressureDurationSec = "20s";
     };
