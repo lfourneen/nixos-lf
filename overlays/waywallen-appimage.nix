@@ -6,9 +6,7 @@ let
   src = ./local-apps/waywallen-${version}-x86_64.AppImage;
 
   # Single extraction, reused for the runtime AppDir plus the desktop entry,
-  # icon and metainfo. The AppImage bundles Qt 6, FFmpeg, libwaywallen-bridge,
-  # the three renderers and `waywallen-layer-shell`; only the host GPU/display
-  # stack is missing.
+  # icon and metainfo.
   appDir = pkgs.appimageTools.extract { inherit pname version src; };
 
 in
@@ -22,16 +20,8 @@ pkgs.appimageTools.wrapAppImage {
   inherit pname version;
   src = appDir;
 
-  # `ldd` on the AppDir binaries with LD_LIBRARY_PATH=$APPDIR/usr/lib reports
-  # these as missing. The AppImage deliberately does not ship them because
-  # Vulkan/GBM/DRM/EGL must match the running GPU driver.
-  #   waywallen-layer-shell     : libwayland-client
-  #   waywallen-video/image-renderer: libdrm, libgbm, libvulkan, libz
-  #   waywallen-ui              : + libEGL/libGL/libGLX/libOpenGL, libdbus-1,
-  #                               fontconfig, freetype, harfbuzz, libX11,
-  #                               libxkbcommon
-  # Most already arrive through appimageTools' FHS `multiPkgs`; they are listed
-  # explicitly so the requirement is visible and independent of that list.
+  # The AppImage omits the GPU/display stack (it must match the running driver);
+  # listed explicitly rather than relying on appimageTools' FHS multiPkgs.
   extraPkgs = pkgs: with pkgs; [
     wayland
     libdrm
@@ -52,8 +42,8 @@ pkgs.appimageTools.wrapAppImage {
     zlib
   ];
 
-  # AppRun already execs `usr/bin/waywallen`, and the wrapper is named after
-  # `pname`, so the desktop entry's `Exec=waywallen` works unchanged.
+  # AppRun execs `usr/bin/waywallen`, matching the wrapper name, so Exec works
+  # unchanged.
   extraInstallCommands = ''
     install -m 444 -D ${appDir}/usr/share/applications/org.waywallen.waywallen.desktop \
       $out/share/applications/org.waywallen.waywallen.desktop
@@ -61,8 +51,7 @@ pkgs.appimageTools.wrapAppImage {
     install -m 444 -D ${appDir}/usr/share/metainfo/org.waywallen.waywallen.metainfo.xml \
       $out/share/metainfo/org.waywallen.waywallen.metainfo.xml
 
-    # Copy into the existing hicolor tree; `cp -r <dir> $out/share/` would nest
-    # it as $out/share/icons/icons.
+    # Copy into the existing hicolor tree (cp -r <dir> $out/share/ would nest).
     mkdir -p $out/share/icons
     cp -r ${appDir}/usr/share/icons/. $out/share/icons/
   '';
