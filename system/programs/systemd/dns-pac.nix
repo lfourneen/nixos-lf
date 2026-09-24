@@ -1,10 +1,8 @@
 { pkgs, ... }:
 
 {
-  # DNS PAC: clash up -> mihomo DNS (1053); down -> unbound DoT (1055).
-  # Probe needs the mihomo core port (7897) + a real answer; a dead core falls
-  # back immediately, other failures need 2 consecutive probes (anti ghost listener).
-  # 2s polling bounds the worst-case ghost-core window to ~4s (2 misses).
+  # DNS PAC: clash up -> mihomo DNS (1053); down -> unbound DoT (1055). Both
+  # listeners are identified by cgroup, so an impostor on them means direct.
   systemd.services.dns-pac = {
     description = "DNS PAC: mihomo DNS when clash is up, DoT otherwise";
     after = [ "network.target" ];
@@ -12,6 +10,26 @@
     unitConfig.StartLimitIntervalSec = 0;
     serviceConfig = {
       RuntimeDirectory = "dns-pac";
+
+      # Root only for D-Bus (systemctl restart dnsmasq + resolvectl flush-caches):
+      # no caps and no writes outside /run/dns-pac. AF_NETLINK is for ss(8).
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectControlGroups = true;
+      ProtectClock = true;
+      ProtectHostname = true;
+      RestrictNamespaces = true;
+      RestrictSUIDSGID = true;
+      RestrictRealtime = true;
+      RemoveIPC = true;
+      CapabilityBoundingSet = "";
+      RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
+      ReadWritePaths = [ "/run/dns-pac" ];
+
       ExecStart = "${pkgs.writeShellScript "dns-pac-loop" ''
 
         write_state() {
@@ -39,18 +57,26 @@
           ${pkgs.systemd}/bin/resolvectl flush-caches
         }
 
+        # Identity, not reachability: a local impostor can bind these ports but
+        # cannot land in clash-verge's cgroup, which the kernel reports.
         core_up() {
-          ${pkgs.coreutils}/bin/timeout 2 ${pkgs.bash}/bin/bash -c \
-            'echo > /dev/tcp/127.0.0.1/7897' 2>/dev/null
+          ${pkgs.iproute2}/bin/ss -lnteH 'sport = :7897' 2>/dev/null \
+            | ${pkgs.gnugrep}/bin/grep -q 'cgroup:/system.slice/clash-verge.service'
+        }
+
+        dns_listener_up() {
+          ${pkgs.iproute2}/bin/ss -lnteH 'sport = :1053' 2>/dev/null \
+            | ${pkgs.gnugrep}/bin/grep -q 'cgroup:/system.slice/clash-verge.service'
         }
 
         dns_ok() {
-          # CN names through mihomo's policy DoH: answers prove the chain works.
-          for name in www.baidu.com www.qq.com; do
-            ${pkgs.dnsutils}/bin/dig +time=1 +tries=1 +short @127.0.0.1 -p 1053 \
-              "$name" 2>/dev/null | ${pkgs.gnugrep}/bin/grep -q . && return 0
+          # baidu is DIRECT-policy, gstatic goes through the node (respect-rules):
+          # requiring both proves the core and the node, not just a live core.
+          for name in www.baidu.com www.gstatic.com; do
+            ${pkgs.dnsutils}/bin/dig +time=2 +tries=1 +short @127.0.0.1 -p 1053 \
+              "$name" 2>/dev/null | ${pkgs.gnugrep}/bin/grep -q . || return 1
           done
-          return 1
+          return 0
         }
 
         mkdir -p /run/dns-pac
@@ -63,9 +89,9 @@
         misses=0
 
         while true; do
-          if ! core_up; then
-            # Core socket gone -> 1053 cannot answer: fall back immediately
-            # (no hysteresis so DIRECT never waits on a dead resolver).
+          if ! core_up || ! dns_listener_up; then
+            # Core (or its DNS listener) is gone/not ours -> 1053 cannot answer:
+            # fall back immediately (no hysteresis so DIRECT never waits).
             if [ "$current" != "direct" ]; then
               echo "clash core gone; DNS -> direct"
               write_state direct
