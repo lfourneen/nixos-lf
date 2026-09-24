@@ -10,6 +10,7 @@
     ./journald.nix
     ./libvirtd.nix  
     ./nix-daemon.nix
+    ./nftables-verify.nix
     ./ntsync.nix  
     ./nvidia-powerd.nix
   ];
