@@ -1,9 +1,8 @@
 { pkgs, lib, config, ... }:
 
 let
-  # Health-probe target: single source of truth, shared by the probe and the
-  # WARN message. Keep it a domestic, highly reachable URL - an overseas target
-  # makes the return-to-proxy depend on the current node reaching that site.
+  # Health-probe target for the "core really answers" gate: domestic and highly
+  # reachable, so it proves mihomo's own chain rather than the node.
   healthProbeUrl = "https://www.baidu.com/";
 in
 {
@@ -31,9 +30,10 @@ in
     }
   ];
 
-  # Network PAC (Fail-Open Architecture with Gost)
+  # Network PAC, proxy-only and fail-closed: gost runs only while clash-verge's own
+  # listener is verified, otherwise :33332/:33333 refuse instead of dialing out.
   systemd.services.gost-pac = {
-    description = "Gost PAC High-Availability Proxy Daemon";
+    description = "Gost PAC (proxy-only, fail-closed)";
     after = [ "network.target" ];
     wantedBy = [ "multi-user.target" ];
     # Never stop retrying (else a crash-loop leaves proxied apps without internet)
@@ -78,13 +78,11 @@ in
 
       # Internal implementation of persistent loop monitoring and hot-reloading
       ExecStart = "${pkgs.writeShellScript "gost-launcher" ''
-        current_status="none"
+        mode="closed"          # closed = nothing listening; proxy = chained to mihomo
         proxy_pid=""
         good=0
-        last_flip=0
         listen_fail=0
         degraded=0
-        last_live=""
 
         # nft/Clash bake 987; a drifted runtime uid means the exemption no longer
         # matches this process, so say so instead of failing silently.
@@ -92,10 +90,17 @@ in
           echo "gost-pac: WARN running as uid $(${pkgs.coreutils}/bin/id -u); killswitch/TUN exemption expects 987" >&2
         fi
 
-        # State-file contract: exactly one mode word plus a newline; the desktop
-        # user's `proxy-status` reads this path and format.
+        # State-file contract: one mode word plus a newline, rewritten every round
+        # (so its mtime only proves the supervisor is alive); `proxy-status` reads it.
         write_state() {
           printf '%s\n' "$1" > /run/gost-pac/status
+        }
+
+        # Identity, not reachability: an impostor can bind :7897 but cannot land in
+        # clash-verge's cgroup, which the kernel reports through ss(8).
+        core_up() {
+          ${pkgs.iproute2}/bin/ss -lnteH 'sport = :7897' 2>/dev/null \
+            | ${pkgs.gnugrep}/bin/grep -q 'cgroup:/system.slice/clash-verge.service'
         }
 
         # Observe the sockets with ss(8): never connect() to :33333 - one
@@ -133,65 +138,34 @@ in
           fi
         }
 
-        start_gost() {
-          mode="$1"
-          # :33332 HTTP proxy for proxy-aware apps; :33333 redirect
-          # (transparent) for the rest (nftables sends their TCP here).
-          # Loopback-only, like :33332. SO_REUSEPORT keeps a mode flip
-          # from refusing connections.
-          if [ "$mode" = "proxy" ]; then
-            # Clash online: chain to the core at 7897
-            env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
-              "${pkgs.gost}/bin/gost" \
-                "-L=http://127.0.0.1:33332?reuseport=true" \
-                "-L=redirect://127.0.0.1:33333?reuseport=true" \
-                "-L=redirect://[::1]:33333?reuseport=true" \
-                -F=http://127.0.0.1:7897 &
-          else
-            # Clash offline: direct proxy (tun.exclude-uid keeps it out of TUN).
-            env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
-              "${pkgs.gost}/bin/gost" \
-                "-L=http://127.0.0.1:33332?reuseport=true" \
-                "-L=redirect://127.0.0.1:33333?reuseport=true" \
-                "-L=redirect://[::1]:33333?reuseport=true" &
-          fi
+        start_proxy() {
+          # Proxy-only: gost never dials a target itself, so there is no real-IP
+          # egress path. Loopback-only; SO_REUSEPORT keeps a restart from refusing.
+          env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
+            "${pkgs.gost}/bin/gost" \
+              "-L=http://127.0.0.1:33332?reuseport=true" \
+              "-L=redirect://127.0.0.1:33333?reuseport=true" \
+              "-L=redirect://[::1]:33333?reuseport=true" \
+              -F=http://127.0.0.1:7897 &
           new_pid=$!
 
           sleep 1
           if ! kill -0 "$new_pid" 2>/dev/null; then
-            # Roll back instead of lying: keep the old instance and the state file
-            # untouched, reap the dead child, and let the 5s loop retry.
-            echo "gost-pac: gost failed to start in [$mode]; keeping current instance" >&2
+            # Stay closed instead of lying: reap the dead child, keep the state.
+            echo "gost-pac: gost failed to start; staying closed" >&2
             ${pkgs.systemd}/bin/systemd-cat -t gost-pac -p err ${pkgs.coreutils}/bin/echo \
-              "gost-pac: gost failed to start in [$mode]; proxy may be stale" || true
+              "gost-pac: gost failed to start; proxy stays closed" || true
             wait "$new_pid" 2>/dev/null
             return 1
           fi
 
-          old_pid="$proxy_pid"
           proxy_pid="$new_pid"
-          current_status="$mode"
-          # State for proxy-status.
-          write_state "$mode"
-          echo "gost-pac status -> $mode (pid $new_pid)"
+          echo "gost-pac status -> proxy (pid $new_pid)"
 
-          if [ -n "$old_pid" ]; then
-            # Drain only when the new mode is proxy: going proxy -> direct the old
-            # instance is chained to the dead core, so overlapping it serves
-            # failures.
-            if [ "$mode" = "proxy" ]; then
-              sleep 2
-            fi
-            kill "$old_pid" 2>/dev/null
-            wait "$old_pid" 2>/dev/null
-          fi
-
-          # A mode with no bound listeners is a lie; check after the old instance
-          # is retired so its sockets cannot answer for the new one.
           if ! listen_ok; then
-            echo "gost-pac: WARN status=$mode but 127.0.0.1:33332/33333 are not both listening" >&2
+            echo "gost-pac: WARN status=proxy but 127.0.0.1:33332/33333 are not both listening" >&2
             ${pkgs.systemd}/bin/systemd-cat -t gost-pac -p warning ${pkgs.coreutils}/bin/echo \
-              "gost-pac: status=$mode without bound listeners" || true
+              "gost-pac: status=proxy without bound listeners" || true
           fi
         }
 
@@ -202,65 +176,38 @@ in
         }
         trap cleanup TERM INT
 
+        # Fail closed from the first second: no listener until the core is verified.
+        write_state closed
+
         while true; do
           # A crash after the 1s start check would leave both ports unbound while
-          # the state file still claims the old mode. Heal it first.
+          # the state file still claims proxy. Heal it first, back to closed.
           if [ -n "$proxy_pid" ] && ! kill -0 "$proxy_pid" 2>/dev/null; then
-            echo "gost-pac: instance pid $proxy_pid ($current_status) is gone; restarting" >&2
+            echo "gost-pac: instance pid $proxy_pid is gone; closing" >&2
             proxy_pid=""
-            # Remember what the dead instance served: the re-selection below must
-            # not demote a crashed proxy to direct (see the `none` branch).
-            last_live="$current_status"
-            current_status="none"
+            mode="closed"
             listen_fail=0
           fi
 
-          if [ -z "$proxy_pid" ]; then
-            # No live instance => mode unknown; the flip logic below starts one
-            # and keeps retrying every loop until a start succeeds.
-            current_status="none"
-            listen_fail=0
-          else
-            # Process alive but its listeners disappeared: restart after two
-            # misses in a row, so a mode flip cannot cause churn.
+          if [ -n "$proxy_pid" ]; then
+            # Process alive but its listeners disappeared: close after two misses
+            # in a row, so a start-up race cannot cause churn.
             if listen_ok; then
               listen_fail=0
             else
               listen_fail=$((listen_fail + 1))
               if [ "$listen_fail" -ge 2 ]; then
-                echo "gost-pac: pid $proxy_pid is alive but 127.0.0.1:33332/33333 are not listening; restarting" >&2
+                echo "gost-pac: pid $proxy_pid is alive but 127.0.0.1:33332/33333 are not listening; closing" >&2
                 listen_fail=0
                 stop_current
-                # It was live: remember its mode, as in the dead-child path.
-                last_live="$current_status"
-                # Mode unknown again; the flip logic below starts a fresh
-                # instance.
-                current_status="none"
+                mode="closed"
               fi
             fi
           fi
 
-          # Refresh the state file only while an instance is alive, so its mtime
-          # is a real liveness signal for `proxy-status`.
-          if [ -n "$proxy_pid" ] && kill -0 "$proxy_pid" 2>/dev/null; then
-            write_state "$current_status"
-          fi
-
-          # Two-tier health judge.
-          # Tier 1 (proxy -> direct) only asks whether the core's mixed port still
-          # accepts TCP: an open port means the core is alive, and direct is not
-          # better while the node cannot reach the probed site.
-          # Tier 2 (boot, direct -> proxy) needs a real proxied answer twice in a
-          # row. Local processes can bind :7897 while the core is down, but a dumb
-          # socket cannot answer a request, so an impostor can never pull a direct
-          # gost onto itself. Port open + tier 2 failing stays on proxy and warns;
-          # direct is not better either. Probe target: healthProbeUrl above.
-          if ${pkgs.coreutils}/bin/timeout 2 ${pkgs.bash}/bin/bash -c \
-               'echo > /dev/tcp/127.0.0.1/7897' 2>/dev/null; then
-            core_port_up=1
-          else
-            core_port_up=0
-          fi
+          # Two signals: :7897 must be clash-verge's (identity) and answer a real
+          # proxied request twice in a row; staying in proxy only needs identity.
+          if core_up; then core_id=1; else core_id=0; fi
 
           if ${pkgs.coreutils}/bin/timeout 3 ${pkgs.curl}/bin/curl -s -o /dev/null \
                -w '%{http_code}' --noproxy "" -x http://127.0.0.1:7897 \
@@ -273,62 +220,42 @@ in
 
           if [ "$core_e2e" = 1 ]; then good=$((good+1)); else good=0; fi
 
-          new_status="$current_status"
-          if [ "$current_status" = "none" ]; then
-            # Boot: serve direct at once (fail-open) and upgrade only after two
-            # tier-2 confirmations. "No live instance" also happens on the
-            # self-heal paths above: with the port open they restore last_live
-            # instead of demoting a previously-live proxy to direct. Cold start
-            # has last_live empty, so it starts direct.
-            if [ "$core_port_up" = 1 ] && { [ "$good" -ge 2 ] || [ "$last_live" = "proxy" ]; }; then
-              new_status="proxy"
-            else
-              new_status="direct"
-            fi
-          elif [ "$core_port_up" = 0 ]; then
-            # The only signal-driven (periodic) downgrade.
-            new_status="direct"
-          elif [ "$current_status" = "direct" ] && [ "$good" -ge 2 ]; then
-            new_status="proxy"
+          want="closed"
+          if [ "$core_id" = 1 ] && { [ "$mode" = "proxy" ] || [ "$good" -ge 2 ]; }; then
+            want="proxy"
           fi
 
-          # Port open but no proxied answer while on proxy: nothing flips (direct
-          # is not better), log it - once, then every 12th round.
-          if [ "$current_status" = "proxy" ] && [ "$core_port_up" = 1 ] && [ "$core_e2e" = 0 ]; then
+          if [ "$want" != "$mode" ]; then
+            if [ "$want" = "proxy" ]; then
+              if start_proxy; then mode="proxy"; good=0; fi
+            else
+              # Fail closed: retire the instance, so callers get refused instead
+              # of being forwarded into a core that is gone or is not ours.
+              echo "gost-pac: core gone (or not clash-verge's); closing the proxy" >&2
+              stop_current
+              mode="closed"
+            fi
+          fi
+
+          # Identity holds but the proxied probe fails: there is nothing better to
+          # fail over to, so keep serving and log it - once, then every 12th round.
+          if [ "$mode" = "proxy" ] && [ "$core_id" = 1 ] && [ "$core_e2e" = 0 ]; then
             degraded=$((degraded + 1))
             if [ "$degraded" = 1 ] || [ $((degraded % 12)) -eq 0 ]; then
-              echo "gost-pac: WARN port 7897 accepts but the proxied probe ${healthProbeUrl} failed for $degraded round(s); keeping proxy (direct would not be better)" >&2
+              echo "gost-pac: WARN :7897 is clash-verge's but the proxied probe ${healthProbeUrl} failed for $degraded round(s); staying proxy" >&2
             fi
           else
             if [ "$degraded" -gt 0 ]; then
-              # The streak also ends when the port closes or the instance/mode
-              # changes; only a fresh tier-2 answer is a recovery.
               if [ "$core_e2e" = 1 ]; then
                 echo "gost-pac: proxied probe recovered after $degraded degraded round(s)" >&2
               else
-                echo "gost-pac: degraded streak ended (port closed or mode/instance changed) after $degraded round(s)" >&2
+                echo "gost-pac: degraded streak ended (core unverified or mode changed) after $degraded round(s)" >&2
               fi
             fi
             degraded=0
           fi
 
-          if [ "$new_status" != "$current_status" ]; then
-            # Minimum residency for the return to proxy; direct is never cooled
-            # (fail-open). The boot-time selection is initialisation, not an
-            # oscillation, so it must not start the cooldown. Read the previous
-            # status: start_gost() overwrites current_status.
-            now="$(${pkgs.coreutils}/bin/date +%s)"
-            prev_status="$current_status"
-            if [ "$prev_status" = "none" ] || [ "$new_status" = "direct" ] || [ $((now - last_flip)) -ge 30 ]; then
-              if start_gost "$new_status"; then
-                good=0
-                if [ "$prev_status" != "none" ]; then
-                  last_flip="$now"
-                fi
-              fi
-            fi
-          fi
-
+          write_state "$mode"
           sleep 5
         done
       ''
