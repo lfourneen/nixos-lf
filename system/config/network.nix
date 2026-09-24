@@ -75,16 +75,6 @@ let
     meta skuid != ${killSwitchUidSet} oifname != { "lo", "${tunDev}" } ip6 daddr != ff00::/8 counter drop
   '';
 
-  # TUN-bound packets must not be queued; zapret is for physical egress only.
-  zapretGuard = lib.optionalString tunMode ''oifname { "ens1", "wlo1" } '';
-
-  # Keep engine-marked (mihomo) and gost packets out of the zapret queue:
-  # nfqws drops the fwmark on reinjection, looping DIRECT conns back into TUN.
-  zapretMarkAccept = lib.optionalString tunMode ''
-    meta mark != 0 accept
-    meta skuid 0 accept
-    meta skuid ${toString config.users.users.gost.uid} accept'';
-
   # TPROXY bridges whose egress goes through mihomo (tproxy-port 7896, see
   # cvr-merge.nix). Empty = off; TUN only captures host output. Untested.
   vmTransparentProxyIfaces = [
@@ -215,27 +205,6 @@ in
     nssmdns4 = true;
     nssmdns6 = true;
     allowInterfaces = [ "lo" "wlo1" "tailscale0" ];
-  };
-
-  # Zapret
-  services.zapret = {
-    enable = true;
-    configureFirewall = false;
-    httpSupport = true;
-    udpSupport = true;
-    udpPorts = [ "443" ];
-
-    params = [
-      # Minimal DPI bypass, less aggressive
-      "--dpi-desync=fake"
-      "--dpi-desync-ttl=4"
-      "--dpi-desync-split-pos=1,midsld"
-
-      # --- risky options (can cause lag/packet loss) ---
-      # "--dpi-desync=fake,multisplit"
-      # "--dpi-desync-fooling=badseq"
-      # "--dpi-desync-repeats=5"
-    ];
   };
 
   # DNS PAC: dnsmasq (1054, always up) forwards to mihomo (1053) when clash is up,
@@ -426,13 +395,6 @@ in
           # public IP, not :33333 -- count those as proxied, not bypasses.
           tcp dport { 7897 } accept
           udp dport { 7897 } accept
-
-          # Zapret diversion (mihomo's own packets exempt, see zapretMarkAccept).
-          ${zapretMarkAccept}
-          ${zapretGuard}ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } tcp dport { 80, 443 } counter queue num 200 bypass
-          ${zapretGuard}ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 } udp dport 443 counter queue num 200 bypass
-          ${zapretGuard}ip6 daddr != { fe80::/10, fc00::/7 } tcp dport { 80, 443 } counter queue num 200 bypass
-          ${zapretGuard}ip6 daddr != { fe80::/10, fc00::/7 } udp dport 443 counter queue num 200 bypass
 
           # Chain-tail reverse default-deny (see killSwitchTail).
           ${killSwitchTail}
