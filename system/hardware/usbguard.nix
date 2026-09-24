@@ -1,15 +1,13 @@
 { pkgs, ... }:
 
 {
-  # Kernel-side fail-closed: external (removable) USB stays unauthorized by
-  # default even if the USBGuard daemon is down; internal fixed devices
-  # (keyboard/camera/BT) remain authorized so there is no lockout.
+  # Kernel-side fail-closed: external USB stays unauthorized even if USBGuard is down;
+  # internal fixed devices (keyboard/camera/BT) stay authorized, so there is no lockout.
   boot.kernelParams = [ "usbcore.authorized_default=2" ];
 
-  # USBGuard: hash-pinned allowlist of current devices (generate-policy).
-  # Boot-time devices stay allowed (no lockout); hotplug is default-deny.
-  # USE: usbguard list-devices / usbguard allow-device <id>
-  # Regenerate: nix shell nixpkgs#usbguard -c usbguard generate-policy
+  # "allow" auto-authorizes boot-present devices; apply-policy would lock them out.
+  # Regenerate with: nix shell nixpkgs#usbguard -c usbguard generate-policy
+  # Recover a blocked device (temporary until restart): usbguard allow-device <id>
   services.usbguard = {
     enable = true;
     dbus.enable = true;
@@ -19,8 +17,10 @@
     insertedDevicePolicy = "apply-policy";
     implicitPolicyTarget = "block";
 
-    # root is required for usbguard-dbus; lfour for interactive use.
+    # IPCAllowedUsers alone does not enable polkit (the rule only checks IPCAllowedGroups),
+    # so wheel is listed to keep a non-root recovery path for blocked devices.
     IPCAllowedUsers = [ "root" "lfour" ];
+    IPCAllowedGroups = [ "wheel" ];
 
     rules = ''
       allow id 1d6b:0002 serial "0000:06:00.3" name "xHCI Host Controller" hash "+0s5mKAEDBjZasKfFR9ExKfjpMr/J4C4yq4bgYdLJSM=" parent-hash "KTj0i1ONjkGo2CJx42BsIwl+RMi6YVks67qrDYNrwPo=" with-interface 09:00:00 with-connect-type ""
