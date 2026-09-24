@@ -106,6 +106,15 @@ in
             ports: [ 443, 8443 ]
           QUIC:
             ports: [ 443, 8443 ]
+
+      # Force domains through the proxy group: prepend-rules wins by order, so its
+      # entries beat GEOIP,CN,DIRECT. Fill in, e.g. DOMAIN-SUFFIX,your.example,<代理组名>
+      prepend-rules: []
+
+      # Keep the TCP controller off and never ship the default secret; replace the
+      # placeholder with `openssl rand -hex 16`. Verge may override both keys.
+      external-controller: ""
+      secret: "<在此填入随机值>"
     '';
     force = true;
   };
