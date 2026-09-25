@@ -35,16 +35,16 @@ Outbound traffic is handled by a chain of local components:
 | Component | Port / interface | Role |
 |---|---|---|
 | Clash Verge (mihomo) | `127.0.0.1:7897`, TUN device `Mihomo` | proxy core and DNS resolver |
-| `gost-pac` (uid 987) | `127.0.0.1:33332` (HTTP), `127.0.0.1:33333` (transparent redirect) | local relay; forwards to mihomo, and refuses connections while the core is unavailable |
+| `gost-pac` (uid 987) | `127.0.0.1:33332` (HTTP), `127.0.0.1:33333` (transparent redirect) | local relay; forwards to mihomo while Clash runs, plain passthrough when it does not |
 | `dnsmasq` | `127.0.0.1:1054` | single DNS entry point for the system |
 | `unbound` | `127.0.0.1:1055` | encrypted (DoT) resolver used while mihomo is unavailable |
 | nftables | — | kill switch, transparent redirect |
 
 Applications that honour proxy settings are pointed at `127.0.0.1:33332` (session environment variables, GSettings, Flatpak overrides). TCP traffic from applications that ignore them is redirected to `127.0.0.1:33333` by nftables.
 
-### Failover
+### Modes
 
-`gost-pac` is fail-closed: it only ever forwards to `127.0.0.1:7897`, so while the core is down connections to `:33332`/`:33333` are refused instead of falling back to a direct connection — the real address is never used as an implicit fallback. DNS still fails over: `dns-pac` repoints dnsmasq at the encrypted resolver while mihomo is down.
+`proxy-mode` loads the kill switch and the `:33333` redirect only while Clash runs. With Clash closed the host is plain direct-connected: the portal, DNS and ordinary browsing work with no warm-up, and `gost-pac` keeps serving `:33332` as a plain passthrough instead of refusing, so applications that only honour proxy variables (nix-daemon, Flatpak apps, hermes, curl) keep working. While Clash runs, `gost-pac` only ever forwards to `127.0.0.1:7897`: a missing core or node fails the connection instead of falling back to a direct one, and the mode is selected from the Clash unit and GUI rather than from the core, so a crashed core stays fail-closed. DNS follows the same split: `dns-pac` repoints dnsmasq at the encrypted resolver while mihomo is down.
 
 `/run/gost-pac/status` and `/run/dns-pac/status` (shown by the `proxy-status` command in the Nushell config) report the mode the supervisors have selected; they describe the supervisors' state, not the path an individual connection takes.
 
@@ -56,7 +56,8 @@ Applications that honour proxy settings are pointed at `127.0.0.1:33332` (sessio
 
 * With the TUN device up, the nftables redirect to `:33333` is dormant: TCP is intercepted by mihomo's own auto-redirect rules first. The redirect carries traffic while the TUN is down.
 * Only `unbound` (DoT, tcp/853) and `systemd-timesyncd` (udp/123) may reach the network directly for DNS and NTP. Plain queries to other public resolvers are dropped for processes outside that exempt set.
-* The kill switch drops direct egress from non-root processes, except loopback, LAN addresses, DNS/NTP and multicast. uid 987 (`gost-pac`) is still exempt from the kill switch and from mihomo's TUN; with the relay fail-closed that exemption is legacy rather than an egress path.
+* The kill switch drops direct egress from non-root processes, except loopback, LAN addresses, DNS/NTP and multicast. Only root is exempt, and that exemption is what lets mihomo's DIRECT rule egress directly while proxy mode is loaded: the DIRECT availability of the chain implicitly depends on mihomo running as root.
+* `gost-pac` is excluded from the `:33333` redirect so that its passthrough relay cannot dial itself; its egress is still subject to the kill switch, which drops it whenever proxy mode is loaded (a stale mode costs a moment of refused traffic, never a direct leak).
 * A probe is only satisfied by a listener that belongs to `clash-verge.service`: the check reads the listener's cgroup, which a local process cannot forge, so merely listening on `127.0.0.1:7897` cannot attract traffic.
 * The mihomo external controller is a world-writable unix socket that does not enforce a secret, so any process running as the login user can reconfigure the core — including setting a node to DIRECT. Accepted for a single-user desktop; the merge profile cannot override the controller settings.
 * The probes require both a domestic name (resolved DIRECT) and one carried by the proxy group, so a failed probe means the chain cannot carry traffic, not merely that one upstream node is down.

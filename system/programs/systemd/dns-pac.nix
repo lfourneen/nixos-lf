@@ -1,8 +1,8 @@
-{ pkgs, ... }:
+{ pkgs, config, ... }:
 
 {
-  # DNS PAC: clash up -> mihomo DNS (1053); down -> unbound DoT (1055). Both
-  # listeners are identified by cgroup, so an impostor on them means direct.
+  # DNS PAC: clash up -> mihomo DNS (1053); down -> unbound DoT (1055). The mode
+  # decision is the shared is-clash-on script, and the listener must be clash's own.
   systemd.services.dns-pac = {
     description = "DNS PAC: mihomo DNS when clash is up, DoT otherwise";
     after = [ "network.target" ];
@@ -31,18 +31,43 @@
       ReadWritePaths = [ "/run/dns-pac" ];
 
       ExecStart = "${pkgs.writeShellScript "dns-pac-loop" ''
+        CLASH_ON=${config.my.proxy.isClashOn}
+
+        isp_servers() {
+          $CLASH_ON && return 0
+
+          lease=/var/lib/dhcpcd/ens1.lease
+          if [ ! -r "$lease" ]; then
+            echo "dns-pac: $lease is not readable; no ISP DNS fallback" >&2
+            return 0
+          fi
+
+          found="$(${pkgs.gnused}/bin/sed -n 's/^domain_name_servers=//p; s/^new_domain_name_servers=//p' "$lease" \
+            | ${pkgs.coreutils}/bin/tr -s ' \t' '\n' \
+            | ${pkgs.gnugrep}/bin/grep -vE '^(0\.0\.0\.0|127\.|169\.254\.|255\.255\.255\.255)' \
+            | ${pkgs.gnugrep}/bin/grep -E '^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$')"
+          if [ -z "$found" ]; then
+            echo "dns-pac: no ISP resolver in $lease; no DNS fallback" >&2
+            return 0
+          fi
+
+          printf 'server=%s\n' $found
+        }
 
         write_state() {
           case "$1" in
             proxy)
-              upstream='server=127.0.0.1#1053'
+              new_conf='server=127.0.0.1#1053'
               ;;
             direct)
-              # Encrypted DoT only; no plaintext fallback.
-              upstream='server=127.0.0.1#1055'
+              new_conf='server=127.0.0.1#1055'
+              isp="$(isp_servers)"
+              if [ -n "$isp" ]; then
+                new_conf="$(printf '%s\n%s' "$new_conf" "$isp")"
+              fi
               ;;
           esac
-          printf '%s\n' "$upstream" > /run/dns-pac/servers.conf
+          printf '%s\n' "$new_conf" > /run/dns-pac/servers.conf
 
           # State for proxy-status.
           printf '%s\n' "$1" > /run/dns-pac/status
@@ -50,20 +75,15 @@
           # Only restart when the upstream really changed: dnsmasq's StartLimit
           # (5 per 10s) must not be hit by a flapping probe, and a redundant
           # write needs no restart. The cache flush is cheap, so keep it.
-          if [ "$upstream" != "''${last_upstream:-}" ]; then
-            last_upstream="$upstream"
+          if [ "$new_conf" != "''${last_conf:-}" ]; then
+            last_conf="$new_conf"
             ${pkgs.systemd}/bin/systemctl restart --no-block dnsmasq.service || true
           fi
           ${pkgs.systemd}/bin/resolvectl flush-caches
         }
 
-        # Identity, not reachability: a local impostor can bind these ports but
-        # cannot land in clash-verge's cgroup, which the kernel reports.
-        core_up() {
-          ${pkgs.iproute2}/bin/ss -lnteH 'sport = :7897' 2>/dev/null \
-            | ${pkgs.gnugrep}/bin/grep -q 'cgroup:/system.slice/clash-verge.service'
-        }
-
+        # Identity, not reachability: a local impostor can bind 1053 but cannot land
+        # in clash-verge's cgroup, which the kernel reports.
         dns_listener_up() {
           ${pkgs.iproute2}/bin/ss -lnteH 'sport = :1053' 2>/dev/null \
             | ${pkgs.gnugrep}/bin/grep -q 'cgroup:/system.slice/clash-verge.service'
@@ -89,9 +109,9 @@
         misses=0
 
         while true; do
-          if ! core_up || ! dns_listener_up; then
-            # Core (or its DNS listener) is gone/not ours -> 1053 cannot answer:
-            # fall back immediately (no hysteresis so DIRECT never waits).
+          if ! $CLASH_ON || ! dns_listener_up; then
+            # Clash is off, or its DNS listener is gone/not ours -> 1053 cannot
+            # answer: fall back immediately (no hysteresis so DIRECT never waits).
             if [ "$current" != "direct" ]; then
               echo "clash core gone; DNS -> direct"
               write_state direct

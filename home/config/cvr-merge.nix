@@ -8,9 +8,6 @@ let
   # device name or TUN traffic stops matching them.
   tunDev = osConfig.my.proxy.tunDev;
 
-  # Same single source as gost-pac.nix; avoids a silent TUN loop on uid drift.
-  gostUid = osConfig.users.users.gost.uid;
-
 in
 {
   home.file.".local/share/io.github.clash-verge-rev.clash-verge-rev/profiles/Merge.yaml" = {
@@ -46,9 +43,18 @@ in
           - any:53
           - tcp://any:53
         mtu: 1500
-        # Keep gost-pac out of the TUN (fail-open egresses the physical NIC).
-        exclude-uid:
-          - ${toString gostUid}
+        # Portal/LAN/CGNAT targets must bypass the TUN, else the ISP login page is
+        # unreachable; keep in sync with the private ranges exempted in network.nix.
+        route-exclude-address:
+          - 10.0.0.0/8
+          - 172.16.0.0/12
+          - 192.168.0.0/16
+          - 100.64.0.0/10
+          - 224.0.0.0/4
+          - 255.255.255.255/32
+          - fc00::/7
+          - fe80::/10
+          - ff00::/8
       ''}
       # Foreign DoH (1.1.1.1/8.8.8.8) is blocked when dialed directly, but
       # `respect-rules` sends it through the proxy, so ipleak sees the proxy's

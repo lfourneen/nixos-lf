@@ -215,7 +215,7 @@
     # bpftrace (BTF) works on new kernels where bcc's headers fail.
     # A public daddr is therefore no proof of a leak: only call it one when no
     # gost session matches, conntrack shows no :33333 redirect, and the uid is
-    # not exempt (0/987). Watch gost for the matching destination as a check.
+    # not exempt (0). Watch gost for the matching destination as a check.
     def egress-audit [...args] {
       sudo bpftrace /run/current-system/sw/share/bpftrace/tools/tcpconnect.bt ...$args
     }

@@ -13,6 +13,7 @@
     ./nftables-verify.nix
     ./ntsync.nix  
     ./nvidia-powerd.nix
+    ./proxy-mode.nix
   ];
 }
 

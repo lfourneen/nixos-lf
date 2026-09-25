@@ -41,38 +41,58 @@ let
   # closed). Needs Clash Verge Service Mode (root core exempt via skuid 0).
   proxyKillSwitch = true;
 
-  # Extra exempt UIDs (root 0 is always exempt).
-  killSwitchExemptUids = [
-    config.users.users.gost.uid  # gost fail-open needs any target:port; never narrow by port
-  ];
-  killSwitchUidSet = "{ ${lib.concatStringsSep ", " (map toString ([ 0 ] ++ killSwitchExemptUids))} }";
+  # Only root is exempt: mihomo egresses as root, so its DIRECT rule keeps working
+  # in proxy mode. gost only dials loopback, so it needs no exemption.
+  killSwitchUidSet = "{ 0 }";
+
+  # gost stays out of the redirect so that a passthrough relay cannot dial itself;
+  # its egress is still dropped by the killswitch, so this is not an egress path.
+  redirectExemptUidSet = "{ 0, ${toString config.users.users.gost.uid} }";
 
   # The 53/853/123 channel is pinned per-process instead of opened to any
   # destination: unbound needs DoT (tcp/853) to its two fixed upstreams -- the
   # only resolver left when Clash is down -- and systemd-timesyncd needs
   # udp/123, whose peers rotate. unbound is a dynamic user, so its eval-time
-  # null uid is pinned like gost's 987 below.
+  # null uid is pinned like gost's literal above.
   dnsDotUpstreams = "{ 223.5.5.5, 223.6.6.6 }";
   unboundUid = 983;
   timesyncUid = config.users.users."systemd-timesync".uid;
 
-  killSwitchRules = lib.optionalString proxyKillSwitch ''
+  # Exemptions stay static so DNS/NTP keep working in direct mode; the drops and
+  # the redirect are loaded only while Clash runs (see proxy-mode.nix).
+  killSwitchAccepts = lib.optionalString proxyKillSwitch ''
     # Per-process, per-destination: only unbound's DoT and timesyncd's NTP.
     meta skuid ${toString unboundUid} oifname { "ens1", "wlo1" } ip daddr ${dnsDotUpstreams} tcp dport 853 accept
     meta skuid ${toString timesyncUid} oifname { "ens1", "wlo1" } udp dport 123 accept
-    # LAN + multicast/broadcast are link-local, not an egress leak; keep mDNS
-    # (Avahi) and LocalSend discovery working for non-root apps.
-    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 224.0.0.0/4, 255.255.255.255 } counter drop
-    meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip6 daddr != { fe80::/10, fc00::/7, ff00::/8 } counter drop
   '';
 
-  # Reverse default-deny: the drops above only cover the NICs pinned in
-  # systemd.network.links, so another interface or a tailnet exit-node route
-  # would egress unmetered. Keep the lo/TUN and multicast/broadcast exceptions:
-  # mDNS, DHCP and the TUN return path depend on them.
-  killSwitchTail = lib.optionalString proxyKillSwitch ''
-    meta skuid != ${killSwitchUidSet} oifname != { "lo", "${tunDev}" } ip daddr != { 224.0.0.0/4, 255.255.255.255 } counter drop
-    meta skuid != ${killSwitchUidSet} oifname != { "lo", "${tunDev}" } ip6 daddr != ff00::/8 counter drop
+  # Fragment proxy-mode.service applies while Clash runs: LAN/multicast stay
+  # link-local, and the tail also covers interfaces not pinned in network.links.
+  proxyModeRules = lib.optionalString proxyKillSwitch ''
+    flush chain inet filter proxymode_drops
+    add rule inet filter proxymode_drops meta skuid != 0 udp dport { 3478, 5349 } drop
+    add rule inet filter proxymode_drops meta skuid != 0 tcp dport { 3478, 5349 } drop
+    add rule inet filter proxymode_drops meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 224.0.0.0/4, 255.255.255.255 } counter drop
+    add rule inet filter proxymode_drops meta skuid != ${killSwitchUidSet} oifname { "ens1", "wlo1" } ip6 daddr != { fe80::/10, fc00::/7, ff00::/8 } counter drop
+
+    flush chain inet filter proxymode_tail
+    add rule inet filter proxymode_tail meta skuid != ${killSwitchUidSet} oifname != { "lo", "${tunDev}" } ip daddr != { 224.0.0.0/4, 255.255.255.255 } counter drop
+    add rule inet filter proxymode_tail meta skuid != ${killSwitchUidSet} oifname != { "lo", "${tunDev}" } ip6 daddr != ff00::/8 counter drop
+
+    # `redirect` is an nft statement keyword, so the chain cannot be named that.
+    table ip proxymode_nat {
+      chain output {
+        type nat hook output priority -100; policy accept;
+        meta skuid != ${redirectExemptUidSet} ip daddr != { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 224.0.0.0/4, 255.255.255.255 } tcp dport != { 53, 853 } counter redirect to :33333
+      }
+    }
+
+    table ip6 proxymode_nat {
+      chain output {
+        type nat hook output priority -100; policy accept;
+        meta skuid != ${redirectExemptUidSet} ip6 daddr != { ::1, fe80::/10, fc00::/7, ff00::/8 } tcp dport != { 53, 853 } counter redirect to :33333
+      }
+    }
   '';
 
   # TPROXY bridges whose egress goes through mihomo (tproxy-port 7896, see
@@ -91,6 +111,9 @@ let
 
 in
 {
+  # The mode-dependent rules are applied by proxy-mode.service (see proxy-mode.nix).
+  my.proxy.proxyModeRules = proxyModeRules;
+
   # Pin NIC names so they survive kernel naming changes. Wired matches by
   # hardware MAC only: Path can change if PCIe bus numbers shift.
   systemd.network.links."10-wired-ens1" = {
@@ -370,6 +393,11 @@ in
           drop
         }
 
+        # Filled by proxy-mode.service while Clash runs; empty means no enforcement.
+        # Declared before the jumps because a target must exist when the rule loads.
+        chain proxymode_drops { }
+        chain proxymode_tail { }
+
         chain output {
           type filter hook output priority 0; policy accept;
 
@@ -378,16 +406,14 @@ in
           ip daddr 127.0.0.0/8 accept
           ip6 daddr ::1 accept
 
-          # WebRTC/STUN leak block -- unconditional (applies with/without TUN);
-          # tailscaled is root, so unaffected.
-          meta skuid != 0 udp dport { 3478, 5349 } drop
-          meta skuid != 0 tcp dport { 3478, 5349 } drop
-
           # QUIC drop (non-TUN only; see blockQuic).
           ${lib.optionalString blockQuic "meta skuid != 0 udp dport 443 drop"}
 
-          # Proxy kill switch (see let).
-          ${killSwitchRules}
+          # Per-process DNS/NTP exemptions; static so direct mode keeps working.
+          ${killSwitchAccepts}
+
+          # Enforcement is loaded only while Clash runs; empty chain = no-op.
+          jump proxymode_drops
 
           # Clash mixed-port (loopback-only; already accepted above, listed
           # explicitly for auditing). NOTE: egress-audit uses connect(2)
@@ -396,8 +422,8 @@ in
           tcp dport { 7897 } accept
           udp dport { 7897 } accept
 
-          # Chain-tail reverse default-deny (see killSwitchTail).
-          ${killSwitchTail}
+          # Chain-tail reverse default-deny, loaded only while Clash runs.
+          jump proxymode_tail
         }
       }
 
@@ -415,14 +441,6 @@ in
           meta skuid != 0 ip daddr != { 127.0.0.0/8, 100.100.100.100 } udp dport 53 redirect to :1054
           meta skuid != 0 ip daddr != { 127.0.0.0/8, 100.100.100.100 } tcp dport 53 redirect to :1054
           ''}
-
-          ${lib.optionalString proxyKillSwitch ''
-          # Dormant while TUN is up (mihomo's auto-redirect claims the TCP path
-          # first), so this only carries traffic in the fail-open window. Its
-          # exclusion set must match the killswitch drop's set: 169.254.0.0/16 is
-          # deliberately absent, so link-local TCP reaches the device via gost.
-          meta skuid != ${killSwitchUidSet} ip daddr != { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 224.0.0.0/4, 255.255.255.255 } tcp dport != { 53, 853 } counter redirect to :33333
-          ''}
         }
 
         chain postrouting {
@@ -435,17 +453,6 @@ in
           oifname "ens1" ip saddr 10.42.0.0/24 masquerade
         }
       }
-
-      # IPv6 twin of the above.
-      ${lib.optionalString proxyKillSwitch ''
-      table ip6 nat {
-        chain output {
-          type nat hook output priority -100; policy accept;
-
-          meta skuid != ${killSwitchUidSet} ip6 daddr != { ::1, fe80::/10, fc00::/7, ff00::/8 } tcp dport != { 53, 853 } counter redirect to :33333
-        }
-      }
-      ''}
 
       ${lib.optionalString vmTproxy ''
       # Divert listed bridges' public TCP/UDP into mihomo's tproxy port.

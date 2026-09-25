@@ -4,6 +4,7 @@ let
   # Health-probe target for the "core really answers" gate: domestic and highly
   # reachable, so it proves mihomo's own chain rather than the node.
   healthProbeUrl = "https://www.baidu.com/";
+
 in
 {
   # Dedicated user so clash's tun.exclude-uid and network.nix nft rules can
@@ -15,25 +16,24 @@ in
     uid = 987;   # static: dynamic system users have a null uid at eval time
   };
 
-  # nftables and clash's tun.exclude-uid bake the literal 987; activation never
-  # re-checks an explicit uid, so a second account claiming it would silently
-  # widen the trusted egress set. Fail the build instead.
+  # The nft redirect excludes the literal 987 so a passthrough relay cannot dial
+  # itself; a second account claiming that uid would silently widen the exclusion.
   assertions = [
     {
       assertion =
         lib.count (u: u.uid == 987) (lib.attrValues config.users.users) == 1;
       message = ''
         gost-pac.nix: uid 987 must be used by exactly one account (gost).
-        The nftables killswitch exemption and Clash tun.exclude-uid bake the
-        literal 987; a duplicate uid silently widens the trusted egress set.
+        The nft redirect exclusion bakes the literal 987; a duplicate uid would
+        silently widen it.
       '';
     }
   ];
 
-  # Network PAC, proxy-only and fail-closed: gost runs only while clash-verge's own
-  # listener is verified, otherwise :33332/:33333 refuse instead of dialing out.
+  # Network PAC: with Clash on, gost only forwards to mihomo; with Clash off it is a
+  # plain passthrough, so env-proxy consumers keep working without a warm-up.
   systemd.services.gost-pac = {
-    description = "Gost PAC (proxy-only, fail-closed)";
+    description = "Gost PAC (forwards to mihomo, or passthrough when Clash is off)";
     after = [ "network.target" ];
     wantedBy = [ "multi-user.target" ];
     # Never stop retrying (else a crash-loop leaves proxied apps without internet)
@@ -84,10 +84,10 @@ in
         listen_fail=0
         degraded=0
 
-        # nft/Clash bake 987; a drifted runtime uid means the exemption no longer
-        # matches this process, so say so instead of failing silently.
+        # The nat redirect excludes 987 so a passthrough relay cannot dial itself;
+        # a drifted runtime uid would silently widen that exclusion.
         if [ "$(${pkgs.coreutils}/bin/id -u)" != "987" ]; then
-          echo "gost-pac: WARN running as uid $(${pkgs.coreutils}/bin/id -u); killswitch/TUN exemption expects 987" >&2
+          echo "gost-pac: WARN running as uid $(${pkgs.coreutils}/bin/id -u); the nat redirect exclusion expects 987" >&2
         fi
 
         # State-file contract: one mode word plus a newline, rewritten every round
@@ -138,34 +138,42 @@ in
           fi
         }
 
-        start_proxy() {
-          # Proxy-only: gost never dials a target itself, so there is no real-IP
-          # egress path. Loopback-only; SO_REUSEPORT keeps a restart from refusing.
-          env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
-            "${pkgs.gost}/bin/gost" \
-              "-L=http://127.0.0.1:33332?reuseport=true" \
-              "-L=redirect://127.0.0.1:33333?reuseport=true" \
-              "-L=redirect://[::1]:33333?reuseport=true" \
-              -F=http://127.0.0.1:7897 &
+        start_gost() {
+          # proxy: only forward to mihomo, never dialing a target itself. direct:
+          # passthrough, which is what "Clash is off" means.
+          if [ "$1" = "proxy" ]; then
+            env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
+              "${pkgs.gost}/bin/gost" \
+                "-L=http://127.0.0.1:33332?reuseport=true" \
+                "-L=redirect://127.0.0.1:33333?reuseport=true" \
+                "-L=redirect://[::1]:33333?reuseport=true" \
+                -F=http://127.0.0.1:7897 &
+          else
+            env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
+              "${pkgs.gost}/bin/gost" \
+                "-L=http://127.0.0.1:33332?reuseport=true" \
+                "-L=redirect://127.0.0.1:33333?reuseport=true" \
+                "-L=redirect://[::1]:33333?reuseport=true" &
+          fi
           new_pid=$!
 
           sleep 1
           if ! kill -0 "$new_pid" 2>/dev/null; then
-            # Stay closed instead of lying: reap the dead child, keep the state.
-            echo "gost-pac: gost failed to start; staying closed" >&2
+            # Stay as we are instead of lying: reap the dead child, keep the state.
+            echo "gost-pac: gost failed to start in [$1]" >&2
             ${pkgs.systemd}/bin/systemd-cat -t gost-pac -p err ${pkgs.coreutils}/bin/echo \
-              "gost-pac: gost failed to start; proxy stays closed" || true
+              "gost-pac: gost failed to start in [$1]" || true
             wait "$new_pid" 2>/dev/null
             return 1
           fi
 
           proxy_pid="$new_pid"
-          echo "gost-pac status -> proxy (pid $new_pid)"
+          echo "gost-pac status -> $1 (pid $new_pid)"
 
           if ! listen_ok; then
-            echo "gost-pac: WARN status=proxy but 127.0.0.1:33332/33333 are not both listening" >&2
+            echo "gost-pac: WARN status=$1 but 127.0.0.1:33332/33333 are not both listening" >&2
             ${pkgs.systemd}/bin/systemd-cat -t gost-pac -p warning ${pkgs.coreutils}/bin/echo \
-              "gost-pac: status=proxy without bound listeners" || true
+              "gost-pac: status=$1 without bound listeners" || true
           fi
         }
 
@@ -176,14 +184,14 @@ in
         }
         trap cleanup TERM INT
 
-        # Fail closed from the first second: no listener until the core is verified.
+        # Nothing is served until the first round decides between proxy and passthrough.
         write_state closed
 
         while true; do
           # A crash after the 1s start check would leave both ports unbound while
-          # the state file still claims proxy. Heal it first, back to closed.
+          # the state file still claims a mode. Heal it first, back to unknown.
           if [ -n "$proxy_pid" ] && ! kill -0 "$proxy_pid" 2>/dev/null; then
-            echo "gost-pac: instance pid $proxy_pid is gone; closing" >&2
+            echo "gost-pac: instance pid $proxy_pid is gone; restarting" >&2
             proxy_pid=""
             mode="closed"
             listen_fail=0
@@ -197,7 +205,7 @@ in
             else
               listen_fail=$((listen_fail + 1))
               if [ "$listen_fail" -ge 2 ]; then
-                echo "gost-pac: pid $proxy_pid is alive but 127.0.0.1:33332/33333 are not listening; closing" >&2
+                echo "gost-pac: pid $proxy_pid is alive but 127.0.0.1:33332/33333 are not listening; restarting" >&2
                 listen_fail=0
                 stop_current
                 mode="closed"
@@ -205,36 +213,57 @@ in
             fi
           fi
 
-          # Two signals: :7897 must be clash-verge's (identity) and answer a real
-          # proxied request twice in a row; staying in proxy only needs identity.
-          if core_up; then core_id=1; else core_id=0; fi
-
-          if ${pkgs.coreutils}/bin/timeout 3 ${pkgs.curl}/bin/curl -s -o /dev/null \
-               -w '%{http_code}' --noproxy "" -x http://127.0.0.1:7897 \
-               ${healthProbeUrl} 2>/dev/null \
-             | ${pkgs.gnugrep}/bin/grep -qE '^(200|204)$'; then
-            core_e2e=1
+          # Proxy mode owns the redirect + killswitch; with it off gost is a plain
+          # passthrough (real IP, nothing loaded), which is what "direct" means.
+          if ${pkgs.coreutils}/bin/cat /run/proxy-mode/status 2>/dev/null | ${pkgs.gnugrep}/bin/grep -q '^proxy$'; then
+            proxy_mode=1
           else
-            core_e2e=0
+            proxy_mode=0
           fi
 
-          if [ "$core_e2e" = 1 ]; then good=$((good+1)); else good=0; fi
+          core_id=0
+          core_e2e=0
+          want="direct"
+          if [ "$proxy_mode" = 1 ]; then
+            # Two signals: :7897 must be clash-verge's (identity) and answer a real
+            # proxied request twice in a row; staying in proxy only needs identity.
+            if core_up; then core_id=1; fi
 
-          want="closed"
-          if [ "$core_id" = 1 ] && { [ "$mode" = "proxy" ] || [ "$good" -ge 2 ]; }; then
-            want="proxy"
+            if ${pkgs.coreutils}/bin/timeout 3 ${pkgs.curl}/bin/curl -s -o /dev/null \
+                 -w '%{http_code}' --noproxy "" -x http://127.0.0.1:7897 \
+                 ${healthProbeUrl} 2>/dev/null \
+               | ${pkgs.gnugrep}/bin/grep -qE '^(200|204)$'; then
+              core_e2e=1
+            fi
+            if [ "$core_e2e" = 1 ]; then good=$((good+1)); else good=0; fi
+
+            want="closed"
+            if [ "$core_id" = 1 ] && { [ "$mode" = "proxy" ] || [ "$good" -ge 2 ]; }; then
+              want="proxy"
+            fi
           fi
 
           if [ "$want" != "$mode" ]; then
-            if [ "$want" = "proxy" ]; then
-              if start_proxy; then mode="proxy"; good=0; fi
-            else
-              # Fail closed: retire the instance, so callers get refused instead
-              # of being forwarded into a core that is gone or is not ours.
-              echo "gost-pac: core gone (or not clash-verge's); closing the proxy" >&2
-              stop_current
-              mode="closed"
-            fi
+            case "$want" in
+              proxy)
+                if start_gost proxy; then mode="proxy"; good=0; fi
+                ;;
+              direct)
+                # Passthrough from the first round: nothing points at a core when
+                # Clash is off, so env-proxy consumers must not be left refused.
+                if start_gost direct; then
+                  mode="direct"
+                  echo "gost-pac: Clash is off; passthrough relay on 127.0.0.1:33332" >&2
+                fi
+                ;;
+              *)
+                if [ "$mode" = "proxy" ]; then
+                  echo "gost-pac: core gone (or not clash-verge's); closing" >&2
+                fi
+                stop_current
+                mode="closed"
+                ;;
+            esac
           fi
 
           # Identity holds but the proxied probe fails: there is nothing better to
