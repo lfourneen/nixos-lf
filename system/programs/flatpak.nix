@@ -31,6 +31,16 @@
       };
     };
 
+    overrides.settings."cn.lceda.LCEDAPro" = {
+      Context = {
+        filesystems = [ "~/Projects" "~/.config/LCEDA-Pro" ];
+        sockets = [ "!x11" "wayland" ];
+      };
+      "Session Bus Policy" = {
+        "org.freedesktop.FileManager1" = "talk";
+      };
+    };
+
     packages = [
       # Communication tools
       "app.zen_browser.zen"
