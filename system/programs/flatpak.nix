@@ -41,6 +41,15 @@
       };
     };
 
+    # Keep QQ on the Wayland backend (launcher passes --ozone-platform=wayland
+    # when WAYLAND_DISPLAY is set) so the CSD titlebar stays draggable under
+    # niri, while leaving the X11 socket available for its clipboard code.
+    overrides.settings."com.qq.QQ" = {
+      Context = {
+        sockets = [ "wayland" "x11" ];
+      };
+    };
+
     packages = [
       # Communication tools
       "app.zen_browser.zen"
