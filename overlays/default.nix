@@ -9,5 +9,17 @@ final: prev:
   dsh-desktop = final.callPackage ./dsh-desktop.nix { };
 
   waywallen = final.callPackage ./waywallen-appimage.nix { };
+
+  niri = prev.niri.overrideAttrs (old: {
+    doCheck = false;
+
+    patches = (old.patches or [ ]) ++ [
+      (prev.fetchurl {
+        name = "niri-shm-screencast.diff";
+        url = "https://github.com/niri-wm/niri/pull/1791.diff";
+        hash = "sha256-s8pciMdiGahY6fsA87ZxeRwFA7LwIZ4/cb5OZD64baA=";
+      })
+    ];
+  });
 }
 
