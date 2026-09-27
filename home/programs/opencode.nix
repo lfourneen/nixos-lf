@@ -8,7 +8,7 @@
   };
 
   home.packages = with pkgs;[
-    pkgs.unstable.opencode-desktop
+    #pkgs.unstable.opencode-desktop
   ];
 }
 
