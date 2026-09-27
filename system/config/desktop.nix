@@ -90,7 +90,6 @@
   environment.systemPackages = with pkgs; [ 
     # Gnome extensions
     gnomeExtensions.advanced-weather-companion
-    gnomeExtensions.appindicator
     gnomeExtensions.astra-monitor
     gnomeExtensions.bluetooth-battery-meter
     gnomeExtensions.caffeine
@@ -107,6 +106,7 @@
     gnomeExtensions.kiwi-menu
     gnomeExtensions.proxy-switcher
     gnomeExtensions.quick-settings-audio-devices-renamer
+    pkgs.unstable.gnomeExtensions.status-tray
     gnomeExtensions.user-themes
     gnomeExtensions.wifi-qrcode
     gnomeExtensions.workspace-indicator
