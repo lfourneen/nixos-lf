@@ -606,12 +606,13 @@ in
     # $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
   '';
 
-  # waywallen (AppImage) runs as a daemon and spawns its own layer-shell
-  # display client on niri, so this is the only service needed. `--no-ui` starts
-  # it silently in the tray (no GUI window); the window opens on demand from the
-  # tray icon. `--display-backend layer-shell` avoids relying on DE
-  # autodetection. The client still paints into the `waywallen-wallpaper`
-  # namespace matched by the layer-rule above.
+  # waywallen (AppImage) runs as a daemon and spawns its own display client.
+  # The backend must match the running compositor: `layer-shell` on niri
+  # (wlroots protocol, paints into the `waywallen-wallpaper` namespace matched
+  # by the layer-rule above), `gnome-shell` on GNOME (the GNOME extension embeds
+  # the renderer via Meta.WaylandClient; layer-shell fails there because Mutter
+  # does not expose zwlr_layer_shell_v1). `--no-ui` keeps it silent in the tray;
+  # the window opens on demand from the tray icon.
   systemd.user.services.waywallen = {
     Unit = {
       Description = "waywallen wallpaper daemon (tray, no GUI)";
@@ -619,7 +620,13 @@ in
       After = [ "graphical-session.target" ];
     };
     Service = {
-      ExecStart = "${pkgs.waywallen}/bin/waywallen --no-ui --display-backend layer-shell";
+      ExecStart = pkgs.writeShellScript "waywallen-start" ''
+        case "$XDG_CURRENT_DESKTOP" in
+          *GNOME*) backend=gnome-shell ;;
+          *)       backend=layer-shell ;;
+        esac
+        exec ${pkgs.waywallen}/bin/waywallen --no-ui --display-backend "$backend"
+      '';
       Restart = "on-failure";
       RestartSec = 5;
     };
