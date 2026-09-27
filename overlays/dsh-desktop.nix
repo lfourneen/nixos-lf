@@ -2,7 +2,7 @@
 
 let
   pname = "dsh-desktop";
-  version = "2.0.14";
+  version = "2.0.15";
 
   # Upstream now publishes a plain Electron tarball for Linux (no AppImage).
   # The archive root is DSH-NEXT-<version>-next-linux-x64 and the executable is
