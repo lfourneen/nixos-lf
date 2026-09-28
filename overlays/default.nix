@@ -10,6 +10,8 @@ final: prev:
 
   waywallen = final.callPackage ./waywallen-appimage.nix { };
 
+  wemeet-cursor-hook = final.callPackage ./wemeet-cursor-hook.nix { };
+
   niri = prev.niri.overrideAttrs (old: {
     doCheck = false;
 

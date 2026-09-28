@@ -1,4 +1,4 @@
-{ ... }:
+{ pkgs, ... }:
 
 {
   services.flatpak = {
@@ -47,6 +47,15 @@
     overrides.settings."com.qq.QQ" = {
       Context = {
         sockets = [ "wayland" "x11" ];
+      };
+    };
+
+    overrides.settings."com.tencent.wemeet" = {
+      Context = {
+        filesystems = [ "${pkgs.wemeet-cursor-hook}" ];
+      };
+      Environment = {
+        LD_PRELOAD = "${pkgs.wemeet-cursor-hook}/lib/libwemeet-cursor-hook.so";
       };
     };
 
