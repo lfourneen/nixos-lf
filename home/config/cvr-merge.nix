@@ -29,10 +29,13 @@ in
       # TPROXY inbound for the optional VM transparent proxy (vmTransparentProxy).
       tproxy-port: 7896
       ${lib.optionalString tunMode ''
-      # TUN: stack/auto-redirect/dns-hijack/strict-route are authoritative in the
-      # Clash Verge GUI (Stack=Mixed, Auto Redirect=ON, DNS Hijack=any:53,
-      # Strict Route=ON). strict-route is required because auto-route's
-      # `from ::/1 iif lo` rule otherwise lets locally-generated IPv6 bypass TUN.
+      # TUN: stack/dns-hijack/strict-route are authoritative in the Clash Verge
+      # GUI (Stack=Mixed, DNS Hijack=any:53, Strict Route=ON). strict-route is
+      # required because auto-route's `from ::/1 iif lo` rule otherwise lets
+      # locally-generated IPv6 bypass TUN.
+      #
+      # auto-redirect needs the sing-tun patch applied in
+      # system/programs/clash-verge.nix.
       tun:
         stack: mixed
         device: ${tunDev}
