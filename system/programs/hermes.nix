@@ -143,6 +143,11 @@ in
         model = "deepseek-flash";
       };
 
+      # Disable the unattended post-turn review fork
+      auxiliary.background_review = {
+        enabled = false;
+      };
+
       display = {
         compact = false; 
         personality = "kawaii"; 
