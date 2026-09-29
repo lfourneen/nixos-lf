@@ -17,6 +17,7 @@
     # SSH is intentionally off; enabling it also needs the `tcp dport 22` rule
     # in system/config/network.nix.
     #./ssh.nix
+    ./sops.nix
     ./steam.nix
     ./sunshine.nix
     ./udev.nix
