@@ -207,6 +207,10 @@ let
       "8bury/mini-docker" = {
         manager_placement = "attached";
       };
+      "lfourneen/waywallen-bridge" = {
+        yield_wallpaper = false;
+        sync_colors = true;
+      };
       "noctalia/mpvpaper" = {
         video_directory = "${homeDir}/Pictures/Wallpapers";
         run_as_systemd = true;
@@ -227,6 +231,24 @@ let
         "8bury/mini-docker"
         "nightwatch75/todo"
         "rxtsel/portctl"
+        "lfourneen/waywallen-bridge"
+      ];
+      source = [
+        {
+          name = "official";
+          kind = "git";
+          location = "https://github.com/noctalia-dev/official-plugins";
+        }
+        {
+          name = "community";
+          kind = "git";
+          location = "https://github.com/noctalia-dev/community-plugins";
+        }
+        {
+          name = "lfourneen";
+          kind = "git";
+          location = "https://github.com/lfourneen/noctalia-plugins";
+        }
       ];
     };
     shell = {
@@ -311,22 +333,17 @@ in
     noctaliaPackage
   ];
 
-  # Deploy a writable default config
+  # config.toml is Nix-managed: deploy it on every activation so the settings
+  # above actually apply. The app keeps its own user/runtime overrides in the
+  # state dir's settings.toml, which layers on top; hand-edits to config.toml
+  # will be overwritten.
   home.activation.setupNoctaliaConfig = inputs.home-manager.lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     TARGET_DIR="$HOME/.config/noctalia"
     TARGET_FILE="$TARGET_DIR/config.toml"
 
     $DRY_RUN_CMD mkdir -p "$TARGET_DIR"
-
-    # Deploy the default only if the file does not exist
-    if [ ! -f "$TARGET_FILE" ]; then
-      $DRY_RUN_CMD cp "${noctaliaTomlFile}" "$TARGET_FILE"
-      $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
-    fi
-
-    # Alternative: reset to default on every update (overwrites local edits)
-    # $DRY_RUN_CMD cp -f "${noctaliaTomlFile}" "$TARGET_FILE"
-    # $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
+    $DRY_RUN_CMD cp -f "${noctaliaTomlFile}" "$TARGET_FILE"
+    $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
   '';
 }
 
