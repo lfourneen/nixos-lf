@@ -10,7 +10,7 @@
       init.defaultBranch = "main";
 
       user = {
-        name  = "LFour86";
+        name  = "lfourneen";
         email = "lfourneen@qq.com";
       };
 

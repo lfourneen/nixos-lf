@@ -11,7 +11,7 @@ A declarative NixOS system configuration using Nix flakes, featuring a customize
 > **Do NOT blindly apply this configuration!**
 
 * **Change the username**: Make sure to update all references to my username (`lfour`) to your own throughout the configs.
-* **Hardware Partitioning**: This config uses `disko`, so you'll need to edit `system/hardware/disko.nix` to match your disk layout. (See [this clean install example](https://github.com/LFour86/nixos-disko-lf).)
+* **Hardware Partitioning**: This config uses `disko`, so you'll need to edit `system/hardware/disko.nix` to match your disk layout. (See [this clean install example](https://github.com/lfourneen/nixos-disko-lf).)
 * **Adapt to Your Needs**: This config is tailored for my hardware and preferences. Review and adjust all settings before use!
 
 ---

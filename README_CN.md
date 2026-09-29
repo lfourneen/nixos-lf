@@ -11,7 +11,7 @@
 > **请勿直接照搬此配置！**
 
 * **修改用户名**：请将配置中所有 `lfour` 的引用替换为你自己的用户名。
-* **硬件分区**：本配置使用 `disko`，需要编辑 `system/hardware/disko.nix` 以匹配你的磁盘布局。（参考[这个全新安装示例](https://github.com/LFour86/nixos-disko-lf)。）
+* **硬件分区**：本配置使用 `disko`，需要编辑 `system/hardware/disko.nix` 以匹配你的磁盘布局。（参考[这个全新安装示例](https://github.com/lfourneen/nixos-disko-lf)。）
 * **按需调整**：此配置针对我的硬件和偏好定制，使用前请审查并调整所有设置！
 
 ---
