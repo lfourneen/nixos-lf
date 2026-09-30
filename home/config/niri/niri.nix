@@ -627,7 +627,7 @@ in
         esac
         exec ${pkgs.waywallen}/bin/waywallen --no-ui --display-backend "$backend"
       '';
-      Restart = "on-failure";
+      Restart = "always";
       RestartSec = 5;
     };
     Install.WantedBy = [ "graphical-session.target" ];
