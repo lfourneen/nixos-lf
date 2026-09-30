@@ -1,8 +1,31 @@
-{ pkgs, config, ... }:
+{ pkgs, config, lib, ... }:
 
+let
+  m = config.my.machine;
+  port = m.ports;
+
+  # The interface whose DHCP lease carries the fallback resolvers: it must be the
+  # one NixOS runs a DHCP client on, or the lease path does not exist.
+  dhcpIfaces = lib.attrNames (lib.filterAttrs (_: v: v.useDHCP == true) config.networking.interfaces);
+  dhcpIface = if dhcpIfaces == [ ] then m.wired.name else lib.head dhcpIfaces;
+
+in
 {
-  # DNS PAC: clash up -> mihomo DNS (1053); down -> unbound DoT (1055). The mode
-  # decision is the shared is-clash-on script, and the listener must be clash's own.
+  assertions = [
+    {
+      assertion = lib.length dhcpIfaces == 1;
+      message = ''
+        dns-pac.nix reads the fallback resolvers from the DHCP lease of the one
+        interface that runs a DHCP client, but this configuration has
+        ${toString (lib.length dhcpIfaces)} of them
+        (${lib.concatStringsSep ", " dhcpIfaces}). Pin the interface or fix
+        networking.interfaces.
+      '';
+    }
+  ];
+
+  # DNS PAC: mihomo DNS while clash runs, unbound DoT otherwise, with the DHCP
+  # resolvers only inside the bounded windows below.
   systemd.services.dns-pac = {
     description = "DNS PAC: mihomo DNS when clash is up, DoT otherwise";
     after = [ "network.target" ];
@@ -33,34 +56,50 @@
       ExecStart = "${pkgs.writeShellScript "dns-pac-loop" ''
         CLASH_ON=${config.my.proxy.isClashOn}
 
+        # dhcpcd >= 10 writes an opaque lease blob, so parsing the file never
+        # matches: `dhcpcd -U` decodes it over /run/dhcpcd/unpriv.sock.
+        lease_resolvers() {
+          ${pkgs.dhcpcd}/bin/dhcpcd -U -4 "${dhcpIface}" 2>/dev/null \
+            || ${pkgs.networkmanager}/bin/nmcli -t -g IP4.DNS device show "${dhcpIface}" 2>/dev/null
+        }
+
+        # The guard is what keeps proxy mode from appending a plaintext resolver.
         isp_servers() {
           $CLASH_ON && return 0
 
-          lease=/var/lib/dhcpcd/ens1.lease
-          if [ ! -r "$lease" ]; then
-            echo "dns-pac: $lease is not readable; no ISP DNS fallback" >&2
-            return 0
-          fi
-
-          found="$(${pkgs.gnused}/bin/sed -n 's/^domain_name_servers=//p; s/^new_domain_name_servers=//p' "$lease" \
+          found="$(lease_resolvers \
+            | ${pkgs.gnused}/bin/sed -n 's/^domain_name_servers=//p; s/^new_domain_name_servers=//p' \
             | ${pkgs.coreutils}/bin/tr -s ' \t' '\n' \
             | ${pkgs.gnugrep}/bin/grep -vE '^(0\.0\.0\.0|127\.|169\.254\.|255\.255\.255\.255)' \
             | ${pkgs.gnugrep}/bin/grep -E '^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$')"
           if [ -z "$found" ]; then
-            echo "dns-pac: no ISP resolver in $lease; no DNS fallback" >&2
+            echo "dns-pac: no DHCP resolver available (dhcpcd -U/nmcli); no plaintext fallback" >&2
             return 0
           fi
 
           printf 'server=%s\n' $found
         }
 
+        # Identity of the link: a change means a new network, which opens the
+        # bootstrap window.
+        dhcp_identity() {
+          lease_resolvers \
+            | ${pkgs.gnugrep}/bin/grep -E '^(ip_address|routers|domain_name_servers|new_domain_name_servers)=' \
+            | ${pkgs.coreutils}/bin/tr '\n' ' '
+        }
+
         write_state() {
           case "$1" in
             proxy)
-              new_conf='server=127.0.0.1#1053'
+              new_conf='server=127.0.0.1#${toString port.mihomoDns}'
               ;;
-            direct)
-              new_conf='server=127.0.0.1#1055'
+            dot|degraded-dot-only)
+              # Encrypted only; same upstream as `dot`, louder reason.
+              new_conf='server=127.0.0.1#${toString port.unbound}'
+              ;;
+            *)
+              # The bounded plaintext states, reachable only from mode_a_state().
+              new_conf='server=127.0.0.1#${toString port.unbound}'
               isp="$(isp_servers)"
               if [ -n "$isp" ]; then
                 new_conf="$(printf '%s\n%s' "$new_conf" "$isp")"
@@ -69,8 +108,9 @@
           esac
           printf '%s\n' "$new_conf" > /run/dns-pac/servers.conf
 
-          # State for proxy-status.
+          # State for proxy-status plus a reason: degradations name themselves here.
           printf '%s\n' "$1" > /run/dns-pac/status
+          printf '%s\n' "$state_reason" > /run/dns-pac/reason
 
           # Only restart when the upstream really changed: dnsmasq's StartLimit
           # (5 per 10s) must not be hit by a flapping probe, and a redundant
@@ -82,10 +122,10 @@
           ${pkgs.systemd}/bin/resolvectl flush-caches
         }
 
-        # Identity, not reachability: a local impostor can bind 1053 but cannot land
+        # Identity, not reachability: a local impostor can bind ${toString port.mihomoDns} but cannot land
         # in clash-verge's cgroup, which the kernel reports.
         dns_listener_up() {
-          ${pkgs.iproute2}/bin/ss -lnteH 'sport = :1053' 2>/dev/null \
+          ${pkgs.iproute2}/bin/ss -lnteH 'sport = :${toString port.mihomoDns}' 2>/dev/null \
             | ${pkgs.gnugrep}/bin/grep -q 'cgroup:/system.slice/clash-verge.service'
         }
 
@@ -93,29 +133,122 @@
           # baidu is DIRECT-policy, gstatic goes through the node (respect-rules):
           # requiring both proves the core and the node, not just a live core.
           for name in www.baidu.com www.gstatic.com; do
-            ${pkgs.dnsutils}/bin/dig +time=2 +tries=1 +short @127.0.0.1 -p 1053 \
+            ${pkgs.dnsutils}/bin/dig +time=2 +tries=1 +short @127.0.0.1 -p ${toString port.mihomoDns} \
               "$name" 2>/dev/null | ${pkgs.gnugrep}/bin/grep -q . || return 1
           done
           return 0
         }
 
+        # Health of the encrypted path itself: dnsmasq's own failover is a hang
+        # (one failed upstream means the client waits ~8 s for no SERVFAIL).
+        dot_ok() {
+          for name in example.com www.baidu.com; do
+            ${pkgs.dnsutils}/bin/dig +time=3 +tries=1 +short @127.0.0.1 -p ${toString port.unbound} "$name" 2>/dev/null \
+              | ${pkgs.gnugrep}/bin/grep -q . || return 1
+          done
+          return 0
+        }
+
+        nm_connectivity() {
+          ${pkgs.networkmanager}/bin/nmcli -t networking connectivity 2>/dev/null || echo unknown
+        }
+
+        # ---- Mode A (Clash closed) --------------------------------------------
+        # Plaintext resolvers are appended only inside two bounded, logged windows,
+        # because a portal's resolver is usually the only one that answers before the
+        # portal has been passed; outside them a DoT outage stops DNS loudly.
+        #
+        # mode_a_state() must run in the current shell: it updates dot_fails, so a
+        # subshell would re-open the window on every tick.
+        PL_TTL=120
+        window_until=0
+        dot_fails=0
+        MODE_A_STATE=""
+        state_reason="mode-a: starting, encrypted upstream first"
+
+        now_epoch() { ${pkgs.coreutils}/bin/date +%s; }
+        open_window() { window_until=$(( $(now_epoch) + PL_TTL )); }
+        window_open() { [ "$(now_epoch)" -lt "$window_until" ]; }
+
+        # The reason file tracks the current state, so a recovery clears "degraded".
+        write_reason() {
+          if [ -f /run/dns-pac/reason ] \
+             && [ "$(${pkgs.coreutils}/bin/cat /run/dns-pac/reason)" = "$state_reason" ]; then
+            return 0
+          fi
+          printf '%s\n' "$state_reason" > /run/dns-pac/reason
+        }
+
+        mode_a_state() {
+          if dot_ok; then
+            [ "$dot_fails" -ge 3 ] && echo "dns-pac: encrypted upstream recovered" >&2
+            dot_fails=0
+            state_reason="mode-a: encrypted upstream healthy"
+            MODE_A_STATE="dot"
+            return 0
+          fi
+
+          dot_fails=$((dot_fails + 1))
+          [ "$dot_fails" = 1 ] && open_window
+
+          if [ -n "$(isp_servers)" ]; then
+            plaintext_note=""
+          else
+            plaintext_note=" [no DHCP resolver available: the window has no server]"
+          fi
+
+          if [ -e /run/dns-pac/force-plaintext ]; then
+            state_reason="mode-a: operator override (/run/dns-pac/force-plaintext)$plaintext_note"
+            MODE_A_STATE="degraded-plaintext"
+            return 0
+          fi
+
+          if window_open; then
+            state_reason="mode-a: DoT failed $dot_fails time(s); bounded plaintext window open (portal/bootstrap)$plaintext_note"
+            MODE_A_STATE="bootstrap-plaintext"
+            return 0
+          fi
+
+          conn="$(nm_connectivity)"
+          if [ "$conn" = "portal" ] || [ "$conn" = "limited" ]; then
+            open_window
+            state_reason="mode-a: captive portal (NetworkManager=$conn), DoT unreachable -> plaintext DNS$plaintext_note"
+            MODE_A_STATE="portal-plaintext"
+            return 0
+          fi
+
+          state_reason="mode-a: DoT down, fail-closed (DNS stops; nothing degrades to plaintext). Remedies: touch /run/dns-pac/force-plaintext, or fix tcp/853"
+          MODE_A_STATE="degraded-dot-only"
+          return 0
+        }
+
         mkdir -p /run/dns-pac
 
-        # Start direct: the file must point at a clash-independent upstream
-        # before dnsmasq starts. Upgrade to mihomo only after 2 consecutive wins.
-        write_state direct
-        current="direct"
+        # Start encrypted-only: dnsmasq needs a clash-independent upstream, and the
+        # upgrade to mihomo happens only after two consecutive wins.
+        state_reason="mode-a: starting, encrypted upstream first"
+        write_state dot
+        current="dot"
         hits=0
         misses=0
+        last_ident=""
 
         while true; do
           if ! $CLASH_ON || ! dns_listener_up; then
-            # Clash is off, or its DNS listener is gone/not ours -> 1053 cannot
-            # answer: fall back immediately (no hysteresis so DIRECT never waits).
-            if [ "$current" != "direct" ]; then
-              echo "clash core gone; DNS -> direct"
-              write_state direct
-              current="direct"
+            # Mode A. A change of uplink identity opens the bootstrap window.
+            ident="$(dhcp_identity)"
+            if [ "$ident" != "$last_ident" ]; then
+              last_ident="$ident"
+              open_window
+              echo "dns-pac: uplink identity changed; plaintext bootstrap window opened" >&2
+            fi
+
+            mode_a_state
+            new_status="$MODE_A_STATE"
+            if [ "$new_status" != "$current" ]; then
+              echo "DNS upstream changed from [$current] to [$new_status]: $state_reason"
+              write_state "$new_status"
+              current="$new_status"
             fi
             hits=0
             misses=0
@@ -131,8 +264,11 @@
             new_status="$current"
             if [ "$hits" -ge 2 ]; then
               new_status="proxy"
+              state_reason="mode-b: mihomo DNS answered both probes"
             elif [ "$misses" -ge 2 ]; then
-              new_status="direct"
+              # Core up, its DNS not answering: encrypted DoT only, and loud.
+              new_status="degraded-dot-only"
+              state_reason="mode-b: core up but its DNS probe failed; encrypted DoT only"
             fi
 
             if [ "$new_status" != "$current" ]; then
@@ -144,6 +280,7 @@
             fi
           fi
 
+          write_reason
           sleep 2
         done
       ''
@@ -163,7 +300,7 @@
   # dns-pac has not run yet; the script rewrites it at startup and on a switch.
   systemd.tmpfiles.rules = [
     "d /run/dns-pac 0755 root root -"
-    "f /run/dns-pac/servers.conf 0644 root root - server=127.0.0.1#1055"
+    "f /run/dns-pac/servers.conf 0644 root root - server=127.0.0.1#${toString port.unbound}"
   ];
 }
 

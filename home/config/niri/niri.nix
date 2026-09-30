@@ -1,6 +1,9 @@
-{ pkgs, lib, ... }:
+{ pkgs, lib, osConfig, ... }:
 
 let
+  # gost's HTTP listener; machine.nix owns the port.
+  gostHttp = toString osConfig.my.machine.ports.gostHttp;
+
   # Define the Niri config as raw KDL text
   niriConfigContent = ''
     // niri config
@@ -28,9 +31,9 @@ let
       DISPLAY ":0"
 
       // Proxy
-      http_proxy "http://127.0.0.1:33332"
-      https_proxy "http://127.0.0.1:33332"
-      all_proxy "http://127.0.0.1:33332"
+      http_proxy "http://127.0.0.1:${gostHttp}"
+      https_proxy "http://127.0.0.1:${gostHttp}"
+      all_proxy "http://127.0.0.1:${gostHttp}"
     }
 
     input {

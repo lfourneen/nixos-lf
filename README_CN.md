@@ -44,23 +44,44 @@
 
 ### 模式
 
-`proxy-mode` 只在 Clash 运行时装载断网保护与 `:33333` 重定向。Clash 关闭时主机就是普通直连：门户、DNS 与日常上网都无需预热，`gost-pac` 也继续以纯直通方式提供 `:33332`（而不是拒绝连接），因此只认代理环境变量的应用（nix-daemon、Flatpak 应用、hermes、curl）仍可用。Clash 运行时 `gost-pac` 只转发到 `127.0.0.1:7897`：核心或节点缺失只会让连接失败，不会回退直连；模式由 Clash 的 unit/GUI 决定而非由内核决定，因此核心崩溃后仍是 fail-closed。DNS 同理：mihomo 不可用期间 `dns-pac` 把 dnsmasq 指向加密解析器。
+`proxy-mode` 只在 Clash 运行时装载断网保护与 `:33333` 重定向，因此机器有两种保证不同的状态：
 
-`/run/gost-pac/status` 与 `/run/dns-pac/status`（Nushell 配置中的 `proxy-status` 命令会显示）给出的是两个守护脚本选择的模式，描述脚本自身的状态，而不是某条连接实际走的路径。
+| | **模式 A —— Clash Verge 已关闭**（本机常态） | **模式 B —— Clash 运行中，TUN 已建立** |
+|---|---|---|
+| 如何进入 | 关闭 Clash Verge | 启动 Clash Verge（`my.proxy.tunMode` 决定 Nix 是否需要 TUN，是否真的创建由 GUI 决定） |
+| 强制了什么 | `nftables.service` 不依赖 Clash，在启动时装载 `table inet filter`：`input policy drop`、连接跟踪状态规则、martian 源丢弃、公网 IPv6 丢弃、`forward` 链与 masquerade 全部生效。DNS 走 dnsmasq (:1054)，再到加密 DoT 解析器（unbound :1055） | 以上全部，外加：TUN 接管本机产生的流量，mihomo 的 `dns-hijack` 接管 TUN 路由的 :53，`proxymode_*` 片段加上断网保护（非 root 经上行口访问公网地址被丢弃）、`:33333` 重定向与访客策略 |
+| 保证了什么 | 直连、真实地址、没有断网保护；门户/局域网/CGNAT 地址按设计可达，DHCP 下发的明文解析器是允许的兜底，但只在两个有界的时间窗内生效（见下文 DNS） | 本机产生的每条流要么走 mihomo，要么被丢弃；核心、TUN 或节点失败时 DNS 停止、出站被拒，而不是回退直连；热点/虚拟机客户端的流量被拒绝，而不是被转发出去 |
+| 不保护什么 | 源地址与全部目的地址对 ISP 以及路径上的任何人都可见；明文协议依然可读；DNS 过滤只是缓解手段，不是墙；自带 DoH/DoT 的应用会绕过这条解析链路 | 策略判为 DIRECT 的流量以真实地址直出；绑定源地址/网卡的套接字会绕过 TUN，只由断网保护兜住；非 root 的 UDP `3478/5349`（STUN/TURN）被丢弃；手工执行 `sudo nft flush ruleset` 会清掉全部规则，直到 `nftables.service` 下次启动 |
+
+模式 A 不隐藏源地址，也不加密应用发出的内容。模式 B 只和能看见它的检查一样强：`nftables-verify` 读取内核状态——TUN 设备、mihomo 自己的 `table inet mihomo`、FIB 规则、监听端口、实际 uid——而不是相信状态文件；失败会通过 `journalctl -t netsec-alert` 与 `/run/netsec/failed` 报警。
+
+Clash 关闭时主机就是普通直连：门户、DNS 与日常上网都无需预热，`gost-pac` 也继续以纯直通方式提供 `:33332`（而不是拒绝连接），因此只认代理环境变量的应用（nix-daemon、Flatpak 应用、hermes、curl）仍可用。Clash 运行时 `gost-pac` 只转发到 `127.0.0.1:7897`：核心或节点缺失只会让连接失败，不会回退直连；模式判据是核心进程是否位于 `clash-verge.service` 的 cgroup 内（而不是进程名），因此核心崩溃后仍是 fail-closed。DNS 同理：mihomo 不可用期间 `dns-pac` 把 dnsmasq 指向加密解析器。
+
+记录下来的状态在 `/run/proxy-mode/status`（`proxy` | `direct` | `unenforced`）、`/run/gost-pac/status`、`/run/dns-pac/status` 与 `/run/dns-pac/reason`（Nushell 配置中的 `proxy-status` 命令会显示）。`unenforced` 表示 Clash 正在运行、但 enforcement 片段没有装载：`nftables-verify` 会把它当作失败，并且 `nftables.service`/`proxy-mode.service`/`nftables-verify.service` 失败时都会通过 `netsec-alert@` 报警。这些文件描述的是守护脚本自身的状态，而不是某条连接实际走的路径。
 
 ### DNS
 
-`systemd-resolved` 使用 `127.0.0.1:1054` 上的 dnsmasq，失败时回退到 `127.0.0.1:1055` 上的 unbound。TUN 设备启用时，mihomo 接管 53 端口并按 Clash Verge 合并配置中的 DNS 段解析；dnsmasq 与 unbound 服务于回退窗口。
+`systemd-resolved` 使用 `127.0.0.1:1054` 上的 dnsmasq，它的上游随模式变化。每个模式只有一个解析器，不存在常驻的第二个 server 可供回退：
+
+* 模式 B：`127.0.0.1:1053`（mihomo）。应答来自 mihomo 转发的 DoH 上游，由它完成 DNSSEC 校验：`dig +dnssec @127.0.0.1 -p 1053 cloudflare.com` 带 `ad` 标志与 RRSIG，`dnssec-failed.org` 返回 SERVFAIL。由于没有别的上游，这个拒绝会直接到达客户端，而不会被不做校验的解析器替换；`nftables-verify` 会校验这一点（`:1054` 必须拒绝对 `dnssec-failed.org` 下随机标签的查询，同时对照域名能正常解析）。
+* 模式 A：`127.0.0.1:1055`（unbound DoT 到 AliDNS）。unbound 不做校验（`enableRootTrustAnchor = false`，且上游会剥掉 RRSIG），因此模式 A 没有 DNSSEC 保护；对这个上游开启校验会让所有签名域名 SERVFAIL，所以保持关闭。
+* 模式 A 且加密链路不可达时：DHCP 下发的解析器（用 `dhcpcd -U` 读取）只在两个有界、有日志的时间窗内被追加——链路建立或加密链路失败后的 120 秒引导窗，以及 NetworkManager 报告 `portal`/`limited` 期间。窗口之外 DNS 会停止并在 `/run/dns-pac/reason` 里说明原因，而不是退化为明文。`touch /run/dns-pac/force-plaintext` 可手工强制启用明文兜底。
+
+凡不是 dnsmasq 自身上游 socket 的明文解析器都会被重定向进 dnsmasq（上行口的 `:53`，IPv4 与 IPv6，两种模式都生效），因此门户/局域网/CGNAT 范围内硬编码的解析器不会明文出网。
 
 ### 说明与限制
 
-* TUN 设备启用时，nftables 到 `:33333` 的透明重定向处于休眠状态：TCP 会先被 mihomo 自己的 auto-redirect 规则接管。该重定向在 TUN 关闭时才承载流量。
-* 只有 `unbound`（DoT，tcp/853）与 `systemd-timesyncd`（udp/123）可以直接出网做 DNS 与 NTP；其它公网解析器的明文查询，对豁免集合之外的进程会被丢弃。
+* TUN 设备启用时，nftables 到 `:33333` 的重定向**承载流量**，并非休眠：所有未进入 TUN 的 TCP 流（绑定源地址/网卡的套接字，以及手工 flush 之后的流量）都由它承载。`gost` 是这些流的单点故障，`nftables-verify` 会校验它的监听端口是否存在。经它到达的流会被改源为 `127.0.0.1`：任何按来源匹配的策略规则对它们都没有意义。
+* 只有 `unbound`（DoT，tcp/853）与 `systemd-timesyncd`（udp/123）可以直接出网做 DNS 与 NTP；其它公网解析器的明文查询，对豁免集合之外的进程会被丢弃——除非它们先被重定向进 dnsmasq。
 * 断网保护会丢弃非 root 进程的直接出站流量，回环、局域网地址、DNS/NTP 与组播除外。只有 root 被豁免，而这正是 mihomo 的 DIRECT 规则在代理模式下能直接出网的前提：DIRECT 的可用性隐含依赖 mihomo 以 root 运行。
 * `gost-pac` 被排除在 `:33333` 重定向之外，这样它的直通中继不会拨回自己；它的出站仍受断网保护约束——代理模式装载期间会被丢弃（模式短暂过期只会造成瞬时的连接失败，不会造成直连泄漏）。
-* 探测只认属于 `clash-verge.service` 的监听者：判据读取监听者的 cgroup，本机进程无法伪造，因此仅在 `127.0.0.1:7897` 上监听并不能把流量引过去。
+* 探测只认属于 `clash-verge.service` 的监听者：判据读取监听者的 cgroup，本机进程无法伪造，因此仅在 `127.0.0.1:7897` 上监听并不能把流量引过去。“Clash 在运行”的判据要求**核心**位于该 cgroup 内，只有 GUI 进程不再算数。
 * mihomo 的外部控制口是一个全局可写的 unix socket 且不校验 secret，因此以登录用户身份运行的任意进程都能重配内核——包括把节点置为 DIRECT。单用户桌面下接受这一取舍；合并配置无法覆写控制口设置。
 * 探测同时要求一个国内域名（走 DIRECT）与一个由代理组承载的域名，因此探测失败表示整条链路无法承载流量，而不只是某个上游节点不可用。
+* `systemctl stop nftables.service` 不再移除防火墙：拆除与装载在同一个 `nft -f` 事务里，且模块的 deletions 文件为空，因此已装载的规则会保留到下次启动替换为止。手工复位仍然是 `sudo nft flush ruleset`（它同时会清掉 mihomo 自己的表，直到 TUN 重启）。
+* 热点与虚拟机：转发流量不经过 output 链、也不带 uid，断网保护看不到它。Clash 运行期间 `proxymode_forward` 拒绝客户端发往公网目的地址的上行口流量（门户/局域网/CGNAT 仍可达）；Clash 关闭时热点/虚拟机规则与之前一致。客户端流量永远不会被代理——要么被 TUN 承载，要么被拒绝。
+* 模式 A 的网络姿态（`my.hardening.*`）：热点 AP 默认**关闭**（其 accept 按来源网段匹配，在 wlo1 作为客户端时可被伪造——需要共享上行时再显式打开）；tailnet 只能访问 `my.hardening.tailnet{Tcp,Udp}Ports` 列出的端口，而不是所有通配监听。抓包权限（`dumpcap`/`usbmon`）默认关闭：抓包需要 `sudo dumpcap`。无线连接默认沿用 NetworkManager 自身的 MAC 策略，除非设置 `my.hardening.wifi.clonedMacAddress`（例如 `stable`）。
+* `nftables-verify` 只做检查、不做修复：它从不改动状态（会自修复的检查会掩盖自己的失败）。`systemctl start nftables-verify-repair.service` 是显式、可选的修复入口。
 
 ### 仓库说明
 

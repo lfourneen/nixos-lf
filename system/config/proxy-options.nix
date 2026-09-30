@@ -1,4 +1,4 @@
-{ lib, ... }:
+{ lib, config, ... }:
 
 {
   # Single source of truth for TUN mode; home/config/cvr-merge.nix reads it
@@ -14,7 +14,7 @@
   # the input-chain accept or the reverse-default-deny exception.
   options.my.proxy.tunDev = lib.mkOption {
     type = lib.types.str;
-    default = "Mihomo";
+    default = config.my.machine.tunDevice;
     description = "Clash TUN interface name; firewall rules and the home-side clash Merge template read this via osConfig.";
   };
 }

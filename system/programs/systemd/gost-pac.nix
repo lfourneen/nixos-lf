@@ -1,6 +1,10 @@
 { pkgs, lib, config, ... }:
 
 let
+  m = config.my.machine;
+  port = m.ports;
+  gostUid = m.uids.gost;
+
   # Health-probe target for the "core really answers" gate: domestic and highly
   # reachable, so it proves mihomo's own chain rather than the node.
   healthProbeUrl = "https://www.baidu.com/";
@@ -13,19 +17,18 @@ in
   users.users.gost = {
     isSystemUser = true;
     group = "gost";
-    uid = 987;   # static: dynamic system users have a null uid at eval time
+    uid = gostUid;   # static: dynamic system users have a null uid at eval time
   };
 
-  # The nft redirect excludes the literal 987 so a passthrough relay cannot dial
-  # itself; a second account claiming that uid would silently widen the exclusion.
+  # The nft redirect excludes this uid; a second account claiming it would widen
+  # the exclusion silently.
   assertions = [
     {
       assertion =
-        lib.count (u: u.uid == 987) (lib.attrValues config.users.users) == 1;
+        lib.count (u: u.uid == gostUid) (lib.attrValues config.users.users) == 1;
       message = ''
-        gost-pac.nix: uid 987 must be used by exactly one account (gost).
-        The nft redirect exclusion bakes the literal 987; a duplicate uid would
-        silently widen it.
+        gost-pac.nix: my.machine.uids.gost (${toString gostUid}) must belong to
+        exactly one account (gost): the nft redirect exclusion uses it.
       '';
     }
   ];
@@ -47,7 +50,7 @@ in
       RuntimeDirectoryMode = "0755";
       UMask = "0022";
 
-      # Bound the blast radius of the :33333 redirect self-loop; systemd sets both
+      # Bound the blast radius of the :${toString port.gostRedirect} redirect self-loop; systemd sets both
       # the soft and the hard limit from this one option.
       LimitNOFILE = 8192;
 
@@ -84,10 +87,10 @@ in
         listen_fail=0
         degraded=0
 
-        # The nat redirect excludes 987 so a passthrough relay cannot dial itself;
+        # The nat redirect excludes this uid so a passthrough relay cannot dial itself;
         # a drifted runtime uid would silently widen that exclusion.
-        if [ "$(${pkgs.coreutils}/bin/id -u)" != "987" ]; then
-          echo "gost-pac: WARN running as uid $(${pkgs.coreutils}/bin/id -u); the nat redirect exclusion expects 987" >&2
+        if [ "$(${pkgs.coreutils}/bin/id -u)" != "${toString gostUid}" ]; then
+          echo "gost-pac: WARN running as uid $(${pkgs.coreutils}/bin/id -u); the nat redirect exclusion expects ${toString gostUid}" >&2
         fi
 
         # State-file contract: one mode word plus a newline, rewritten every round
@@ -96,25 +99,25 @@ in
           printf '%s\n' "$1" > /run/gost-pac/status
         }
 
-        # Identity, not reachability: an impostor can bind :7897 but cannot land in
+        # Identity, not reachability: an impostor can bind :${toString port.mihomoMixed} but cannot land in
         # clash-verge's cgroup, which the kernel reports through ss(8).
         core_up() {
-          ${pkgs.iproute2}/bin/ss -lnteH 'sport = :7897' 2>/dev/null \
+          ${pkgs.iproute2}/bin/ss -lnteH 'sport = :${toString port.mihomoMixed}' 2>/dev/null \
             | ${pkgs.gnugrep}/bin/grep -q 'cgroup:/system.slice/clash-verge.service'
         }
 
-        # Observe the sockets with ss(8): never connect() to :33333 - one
+        # Observe the sockets with ss(8): never connect() to :${toString port.gostRedirect} - one
         # connection starts the redirect self-loop. Empty output means "cannot
         # inspect": treat as ok and let the pid check stay authoritative.
         listen_ok() {
           listening="$(${pkgs.iproute2}/bin/ss -ltn 2>/dev/null)"
           [ -n "$listening" ] || return 0
           case "$listening" in
-            *127.0.0.1:33332*) ;;
+            *127.0.0.1:${toString port.gostHttp}*) ;;
             *) return 1 ;;
           esac
           case "$listening" in
-            *127.0.0.1:33333*) ;;
+            *127.0.0.1:${toString port.gostRedirect}*) ;;
             *) return 1 ;;
           esac
           return 0
@@ -144,16 +147,16 @@ in
           if [ "$1" = "proxy" ]; then
             env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
               "${pkgs.gost}/bin/gost" \
-                "-L=http://127.0.0.1:33332?reuseport=true" \
-                "-L=redirect://127.0.0.1:33333?reuseport=true" \
-                "-L=redirect://[::1]:33333?reuseport=true" \
-                -F=http://127.0.0.1:7897 &
+                "-L=http://127.0.0.1:${toString port.gostHttp}?reuseport=true" \
+                "-L=redirect://127.0.0.1:${toString port.gostRedirect}?reuseport=true" \
+                "-L=redirect://[::1]:${toString port.gostRedirect}?reuseport=true" \
+                -F=http://127.0.0.1:${toString port.mihomoMixed} &
           else
             env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
               "${pkgs.gost}/bin/gost" \
-                "-L=http://127.0.0.1:33332?reuseport=true" \
-                "-L=redirect://127.0.0.1:33333?reuseport=true" \
-                "-L=redirect://[::1]:33333?reuseport=true" &
+                "-L=http://127.0.0.1:${toString port.gostHttp}?reuseport=true" \
+                "-L=redirect://127.0.0.1:${toString port.gostRedirect}?reuseport=true" \
+                "-L=redirect://[::1]:${toString port.gostRedirect}?reuseport=true" &
           fi
           new_pid=$!
 
@@ -171,7 +174,7 @@ in
           echo "gost-pac status -> $1 (pid $new_pid)"
 
           if ! listen_ok; then
-            echo "gost-pac: WARN status=$1 but 127.0.0.1:33332/33333 are not both listening" >&2
+            echo "gost-pac: WARN status=$1 but 127.0.0.1:${toString port.gostHttp}/${toString port.gostRedirect} are not both listening" >&2
             ${pkgs.systemd}/bin/systemd-cat -t gost-pac -p warning ${pkgs.coreutils}/bin/echo \
               "gost-pac: status=$1 without bound listeners" || true
           fi
@@ -205,7 +208,7 @@ in
             else
               listen_fail=$((listen_fail + 1))
               if [ "$listen_fail" -ge 2 ]; then
-                echo "gost-pac: pid $proxy_pid is alive but 127.0.0.1:33332/33333 are not listening; restarting" >&2
+                echo "gost-pac: pid $proxy_pid is alive but 127.0.0.1:${toString port.gostHttp}/${toString port.gostRedirect} are not listening; restarting" >&2
                 listen_fail=0
                 stop_current
                 mode="closed"
@@ -225,12 +228,12 @@ in
           core_e2e=0
           want="direct"
           if [ "$proxy_mode" = 1 ]; then
-            # Two signals: :7897 must be clash-verge's (identity) and answer a real
+            # Two signals: :${toString port.mihomoMixed} must be clash-verge's (identity) and answer a real
             # proxied request twice in a row; staying in proxy only needs identity.
             if core_up; then core_id=1; fi
 
             if ${pkgs.coreutils}/bin/timeout 3 ${pkgs.curl}/bin/curl -s -o /dev/null \
-                 -w '%{http_code}' --noproxy "" -x http://127.0.0.1:7897 \
+                 -w '%{http_code}' --noproxy "" -x http://127.0.0.1:${toString port.mihomoMixed} \
                  ${healthProbeUrl} 2>/dev/null \
                | ${pkgs.gnugrep}/bin/grep -qE '^(200|204)$'; then
               core_e2e=1
@@ -253,7 +256,7 @@ in
                 # Clash is off, so env-proxy consumers must not be left refused.
                 if start_gost direct; then
                   mode="direct"
-                  echo "gost-pac: Clash is off; passthrough relay on 127.0.0.1:33332" >&2
+                  echo "gost-pac: Clash is off; passthrough relay on 127.0.0.1:${toString port.gostHttp}" >&2
                 fi
                 ;;
               *)
@@ -271,7 +274,7 @@ in
           if [ "$mode" = "proxy" ] && [ "$core_id" = 1 ] && [ "$core_e2e" = 0 ]; then
             degraded=$((degraded + 1))
             if [ "$degraded" = 1 ] || [ $((degraded % 12)) -eq 0 ]; then
-              echo "gost-pac: WARN :7897 is clash-verge's but the proxied probe ${healthProbeUrl} failed for $degraded round(s); staying proxy" >&2
+              echo "gost-pac: WARN :${toString port.mihomoMixed} is clash-verge's but the proxied probe ${healthProbeUrl} failed for $degraded round(s); staying proxy" >&2
             fi
           else
             if [ "$degraded" -gt 0 ]; then

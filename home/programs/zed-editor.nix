@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ osConfig, pkgs, ... }:
 
 {
   programs.zed-editor = {
@@ -66,7 +66,7 @@
         mute_on_join = true;
       };
 
-      proxy = "127.0.0.1:33332";
+      proxy = "127.0.0.1:${toString osConfig.my.machine.ports.gostHttp}";
 
       agent_ui_font_family = "Maple Mono NF CN";
       buffer_font_family = "Maple Mono NF CN";

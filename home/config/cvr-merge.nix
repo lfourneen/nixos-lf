@@ -8,6 +8,14 @@ let
   # device name or TUN traffic stops matching them.
   tunDev = osConfig.my.proxy.tunDev;
 
+  m = osConfig.my.machine;
+  port = m.ports;
+  # Portal/LAN/CGNAT bypass the TUN; same ranges as the firewall.
+  routeExclude = m.privateV4 ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ]
+    ++ m.ulaV6 ++ m.linkLocalV6 ++ m.multicastV6;
+  # No trailing newline: the interpolation line supplies it.
+  yamlItems = indent: xs: lib.concatStringsSep "\n" (map (x: "${indent}- ${x}") xs);
+
 in
 {
   home.file.".local/share/io.github.clash-verge-rev.clash-verge-rev/profiles/Merge.yaml" = {
@@ -18,7 +26,7 @@ in
         store-selected: true
 
       # Fix the mixed port to align with the probe and forwarding ports in gost-pac.nix.
-      mixed-port: 7897
+      mixed-port: ${toString port.mihomoMixed}
 
       # allow-lan:false keeps the plain proxy ports on loopback. bind-address
       # must stay "*" so the optional TPROXY listener (vmTransparentProxy) can
@@ -27,7 +35,13 @@ in
       bind-address: "*"
 
       # TPROXY inbound for the optional VM transparent proxy (vmTransparentProxy).
-      tproxy-port: 7896
+      tproxy-port: ${toString port.mihomoTproxy}
+      # `enable` must always be listed here: the GUI owns tun.enable, so without
+      # this key a rebuild with tunMode = false leaves the TUN up with an empty
+      # exclusion list. This template wins per key, and nftables-verify reports the
+      # case where Verge injects the key after the merge instead.
+      tun:
+        enable: ${lib.boolToString tunMode}
       ${lib.optionalString tunMode ''
       # TUN: stack/dns-hijack/strict-route are authoritative in the Clash Verge
       # GUI (Stack=Mixed, DNS Hijack=any:53, Strict Route=ON). strict-route is
@@ -36,7 +50,6 @@ in
       #
       # auto-redirect needs the sing-tun patch applied in
       # system/programs/clash-verge.nix.
-      tun:
         stack: mixed
         device: ${tunDev}
         auto-route: true
@@ -47,40 +60,31 @@ in
           - tcp://any:53
         mtu: 1500
         # Portal/LAN/CGNAT targets must bypass the TUN, else the ISP login page is
-        # unreachable; keep in sync with the private ranges exempted in network.nix.
+        # unreachable.
         route-exclude-address:
-          - 10.0.0.0/8
-          - 172.16.0.0/12
-          - 192.168.0.0/16
-          - 100.64.0.0/10
-          - 224.0.0.0/4
-          - 255.255.255.255/32
-          - fc00::/7
-          - fe80::/10
-          - ff00::/8
+      ${yamlItems "    " routeExclude}
       ''}
       # Foreign DoH (1.1.1.1/8.8.8.8) is blocked when dialed directly, but
       # `respect-rules` sends it through the proxy, so ipleak sees the proxy's
       # resolver instead of the local one. CN names stay on domestic DoH.
       dns:
         enable: true
-        listen: 127.0.0.1:1053
+        listen: 127.0.0.1:${toString port.mihomoDns}
         ipv6: false
         enhanced-mode: redir-host
         use-hosts: true
         respect-rules: true
         default-nameserver:
-          - 223.5.5.5
+          - ${lib.head m.dotUpstreams}
           - 119.29.29.29
         proxy-server-nameserver:
-          - https://223.5.5.5/dns-query
+          - https://${lib.head m.dotUpstreams}/dns-query
         nameserver:
           - https://1.1.1.1/dns-query
           - https://8.8.8.8/dns-query
         nameserver-policy:
           'geosite:cn':
-            - https://223.5.5.5/dns-query
-            - https://223.6.6.6/dns-query
+      ${yamlItems "      " (map (ip: "https://${ip}/dns-query") m.dotUpstreams)}
           'geosite:geolocation-!cn':
             - https://1.1.1.1/dns-query
             - https://8.8.8.8/dns-query

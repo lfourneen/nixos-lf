@@ -1,9 +1,10 @@
-{ ... }:
+{ osConfig, ... }:
 
 {
   # GUI system proxy via gsettings ("Use system proxy settings" apps: Zen/Firefox, Electron, Qt)
-  # Points at gost-pac 33332 (fail-open: Clash up -> 7897, down -> direct)
-  # NOTE: keep Clash Verge "System Proxy" OFF or it overwrites these values with 7897
+  # Points at gost-pac's HTTP listener (fail-open: Clash up -> mihomo, down -> direct)
+  # NOTE: keep Clash Verge "System Proxy" OFF or it overwrites these values with
+  # my.machine.ports.mihomoMixed.
   dconf.settings = {
     # org.gnome.system.proxy schema path is /system/proxy/ (not /org/gnome/).
     "system/proxy" = {
@@ -12,10 +13,7 @@
         "localhost"
         "127.0.0.0/8"
         "::1"
-        "10.0.0.0/8"
-        "172.16.0.0/12"
-        "192.168.0.0/16"
-        "100.64.0.0/10"
+      ] ++ osConfig.my.machine.privateV4 ++ [
         "*.local"
       ];
       # dconf is written once at activation, so runtime drift (Clash Verge,
@@ -27,16 +25,16 @@
 
     "system/proxy/http" = {
       host = "127.0.0.1";
-      port = 33332;
+      port = osConfig.my.machine.ports.gostHttp;
     };
     
     "system/proxy/https" = {
       host = "127.0.0.1";
-      port = 33332;
+      port = osConfig.my.machine.ports.gostHttp;
     };
 
     # SOCKS/FTP are separate child schemas; pinned empty because they are the
-    # keys the drift above writes with 127.0.0.1:7897.
+    # keys the drift above writes with mihomo's mixed port.
     "system/proxy/socks" = { host = ""; port = 0; };
     "system/proxy/ftp" = { host = ""; port = 0; };
   };

@@ -7,12 +7,13 @@ let
   # the criterion cannot drift between the two supervisors.
   isClashOn = pkgs.writeShellScript "is-clash-on" ''
     # clash-verge.service also runs an always-on root helper, so its state alone is
-    # not "Clash is on": require the core in the unit's cgroup (unspoofable) or the GUI.
+    # not "Clash is on": require the core inside the unit's cgroup, which a local
+    # process cannot forge. Matching a process name would let any user process pin
+    # the host in proxy mode with a dead core.
     ${pkgs.systemd}/bin/systemctl is-active --quiet clash-verge.service || exit 1
     for p in $(${pkgs.coreutils}/bin/cat /sys/fs/cgroup/system.slice/clash-verge.service/cgroup.procs 2>/dev/null); do
       ${pkgs.gnugrep}/bin/grep -qa 'bin/verge-mihomo' "/proc/$p/cmdline" 2>/dev/null && exit 0
     done
-    ${pkgs.gnugrep}/bin/grep -qa '^clash-verge' /proc/[0-9]*/cmdline 2>/dev/null && exit 0
     exit 1
   '';
 
@@ -38,13 +39,24 @@ let
       ${pkgs.systemd}/bin/systemd-cat -t proxy-mode -p err ${pkgs.coreutils}/bin/echo "proxy-mode: $*" || true
     }
 
-    # The fragment loads in one transaction, so one probe covers all of it.
+    # Ask for an immediate verification. A start issued here rides the activation
+    # transaction when a rebuild restarts proxy-mode, but that is harmless now:
+    # nftables-verify reports through the journal + /run/netsec/failed and always
+    # exits 0 (see nftables-verify.nix), so it can never fail the rebuild.
+    request_verify() { $SYSTEMCTL start --no-block nftables-verify.service 2>/dev/null || true; }
+
+    # The fragment loads in one transaction, so one probe covers all of it -- but
+    # both families and every fragment chain, or a half-loaded state goes unnoticed.
     rules_loaded() { $NFT list table ip proxymode_nat >/dev/null 2>&1; }
+    rules_loaded6() { $NFT list table ip6 proxymode_nat >/dev/null 2>&1; }
 
     # Anything that would still redirect or drop after a tear-down.
     rules_present() {
       rules_loaded && return 0
+      rules_loaded6 && return 0
       $NFT list chain inet filter proxymode_drops 2>/dev/null | $GREP -q 'counter' && return 0
+      $NFT list chain inet filter proxymode_tail 2>/dev/null | $GREP -q 'counter' && return 0
+      $NFT list chain inet filter proxymode_forward 2>/dev/null | $GREP -q 'counter' && return 0
       return 1
     }
 
@@ -60,6 +72,7 @@ let
       fi
       $NFT flush chain inet filter proxymode_drops || rc=1
       $NFT flush chain inet filter proxymode_tail || rc=1
+      $NFT flush chain inet filter proxymode_forward || rc=1
       return $rc
     }
 
@@ -71,6 +84,8 @@ let
     }
 
     sync_pass() {
+      prev="$mode"
+
       if [ ! -s "$RULES" ]; then
         rules_off
         printf 'direct\n' > "$STATUS"
@@ -83,8 +98,15 @@ let
         if [ "$first" = "1" ] || ! rules_loaded; then
           if rules_on; then
             log "Clash is on -> redirect + killswitch loaded"
+            # Verify the live state the fragment depends on (the TUN, mihomo's own
+            # table, the FIB rules, the listeners) right at Mode-B start, instead
+            # of waiting for the timer.
+            request_verify
           else
-            echo "proxy-mode: could not load the rules" >&2
+            # Never record a mode that was not entered: `unenforced` is the state
+            # for "Clash is on, enforcement is not loaded".
+            loud "could not load the rules; enforcement absent"
+            want=unenforced
           fi
         fi
       else
@@ -103,11 +125,20 @@ let
       first=0
       printf '%s\n' "$mode" > "$STATUS"
 
+      # A mode change is the moment the claim and the world have to be compared.
+      if [ -n "$prev" ] && [ "$mode" != "$prev" ]; then
+        request_verify
+      fi
+
       # Post-condition of the recorded mode; a mismatch is what keeps the user
       # offline after closing Clash, so fail visibly through the verifier unit.
       ok=1
       if [ "$mode" = "proxy" ]; then
-        rules_loaded || ok=0
+        # Both families: a missing ip6 nat table means half the redirect is gone.
+        { rules_loaded && rules_loaded6; } || ok=0
+      elif [ "$mode" = "unenforced" ]; then
+        # Always loud: Clash is on and our enforcement is not loaded.
+        ok=0
       else
         rules_present && ok=0
       fi
@@ -117,7 +148,7 @@ let
         fails=$((fails + 1))
         if [ "$fails" = "1" ] || [ $((fails % 6)) -eq 0 ]; then
           loud "nft state does not match mode $mode (attempt $fails)"
-          $SYSTEMCTL restart --no-block nftables-verify.service 2>/dev/null
+          request_verify
         fi
       fi
       return 0
@@ -153,7 +184,10 @@ in
     systemd.services.proxy-mode = {
       description = "Load the redirect + killswitch only while Clash is running";
       after = [ "nftables.service" ];
-      wants = [ "nftables.service" ];
+      # Never claim `proxy` behind a firewall that is not there: a failed
+      # nftables.service propagates here.
+      requires = [ "nftables.service" ];
+      unitConfig.OnFailure = [ "netsec-alert@%n.service" ];
       wantedBy = [ "multi-user.target" ];
       unitConfig.StartLimitIntervalSec = 0;
       serviceConfig = {

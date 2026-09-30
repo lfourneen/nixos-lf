@@ -28,8 +28,11 @@
   programs.wireshark = {
     enable = true;
     package = pkgs.unstable.wireshark;
-    dumpcap.enable = true;
-    usbmon.enable = true;
+    # No standing capture capability: the grant lets any process running as lfour
+    # read the uplink and the TUN with no password prompt. Capture stays explicit:
+    # `sudo dumpcap -i <iface> ...`.
+    dumpcap.enable = false;
+    usbmon.enable = false;
   };
 
   # KMSCon

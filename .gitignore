@@ -9,3 +9,6 @@ overlays/local-apps/*
 .agent-teams/
 audit/
 .omo
+
+# Nix
+.nix-cache

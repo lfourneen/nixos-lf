@@ -1,4 +1,4 @@
-{ ... }:
+{ lib, config, ... }:
 
 {
   systemd.services.nix-daemon = {
@@ -7,9 +7,9 @@
     wants = [ "gost-pac.service" ];
     after = [ "gost-pac.service" ];
     environment = {
-      HTTP_PROXY = "http://127.0.0.1:33332/";
-      HTTPS_PROXY = "http://127.0.0.1:33332/";
-      NO_PROXY = "127.0.0.1,localhost,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10";
+      HTTP_PROXY = "http://127.0.0.1:${toString config.my.machine.ports.gostHttp}/";
+      HTTPS_PROXY = "http://127.0.0.1:${toString config.my.machine.ports.gostHttp}/";
+      NO_PROXY = "127.0.0.1,localhost,::1,${lib.concatStringsSep "," config.my.machine.privateV4}";
     };
   };
 }
