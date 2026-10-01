@@ -1,12 +1,15 @@
 { config, libs, pkgs, ... }:
 
 let
-  tdRoot = "${config.users.users.lfour.home}/FHS/TD_4.6.7_Linux";
+  # TD 5.6.3 release 88061 (NL). Extract the vendor zip found in first:
+  # unzip -q /path/to/TD_5.6.3_Release_88061_NL.zip -d ~/FHS/
+  tdRelease = "5.6.3";
+  tdBuild = "88061";
+  tdRoot = "${config.users.users.lfour.home}/FHS/TD_${tdRelease}_Release_${tdBuild}_NL";
 
 in
 {
   environment.systemPackages = with pkgs; [
-    # TD (Qt5) FHS
     (buildFHSEnvBubblewrap {
       name = "td-fhs";
       chdir = tdRoot;
@@ -26,23 +29,23 @@ in
         # Graphics & UI (GTK/GL)
         atk cairo fontconfig
         freetype gdk-pixbuf glib
-        gtk2 gtk3 libGL
-        mesa pango
+        gtk2 libGL mesa
+        pango
 
-        # Qt Framework
-        libsForQt5.qt5.qtbase libsForQt5.qt5.qttools xkeyboard_config
+        # Qt/xcb runtime (Qt itself is statically linked)
+        xkeyboard_config libxkbcommon
       ] ++ (with pkgs; [
         # X11 Libraries
         libICE libSM libX11
-        libxcb libXcomposite libXcursor
-        libXdamage libXext libXfixes
-        libXi libXinerama libXrandr
-        libXrender xcbutil
+        libxcb xcbutil libXcomposite
+        libXcursor libXdamage libXext
+        libXfixes libXi libXinerama
+        libXrandr libXrender
       ]);
       extraBwrapArgs = [
         "--bind" "/run/udev" "/run/udev"
         "--bind-try" "/var/run/dbus" "/var/run/dbus"
-	      "--dev-bind" "/dev" "/dev"
+        "--dev-bind" "/dev" "/dev"
       ];
       runScript = "bash";
       profile = ''
@@ -55,7 +58,7 @@ in
         unset XDG_CURRENT_DESKTOP
         unset GDK_BACKEND
         unset MOZ_ENABLE_WAYLAND
-        export LD_LIBRARY_PATH=${tdRoot}/lib/Qt/lib:${tdRoot}/lib:/run/opengl-driver/lib:$LD_LIBRARY_PATH
+        export LD_LIBRARY_PATH=${tdRoot}/lib:/run/opengl-driver/lib:$LD_LIBRARY_PATH
       '';
     })
   ];
