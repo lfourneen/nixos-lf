@@ -103,12 +103,18 @@ in
         MIN=2
         MAX=30
         trap ':' WINCH
+        # woken=1 when the nap was cut short by the coordinator's SIGWINCH (a real
+        # Clash/link event); the loop then re-evaluates at once for the second
+        # confirmation instead of waiting a whole interval.
+        woken=1
         nap() {
           ${pkgs.coreutils}/bin/sleep "$1" &
           nap_pid=$!
-          wait "$nap_pid" 2>/dev/null || true
+          wait "$nap_pid" 2>/dev/null
+          rc=$?
           kill "$nap_pid" 2>/dev/null || true
           nap_pid=""
+          if [ "$rc" -gt 128 ]; then woken=1; else woken=0; fi
         }
 
         # State-file contract: one mode word plus a newline, rewritten every round
@@ -321,6 +327,13 @@ in
             interval=$MIN
           elif [ "$interval" -lt "$MAX" ]; then
             interval=$(( interval * 2 > MAX ? MAX : interval * 2 ))
+          fi
+          # An event wake while a switch is still in flight must not wait a whole
+          # interval for the second confirmation: re-evaluate at once (the woken
+          # flag is pre-cleared so this repeats at most once).
+          if [ "$woken" = 1 ] && [ "$changed" = 1 ]; then
+            woken=0
+            continue
           fi
           nap "$interval"
         done
