@@ -54,12 +54,14 @@ let
       ${pkgs.systemd}/bin/systemd-cat -t proxy-mode -p err ${pkgs.coreutils}/bin/echo "proxy-mode: $*" || true
     }
 
-    # Event-driven sleep: `proxy-net-wake.service` sends SIGUSR1 when the Clash
-    # core appears or disappears, and SIGUSR1 interrupts `wait`, so the loop reacts
-    # at once instead of waiting out the backstop interval. The interval itself
-    # adapts (2 s while transitioning/degraded, up to 30 s when stable and clean),
-    # which is what makes the steady state almost free while staying responsive.
-    trap ':' USR1
+    # Event-driven sleep: `proxy-net-wake.service` sends SIGWINCH when the Clash
+    # core appears or disappears, and a trapped SIGWINCH interrupts `wait`, so the
+    # loop reacts at once instead of waiting out the backstop interval. SIGWINCH
+    # (not SIGUSR1) because its default action is to be ignored: a wake that lands
+    # before this trap is installed cannot kill the process. The interval adapts
+    # (2 s while transitioning/degraded, up to 30 s when stable), so the steady
+    # state is almost free while staying responsive.
+    trap ':' WINCH
     nap() {
       ${pkgs.coreutils}/bin/sleep "$1" &
       nap_pid=$!
@@ -257,7 +259,7 @@ in
 
     # The coordinator: one event wakes nft (proxy-mode), DNS (dns-pac) and gost in
     # the same instant, so they switch together instead of three loops noticing at
-    # different times. SIGUSR1 only interrupts each loop's sleep; every loop keeps
+    # different times. SIGWINCH only interrupts each loop's sleep; every loop keeps
     # its own idempotent decision logic and stays the source of truth.
     systemd.services.proxy-net-wake = {
       description = "Wake the proxy supervisors on a Clash core state change";
@@ -265,7 +267,7 @@ in
         Type = "oneshot";
         ExecStart = pkgs.writeShellScript "proxy-net-wake" ''
           for u in proxy-mode.service dns-pac.service gost-pac.service; do
-            ${pkgs.systemd}/bin/systemctl kill -s USR1 --kill-whom=main "$u" 2>/dev/null || true
+            ${pkgs.systemd}/bin/systemctl kill -s WINCH --kill-whom=main "$u" 2>/dev/null || true
           done
         '';
       };

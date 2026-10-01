@@ -94,14 +94,15 @@ in
         fi
 
         # Event-driven, adaptive sleep (see proxy-mode.nix): proxy-net-wake sends
-        # SIGUSR1 on a Clash core change, which interrupts `wait`; the interval
-        # adapts -- fast while a transition is pending or the probe is degraded, up
-        # to 30 s when the mode is settled.
+        # SIGWINCH on a Clash core change, which interrupts `wait`; SIGWINCH is
+        # ignore-by-default, so an early wake cannot kill this process before the
+        # trap is installed. The interval adapts -- fast while a transition is
+        # pending or the probe is degraded, up to 30 s when the mode is settled.
         nap_pid=""
         interval=5
         MIN=2
         MAX=30
-        trap ':' USR1
+        trap ':' WINCH
         nap() {
           ${pkgs.coreutils}/bin/sleep "$1" &
           nap_pid=$!

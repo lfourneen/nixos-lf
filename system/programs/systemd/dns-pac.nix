@@ -33,6 +33,10 @@ in
     unitConfig.StartLimitIntervalSec = 0;
     serviceConfig = {
       RuntimeDirectory = "dns-pac";
+      # Keep /run/dns-pac/servers.conf across a restart: dnsmasq reads it at start
+      # and the tmpfiles seed lives in this directory, so removing it on stop (the
+      # default) would leave dnsmasq with no conf-file to read.
+      RuntimeDirectoryPreserve = true;
 
       # Root only for D-Bus (systemctl restart dnsmasq + resolvectl flush-caches):
       # no caps and no writes outside /run/dns-pac. AF_NETLINK is for ss(8).
@@ -57,15 +61,16 @@ in
         CLASH_ON=${config.my.proxy.isClashOn}
 
         # Event-driven, adaptive sleep (same mechanism as proxy-mode.nix):
-        # proxy-net-wake sends SIGUSR1 on a Clash core change, which interrupts
-        # `wait`; the interval adapts -- 2 s while transitioning/degraded, up to
-        # 30 s once the path is settled and healthy.
+        # proxy-net-wake sends SIGWINCH on a Clash core change, which interrupts
+        # `wait`; SIGWINCH is ignore-by-default, so an early wake cannot kill the
+        # process before the trap is installed. The interval adapts -- 2 s while
+        # transitioning/degraded, up to 15 s once the path is settled and healthy.
         nap_pid=""
         interval=2
         MIN=2
         MAX=15              # cap the backstop: a missed event must not leave DNS
                             # pointing at a core that is gone for long
-        trap ':' USR1
+        trap ':' WINCH
         nap() {
           ${pkgs.coreutils}/bin/sleep "$1" &
           nap_pid=$!
