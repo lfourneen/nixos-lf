@@ -57,13 +57,15 @@
 
 Clash 关闭时主机就是普通直连：门户、DNS 与日常上网都无需预热，`gost-pac` 也继续以纯直通方式提供 `:33332`（而不是拒绝连接），因此只认代理环境变量的应用（nix-daemon、Flatpak 应用、hermes、curl）仍可用。Clash 运行时 `gost-pac` 只转发到 `127.0.0.1:7897`：核心或节点缺失只会让连接失败，不会回退直连；模式判据是核心进程是否位于 `clash-verge.service` 的 cgroup 内（而不是进程名），因此核心崩溃后仍是 fail-closed。DNS 同理：mihomo 不可用期间 `dns-pac` 把 dnsmasq 指向加密解析器。
 
+这些守护脚本是事件驱动的：`proxy-net-watch.path` 监听 mihomo 的控制 socket（及其目录），`proxy-net-wake.service` 在 Clash 核心起停时**同时**唤醒 `proxy-mode`、`dns-pac` 与 `gost-pac`；链路变化则由 NetworkManager dispatcher 钩子触发同样的事。每个循环保留一个自适应兜底——切换中或降级时快，稳定后放宽到 10/15/30 秒——因此切换在同一瞬间完成，稳态几乎零开销。
+
 记录下来的状态在 `/run/proxy-mode/status`（`proxy` | `direct` | `unenforced`）、`/run/gost-pac/status`、`/run/dns-pac/status` 与 `/run/dns-pac/reason`（Nushell 配置中的 `proxy-status` 命令会显示）。`unenforced` 表示 Clash 正在运行、但 enforcement 片段没有装载：`nftables-verify` 会把它当作失败，并且 `nftables.service`/`proxy-mode.service`/`nftables-verify.service` 失败时都会通过 `netsec-alert@` 报警。这些文件描述的是守护脚本自身的状态，而不是某条连接实际走的路径。
 
 ### DNS
 
 `systemd-resolved` 使用 `127.0.0.1:1054` 上的 dnsmasq，它的上游随模式变化。每个模式只有一个解析器，不存在常驻的第二个 server 可供回退：
 
-* 模式 B：`127.0.0.1:1053`（mihomo）。应答来自 mihomo 转发的 DoH 上游，由它完成 DNSSEC 校验：`dig +dnssec @127.0.0.1 -p 1053 cloudflare.com` 带 `ad` 标志与 RRSIG，`dnssec-failed.org` 返回 SERVFAIL。由于没有别的上游，这个拒绝会直接到达客户端，而不会被不做校验的解析器替换；`nftables-verify` 会校验这一点（`:1054` 必须拒绝对 `dnssec-failed.org` 下随机标签的查询，同时对照域名能正常解析）。
+* 模式 B：`127.0.0.1:1053`（mihomo）。应答来自 mihomo 转发的 DoH 上游，由它完成 DNSSEC 校验：`dig +dnssec @127.0.0.1 -p 1053 cloudflare.com` 带 `ad` 标志与 RRSIG，`dnssec-failed.org` 返回 SERVFAIL。由于没有别的上游，这个拒绝会直接到达客户端，而不会被不做校验的解析器替换。`nftables-verify` 会校验这一点，但只在 `dns-pac` 真的把解析器切到 `:1053` 之后（它的状态可能滞后于 `proxy-mode`）：要求 `:1054` 拒绝对 `dnssec-failed.org` 下随机标签的查询（SERVFAIL 或超时都算被拒绝），同时对照域名能正常解析，并带重试以挺过 dnsmasq 的异步重启。
 * 模式 A：`127.0.0.1:1055`（unbound DoT 到 AliDNS）。unbound 不做校验（`enableRootTrustAnchor = false`，且上游会剥掉 RRSIG），因此模式 A 没有 DNSSEC 保护；对这个上游开启校验会让所有签名域名 SERVFAIL，所以保持关闭。
 * 模式 A 且加密链路不可达时：DHCP 下发的解析器（用 `dhcpcd -U` 读取）只在两个有界、有日志的时间窗内被追加——链路建立或加密链路失败后的 120 秒引导窗，以及 NetworkManager 报告 `portal`/`limited` 期间。窗口之外 DNS 会停止并在 `/run/dns-pac/reason` 里说明原因，而不是退化为明文。`touch /run/dns-pac/force-plaintext` 可手工强制启用明文兜底。
 

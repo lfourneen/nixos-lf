@@ -3,14 +3,23 @@
 let
   rules = pkgs.writeText "proxymode-rules.nft" config.my.proxy.proxyModeRules;
 
+  # The desktop user's Clash Verge runtime owns the mihomo control socket; the core
+  # creates it on start and removes it on stop, so watching it (and its directory,
+  # which survives the socket) is the event that says "the Clash core changed
+  # state".
+  mihomoDir = "/run/user/${
+    toString config.users.users.${config.my.machine.desktopUser}.uid
+  }/clash-verge-rev";
+  mihomoSock = "${mihomoDir}/verge-mihomo.sock";
+
   # Single source of truth for "Clash is on": dns-pac.nix calls the same script, so
   # the criterion cannot drift between the two supervisors.
   isClashOn = pkgs.writeShellScript "is-clash-on" ''
     # clash-verge.service also runs an always-on root helper, so its state alone is
     # not "Clash is on": require the core inside the unit's cgroup, which a local
     # process cannot forge. Matching a process name would let any user process pin
-    # the host in proxy mode with a dead core.
-    ${pkgs.systemd}/bin/systemctl is-active --quiet clash-verge.service || exit 1
+    # the host in proxy mode with a dead core. The cgroup is read directly -- an
+    # `is-active` would only add a D-Bus round-trip the cgroup already answers.
     for p in $(${pkgs.coreutils}/bin/cat /sys/fs/cgroup/system.slice/clash-verge.service/cgroup.procs 2>/dev/null); do
       ${pkgs.gnugrep}/bin/grep -qa 'bin/verge-mihomo' "/proc/$p/cmdline" 2>/dev/null && exit 0
     done
@@ -31,12 +40,32 @@ let
     fails=0
     first=1
     once=0
+    changed=1
+    nap_pid=""
+    interval=2          # start fast; the loop backs off once the state is stable
+    MIN=2
+    MAX=10              # cap the backstop: if an event is ever missed, the
+                        # killswitch cannot lag by more than this
     [ "''${1:-}" = "--once" ] && once=1
 
     log() { echo "proxy-mode: $*" >&2; }
     loud() {
       echo "proxy-mode: $*" >&2
       ${pkgs.systemd}/bin/systemd-cat -t proxy-mode -p err ${pkgs.coreutils}/bin/echo "proxy-mode: $*" || true
+    }
+
+    # Event-driven sleep: `proxy-net-wake.service` sends SIGUSR1 when the Clash
+    # core appears or disappears, and SIGUSR1 interrupts `wait`, so the loop reacts
+    # at once instead of waiting out the backstop interval. The interval itself
+    # adapts (2 s while transitioning/degraded, up to 30 s when stable and clean),
+    # which is what makes the steady state almost free while staying responsive.
+    trap ':' USR1
+    nap() {
+      ${pkgs.coreutils}/bin/sleep "$1" &
+      nap_pid=$!
+      wait "$nap_pid" 2>/dev/null || true
+      kill "$nap_pid" 2>/dev/null || true
+      nap_pid=""
     }
 
     # Ask for an immediate verification. A start issued here rides the activation
@@ -90,6 +119,7 @@ let
         rules_off
         printf 'direct\n' > "$STATUS"
         first=0
+        changed=1
         return 0
       fi
 
@@ -151,13 +181,22 @@ let
           request_verify
         fi
       fi
+
+      # Back off only when the mode is stable and the post-condition holds; any
+      # change or mismatch keeps the loop at the fast interval.
+      if [ "$mode" != "$prev" ] || [ "$ok" != "1" ]; then changed=1; else changed=0; fi
       return 0
     }
 
     while true; do
       sync_pass
       [ "$once" = "1" ] && exit 0
-      $SLEEP 2
+      if [ "$changed" = 1 ]; then
+        interval=$MIN
+      elif [ "$interval" -lt "$MAX" ]; then
+        interval=$(( interval * 2 > MAX ? MAX : interval * 2 ))
+      fi
+      nap "$interval"
     done
   '';
 
@@ -199,6 +238,36 @@ in
         ExecStart = modeScript;
         Restart = "always";
         RestartSec = "5";
+      };
+    };
+
+    # Event trigger: the mihomo control socket is created when the core starts and
+    # removed when it stops (or restarts), so watching it turns the supervisors
+    # from 2 s pollers into event-driven loops. A backstop interval inside each
+    # loop still heals anything the event misses.
+    systemd.paths.proxy-net-watch = {
+      wantedBy = [ "multi-user.target" ];
+      pathConfig = {
+        # The socket and its directory: either one changing (core start/stop,
+        # socket recreate) fires the coordinator.
+        PathChanged = [ mihomoSock mihomoDir ];
+        Unit = "proxy-net-wake.service";
+      };
+    };
+
+    # The coordinator: one event wakes nft (proxy-mode), DNS (dns-pac) and gost in
+    # the same instant, so they switch together instead of three loops noticing at
+    # different times. SIGUSR1 only interrupts each loop's sleep; every loop keeps
+    # its own idempotent decision logic and stays the source of truth.
+    systemd.services.proxy-net-wake = {
+      description = "Wake the proxy supervisors on a Clash core state change";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = pkgs.writeShellScript "proxy-net-wake" ''
+          for u in proxy-mode.service dns-pac.service gost-pac.service; do
+            ${pkgs.systemd}/bin/systemctl kill -s USR1 --kill-whom=main "$u" 2>/dev/null || true
+          done
+        '';
       };
     };
   };

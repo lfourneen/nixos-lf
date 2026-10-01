@@ -50,6 +50,7 @@ in
       SORT=${pkgs.coreutils}/bin/sort
       DIFF=${pkgs.diffutils}/bin/diff
       DATE=${pkgs.coreutils}/bin/date
+      SLEEP=${pkgs.coreutils}/bin/sleep
 
       FRAGMENT=${fragment}
       STATUS=/run/proxy-mode/status
@@ -227,24 +228,36 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
           cmp_rules "table ip6 proxymode_nat" "$(expected_table ip6 proxymode_nat)" "$(live_nat ip6 proxymode_nat)"
 
           # A name the validating upstream refuses must not come back as an answer
-          # here. dnsmasq does not relay an upstream SERVFAIL -- it waits and the
-          # client times out -- so "no answer" is also a refusal and must pass; only
-          # a real answer means a non-validating resolver is in the path. The
-          # control query separates "DNS is broken" from "the answer was downgraded".
-          probe="$($DATE +%s).dnssec-failed.org"
-          ctl=$($DIG +time=3 +tries=1 +short @127.0.0.1 -p "$CLIENT_DNS" example.com 2>/dev/null | $GREP -cE '^[0-9a-fA-F:]' || true)
-          if [ "$ctl" = 0 ]; then
-            warn "the client resolver (:$CLIENT_DNS) did not answer a control query; DNS in proxy mode is broken, so validation is not judged"
+          # here. Judge only once dns-pac has actually put the client resolver on
+          # mihomo -- proxy-mode's status leads dns-pac's, and while they disagree
+          # the resolver is still on the non-validating DoT, which is Mode A by
+          # design, not a downgrade.
+          dns_state=$($CAT /run/dns-pac/status 2>/dev/null | $SED -E 's/[[:space:]]+//g')
+          if [ "$dns_state" != "proxy" ]; then
+            warn "dns-pac is [$dns_state], not proxy yet: the client resolver is not on the validating upstream, so DNSSEC is not judged"
           else
-            # dig writes its diagnostics to stdout, so a line count would count them
-            # as answers -- parse the status line instead. SERVFAIL, and no status at
-            # all (dnsmasq swallows the SERVFAIL and the client times out), both mean
-            # the name was not answered; any real status means it was.
-            st=$($DIG +time=3 +tries=1 @127.0.0.1 -p "$CLIENT_DNS" "$probe" 2>/dev/null | $GREP -oE 'status: [A-Z]+' | head -1 || true)
-            case "$st" in
-              "status: SERVFAIL"|"") : ;;
-              *) fail "the client resolver answered '$probe' with [$st] although the validating upstream refuses it: a non-validating fallback is answering" ;;
-            esac
+            ctl=$($DIG +time=3 +tries=1 +short @127.0.0.1 -p "$CLIENT_DNS" example.com 2>/dev/null | $GREP -cE '^[0-9a-fA-F:]' || true)
+            if [ "$ctl" = 0 ]; then
+              warn "the client resolver (:$CLIENT_DNS) did not answer a control query; DNS in proxy mode is broken, so validation is not judged"
+            else
+              # dns-pac restarts dnsmasq asynchronously, so the first probe can still
+              # hit the previous upstream: retry and pass as soon as the name is
+              # refused (SERVFAIL) or swallowed (no status). Only a resolver that
+              # keeps answering for every attempt counts as a downgrade. dig writes
+              # its diagnostics to stdout, so parse the status line, not a line count.
+              refused=0
+              st=""
+              for _ in 1 2 3 4 5; do
+                probe="$($DATE +%s%N).dnssec-failed.org"
+                st=$($DIG +time=3 +tries=1 @127.0.0.1 -p "$CLIENT_DNS" "$probe" 2>/dev/null | $GREP -oE 'status: [A-Z]+' | head -1 || true)
+                case "$st" in
+                  "status: SERVFAIL"|"") refused=1; break ;;
+                esac
+                $SLEEP 1
+              done
+              [ "$refused" = 1 ] \
+                || fail "the client resolver kept answering '$probe' with [$st] although the validating upstream refuses it: a non-validating resolver is in the path"
+            fi
           fi
           ;;
         unenforced)

@@ -232,6 +232,22 @@ in
           "ignore-auto-dns" = true;
         };
       };
+
+      # Wake the proxy supervisors on link changes, so a new network (portal,
+      # DHCP change, connectivity transition) re-evaluates at once instead of
+      # waiting for a backstop interval. Same coordinator as the core event.
+      dispatcherScripts = [
+        {
+          type = "basic";
+          source = pkgs.writeShellScript "nm-proxy-net-wake" ''
+            case "$2" in
+              up|down|connectivity-change|dhcp4-change|dhcp6-change)
+                ${pkgs.systemd}/bin/systemctl start --no-block proxy-net-wake.service 2>/dev/null || true
+                ;;
+            esac
+          '';
+        }
+      ];
     };
 
     resolvconf.enable = false;

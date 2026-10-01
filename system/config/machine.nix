@@ -10,6 +10,16 @@
   options.my.machine = {
     hostName = lib.mkOption { type = lib.types.str; default = "nixos"; };
 
+    desktopUser = lib.mkOption {
+      type = lib.types.str;
+      default = "lfour";
+      description = ''
+        Desktop login user. Its Clash Verge runtime owns the mihomo control socket
+        under /run/user/<uid>/, which the proxy event trigger watches to turn the
+        supervisors from pollers into event-driven loops.
+      '';
+    };
+
     wired = {
       name = lib.mkOption {
         type = lib.types.str;

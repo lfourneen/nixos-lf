@@ -93,6 +93,23 @@ in
           echo "gost-pac: WARN running as uid $(${pkgs.coreutils}/bin/id -u); the nat redirect exclusion expects ${toString gostUid}" >&2
         fi
 
+        # Event-driven, adaptive sleep (see proxy-mode.nix): proxy-net-wake sends
+        # SIGUSR1 on a Clash core change, which interrupts `wait`; the interval
+        # adapts -- fast while a transition is pending or the probe is degraded, up
+        # to 30 s when the mode is settled.
+        nap_pid=""
+        interval=5
+        MIN=2
+        MAX=30
+        trap ':' USR1
+        nap() {
+          ${pkgs.coreutils}/bin/sleep "$1" &
+          nap_pid=$!
+          wait "$nap_pid" 2>/dev/null || true
+          kill "$nap_pid" 2>/dev/null || true
+          nap_pid=""
+        }
+
         # State-file contract: one mode word plus a newline, rewritten every round
         # (so its mtime only proves the supervisor is alive); `proxy-status` reads it.
         write_state() {
@@ -287,8 +304,24 @@ in
             degraded=0
           fi
 
+          # Settled (proxy with a working probe, or passthrough) => back off; a
+          # pending transition, a closed/undecided state or a degraded probe stays
+          # fast so the switch is not delayed.
+          changed=1
+          if [ "$mode" = "$want" ]; then
+            case "$mode" in
+              proxy) [ "$core_e2e" = 1 ] && changed=0 ;;
+              direct) changed=0 ;;
+            esac
+          fi
+
           write_state "$mode"
-          sleep 5
+          if [ "$changed" = 1 ]; then
+            interval=$MIN
+          elif [ "$interval" -lt "$MAX" ]; then
+            interval=$(( interval * 2 > MAX ? MAX : interval * 2 ))
+          fi
+          nap "$interval"
         done
       ''
       }";

@@ -56,6 +56,24 @@ in
       ExecStart = "${pkgs.writeShellScript "dns-pac-loop" ''
         CLASH_ON=${config.my.proxy.isClashOn}
 
+        # Event-driven, adaptive sleep (same mechanism as proxy-mode.nix):
+        # proxy-net-wake sends SIGUSR1 on a Clash core change, which interrupts
+        # `wait`; the interval adapts -- 2 s while transitioning/degraded, up to
+        # 30 s once the path is settled and healthy.
+        nap_pid=""
+        interval=2
+        MIN=2
+        MAX=15              # cap the backstop: a missed event must not leave DNS
+                            # pointing at a core that is gone for long
+        trap ':' USR1
+        nap() {
+          ${pkgs.coreutils}/bin/sleep "$1" &
+          nap_pid=$!
+          wait "$nap_pid" 2>/dev/null || true
+          kill "$nap_pid" 2>/dev/null || true
+          nap_pid=""
+        }
+
         # dhcpcd >= 10 writes an opaque lease blob, so parsing the file never
         # matches: `dhcpcd -U` decodes it over /run/dhcpcd/unpriv.sock.
         lease_resolvers() {
@@ -250,6 +268,7 @@ in
               write_state "$new_status"
               current="$new_status"
             fi
+            [ "$MODE_A_STATE" = "dot" ] && healthy=1 || healthy=0
             hits=0
             misses=0
           else
@@ -278,10 +297,19 @@ in
               hits=0
               misses=0
             fi
+            [ "$current" = "proxy" ] && healthy=1 || healthy=0
           fi
 
+          # Back off only when the path is settled and healthy; every transition,
+          # degradation or open window keeps the fast interval.
+          if [ "$healthy" = 1 ] && [ "$new_status" = "$current" ]; then changed=0; else changed=1; fi
           write_reason
-          sleep 2
+          if [ "$changed" = 1 ]; then
+            interval=$MIN
+          elif [ "$interval" -lt "$MAX" ]; then
+            interval=$(( interval * 2 > MAX ? MAX : interval * 2 ))
+          fi
+          nap "$interval"
         done
       ''
       }";
