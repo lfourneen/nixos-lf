@@ -73,10 +73,14 @@ let
       }
     }
 
-    // Wallpaper layer (noctalia) — stationary wallpaper drawn in the backdrop
+    // Wallpaper layer (noctalia) — stationary wallpaper drawn in the backdrop.
+    // opacity 0 keeps Noctalia's wallpaper instance alive (Home-tab thumbnail and
+    // palette) while making its layer invisible, so waywallen's live wallpaper
+    // shows through regardless of background-layer stacking order.
     layer-rule {
       match namespace="^noctalia-wallpaper*"
       place-within-backdrop true
+      opacity 0.0
     }
 
     // Linux Wallpaper Engine (w-engine plugin → linux-wallpaperengine): draw the
