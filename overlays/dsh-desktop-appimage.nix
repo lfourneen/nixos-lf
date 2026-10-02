@@ -51,6 +51,20 @@ let
         'if (process.platform !== "win32") Menu.setApplicationMenu(Menu.buildFromTemplate([' \
         'if (false) Menu.setApplicationMenu(Menu.buildFromTemplate(['
 
+      # Attachment uploads fail with "上传失败，点击重试". The Web UI posts a File
+      # from a dedicated Web Worker to dsh-app://app/api/session/uploadFileBinary;
+      # Electron's webRequest never intercepts Worker requests, so the main
+      # process cannot attach the x-dsh-desktop-renderer capability that
+      # forwardWebRequest requires and it answers 403. Defining the Harness-owned
+      # __DSH_FILE_UPLOAD__ hook on the page makes dsh-client-file-upload post
+      # from the main frame instead, where the capability is injected as usual.
+      # Verified against the bundled Electron 44.0.0 (main-frame fetch/XHR get
+      # the header; Worker XHR does not).
+      substituteInPlace $app/lib/web-document.js \
+        --replace-fail \
+        'body.toString().replace("<head>", "<head><script>globalThis.__DSH_BOOT_READY__ = Promise.withResolvers()' \
+        'body.toString().replace("<head>", "<head><script>globalThis.__DSH_BOOT_READY__ = Promise.withResolvers()</script><script>globalThis.__DSH_FILE_UPLOAD__ = { fetch: (path, init) => fetch(path, init) }'
+
       # The dshmarket git-source allowBuilds workarounds that used to live here
       # are gone: dshmarket >= 1.66 (bundled) derives both the stable
       # `name@git+https://…` and the commit-pinned codeload key itself
