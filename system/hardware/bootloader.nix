@@ -1,6 +1,12 @@
 { ... }:
 
 {
+  # On a slow cold boot (DHCP/portal, slower sysinit) systemd prints "A start job
+  # is running for <unit> ...", e.g. for the proxy-mode unit that loads the kill
+  # switch; it is only console noise and clears by itself. `error` keeps boot
+  # quiet except for real failures, so the red [FAILED] lines still show.
+  boot.kernelParams = [ "systemd.show_status=error" ];
+
   # Bootloader
   boot.loader = {
     systemd-boot.enable = true;
