@@ -68,8 +68,10 @@ in
         nap_pid=""
         interval=2
         MIN=2
-        MAX=15              # cap the backstop: a missed event must not leave DNS
-                            # pointing at a core that is gone for long
+        # Backstop cap: short while a degradation or a plaintext window is in
+        # flight, long once the path is settled (dot or proxy). Events still drive
+        # the transitions, so the cap only bounds a missed event.
+        cap_for() { case "$1" in dot|proxy) echo 60 ;; *) echo 15 ;; esac; }
         trap ':' WINCH
         # woken=1 when the nap was cut short by the coordinator's SIGWINCH (a real
         # Clash/link event); the loop then re-evaluates at once for the second
@@ -97,7 +99,7 @@ in
           $CLASH_ON && return 0
 
           found="$(lease_resolvers \
-            | ${pkgs.gnused}/bin/sed -n 's/^domain_name_servers=//p; s/^new_domain_name_servers=//p' \
+            | ${pkgs.gnused}/bin/sed -n 's/^domain_name_servers=//p; s/^new_domain_name_servers=//p; s/^IP4\.DNS\[[0-9]\+\]://p' \
             | ${pkgs.coreutils}/bin/tr -s ' \t' '\n' \
             | ${pkgs.gnugrep}/bin/grep -vE '^(0\.0\.0\.0|127\.|169\.254\.|255\.255\.255\.255)' \
             | ${pkgs.gnugrep}/bin/grep -E '^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$')"
@@ -113,7 +115,7 @@ in
         # bootstrap window.
         dhcp_identity() {
           lease_resolvers \
-            | ${pkgs.gnugrep}/bin/grep -E '^(ip_address|routers|domain_name_servers|new_domain_name_servers)=' \
+            | ${pkgs.gnugrep}/bin/grep -E '^(ip_address|routers|domain_name_servers|new_domain_name_servers)=|^IP4\.(ADDRESS|GATEWAY|DNS)' \
             | ${pkgs.coreutils}/bin/tr '\n' ' '
         }
 
@@ -317,8 +319,9 @@ in
           write_reason
           if [ "$changed" = 1 ]; then
             interval=$MIN
-          elif [ "$interval" -lt "$MAX" ]; then
-            interval=$(( interval * 2 > MAX ? MAX : interval * 2 ))
+          else
+            cap=$(cap_for "$current")
+            [ "$interval" -lt "$cap" ] && interval=$(( interval * 2 > cap ? cap : interval * 2 ))
           fi
           # An event wake while a switch is still in flight must not wait a whole
           # interval for the second confirmation: re-evaluate at once (the woken

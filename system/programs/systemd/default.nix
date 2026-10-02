@@ -11,6 +11,7 @@
     ./libvirtd.nix  
     ./nix-daemon.nix
     ./netsec-alert.nix
+    ./nftables-recover.nix
     ./nftables-verify.nix
     ./ntsync.nix  
     ./nvidia-powerd.nix

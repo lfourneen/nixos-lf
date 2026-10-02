@@ -34,7 +34,6 @@ let
     NFT=${pkgs.nftables}/bin/nft
     SYSTEMCTL=${pkgs.systemd}/bin/systemctl
     GREP=${pkgs.gnugrep}/bin/grep
-    SLEEP=${pkgs.coreutils}/bin/sleep
 
     mode=""
     fails=0
@@ -44,8 +43,10 @@ let
     nap_pid=""
     interval=2          # start fast; the loop backs off once the state is stable
     MIN=2
-    MAX=10              # cap the backstop: if an event is ever missed, the
-                        # killswitch cannot lag by more than this
+    # Backstop cap: short while proxy mode is (or should be) enforced -- a missed
+    # event must not leave the kill switch off for long -- and long when settled in
+    # direct, where no kill switch is loaded and events still drive transitions.
+    cap_for() { case "$1" in proxy|unenforced) echo 10 ;; *) echo 60 ;; esac; }
     [ "''${1:-}" = "--once" ] && once=1
 
     log() { echo "proxy-mode: $*" >&2; }
@@ -76,18 +77,21 @@ let
     # exits 0 (see nftables-verify.nix), so it can never fail the rebuild.
     request_verify() { $SYSTEMCTL start --no-block nftables-verify.service 2>/dev/null || true; }
 
-    # The fragment loads in one transaction, so one probe covers all of it -- but
-    # both families and every fragment chain, or a half-loaded state goes unnoticed.
-    rules_loaded() { $NFT list table ip proxymode_nat >/dev/null 2>&1; }
-    rules_loaded6() { $NFT list table ip6 proxymode_nat >/dev/null 2>&1; }
+    # The fragment loads in one transaction, so one probe covers all of it -- both
+    # families and the rule chains, or a half-loaded state goes unnoticed. The chain
+    # probe is what catches a base-ruleset reload that empties the fragment chains
+    # while its own tables survive.
+    rules_loaded() { $NFT list table ip lf_proxymode_nat >/dev/null 2>&1; }
+    rules_loaded6() { $NFT list table ip6 lf_proxymode_nat >/dev/null 2>&1; }
+    chains_loaded() { $NFT list chain inet lf_filter proxymode_drops 2>/dev/null | $GREP -q 'counter'; }
 
     # Anything that would still redirect or drop after a tear-down.
     rules_present() {
       rules_loaded && return 0
       rules_loaded6 && return 0
-      $NFT list chain inet filter proxymode_drops 2>/dev/null | $GREP -q 'counter' && return 0
-      $NFT list chain inet filter proxymode_tail 2>/dev/null | $GREP -q 'counter' && return 0
-      $NFT list chain inet filter proxymode_forward 2>/dev/null | $GREP -q 'counter' && return 0
+      $NFT list chain inet lf_filter proxymode_drops 2>/dev/null | $GREP -q 'counter' && return 0
+      $NFT list chain inet lf_filter proxymode_tail 2>/dev/null | $GREP -q 'counter' && return 0
+      $NFT list chain inet lf_filter proxymode_forward 2>/dev/null | $GREP -q 'counter' && return 0
       return 1
     }
 
@@ -96,21 +100,20 @@ let
     rules_off() {
       rc=0
       if rules_loaded; then
-        $NFT delete table ip proxymode_nat || rc=1
+        $NFT delete table ip lf_proxymode_nat || rc=1
       fi
-      if $NFT list table ip6 proxymode_nat >/dev/null 2>&1; then
-        $NFT delete table ip6 proxymode_nat || rc=1
+      if rules_loaded6; then
+        $NFT delete table ip6 lf_proxymode_nat || rc=1
       fi
-      $NFT flush chain inet filter proxymode_drops || rc=1
-      $NFT flush chain inet filter proxymode_tail || rc=1
-      $NFT flush chain inet filter proxymode_forward || rc=1
+      $NFT flush chain inet lf_filter proxymode_drops || rc=1
+      $NFT flush chain inet lf_filter proxymode_tail || rc=1
+      $NFT flush chain inet lf_filter proxymode_forward || rc=1
       return $rc
     }
 
     rules_on() {
-      # The fragment flushes the chains itself; the deletes only clear stale tables.
-      $NFT delete table ip proxymode_nat 2>/dev/null
-      $NFT delete table ip6 proxymode_nat 2>/dev/null
+      # The fragment tears down and re-creates its own NAT tables, so this is a
+      # single atomic transaction.
       $NFT -f "$RULES"
     }
 
@@ -127,7 +130,7 @@ let
 
       if $IS_CLASH_ON; then
         want=proxy
-        if [ "$first" = "1" ] || ! rules_loaded; then
+        if [ "$first" = "1" ] || ! rules_loaded || ! chains_loaded; then
           if rules_on; then
             log "Clash is on -> redirect + killswitch loaded"
             # Verify the live state the fragment depends on (the TUN, mihomo's own
@@ -166,8 +169,9 @@ let
       # offline after closing Clash, so fail visibly through the verifier unit.
       ok=1
       if [ "$mode" = "proxy" ]; then
-        # Both families: a missing ip6 nat table means half the redirect is gone.
-        { rules_loaded && rules_loaded6; } || ok=0
+        # Both families and the rule chains: a missing ip6 nat table or an emptied
+        # drops chain means half the enforcement is gone.
+        { rules_loaded && rules_loaded6 && chains_loaded; } || ok=0
       elif [ "$mode" = "unenforced" ]; then
         # Always loud: Clash is on and our enforcement is not loaded.
         ok=0
@@ -195,8 +199,9 @@ let
       [ "$once" = "1" ] && exit 0
       if [ "$changed" = 1 ]; then
         interval=$MIN
-      elif [ "$interval" -lt "$MAX" ]; then
-        interval=$(( interval * 2 > MAX ? MAX : interval * 2 ))
+      else
+        cap=$(cap_for "$mode")
+        [ "$interval" -lt "$cap" ] && interval=$(( interval * 2 > cap ? cap : interval * 2 ))
       fi
       nap "$interval"
     done
@@ -240,6 +245,23 @@ in
         ExecStart = modeScript;
         Restart = "always";
         RestartSec = "5";
+
+        # Sandboxing. It shells out to nft (netlink) and systemctl (D-Bus) and reads
+        # cgroupfs, so ProtectKernelTunables / ProtectControlGroups stay off and
+        # AF_NETLINK is allowed; everything else is narrowed.
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        ProtectKernelModules = true;
+        ProtectKernelLogs = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        RestrictNamespaces = true;
+        RestrictSUIDSGID = true;
+        RestrictRealtime = true;
+        RemoveIPC = true;
+        RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
       };
     };
 

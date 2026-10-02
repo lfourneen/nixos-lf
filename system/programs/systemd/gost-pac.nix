@@ -169,15 +169,13 @@ in
           # proxy: only forward to mihomo, never dialing a target itself. direct:
           # passthrough, which is what "Clash is off" means.
           if [ "$1" = "proxy" ]; then
-            env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
-              "${pkgs.gost}/bin/gost" \
+            "${pkgs.gost}/bin/gost" \
                 "-L=http://127.0.0.1:${toString port.gostHttp}?reuseport=true" \
                 "-L=redirect://127.0.0.1:${toString port.gostRedirect}?reuseport=true" \
                 "-L=redirect://[::1]:${toString port.gostRedirect}?reuseport=true" \
                 -F=http://127.0.0.1:${toString port.mihomoMixed} &
           else
-            env http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
-              "${pkgs.gost}/bin/gost" \
+            "${pkgs.gost}/bin/gost" \
                 "-L=http://127.0.0.1:${toString port.gostHttp}?reuseport=true" \
                 "-L=redirect://127.0.0.1:${toString port.gostRedirect}?reuseport=true" \
                 "-L=redirect://[::1]:${toString port.gostRedirect}?reuseport=true" &

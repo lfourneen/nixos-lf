@@ -63,21 +63,24 @@ let
 
   clonedMac = config.my.hardening.wifi.clonedMacAddress;
 
-  # Kill switch: non-root apps may only egress to loopback/LAN/DNS/NTP (fail
-  # closed). Needs Clash Verge Service Mode (root core exempt via skuid 0).
+  # Kill switch: everything leaving an uplink for a public destination must go
+  # through the proxy core or be dropped (fail closed). The core is exempted by
+  # the packet mark it sets on its own sockets (`routing-mark`), not by uid 0, so
+  # unmarked root traffic is subject to the same drop/redirect as anything else.
   proxyKillSwitch = true;
 
-  # Only root is exempt: mihomo egresses as root, so its DIRECT rule keeps working
-  # in proxy mode. gost only dials loopback, so it needs no exemption.
-  killSwitchUidSet = "{ 0 }";
+  # The core's mark (also pinned in the Clash merge template) and the one uid
+  # kept out of the TCP redirect: gost dials only loopback, but a passthrough
+  # relay must not dial itself. nft prints a mark as zero-padded lowercase hex
+  # (6666 -> 0x00001a0a), so the fragment emits that form and the live rules
+  # compare equal to it.
+  coreMark = "0x" + lib.toLower (lib.fixedWidthString 8 "0" (lib.toHexString m.mihomoMark));
 
-  # gost stays out of the redirect so that a passthrough relay cannot dial itself;
-  # its egress is still dropped by the killswitch, so this is not an egress path.
-  redirectExemptUidSet = "{ 0, ${toString config.users.users.gost.uid} }";
+  redirectExemptUidSet = "{ ${toString config.users.users.gost.uid} }";
 
   # The :53 redirect must exempt dnsmasq's own upstream sockets or they loop back
-  # into its listener; root stays exempt as a manual escape hatch.
-  dnsRedirectExemptUidSet = "{ 0, ${toString config.users.users.dnsmasq.uid} }";
+  # into its listener. Root is no longer exempt: root's :53 lands in dnsmasq now.
+  dnsRedirectExemptUidSet = "{ ${toString config.users.users.dnsmasq.uid} }";
 
   # The 53/853/123 channel is pinned per-process instead of opened to any
   # destination: unbound needs DoT (tcp/853) to its two fixed upstreams -- the
@@ -102,33 +105,49 @@ let
   # Fragment proxy-mode.service applies while Clash runs: LAN/multicast stay
   # link-local, and the tail also covers interfaces not pinned in network.links.
   proxyModeRules = lib.optionalString proxyKillSwitch ''
-    flush chain inet filter proxymode_drops
-    add rule inet filter proxymode_drops meta skuid != 0 udp dport { 3478, 5349 } drop
-    add rule inet filter proxymode_drops meta skuid != 0 tcp dport { 3478, 5349 } drop
-    add rule inet filter proxymode_drops meta skuid != ${killSwitchUidSet} oifname { "${wired}", "${wireless}" } ip daddr != { ${exempt4} } counter drop
-    add rule inet filter proxymode_drops meta skuid != ${killSwitchUidSet} oifname { "${wired}", "${wireless}" } ip6 daddr != { ${exempt6} } counter drop
+    # One atomic load: the mode-dependent NAT tables are torn down here, inside the
+    # same `nft -f`, so the fragment is applied or not (no partial window).
+    destroy table ip lf_proxymode_nat
+    destroy table ip6 lf_proxymode_nat
 
-    flush chain inet filter proxymode_tail
-    add rule inet filter proxymode_tail meta skuid != ${killSwitchUidSet} oifname != { "lo", "${tunDev}" } ip daddr != { ${join multicast4} } counter drop
-    add rule inet filter proxymode_tail meta skuid != ${killSwitchUidSet} oifname != { "lo", "${tunDev}" } ip6 daddr != ${join m.multicastV6} counter drop
+    flush chain inet lf_filter proxymode_drops
+    # The proxy core marks its own outbound sockets (routing-mark): allow it, it
+    # must reach the nodes directly.
+    add rule inet lf_filter proxymode_drops meta mark ${coreMark} accept
+    # DHCP on the uplinks (dhcpcd is root and unmarked).
+    add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
+    add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept
+    # Tailscale WireGuard endpoint (root, unmarked).
+    add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } udp dport 41641 accept
+    # Everything else leaving an uplink for a non-local destination is dropped,
+    # root included.
+    add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } ip daddr != { ${exempt4} } counter drop
+    add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } ip6 daddr != { ${exempt6} } counter drop
+
+    flush chain inet lf_filter proxymode_tail
+    add rule inet lf_filter proxymode_tail meta mark ${coreMark} accept
+    add rule inet lf_filter proxymode_tail oifname != { "lo", "${tunDev}" } ip daddr != { ${join multicast4} } counter drop
+    add rule inet lf_filter proxymode_tail oifname != { "lo", "${tunDev}" } ip6 daddr != ${join m.multicastV6} counter drop
 
     # Guests. Forwarded traffic never reaches chain output and carries no skuid, so
-    # the killswitch cannot see it: public destinations are refused instead.
-    flush chain inet filter proxymode_forward
-    add rule inet filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}" } oifname { "${wired}", "${wireless}" } ip daddr != { ${local4} } counter drop
+    # the killswitch cannot see it: public destinations are refused instead (v4
+    # and v6).
+    flush chain inet lf_filter proxymode_forward
+    add rule inet lf_filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}" } oifname { "${wired}", "${wireless}" } ip daddr != { ${local4} } counter drop
+    add rule inet lf_filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}" } oifname { "${wired}", "${wireless}" } ip6 daddr != { ${local6} } counter drop
 
     # `redirect` is an nft statement keyword, so the chain cannot be named that.
-    table ip proxymode_nat {
+    table ip lf_proxymode_nat {
       chain output {
         type nat hook output priority -100; policy accept;
-        meta skuid != ${redirectExemptUidSet} ip daddr != { ${redirectExempt4} } tcp dport != { 53, ${toString port.dot} } counter redirect to :${toString port.gostRedirect}
+        meta mark != ${coreMark} meta skuid != ${redirectExemptUidSet} ip daddr != { ${redirectExempt4} } tcp dport != { 53, ${toString port.dot} } counter redirect to :${toString port.gostRedirect}
       }
     }
 
-    table ip6 proxymode_nat {
+    table ip6 lf_proxymode_nat {
       chain output {
         type nat hook output priority -100; policy accept;
-        meta skuid != ${redirectExemptUidSet} ip6 daddr != { ${redirectExempt6} } tcp dport != { 53, ${toString port.dot} } counter redirect to :${toString port.gostRedirect}
+        meta mark != ${coreMark} meta skuid != ${redirectExemptUidSet} ip6 daddr != { ${redirectExempt6} } tcp dport != { 53, ${toString port.dot} } counter redirect to :${toString port.gostRedirect}
       }
     }
   '';
@@ -265,7 +284,7 @@ in
 
     proxy = {
       default = "http://127.0.0.1:${toString port.gostHttp}/";
-      noProxy = "127.0.0.1,localhost,::1,${join m.privateV4},192.168.1.1,*.local";
+      noProxy = "127.0.0.1,localhost,::1,${join m.privateV4},*.local";
     };
   };
 
@@ -274,7 +293,7 @@ in
     HTTP_PROXY = "http://127.0.0.1:${toString port.gostHttp}/";
     HTTPS_PROXY = "http://127.0.0.1:${toString port.gostHttp}/";
     ALL_PROXY = "http://127.0.0.1:${toString port.gostHttp}/";
-    NO_PROXY = "127.0.0.1,localhost,::1,${join m.privateV4},192.168.1.1,*.local";
+    NO_PROXY = "127.0.0.1,localhost,::1,${join m.privateV4},*.local";
   };
 
   # Substituters mirrors
@@ -308,7 +327,9 @@ in
     enable = true;
     nssmdns4 = true;
     nssmdns6 = true;
-    allowInterfaces = [ "lo" wireless "tailscale0" ];
+    # The wireless interface is trusted only while it *is* the AP: as a client of a
+    # foreign network it must not announce, so it is wired to the hotspot opt-in.
+    allowInterfaces = [ "lo" "tailscale0" ] ++ lib.optionals hotspotEnable [ wireless ];
   };
 
   # DNS PAC: dnsmasq forwards to mihomo while clash runs and to the encrypted
@@ -366,9 +387,9 @@ in
 
         MulticastDNS = "no";
 
-        # Fallback is encrypted (unbound DoT); no plaintext leak.
+        # DNS is always set, so resolved's FallbackDNS would never be consulted; it
+        # is omitted rather than left as dead config.
         DNS = [ "127.0.0.1:${toString port.dnsmasq}" ];
-        FallbackDNS = [ "127.0.0.1:${toString port.unbound}" ];
 
         # Must be "no": opportunistic DoT tries cert validation against IPs and kills fallback
         DNSOverTLS = "no";
@@ -399,21 +420,34 @@ in
   networking.nftables = {
     enable = true;
 
+    # Build-check the static ruleset so a typo fails at build time, not boot.
+    checkRuleset = true;
+
     # Never flush the whole ruleset: it removes mihomo's own tables too, and only a
     # TUN restart recreates them. Our tables are torn down below instead.
     flushRuleset = false;
 
     ruleset = ''
-      # Our own tables only. `destroy` is delete-if-exists, so this is idempotent
-      # and no stale table survives a reload; foreign tables are never touched.
-      # `ip mangle` is listed for the generations that enable vmTransparentProxyIfaces,
-      # which is also what cleans it up when that option is turned off.
-      destroy table inet filter
-      destroy table ip nat
-      destroy table ip6 nat
-      destroy table ip mangle
+      # Our own tables only, under private lf_* names so a reload can never clobber
+      # the shared iptables-nft tables (`ip nat`, `ip6 nat`, `ip mangle`) used by
+      # libvirt / Docker / NetworkManager. `destroy` is delete-if-exists, so this
+      # stays idempotent. The mode fragment's NAT tables are torn down too, so a
+      # reload leaves a clean slate (proxy-mode then re-applies within the backstop).
+      destroy table inet lf_filter
+      destroy table ip lf_nat
+      destroy table ip6 lf_nat
+      destroy table ip lf_mangle
+      destroy table ip lf_proxymode_nat
+      destroy table ip6 lf_proxymode_nat
 
-      table inet filter {
+      # One-time cleanup of the pre-rename table names (ours only; a no-op once they
+      # are gone, including after any reboot). The shared `ip nat` / `ip6 nat` are
+      # deliberately not deleted, so libvirt/Docker/NM rules survive.
+      destroy table inet filter
+      destroy table ip proxymode_nat
+      destroy table ip6 proxymode_nat
+
+      table inet lf_filter {
         chain input {
           type filter hook input priority 0; policy drop;
 
@@ -424,6 +458,10 @@ in
           ct state established,related accept
           # TPROXY'd bridge traffic, if enabled.
           ${tproxyInputAccept}
+
+          # DHCP client replies on the uplinks, before the martian drop below so an
+          # OFFER/ACK sourced from 0.0.0.0 is not caught by it.
+          iifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
 
           # Martian sources on the wired WAN. 100.64.0.0/10 is absent on purpose:
           # this uplink is CGNAT, so those are the ISP's own subscribers.
@@ -439,7 +477,7 @@ in
           iifname "tailscale0" udp dport { ${tailnetUdp} } accept
 
           # ICMPv6 essentials before the public-IPv6 drop
-          ip6 nexthdr icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert, packet-too-big, echo-request, destination-unreachable, time-exceeded } accept
+          meta l4proto ipv6-icmp icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert, packet-too-big, echo-request, destination-unreachable, time-exceeded } accept
 
           # Block all public IPv6 inbound
           ip6 saddr != { ::1, fe80::/10, fc00::/7 } drop
@@ -483,8 +521,9 @@ in
           oifname "${wireless}" ip daddr ${m.hotspot.subnet} ct state established,related accept
           ''}
 
-          # Libvirt VM egress -> real uplinks only
-          iifname "${m.vmBridge}" oifname { "${wired}", "${wireless}" } accept
+          # Libvirt VM egress -> real uplinks only (v4 source-pinned; the Mode-B
+          # guest refusal is per-family, so this accept is kept v4 too).
+          iifname "${m.vmBridge}" ip saddr ${m.vmSubnet} oifname { "${wired}", "${wireless}" } accept
           oifname "${m.vmBridge}" ct state established,related accept
 
           counter drop
@@ -513,21 +552,16 @@ in
           # Enforcement is loaded only while Clash runs; empty chain = no-op.
           jump proxymode_drops
 
-          # Clash mixed-port (loopback-only; already accepted above, listed
-          # explicitly for auditing). NOTE: egress-audit uses connect(2)
-          # pre-NAT, so transparently redirected flows show their original
-          # public IP, not :${toString port.gostRedirect} -- count those as proxied,
-          # not bypasses.
-          tcp dport { ${toString port.mihomoMixed} } accept
-          udp dport { ${toString port.mihomoMixed} } accept
-
+          # No unscoped accept for the mixed port: loopback is accepted above, and
+          # an unscoped accept would let a flow on an unexpected egress interface
+          # skip the chain-tail default-deny below.
           # Chain-tail reverse default-deny, loaded only while Clash runs.
           jump proxymode_tail
         }
       }
 
       # NAT
-      table ip nat {
+      table ip lf_nat {
         # Force :53 out an uplink into dnsmasq: those destinations are the ones the
         # TUN excludes, so mihomo's dns-hijack never sees them. A redirect, not a
         # drop, so an in-range resolver still answers.
@@ -551,7 +585,7 @@ in
 
       # IPv6 twin of the redirect above: otherwise a ULA or link-local resolver is
       # reached in the clear. Same selector; ::1 and the tailnet are exempt.
-      table ip6 nat {
+      table ip6 lf_nat {
         chain output {
           type nat hook output priority -100; policy accept;
 
@@ -562,7 +596,7 @@ in
 
       ${lib.optionalString vmTproxy ''
       # Divert listed bridges' public TCP/UDP into mihomo's tproxy port.
-      table ip mangle {
+      table ip lf_mangle {
         chain prerouting {
           type filter hook prerouting priority mangle; policy accept;
           ${tproxyPrerouting}
@@ -576,11 +610,17 @@ in
   # with no firewall at all (resolved holds udp/0.0.0.0:53). Retry on failure;
   # on-failure is the only restart mode systemd allows for oneshot units.
   systemd.services.nftables = {
-    # Three failed loads leave the host with no ruleset; the failure has to be visible.
+    # Three failed loads leave the host with no ruleset; the failure has to be
+    # visible (nftables-recover.nix also retries it periodically).
     unitConfig.OnFailure = [ "netsec-alert@%n.service" ];
     serviceConfig = {
       Restart = "on-failure";
       RestartSec = "2s";
+      # A reload re-creates the fragment chains empty while the fragment's own
+      # tables survive, so proxy-mode's "rules loaded" probe still returns true and
+      # it would not re-apply. Wake the supervisors right after every load.
+      # mkAfter: the module's own ExecStartPost (saving the deletions file) must stay.
+      ExecStartPost = lib.mkAfter [ "${pkgs.systemd}/bin/systemctl start --no-block proxy-net-wake.service" ];
     };
     unitConfig.StartLimitBurst = 3;
   };

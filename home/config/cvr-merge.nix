@@ -28,6 +28,11 @@ in
       # Fix the mixed port to align with the probe and forwarding ports in gost-pac.nix.
       mixed-port: ${toString port.mihomoMixed}
 
+      # Pin the mark the core sets on its own outbound sockets; the nft kill switch
+      # exempts the core by this mark rather than by uid 0. Must match
+      # my.machine.mihomoMark (nftables-verify asserts it at runtime).
+      routing-mark: ${toString m.mihomoMark}
+
       # allow-lan:false keeps the plain proxy ports on loopback. bind-address
       # must stay "*" so the optional TPROXY listener (vmTransparentProxy) can
       # accept transparent traffic; the controller is loopback via config.yaml.
@@ -74,9 +79,10 @@ in
         enhanced-mode: redir-host
         use-hosts: true
         respect-rules: true
+        # Encrypted bootstrap (both are IP literals, so no bootstrap recursion).
         default-nameserver:
-          - ${lib.head m.dotUpstreams}
-          - 119.29.29.29
+          - tls://${lib.head m.dotUpstreams}
+          - tls://119.29.29.29
         proxy-server-nameserver:
           - https://${lib.head m.dotUpstreams}/dns-query
         nameserver:

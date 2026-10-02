@@ -75,7 +75,7 @@ Clash 关闭时主机就是普通直连：门户、DNS 与日常上网都无需�
 
 * TUN 设备启用时，nftables 到 `:33333` 的重定向**承载流量**，并非休眠：所有未进入 TUN 的 TCP 流（绑定源地址/网卡的套接字，以及手工 flush 之后的流量）都由它承载。`gost` 是这些流的单点故障，`nftables-verify` 会校验它的监听端口是否存在。经它到达的流会被改源为 `127.0.0.1`：任何按来源匹配的策略规则对它们都没有意义。
 * 只有 `unbound`（DoT，tcp/853）与 `systemd-timesyncd`（udp/123）可以直接出网做 DNS 与 NTP；其它公网解析器的明文查询，对豁免集合之外的进程会被丢弃——除非它们先被重定向进 dnsmasq。
-* 断网保护会丢弃非 root 进程的直接出站流量，回环、局域网地址、DNS/NTP 与组播除外。只有 root 被豁免，而这正是 mihomo 的 DIRECT 规则在代理模式下能直接出网的前提：DIRECT 的可用性隐含依赖 mihomo 以 root 运行。
+* 断网保护会丢弃**除代理核心之外**任何进程的直接出站流量，回环、局域网地址、DNS/NTP、DHCP 与组播除外。核心是按它给自己的 socket 打的 packet mark（`routing-mark`，与合并模板一致，并由 `nftables-verify` 运行期校验）豁免的，而不是按 uid；因此未打标的 root 流量与其它流量一样被丢弃或重定向——核心活着但没抓到流量时也不会泄漏 root 出站。DHCP（`dhcpcd`）与 tailnet 有显式例外以保持可用。
 * `gost-pac` 被排除在 `:33333` 重定向之外，这样它的直通中继不会拨回自己；它的出站仍受断网保护约束——代理模式装载期间会被丢弃（模式短暂过期只会造成瞬时的连接失败，不会造成直连泄漏）。
 * 探测只认属于 `clash-verge.service` 的监听者：判据读取监听者的 cgroup，本机进程无法伪造，因此仅在 `127.0.0.1:7897` 上监听并不能把流量引过去。“Clash 在运行”的判据要求**核心**位于该 cgroup 内，只有 GUI 进程不再算数。
 * mihomo 的外部控制口是一个全局可写的 unix socket 且不校验 secret，因此以登录用户身份运行的任意进程都能重配内核——包括把节点置为 DIRECT。单用户桌面下接受这一取舍；合并配置无法覆写控制口设置。
@@ -84,11 +84,12 @@ Clash 关闭时主机就是普通直连：门户、DNS 与日常上网都无需�
 * 热点与虚拟机：转发流量不经过 output 链、也不带 uid，断网保护看不到它。Clash 运行期间 `proxymode_forward` 拒绝客户端发往公网目的地址的上行口流量（门户/局域网/CGNAT 仍可达）；Clash 关闭时热点/虚拟机规则与之前一致。客户端流量永远不会被代理——要么被 TUN 承载，要么被拒绝。
 * 模式 A 的网络姿态（`my.hardening.*`）：热点 AP 默认**关闭**（其 accept 按来源网段匹配，在 wlo1 作为客户端时可被伪造——需要共享上行时再显式打开）；tailnet 只能访问 `my.hardening.tailnet{Tcp,Udp}Ports` 列出的端口，而不是所有通配监听。抓包权限（`dumpcap`/`usbmon`）默认关闭：抓包需要 `sudo dumpcap`。无线连接默认沿用 NetworkManager 自身的 MAC 策略，除非设置 `my.hardening.wifi.clonedMacAddress`（例如 `stable`）。
 * `nftables-verify` 只做检查、不做修复：它从不改动状态（会自修复的检查会掩盖自己的失败）。`systemctl start nftables-verify-repair.service` 是显式、可选的修复入口。
+* 已记录的设计取舍：模式 A 保留一个有界、有日志的明文 DHCP 解析器窗口（见上方 DNS）；模式 B 下 `100.64.0.0/10`（以及 tailnet）按设计经 output 链早期的 `local4` accept 直接可达；A→B 的窗口不可消除（强制滞后于核心），但由 supervisor 的兜底间隔界定。
 
 ### 仓库说明
 
 * `system/programs/ssh.nix` 未被导入（见 `system/programs/default.nix`），因此不部署 sshd 单元与 `:22` 监听；启用时还需要放开 `system/config/network.nix` 里的 `tcp dport 22` 规则。
-* `gost` 安装进 initrd（`boot.initrd.systemd.extraBin`）而不是 `environment.systemPackages`，因此不在主系统 PATH 上。`gost-pac` 直接使用 store 路径；`curl` 与 `sed` 仍由 nixpkgs 默认包提供。
+* `gost` 只从 store 路径运行（`gost-pac` 用绝对路径）：不在主系统 PATH 上，也不再复制进 initrd。
 
 ---
 ## 使用方法

@@ -1,4 +1,4 @@
-{ pkgs, config, ... }:
+{ pkgs, config, lib, ... }:
 
 let
   # The fragment this generation applies in proxy mode: the live chains are
@@ -59,7 +59,9 @@ in
       MIHOMO_MIXED=${toString config.my.machine.ports.mihomoMixed}
       MIHOMO_DNS=${toString config.my.machine.ports.mihomoDns}
       CLIENT_DNS=${toString config.my.machine.ports.dnsmasq}
+      UNBOUND_PORT=${toString config.my.machine.ports.unbound}
       DOT_PORT=${toString config.my.machine.ports.dot}
+      MIHOMO_MARK=0x${lib.toLower (lib.fixedWidthString 8 "0" (lib.toHexString config.my.machine.mihomoMark))}
       EXPECT_UNBOUND_UID=${toString config.users.users.unbound.uid}
       IS_CLASH_ON=${config.my.proxy.isClashOn}
       FLAG=/run/netsec/failed
@@ -84,7 +86,7 @@ in
       # nft prints chains with a type line and counters expanded, so normalise
       # both sides before comparing.
       live_chain() {
-        $NFT list chain inet filter "$1" 2>/dev/null \
+        $NFT list chain inet lf_filter "$1" 2>/dev/null \
           | $GREP -vE '^[[:space:]]*(table|chain|\}|type )' \
           | $SED -E 's/counter packets [0-9]+ bytes [0-9]+/counter/' \
           | $SED -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
@@ -98,8 +100,8 @@ in
           | $GREP -vE '^[[:space:]]*$'
       }
       expected_chain() {
-        $GREP -E "^[[:space:]]*add rule inet filter $1 " "$FRAGMENT" \
-          | $SED -E "s/^[[:space:]]*add rule inet filter $1 //"
+        $GREP -E "^[[:space:]]*add rule inet lf_filter $1 " "$FRAGMENT" \
+          | $SED -E "s/^[[:space:]]*add rule inet lf_filter $1 //"
       }
       # The nat tables are inline in the fragment, not `add rule` lines, so their
       # expected rules are read out of the block. Only `chain output` exists there.
@@ -168,16 +170,40 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
 
       # --- static skeleton ---
       for c in input output forward proxymode_drops proxymode_tail proxymode_forward; do
-        $NFT list chain inet filter "$c" >/dev/null 2>&1 \
-          || fail "inet filter $c is missing: the static ruleset did not load completely"
+        $NFT list chain inet lf_filter "$c" >/dev/null 2>&1 \
+          || fail "inet lf_filter $c is missing: the static ruleset did not load completely"
       done
-      $NFT list chain inet filter input | $GREP -q 'policy drop' \
-        || fail "inet filter input has no 'policy drop' policy: inbound is not default-denied"
-      out=$($NFT list chain inet filter output)
+      $NFT list chain inet lf_filter input | $GREP -q 'policy drop' \
+        || fail "inet lf_filter input has no 'policy drop' policy: inbound is not default-denied"
+      out=$($NFT list chain inet lf_filter output)
       $GREP -q 'jump proxymode_drops' <<<"$out" || fail "chain output no longer jumps to proxymode_drops"
       $GREP -q 'jump proxymode_tail' <<<"$out" || fail "chain output no longer jumps to proxymode_tail"
-      $NFT list chain inet filter forward | $GREP -q 'jump proxymode_forward' \
+      $NFT list chain inet lf_filter forward | $GREP -q 'jump proxymode_forward' \
         || fail "chain forward no longer jumps to proxymode_forward"
+
+      # The client resolver and the encrypted fallback must actually be listening
+      # where the static :53 redirect and the fallback point. dnsmasq is restarted
+      # around a ruleset reload, so retry before judging.
+      listening() {
+        for _ in 1 2 3 4 5; do
+          $SS -lntH | $GREP -q "127\.0\.0\.1:$1" && return 0
+          $SLEEP 1
+        done
+        return 1
+      }
+      listening "$CLIENT_DNS" || fail "dnsmasq is not listening on 127.0.0.1:$CLIENT_DNS: the client resolver is missing"
+      listening "$UNBOUND_PORT" || fail "unbound is not listening on 127.0.0.1:$UNBOUND_PORT: the encrypted fallback is missing"
+
+      # The static :53 redirect (both families) must be present, or an in-range
+      # resolver is reachable in the clear.
+      $NFT list table ip lf_nat 2>/dev/null | $GREP -q "redirect to :$CLIENT_DNS" \
+        || fail "table ip lf_nat no longer redirects :53 to dnsmasq"
+      $NFT list table ip6 lf_nat 2>/dev/null | $GREP -q "redirect to :$CLIENT_DNS" \
+        || fail "table ip6 lf_nat no longer redirects :53 to dnsmasq"
+
+      # Forwarding must be enabled for the guest/VPN paths the ruleset relies on.
+      [ "$($CAT /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)" = "1" ] \
+        || fail "net.ipv4.ip_forward is not 1: the forward/guest paths cannot work"
 
       # --- uid operands match the daemons ---
       # `[not set]`/empty means the unit has not started yet (common at boot): its
@@ -186,7 +212,7 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
       if [ -n "$live_uid" ] && [ "$live_uid" != "[not set]" ] && [ "$live_uid" != "$EXPECT_UNBOUND_UID" ]; then
         fail "unbound runs as uid $live_uid but the rules were built for $EXPECT_UNBOUND_UID: its DoT exemption matches no process"
       fi
-      $NFT list chain inet filter output | $GREP -q "skuid $EXPECT_UNBOUND_UID .*tcp dport $DOT_PORT accept" \
+      $NFT list chain inet lf_filter output | $GREP -q "skuid $EXPECT_UNBOUND_UID .*tcp dport $DOT_PORT accept" \
         || fail "the live rules carry no 'skuid $EXPECT_UNBOUND_UID ... tcp dport $DOT_PORT accept': unbound's DoT exemption is missing"
 
       # --- the recorded mode, and whether the core really is running ----------
@@ -215,17 +241,22 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
             || fail "nothing listens on mihomo's :$MIHOMO_MIXED"
           $SS -lnteH "sport = :$MIHOMO_DNS" | $GREP -q 'cgroup:/system.slice/clash-verge.service' \
             || fail "the DNS listener on :$MIHOMO_DNS does not belong to clash-verge.service: something else answers DNS"
-          for t in "ip proxymode_nat" "ip6 proxymode_nat"; do
+          for t in "ip lf_proxymode_nat" "ip6 lf_proxymode_nat"; do
             set -- $t
             $NFT list table "$1" "$2" >/dev/null 2>&1 \
               || fail "$1 $2 is missing although proxy mode is recorded: the redirect is incomplete"
           done
 
+          # The core is exempted by its routing-mark; if mihomo's mark drifts the
+          # exemption matches nothing and root egress would be dropped.
+          $NFT list chain inet lf_filter proxymode_drops | $GREP -q "meta mark $MIHOMO_MARK accept" \
+            || fail "proxymode_drops carries no 'meta mark $MIHOMO_MARK accept': the core's mark exemption is missing"
+
           cmp_rules "chain proxymode_drops" "$(expected_chain proxymode_drops)" "$(live_chain proxymode_drops)"
           cmp_rules "chain proxymode_tail" "$(expected_chain proxymode_tail)" "$(live_chain proxymode_tail)"
           cmp_rules "chain proxymode_forward" "$(expected_chain proxymode_forward)" "$(live_chain proxymode_forward)"
-          cmp_rules "table ip proxymode_nat" "$(expected_table ip proxymode_nat)" "$(live_nat ip proxymode_nat)"
-          cmp_rules "table ip6 proxymode_nat" "$(expected_table ip6 proxymode_nat)" "$(live_nat ip6 proxymode_nat)"
+          cmp_rules "table ip lf_proxymode_nat" "$(expected_table ip lf_proxymode_nat)" "$(live_nat ip lf_proxymode_nat)"
+          cmp_rules "table ip6 lf_proxymode_nat" "$(expected_table ip6 lf_proxymode_nat)" "$(live_nat ip6 lf_proxymode_nat)"
 
           # A name the validating upstream refuses must not come back as an answer
           # here. Judge only once dns-pac has actually put the client resolver on
@@ -266,12 +297,12 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
         direct)
           for c in proxymode_drops proxymode_tail proxymode_forward; do
             n=$(live_chain "$c" | $GREP -c . || true)
-            [ "$n" = 0 ] || fail "direct mode is recorded, but inet filter $c still holds $n rule(s)"
+            [ "$n" = 0 ] || fail "direct mode is recorded, but inet lf_filter $c still holds $n rule(s)"
           done
-          if $NFT list table ip proxymode_nat >/dev/null 2>&1; then
+          if $NFT list table ip lf_proxymode_nat >/dev/null 2>&1; then
             fail "direct mode is recorded, but the IPv4 redirect table is still loaded"
           fi
-          if $NFT list table ip6 proxymode_nat >/dev/null 2>&1; then
+          if $NFT list table ip6 lf_proxymode_nat >/dev/null 2>&1; then
             fail "direct mode is recorded, but the IPv6 redirect table is still loaded"
           fi
           if $IP link show dev "$TUNDEV" >/dev/null 2>&1; then

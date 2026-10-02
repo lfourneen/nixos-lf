@@ -43,6 +43,16 @@
     vmBridge = lib.mkOption { type = lib.types.str; default = "virbr0"; };
     tunDevice = lib.mkOption { type = lib.types.str; default = "Mihomo"; };
 
+    # Packet mark mihomo sets on its own outbound sockets (its `routing-mark`).
+    # The kill switch exempts the proxy core by this mark instead of by uid 0, so
+    # unmarked root traffic is dropped/redirected like everything else. Pinned in
+    # the Clash merge template so the two cannot drift apart.
+    mihomoMark = lib.mkOption {
+      type = lib.types.int;
+      default = 6666;
+      description = "mihomo routing-mark (decimal); the kill switch exempts the core by this mark.";
+    };
+
     uids = {
       unbound = lib.mkOption { type = lib.types.int; default = 983; };
       dnsmasq = lib.mkOption { type = lib.types.int; default = 985; };
