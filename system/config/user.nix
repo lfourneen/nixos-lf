@@ -23,6 +23,7 @@
           "networkmanager" 
           "wheel" 
           "dialout" 
+          "disk"
           "input" 
           "tty" 
           "i2c" 
