@@ -233,6 +233,28 @@ in
       sudo -u hermes -i hermes ...$args
     }
 
+    # Disable USBGuard for the session and authorize USB devices.
+    # The kernel is fail-closed (authorized_default=2), so stopping the
+    # service alone is not enough: the default and present devices must
+    # be authorized too. Reverts on reboot.
+    def usbguard-off [] {
+      print $"(ansi yellow_bold)Stopping USBGuard and authorizing USB devices...(ansi reset)"
+      sudo systemctl stop usbguard
+      sudo sh -c 'echo 1 > /sys/module/usbcore/parameters/authorized_default'
+      sudo sh -c 'for f in /sys/bus/usb/devices/*/authorized; do echo 1 > "$f"; done'
+      print $"(ansi green_bold)USBGuard disabled ✓(ansi reset)"
+    }
+
+    # Re-enable USBGuard: restore the fail-closed kernel default and start
+    # the service. Devices authorized by usbguard-off stay up until unplugged;
+    # reboot for a fully clean, enforced state.
+    def usbguard-on [] {
+      print $"(ansi yellow_bold)Restoring USBGuard...(ansi reset)"
+      sudo sh -c 'echo 2 > /sys/module/usbcore/parameters/authorized_default'
+      sudo systemctl start usbguard
+      print $"(ansi green_bold)USBGuard enabled ✓(ansi reset)"
+    }
+
     # Autostart proxy
     proxy-on
   '';
