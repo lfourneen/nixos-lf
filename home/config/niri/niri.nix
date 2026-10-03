@@ -220,6 +220,14 @@ let
       open-maximized true
     }
 
+    // Zen Browser (flatpak) reports app-id app.zen_browser.zen, not firefox.
+    // open-maximized = maximize-column (full width, keeps gaps/struts),
+    // NOT fullscreen; it is the "two columns become one" state.
+    window-rule {
+      match app-id=r#"^app\.zen_browser\.zen$"#
+      open-maximized true
+    }
+
     window-rule {
       match app-id=r#"obsidian$"#
       open-maximized true
@@ -233,16 +241,12 @@ let
     }
 
     // File dialogs - Open/Save/Select
+    // Title regexes must be ANCHORED. An unanchored `.*File.*` / `.*Open.*`
+    // also matches browser tab titles (a window's title is the page title),
+    // and then max-width 800 clamps the whole browser window to ~half screen
+    // and overrides Mod+F. See niri issue #3779.
     window-rule {
-      match title=r#".*(Open|Save|Select).*"#
-      open-floating true
-      default-column-width { proportion 0.0; }
-      max-width 800
-      max-height 1000
-    }
-
-    window-rule {
-      match title=r#".*File.*"#
+      match title=r#"^(Open|Save|Select)( a)?( File| Folder| Files| As)?$"#
       open-floating true
       default-column-width { proportion 0.0; }
       max-width 800
