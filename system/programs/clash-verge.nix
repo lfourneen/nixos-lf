@@ -26,5 +26,13 @@
     serviceMode = true;
     group = "users";
   };
+
+  # The service persists its "desired state" (core up + TUN) under
+  # /var/lib/clash-verge-service; without this it logs "Failed to persist
+  # desired state: failed to create desired state directory" on every core
+  # start, and the GUI treats the start as failed and leaves TUN down. The
+  # upstream module sets ProtectSystem=strict with only a RuntimeDirectory, so
+  # the state dir is read-only; StateDirectory creates and whitelists it.
+  systemd.services.clash-verge.serviceConfig.StateDirectory = [ "clash-verge-service" ];
 }
 
