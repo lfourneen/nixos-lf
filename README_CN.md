@@ -46,9 +46,9 @@
 
 `proxy-mode` 只在 Clash 运行时装载断网保护与 `:33333` 重定向，因此机器有两种保证不同的状态：
 
-| | **模式 A —— Clash Verge 已关闭**（本机常态） | **模式 B —— Clash 运行中，TUN 已建立** |
+| | **模式 A —— Clash 核心已停止**（本机常态） | **模式 B —— Clash 核心运行中，TUN 已建立** |
 |---|---|---|
-| 如何进入 | 关闭 Clash Verge | 启动 Clash Verge（`my.proxy.tunMode` 决定 Nix 是否需要 TUN，是否真的创建由 GUI 决定） |
+| 如何进入 | 停止核心：`clash-off`（或 `sudo systemctl stop clash-verge.service`）。**service mode 下关闭 GUI 不会停核心**，只关窗口不够 | 启动核心：`clash-on`（或打开 Clash Verge）。`my.proxy.tunMode` 决定 Nix 是否需要 TUN，是否真的创建由 GUI 决定 |
 | 强制了什么 | `nftables.service` 不依赖 Clash，在启动时装载 `table inet filter`：`input policy drop`、连接跟踪状态规则、martian 源丢弃、公网 IPv6 丢弃、`forward` 链与 masquerade 全部生效。DNS 走 dnsmasq (:1054)，再到加密 DoT 解析器（unbound :1055） | 以上全部，外加：TUN 接管本机产生的流量，mihomo 的 `dns-hijack` 接管 TUN 路由的 :53，`proxymode_*` 片段加上断网保护（非 root 经上行口访问公网地址被丢弃）、`:33333` 重定向与访客策略 |
 | 保证了什么 | 直连、真实地址、没有断网保护；门户/局域网/CGNAT 地址按设计可达，DHCP 下发的明文解析器是允许的兜底，但只在两个有界的时间窗内生效（见下文 DNS） | 本机产生的每条流要么走 mihomo，要么被丢弃；核心、TUN 或节点失败时 DNS 停止、出站被拒，而不是回退直连；热点/虚拟机客户端的流量被拒绝，而不是被转发出去 |
 | 不保护什么 | 源地址与全部目的地址对 ISP 以及路径上的任何人都可见；明文协议依然可读；DNS 过滤只是缓解手段，不是墙；自带 DoH/DoT 的应用会绕过这条解析链路 | 策略判为 DIRECT 的流量以真实地址直出；绑定源地址/网卡的套接字会绕过 TUN，只由断网保护兜住；非 root 的 UDP `3478/5349`（STUN/TURN）被丢弃；手工执行 `sudo nft flush ruleset` 会清掉全部规则，直到 `nftables.service` 下次启动 |
@@ -81,6 +81,7 @@ Clash 关闭时主机就是普通直连：门户、DNS 与日常上网都无需�
 * mihomo 的外部控制口是一个全局可写的 unix socket 且不校验 secret，因此以登录用户身份运行的任意进程都能重配内核——包括把节点置为 DIRECT。单用户桌面下接受这一取舍；合并配置无法覆写控制口设置。
 * 探测同时要求一个国内域名（走 DIRECT）与一个由代理组承载的域名，因此探测失败表示整条链路无法承载流量，而不只是某个上游节点不可用。
 * `systemctl stop nftables.service` 不再移除防火墙：拆除与装载在同一个 `nft -f` 事务里，且模块的 deletions 文件为空，因此已装载的规则会保留到下次启动替换为止。手工复位仍然是 `sudo nft flush ruleset`（它同时会清掉 mihomo 自己的表，直到 TUN 重启）。
+* **Mode A 需要停掉核心，而不只是关窗口。** service mode（`programs.clash-verge.serviceMode = true`）下核心由常驻的 `clash-verge.service` helper 托管，关掉 GUI 核心仍在跑、机器仍是 Mode B。用 `clash-off`（或 `sudo systemctl stop clash-verge.service`）停掉它才回到 Mode A，用 `clash-on` 再启动。
 * 热点与虚拟机：转发流量不经过 output 链、也不带 uid，断网保护看不到它。Clash 运行期间 `proxymode_forward` 拒绝客户端发往公网目的地址的上行口流量（门户/局域网/CGNAT 仍可达）；Clash 关闭时热点/虚拟机规则与之前一致。客户端流量永远不会被代理——要么被 TUN 承载，要么被拒绝。
 * 模式 A 的网络姿态（`my.hardening.*`）：热点 AP 默认**关闭**（其 accept 按来源网段匹配，在 wlo1 作为客户端时可被伪造——需要共享上行时再显式打开）；tailnet 只能访问 `my.hardening.tailnet{Tcp,Udp}Ports` 列出的端口，而不是所有通配监听。抓包权限（`dumpcap`/`usbmon`）默认关闭：抓包需要 `sudo dumpcap`。无线连接默认沿用 NetworkManager 自身的 MAC 策略，除非设置 `my.hardening.wifi.clonedMacAddress`（例如 `stable`）。
 * `nftables-verify` 只做检查、不做修复：它从不改动状态（会自修复的检查会掩盖自己的失败）。`systemctl start nftables-verify-repair.service` 是显式、可选的修复入口。
