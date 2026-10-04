@@ -129,10 +129,10 @@ in
   };
 
   # Runs as root, outside the killswitch and without any *_PROXY, so only order
-  # it behind gost-pac (wants, not requires: gost-pac is fail-open).
+  # it behind gost-relay (wants, not requires: gost-relay is fail-open).
   systemd.services.flatpak-managed-install = {
-    wants = [ "gost-pac.service" ];
-    after = [ "gost-pac.service" ];
+    wants = [ "gost-relay.service" ];
+    after = [ "gost-relay.service" ];
   };
 }
 

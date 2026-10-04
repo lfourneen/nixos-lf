@@ -269,19 +269,19 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
           cmp_rules "table ip6 lf_proxymode_nat" "$(expected_table ip6 lf_proxymode_nat)" "$(live_nat ip6 lf_proxymode_nat)"
 
           # A name the validating upstream refuses must not come back as an answer
-          # here. Judge only once dns-pac has actually put the client resolver on
-          # mihomo -- proxy-mode's status leads dns-pac's, and while they disagree
+          # here. Judge only once dns-upstream has actually put the client resolver on
+          # mihomo -- proxy-mode's status leads dns-upstream's, and while they disagree
           # the resolver is still on the non-validating DoT, which is Mode A by
           # design, not a downgrade.
-          dns_state=$($CAT /run/dns-pac/status 2>/dev/null | $SED -E 's/[[:space:]]+//g')
+          dns_state=$($CAT /run/dns-upstream/status 2>/dev/null | $SED -E 's/[[:space:]]+//g')
           if [ "$dns_state" != "proxy" ]; then
-            warn "dns-pac is [$dns_state], not proxy yet: the client resolver is not on the validating upstream, so DNSSEC is not judged"
+            warn "dns-upstream is [$dns_state], not proxy yet: the client resolver is not on the validating upstream, so DNSSEC is not judged"
           else
             ctl=$($DIG +time=3 +tries=1 +short @127.0.0.1 -p "$CLIENT_DNS" example.com 2>/dev/null | $GREP -cE '^[0-9a-fA-F:]' || true)
             if [ "$ctl" = 0 ]; then
               warn "the client resolver (:$CLIENT_DNS) did not answer a control query; DNS in proxy mode is broken, so validation is not judged"
             else
-              # dns-pac restarts dnsmasq asynchronously, so the first probe can still
+              # dns-upstream restarts dnsmasq asynchronously, so the first probe can still
               # hit the previous upstream: retry and pass as soon as the name is
               # refused (SERVFAIL) or swallowed (no status). Only a resolver that
               # keeps answering for every attempt counts as a downgrade. dig writes

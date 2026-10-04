@@ -12,7 +12,7 @@ let
   }/clash-verge-rev";
   mihomoSock = "${mihomoDir}/verge-mihomo.sock";
 
-  # Single source of truth for "Clash is on": dns-pac.nix calls the same script, so
+  # Single source of truth for "Clash is on": dns-upstream.nix calls the same script, so
   # the criterion cannot drift between the two supervisors.
   isClashOn = pkgs.writeShellScript "is-clash-on" ''
     # clash-verge.service also runs an always-on root helper, so its state alone is
@@ -279,7 +279,7 @@ in
       };
     };
 
-    # The coordinator: one event wakes nft (proxy-mode), DNS (dns-pac) and gost in
+    # The coordinator: one event wakes nft (proxy-mode), DNS (dns-upstream) and gost in
     # the same instant, so they switch together instead of three loops noticing at
     # different times. SIGWINCH only interrupts each loop's sleep; every loop keeps
     # its own idempotent decision logic and stays the source of truth.
@@ -288,7 +288,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         ExecStart = pkgs.writeShellScript "proxy-net-wake" ''
-          for u in proxy-mode.service dns-pac.service gost-pac.service; do
+          for u in proxy-mode.service dns-upstream.service gost-relay.service; do
             ${pkgs.systemd}/bin/systemctl kill -s WINCH --kill-whom=main "$u" 2>/dev/null || true
           done
         '';

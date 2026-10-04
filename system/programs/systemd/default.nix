@@ -3,9 +3,9 @@
     ./btrfs-rollback.nix  
     ./cpufreq-restrict.nix  
     ./coredump.nix
-    ./dns-pac.nix  
+    ./dns-upstream.nix  
     ./flatpak-mirror.nix  
-    ./gost-pac.nix  
+    ./gost-relay.nix  
     ./initrd.nix  
     ./journald.nix
     ./libvirtd.nix  

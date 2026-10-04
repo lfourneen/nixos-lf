@@ -179,7 +179,7 @@ in
       nix-collect-garbage --delete-older-than $age
     }
 
-    # Set proxy to the system-wide gost-pac port
+    # Set proxy to the system-wide gost-relay port
     def --env proxy-on [] {
       $env.http_proxy = "http://127.0.0.1:${gostHttp}"
       $env.https_proxy = "http://127.0.0.1:${gostHttp}"
@@ -202,8 +202,8 @@ in
       let read = {|p|
         try { open --raw $p | str trim } catch { "unknown" }
       }
-      let g = (do $read "/run/gost-pac/status")
-      let d = (do $read "/run/dns-pac/status")
+      let g = (do $read "/run/gost-relay/status")
+      let d = (do $read "/run/dns-upstream/status")
       # ${gostHttp} = gost's HTTP listener (the port every proxy-aware consumer uses).
       let listener = (try {
         ss -H -tln | lines | any {|l| $l | str contains "127.0.0.1:${gostHttp}" }

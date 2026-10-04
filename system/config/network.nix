@@ -332,8 +332,8 @@ in
     allowInterfaces = [ "lo" "tailscale0" ] ++ lib.optionals hotspotEnable [ wireless ];
   };
 
-  # DNS PAC: dnsmasq forwards to mihomo while clash runs and to the encrypted
-  # fallback otherwise; dns-pac.service switches the upstream (see dns-pac.nix).
+  # DNS upstream: dnsmasq forwards to mihomo while clash runs and to the encrypted
+  # fallback otherwise; dns-upstream.service switches the upstream (see dns-upstream.nix).
   services.dnsmasq = {
     enable = true;
     settings = {
@@ -345,14 +345,14 @@ in
       strict-order = true;    # order within the mode's own list; see the note below
       cache-size = 4096;
       "neg-ttl" = "30";       # cap negative caching (e.g. mihomo's empty AAAA) to 30s
-      conf-file = "/run/dns-pac/servers.conf";  # written by dns-pac.service
+      conf-file = "/run/dns-upstream/servers.conf";  # written by dns-upstream.service
       # No static second server: a SERVFAIL from the validating upstream would fall
       # through to the non-validating DoT one under strict-order.
     };
   };
 
   # Encrypted fallback resolver (DoT via AliDNS) used while clash is down, so
-  # the "direct" DNS path is not plaintext. dns-pac points dnsmasq here.
+  # the "direct" DNS path is not plaintext. dns-upstream points dnsmasq here.
   services.unbound = {
     enable = true;
     resolveLocalQueries = false;
