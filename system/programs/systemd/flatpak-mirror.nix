@@ -7,9 +7,9 @@
     wantedBy = [ "multi-user.target" ];
     before = [ "flatpak-managed-install.service" ]; 
     # This unit reaches the mirror through gost's proxy (see Environment below),
-    # so order after gost-pac too; soft only, it must still run if it fails.
-    after = [ "network-online.target" "dbus.service" "gost-pac.service" ]; 
-    wants = [ "network-online.target" "gost-pac.service" ];
+    # so order after gost-relay too; soft only, it must still run if it fails.
+    after = [ "network-online.target" "dbus.service" "gost-relay.service" ]; 
+    wants = [ "network-online.target" "gost-relay.service" ];
     
     path = [ pkgs.flatpak ];
     script = ''
@@ -20,7 +20,7 @@
       Type = "oneshot";
       RemainAfterExit = true;
       # systemd service has no login-session env; without proxy, dl.flathub.org is
-      # GFW-blocked (DNS poisoned) -> "Could not resolve hostname". Route via gost-pac.
+      # GFW-blocked (DNS poisoned) -> "Could not resolve hostname". Route via gost-relay.
       Environment = [
         "http_proxy=http://127.0.0.1:${toString config.my.machine.ports.gostHttp}"
         "https_proxy=http://127.0.0.1:${toString config.my.machine.ports.gostHttp}"

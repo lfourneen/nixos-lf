@@ -27,16 +27,16 @@ in
       assertion =
         lib.count (u: u.uid == gostUid) (lib.attrValues config.users.users) == 1;
       message = ''
-        gost-pac.nix: my.machine.uids.gost (${toString gostUid}) must belong to
+        gost-relay.nix: my.machine.uids.gost (${toString gostUid}) must belong to
         exactly one account (gost): the nft redirect exclusion uses it.
       '';
     }
   ];
 
-  # Network PAC: with Clash on, gost only forwards to mihomo; with Clash off it is a
+  # Gost relay: with Clash on, gost only forwards to mihomo; with Clash off it is a
   # plain passthrough, so env-proxy consumers keep working without a warm-up.
-  systemd.services.gost-pac = {
-    description = "Gost PAC (forwards to mihomo, or passthrough when Clash is off)";
+  systemd.services.gost-relay = {
+    description = "Gost relay (forwards to mihomo, or passthrough when Clash is off)";
     after = [ "network.target" ];
     wantedBy = [ "multi-user.target" ];
     # Never stop retrying (else a crash-loop leaves proxied apps without internet)
@@ -45,8 +45,8 @@ in
       User = "gost";
       Group = "gost";
       StateDirectory = "gost";
-      RuntimeDirectory = "gost-pac";
-      # /run/gost-pac/status is read by the desktop user's `proxy-status`.
+      RuntimeDirectory = "gost-relay";
+      # /run/gost-relay/status is read by the desktop user's `proxy-status`.
       RuntimeDirectoryMode = "0755";
       UMask = "0022";
 
@@ -90,7 +90,7 @@ in
         # The nat redirect excludes this uid so a passthrough relay cannot dial itself;
         # a drifted runtime uid would silently widen that exclusion.
         if [ "$(${pkgs.coreutils}/bin/id -u)" != "${toString gostUid}" ]; then
-          echo "gost-pac: WARN running as uid $(${pkgs.coreutils}/bin/id -u); the nat redirect exclusion expects ${toString gostUid}" >&2
+          echo "gost-relay: WARN running as uid $(${pkgs.coreutils}/bin/id -u); the nat redirect exclusion expects ${toString gostUid}" >&2
         fi
 
         # Event-driven, adaptive sleep (see proxy-mode.nix): proxy-net-wake sends
@@ -120,7 +120,7 @@ in
         # State-file contract: one mode word plus a newline, rewritten every round
         # (so its mtime only proves the supervisor is alive); `proxy-status` reads it.
         write_state() {
-          printf '%s\n' "$1" > /run/gost-pac/status
+          printf '%s\n' "$1" > /run/gost-relay/status
         }
 
         # Identity, not reachability: an impostor can bind :${toString port.mihomoMixed} but cannot land in
@@ -157,7 +157,7 @@ in
               sleep 1
             done
             if kill -0 "$proxy_pid" 2>/dev/null; then
-              echo "gost-pac: pid $proxy_pid ignored SIGTERM; sending SIGKILL" >&2
+              echo "gost-relay: pid $proxy_pid ignored SIGTERM; sending SIGKILL" >&2
               kill -9 "$proxy_pid" 2>/dev/null
             fi
             wait "$proxy_pid" 2>/dev/null
@@ -185,20 +185,20 @@ in
           sleep 1
           if ! kill -0 "$new_pid" 2>/dev/null; then
             # Stay as we are instead of lying: reap the dead child, keep the state.
-            echo "gost-pac: gost failed to start in [$1]" >&2
-            ${pkgs.systemd}/bin/systemd-cat -t gost-pac -p err ${pkgs.coreutils}/bin/echo \
-              "gost-pac: gost failed to start in [$1]" || true
+            echo "gost-relay: gost failed to start in [$1]" >&2
+            ${pkgs.systemd}/bin/systemd-cat -t gost-relay -p err ${pkgs.coreutils}/bin/echo \
+              "gost-relay: gost failed to start in [$1]" || true
             wait "$new_pid" 2>/dev/null
             return 1
           fi
 
           proxy_pid="$new_pid"
-          echo "gost-pac status -> $1 (pid $new_pid)"
+          echo "gost-relay status -> $1 (pid $new_pid)"
 
           if ! listen_ok; then
-            echo "gost-pac: WARN status=$1 but 127.0.0.1:${toString port.gostHttp}/${toString port.gostRedirect} are not both listening" >&2
-            ${pkgs.systemd}/bin/systemd-cat -t gost-pac -p warning ${pkgs.coreutils}/bin/echo \
-              "gost-pac: status=$1 without bound listeners" || true
+            echo "gost-relay: WARN status=$1 but 127.0.0.1:${toString port.gostHttp}/${toString port.gostRedirect} are not both listening" >&2
+            ${pkgs.systemd}/bin/systemd-cat -t gost-relay -p warning ${pkgs.coreutils}/bin/echo \
+              "gost-relay: status=$1 without bound listeners" || true
           fi
         }
 
@@ -216,7 +216,7 @@ in
           # A crash after the 1s start check would leave both ports unbound while
           # the state file still claims a mode. Heal it first, back to unknown.
           if [ -n "$proxy_pid" ] && ! kill -0 "$proxy_pid" 2>/dev/null; then
-            echo "gost-pac: instance pid $proxy_pid is gone; restarting" >&2
+            echo "gost-relay: instance pid $proxy_pid is gone; restarting" >&2
             proxy_pid=""
             mode="closed"
             listen_fail=0
@@ -230,7 +230,7 @@ in
             else
               listen_fail=$((listen_fail + 1))
               if [ "$listen_fail" -ge 2 ]; then
-                echo "gost-pac: pid $proxy_pid is alive but 127.0.0.1:${toString port.gostHttp}/${toString port.gostRedirect} are not listening; restarting" >&2
+                echo "gost-relay: pid $proxy_pid is alive but 127.0.0.1:${toString port.gostHttp}/${toString port.gostRedirect} are not listening; restarting" >&2
                 listen_fail=0
                 stop_current
                 mode="closed"
@@ -278,12 +278,12 @@ in
                 # Clash is off, so env-proxy consumers must not be left refused.
                 if start_gost direct; then
                   mode="direct"
-                  echo "gost-pac: Clash is off; passthrough relay on 127.0.0.1:${toString port.gostHttp}" >&2
+                  echo "gost-relay: Clash is off; passthrough relay on 127.0.0.1:${toString port.gostHttp}" >&2
                 fi
                 ;;
               *)
                 if [ "$mode" = "proxy" ]; then
-                  echo "gost-pac: core gone (or not clash-verge's); closing" >&2
+                  echo "gost-relay: core gone (or not clash-verge's); closing" >&2
                 fi
                 stop_current
                 mode="closed"
@@ -296,14 +296,14 @@ in
           if [ "$mode" = "proxy" ] && [ "$core_id" = 1 ] && [ "$core_e2e" = 0 ]; then
             degraded=$((degraded + 1))
             if [ "$degraded" = 1 ] || [ $((degraded % 12)) -eq 0 ]; then
-              echo "gost-pac: WARN :${toString port.mihomoMixed} is clash-verge's but the proxied probe ${healthProbeUrl} failed for $degraded round(s); staying proxy" >&2
+              echo "gost-relay: WARN :${toString port.mihomoMixed} is clash-verge's but the proxied probe ${healthProbeUrl} failed for $degraded round(s); staying proxy" >&2
             fi
           else
             if [ "$degraded" -gt 0 ]; then
               if [ "$core_e2e" = 1 ]; then
-                echo "gost-pac: proxied probe recovered after $degraded degraded round(s)" >&2
+                echo "gost-relay: proxied probe recovered after $degraded degraded round(s)" >&2
               else
-                echo "gost-pac: degraded streak ended (core unverified or mode changed) after $degraded round(s)" >&2
+                echo "gost-relay: degraded streak ended (core unverified or mode changed) after $degraded round(s)" >&2
               fi
             fi
             degraded=0

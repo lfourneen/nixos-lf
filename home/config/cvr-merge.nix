@@ -25,7 +25,7 @@ in
       profile:
         store-selected: true
 
-      # Fix the mixed port to align with the probe and forwarding ports in gost-pac.nix.
+      # Fix the mixed port to align with the probe and forwarding ports in gost-relay.nix.
       mixed-port: ${toString port.mihomoMixed}
 
       # Pin the mark the core sets on its own outbound sockets; the nft kill switch

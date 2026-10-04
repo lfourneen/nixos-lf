@@ -319,7 +319,7 @@ in
   };
 
   systemd.services.hermes-agent = {
-    # Route the agent's model/API calls through gost-pac so it keeps working
+    # Route the agent's model/API calls through gost-relay so it keeps working
     # under `proxyKillSwitch` (which blocks non-root direct egress).
     environment = {
       HTTP_PROXY = "${gostHttp}/";

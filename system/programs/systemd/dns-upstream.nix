@@ -15,7 +15,7 @@ in
     {
       assertion = lib.length dhcpIfaces == 1;
       message = ''
-        dns-pac.nix reads the fallback resolvers from the DHCP lease of the one
+        dns-upstream.nix reads the fallback resolvers from the DHCP lease of the one
         interface that runs a DHCP client, but this configuration has
         ${toString (lib.length dhcpIfaces)} of them
         (${lib.concatStringsSep ", " dhcpIfaces}). Pin the interface or fix
@@ -24,22 +24,22 @@ in
     }
   ];
 
-  # DNS PAC: mihomo DNS while clash runs, unbound DoT otherwise, with the DHCP
+  # DNS upstream: mihomo DNS while clash runs, unbound DoT otherwise, with the DHCP
   # resolvers only inside the bounded windows below.
-  systemd.services.dns-pac = {
-    description = "DNS PAC: mihomo DNS when clash is up, DoT otherwise";
+  systemd.services.dns-upstream = {
+    description = "DNS upstream: mihomo DNS when clash is up, DoT otherwise";
     after = [ "network.target" ];
     wantedBy = [ "multi-user.target" ];
     unitConfig.StartLimitIntervalSec = 0;
     serviceConfig = {
-      RuntimeDirectory = "dns-pac";
-      # Keep /run/dns-pac/servers.conf across a restart: dnsmasq reads it at start
+      RuntimeDirectory = "dns-upstream";
+      # Keep /run/dns-upstream/servers.conf across a restart: dnsmasq reads it at start
       # and the tmpfiles seed lives in this directory, so removing it on stop (the
       # default) would leave dnsmasq with no conf-file to read.
       RuntimeDirectoryPreserve = true;
 
       # Root only for D-Bus (systemctl restart dnsmasq + resolvectl flush-caches):
-      # no caps and no writes outside /run/dns-pac. AF_NETLINK is for ss(8).
+      # no caps and no writes outside /run/dns-upstream. AF_NETLINK is for ss(8).
       NoNewPrivileges = true;
       ProtectSystem = "strict";
       ProtectHome = true;
@@ -55,9 +55,9 @@ in
       RemoveIPC = true;
       CapabilityBoundingSet = "";
       RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
-      ReadWritePaths = [ "/run/dns-pac" ];
+      ReadWritePaths = [ "/run/dns-upstream" ];
 
-      ExecStart = "${pkgs.writeShellScript "dns-pac-loop" ''
+      ExecStart = "${pkgs.writeShellScript "dns-upstream-loop" ''
         CLASH_ON=${config.my.proxy.isClashOn}
 
         # Event-driven, adaptive sleep (same mechanism as proxy-mode.nix):
@@ -104,7 +104,7 @@ in
             | ${pkgs.gnugrep}/bin/grep -vE '^(0\.0\.0\.0|127\.|169\.254\.|255\.255\.255\.255)' \
             | ${pkgs.gnugrep}/bin/grep -E '^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$')"
           if [ -z "$found" ]; then
-            echo "dns-pac: no DHCP resolver available (dhcpcd -U/nmcli); no plaintext fallback" >&2
+            echo "dns-upstream: no DHCP resolver available (dhcpcd -U/nmcli); no plaintext fallback" >&2
             return 0
           fi
 
@@ -137,11 +137,11 @@ in
               fi
               ;;
           esac
-          printf '%s\n' "$new_conf" > /run/dns-pac/servers.conf
+          printf '%s\n' "$new_conf" > /run/dns-upstream/servers.conf
 
           # State for proxy-status plus a reason: degradations name themselves here.
-          printf '%s\n' "$1" > /run/dns-pac/status
-          printf '%s\n' "$state_reason" > /run/dns-pac/reason
+          printf '%s\n' "$1" > /run/dns-upstream/status
+          printf '%s\n' "$state_reason" > /run/dns-upstream/reason
 
           # Only restart when the upstream really changed: dnsmasq's StartLimit
           # (5 per 10s) must not be hit by a flapping probe, and a redundant
@@ -203,16 +203,16 @@ in
 
         # The reason file tracks the current state, so a recovery clears "degraded".
         write_reason() {
-          if [ -f /run/dns-pac/reason ] \
-             && [ "$(${pkgs.coreutils}/bin/cat /run/dns-pac/reason)" = "$state_reason" ]; then
+          if [ -f /run/dns-upstream/reason ] \
+             && [ "$(${pkgs.coreutils}/bin/cat /run/dns-upstream/reason)" = "$state_reason" ]; then
             return 0
           fi
-          printf '%s\n' "$state_reason" > /run/dns-pac/reason
+          printf '%s\n' "$state_reason" > /run/dns-upstream/reason
         }
 
         mode_a_state() {
           if dot_ok; then
-            [ "$dot_fails" -ge 3 ] && echo "dns-pac: encrypted upstream recovered" >&2
+            [ "$dot_fails" -ge 3 ] && echo "dns-upstream: encrypted upstream recovered" >&2
             dot_fails=0
             state_reason="mode-a: encrypted upstream healthy"
             MODE_A_STATE="dot"
@@ -228,8 +228,8 @@ in
             plaintext_note=" [no DHCP resolver available: the window has no server]"
           fi
 
-          if [ -e /run/dns-pac/force-plaintext ]; then
-            state_reason="mode-a: operator override (/run/dns-pac/force-plaintext)$plaintext_note"
+          if [ -e /run/dns-upstream/force-plaintext ]; then
+            state_reason="mode-a: operator override (/run/dns-upstream/force-plaintext)$plaintext_note"
             MODE_A_STATE="degraded-plaintext"
             return 0
           fi
@@ -248,12 +248,12 @@ in
             return 0
           fi
 
-          state_reason="mode-a: DoT down, fail-closed (DNS stops; nothing degrades to plaintext). Remedies: touch /run/dns-pac/force-plaintext, or fix tcp/853"
+          state_reason="mode-a: DoT down, fail-closed (DNS stops; nothing degrades to plaintext). Remedies: touch /run/dns-upstream/force-plaintext, or fix tcp/853"
           MODE_A_STATE="degraded-dot-only"
           return 0
         }
 
-        mkdir -p /run/dns-pac
+        mkdir -p /run/dns-upstream
 
         # Start encrypted-only: dnsmasq needs a clash-independent upstream, and the
         # upgrade to mihomo happens only after two consecutive wins.
@@ -271,7 +271,7 @@ in
             if [ "$ident" != "$last_ident" ]; then
               last_ident="$ident"
               open_window
-              echo "dns-pac: uplink identity changed; plaintext bootstrap window opened" >&2
+              echo "dns-upstream: uplink identity changed; plaintext bootstrap window opened" >&2
             fi
 
             mode_a_state
@@ -340,16 +340,16 @@ in
     };
   };
 
-  # dnsmasq must not start before dns-pac's initial write, but dns-pac's stop
+  # dnsmasq must not start before dns-upstream's initial write, but dns-upstream's stop
   # must not take it down: keep the ordering, use wants instead of requires.
-  systemd.services.dnsmasq.wants = [ "dns-pac.service" ];
-  systemd.services.dnsmasq.after = [ "dns-pac.service" "unbound.service" ];
+  systemd.services.dnsmasq.wants = [ "dns-upstream.service" ];
+  systemd.services.dnsmasq.after = [ "dns-upstream.service" "unbound.service" ];
 
   # Pre-seed servers.conf with the DoT default so dnsmasq can start even if
-  # dns-pac has not run yet; the script rewrites it at startup and on a switch.
+  # dns-upstream has not run yet; the script rewrites it at startup and on a switch.
   systemd.tmpfiles.rules = [
-    "d /run/dns-pac 0755 root root -"
-    "f /run/dns-pac/servers.conf 0644 root root - server=127.0.0.1#${toString port.unbound}"
+    "d /run/dns-upstream 0755 root root -"
+    "f /run/dns-upstream/servers.conf 0644 root root - server=127.0.0.1#${toString port.unbound}"
   ];
 }
 
