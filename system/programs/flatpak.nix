@@ -74,6 +74,7 @@ in
       "com.baidu.NetDisk"
       "com.dingtalk.DingTalk"
       "com.discordapp.Discord"
+      "com.google.Chrome"
       "com.qq.QQ"
       "im.riot.Riot"
       "com.tencent.WeChat"
