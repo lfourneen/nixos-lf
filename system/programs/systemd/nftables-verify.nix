@@ -62,6 +62,8 @@ in
       UNBOUND_PORT=${toString config.my.machine.ports.unbound}
       DOT_PORT=${toString config.my.machine.ports.dot}
       MIHOMO_MARK=0x${lib.toLower (lib.fixedWidthString 8 "0" (lib.toHexString config.my.machine.mihomoMark))}
+      WAYDROID_BRIDGE=${config.my.machine.waydroidBridge}
+      WAYDROID_ADDR=${config.my.machine.waydroidAddress}
       EXPECT_UNBOUND_UID=${toString config.users.users.unbound.uid}
       IS_CLASH_ON=${config.my.proxy.isClashOn}
       FLAG=/run/netsec/failed
@@ -193,6 +195,14 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
       }
       listening "$CLIENT_DNS" || fail "dnsmasq is not listening on 127.0.0.1:$CLIENT_DNS: the client resolver is missing"
       listening "$UNBOUND_PORT" || fail "unbound is not listening on 127.0.0.1:$UNBOUND_PORT: the encrypted fallback is missing"
+
+      # If the Waydroid bridge is up its address must match the value the static
+      # DHCP/DNS accepts are written for; a drifted subnet would otherwise silently
+      # stop the container from getting a lease.
+      if $IP link show dev "$WAYDROID_BRIDGE" >/dev/null 2>&1; then
+        $IP -o -4 addr show dev "$WAYDROID_BRIDGE" | $GREP -q "$WAYDROID_ADDR/24" \
+          || fail "$WAYDROID_BRIDGE exists but does not carry $WAYDROID_ADDR/24: the DHCP/DNS accepts are written for that default"
+      fi
 
       # The static :53 redirect (both families) must be present, or an in-range
       # resolver is reachable in the clear.
