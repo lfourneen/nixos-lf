@@ -217,16 +217,31 @@ in
       print $"(ansi $color)egress: ($g)(ansi reset)  DNS: ($d)  listener: (if $listener { 'up' } else { 'down' })  probe: ($probe)"
     }
 
+    # True while the Clash Verge GUI runs in the user session. The root
+    # clash-verge-service helper and the verge-mihomo core live in
+    # system.slice/clash-verge.service, so this pattern only catches the GUI.
+    # `complete` because a no-match pgrep exits 1 and would otherwise abort.
+    def clash-gui-running [] {
+      (pgrep -u $env.USER -f '(^|/)clash-verge( |$)' | complete).exit_code == 0
+    }
+
     # Stop the Clash core and return to Mode A (direct egress).
     # In service mode the core is owned by the always-on clash-verge.service
     # helper, so quitting the GUI does NOT stop it -- stopping the unit does.
     def clash-off [] {
       print $"(ansi yellow_bold)Stopping the Clash core \(service mode\)...(ansi reset)"
       sudo systemctl stop clash-verge.service
-      if $env.LAST_EXIT_CODE == 0 {
-        print $"(ansi green_bold)Clash core stopped -> Mode A \(direct\) ✓(ansi reset)"
-      } else {
+      if $env.LAST_EXIT_CODE != 0 {
         print $"(ansi red_bold)Failed to stop the core ✗(ansi reset)"
+        return
+      }
+      # clash-on opens the GUI, so close it too: a live controller can drive the
+      # core back on and silently re-enter Mode B. pkill sends SIGTERM.
+      if (clash-gui-running) {
+        pkill -u $env.USER -f '(^|/)clash-verge( |$)' | complete | ignore
+        print $"(ansi green_bold)Clash core + GUI stopped -> Mode A \(direct\) ✓(ansi reset)"
+      } else {
+        print $"(ansi green_bold)Clash core stopped -> Mode A \(direct\) ✓(ansi reset)"
       }
     }
 
@@ -234,7 +249,9 @@ in
     def clash-on [] {
       print $"(ansi yellow_bold)Starting the Clash Verge service and GUI...(ansi reset)"
       sudo systemctl start clash-verge.service
-      job spawn { ^clash-verge }
+      if not (clash-gui-running) {
+        job spawn { ^clash-verge }
+      }
       print $"(ansi green_bold)Clash Verge starting -> Mode B ✓(ansi reset)"
     }
 
