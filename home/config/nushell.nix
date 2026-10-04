@@ -221,10 +221,10 @@ in
     # In service mode the core is owned by the always-on clash-verge.service
     # helper, so quitting the GUI does NOT stop it -- stopping the unit does.
     def clash-off [] {
-      print $"(ansi yellow_bold)Stopping the Clash core (service mode)...(ansi reset)"
+      print $"(ansi yellow_bold)Stopping the Clash core \(service mode\)...(ansi reset)"
       sudo systemctl stop clash-verge.service
       if $env.LAST_EXIT_CODE == 0 {
-        print $"(ansi green_bold)Clash core stopped -> Mode A (direct) ✓(ansi reset)"
+        print $"(ansi green_bold)Clash core stopped -> Mode A \(direct\) ✓(ansi reset)"
       } else {
         print $"(ansi red_bold)Failed to stop the core ✗(ansi reset)"
       }
