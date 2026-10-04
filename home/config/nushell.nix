@@ -217,6 +217,27 @@ in
       print $"(ansi $color)egress: ($g)(ansi reset)  DNS: ($d)  listener: (if $listener { 'up' } else { 'down' })  probe: ($probe)"
     }
 
+    # Stop the Clash core and return to Mode A (direct egress).
+    # In service mode the core is owned by the always-on clash-verge.service
+    # helper, so quitting the GUI does NOT stop it -- stopping the unit does.
+    def clash-off [] {
+      print $"(ansi yellow_bold)Stopping the Clash core (service mode)...(ansi reset)"
+      sudo systemctl stop clash-verge.service
+      if $env.LAST_EXIT_CODE == 0 {
+        print $"(ansi green_bold)Clash core stopped -> Mode A (direct) ✓(ansi reset)"
+      } else {
+        print $"(ansi red_bold)Failed to stop the core ✗(ansi reset)"
+      }
+    }
+
+    # Start the Clash core again (service + GUI) -> Mode B.
+    def clash-on [] {
+      print $"(ansi yellow_bold)Starting the Clash Verge service and GUI...(ansi reset)"
+      sudo systemctl start clash-verge.service
+      job spawn { ^clash-verge }
+      print $"(ansi green_bold)Clash Verge starting -> Mode B ✓(ansi reset)"
+    }
+
     # Live outbound TCP audit (needs root). connect(2) is pre-NAT, so
     # redirected flows show their real public IP, not :${gostRedirect}.
     # bpftrace (BTF) works on new kernels where bcc's headers fail.
