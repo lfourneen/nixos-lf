@@ -463,6 +463,12 @@ in
           # OFFER/ACK sourced from 0.0.0.0 is not caught by it.
           iifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
 
+          # Waydroid bridge: its own dnsmasq serves DHCP (67) and DNS (53) on
+          # 192.168.240.1. Without these the lf_filter default-drop swallows the
+          # container's DISCOVER before it reaches that dnsmasq.
+          iifname "waydroid0" udp dport { 53, 67 } accept
+          iifname "waydroid0" tcp dport { 53, 67 } accept
+
           # Martian sources on the wired WAN. 100.64.0.0/10 is absent on purpose:
           # this uplink is CGNAT, so those are the ISP's own subscribers.
           iifname "${wired}" ip saddr { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4, 255.255.255.255/32 } counter drop
@@ -525,6 +531,12 @@ in
           # guest refusal is per-family, so this accept is kept v4 too).
           iifname "${m.vmBridge}" ip saddr ${m.vmSubnet} oifname { "${wired}", "${wireless}" } accept
           oifname "${m.vmBridge}" ct state established,related accept
+
+          # Waydroid container. Egress is carried by mihomo's TUN in Mode B and by
+          # waydroid's own `ip lxc` masquerade in Mode A; the return path also
+          # matches the conntrack accept above.
+          iifname "waydroid0" accept
+          oifname "waydroid0" accept
 
           counter drop
         }
