@@ -41,6 +41,10 @@
     };
 
     vmBridge = lib.mkOption { type = lib.types.str; default = "virbr0"; };
+    # Waydroid's container bridge and its LXC subnet; the firewall treats it as a
+    # guest exactly like the libvirt bridge.
+    waydroidBridge = lib.mkOption { type = lib.types.str; default = "waydroid0"; };
+    waydroidAddress = lib.mkOption { type = lib.types.str; default = "192.168.240.1"; };
     tunDevice = lib.mkOption { type = lib.types.str; default = "Mihomo"; };
 
     # Packet mark mihomo sets on its own outbound sockets (its `routing-mark`).
@@ -104,6 +108,7 @@
       address = lib.mkOption { type = lib.types.str; default = "10.42.0.1"; };
     };
     vmSubnet = lib.mkOption { type = lib.types.str; default = "192.168.122.0/24"; };
+    waydroidSubnet = lib.mkOption { type = lib.types.str; default = "192.168.240.0/24"; };
     magicDns = lib.mkOption { type = lib.types.str; default = "100.100.100.100"; };
 
     # Encrypted fallback resolver (DoT) used while Clash is down.

@@ -133,8 +133,8 @@ let
     # the killswitch cannot see it: public destinations are refused instead (v4
     # and v6).
     flush chain inet lf_filter proxymode_forward
-    add rule inet lf_filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}" } oifname { "${wired}", "${wireless}" } ip daddr != { ${local4} } counter drop
-    add rule inet lf_filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}" } oifname { "${wired}", "${wireless}" } ip6 daddr != { ${local6} } counter drop
+    add rule inet lf_filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}", "${m.waydroidBridge}" } oifname { "${wired}", "${wireless}" } ip daddr != { ${local4} } counter drop
+    add rule inet lf_filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}", "${m.waydroidBridge}" } oifname { "${wired}", "${wireless}" } ip6 daddr != { ${local6} } counter drop
 
     # `redirect` is an nft statement keyword, so the chain cannot be named that.
     table ip lf_proxymode_nat {
@@ -463,11 +463,13 @@ in
           # OFFER/ACK sourced from 0.0.0.0 is not caught by it.
           iifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
 
-          # Waydroid bridge: its own dnsmasq serves DHCP (67) and DNS (53) on
-          # 192.168.240.1. Without these the lf_filter default-drop swallows the
-          # container's DISCOVER before it reaches that dnsmasq.
-          iifname "waydroid0" udp dport { 53, 67 } accept
-          iifname "waydroid0" tcp dport { 53, 67 } accept
+          # Waydroid bridge: its dnsmasq serves DHCP (67) and DNS (53) on the
+          # gateway. DHCP is sourced from 0.0.0.0, so it cannot be source-scoped
+          # (same as the hotspot); the DNS accepts are scoped to the container
+          # subnet and to the gateway address, mirroring the hotspot role test.
+          iifname "${m.waydroidBridge}" udp dport 67 accept
+          iifname "${m.waydroidBridge}" ip saddr ${m.waydroidSubnet} ip daddr ${m.waydroidAddress} udp dport 53 accept
+          iifname "${m.waydroidBridge}" ip saddr ${m.waydroidSubnet} ip daddr ${m.waydroidAddress} tcp dport 53 accept
 
           # Martian sources on the wired WAN. 100.64.0.0/10 is absent on purpose:
           # this uplink is CGNAT, so those are the ISP's own subscribers.
@@ -532,11 +534,12 @@ in
           iifname "${m.vmBridge}" ip saddr ${m.vmSubnet} oifname { "${wired}", "${wireless}" } accept
           oifname "${m.vmBridge}" ct state established,related accept
 
-          # Waydroid container. Egress is carried by mihomo's TUN in Mode B and by
-          # waydroid's own `ip lxc` masquerade in Mode A; the return path also
-          # matches the conntrack accept above.
-          iifname "waydroid0" accept
-          oifname "waydroid0" accept
+          # Waydroid container egress -> real uplinks only, exactly like the
+          # libvirt VM. In Mode B the fragment above refuses public destinations
+          # first (TUN carries it, or it is dropped = fail-closed); this accept
+          # only lets portal/LAN/CGNAT through, in both modes.
+          iifname "${m.waydroidBridge}" ip saddr ${m.waydroidSubnet} oifname { "${wired}", "${wireless}" } accept
+          oifname "${m.waydroidBridge}" ct state established,related accept
 
           counter drop
         }
