@@ -220,11 +220,14 @@ let
       open-maximized true
     }
 
-    // Zen Browser (flatpak) reports app-id app.zen_browser.zen, not firefox.
+    // Zen Browser && Google Chrome (flatpak ver)
+    // Chrome reports app-id "google-chrome" to the compositor (its
+    // StartupWMClass), NOT the Flatpak id "com.google.Chrome".
     // open-maximized = maximize-column (full width, keeps gaps/struts),
     // NOT fullscreen; it is the "two columns become one" state.
     window-rule {
       match app-id=r#"^app\.zen_browser\.zen$"#
+      match app-id=r#"^google-chrome$"#
       open-maximized true
     }
 
