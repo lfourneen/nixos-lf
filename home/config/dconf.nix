@@ -6,6 +6,15 @@
   # NOTE: keep Clash Verge "System Proxy" OFF or it overwrites these values with
   # my.machine.ports.mihomoMixed.
   dconf.settings = {
+    # GTK/client-side cursor theme (resize, text, not-allowed, ...). The
+    # compositor (niri) uses its own `cursor { xcursor-theme }`; without this,
+    # GTK apps fall back to whatever gsettings holds and the two look different.
+    # Theme lives in ~/.local/share/icons, so no nix package is needed.
+    "org/gnome/desktop/interface" = {
+      cursor-theme = "Iochi Mari (Gym ver.)";
+      cursor-size = 48;
+    };
+
     # org.gnome.system.proxy schema path is /system/proxy/ (not /org/gnome/).
     "system/proxy" = {
       mode = "manual";

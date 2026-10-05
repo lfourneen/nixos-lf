@@ -18,11 +18,19 @@
     gtk3 = {
       enable = true;
       theme = config.gtk.theme;
+      extraConfig = {
+        gtk-cursor-theme-name = "Iochi Mari (Gym ver.)";
+        gtk-cursor-theme-size = 48;
+      };
     };
 
     gtk4 = {
       enable = true;
       theme = config.gtk.theme;
+      extraConfig = {
+        gtk-cursor-theme-name = "Iochi Mari (Gym ver.)";
+        gtk-cursor-theme-size = 48;
+      };
     };
   };
 
