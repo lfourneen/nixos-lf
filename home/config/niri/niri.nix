@@ -61,7 +61,7 @@ let
     cursor {
       hide-when-typing
       hide-after-inactive-ms 5000
-      xcursor-theme "Default"
+      xcursor-theme "Iochi Mari (Gym ver.)"
       xcursor-size 48
     }
 
