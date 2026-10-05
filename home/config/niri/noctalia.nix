@@ -78,13 +78,16 @@ let
       widget = { };
     };
     dock = {
-      enabled = true;
+      enabled = false;
       icon_size = 32;
       launcher_position = "start";
-      monitors = [ "eDP-1" "HDMI-A-1" ];
       reserve_space = false;
       show_dots = true;
       smart_auto_hide = true;
+      monitor = {
+        "eDP-1" = { enabled = true; };
+        "HDMI-A-1" = { enabled = true; };
+      };
     };
     hot_corners = { enabled = true; };
     idle = {
