@@ -91,6 +91,7 @@ let
     SYSTEMCTL=${pkgs.systemd}/bin/systemctl
     GREP=${pkgs.gnugrep}/bin/grep
     SED=${pkgs.gnused}/bin/sed
+    JQ=${pkgs.jq}/bin/jq
     CAT=${pkgs.coreutils}/bin/cat
     DATE=${pkgs.coreutils}/bin/date
     TIMEOUT=${pkgs.coreutils}/bin/timeout
@@ -247,16 +248,26 @@ let
     #      dead selection -- this is Clash-centric, not "any node is up";
     #  (3) a fake-ip answer is reachable through the TUN, proving the TUN really
     #      carries packets (shape-only checks cannot see a stuck sing-tun).
+    # health_gate names the failing layer for the reason file:
+    #   obs   = the route could not be read (probe code / log line / group list)
+    #   route = the probe was routed DIRECT or REJECT (no real node)
+    #   node  = the effective group's selected node failed the delay test
+    #   tun   = the TUN does not carry packets
     health_ok() {
       health_gate=""
       : > "$CAPTURE" 2>/dev/null || true
-      # -N flushes each line as it arrives, so poll for the connection line and
-      # stop early -- fast, and it does not race the node dial. --max-time caps
-      # the reader if the line never comes.
-      $CURL -N -s --max-time 5 --unix-socket "$MIHOMO_SOCK" "http://localhost/logs?level=info" -o "$CAPTURE" 2>/dev/null &
+      ${pkgs.coreutils}/bin/chmod 600 "$CAPTURE" 2>/dev/null || true
+      # -N flushes each line as it arrives; --max-time caps the reader.
+      $CURL -N -s --max-time 3 --unix-socket "$MIHOMO_SOCK" "http://localhost/logs?level=info" -o "$CAPTURE" 2>/dev/null &
       cap=$!
       $SLEEP 0.2
       code=$($TIMEOUT 3 $CURL -s -o /dev/null -w '%{http_code}' --noproxy "" -x "http://127.0.0.1:$MIHOMO_MIXED" "$PROBE_URL" 2>/dev/null || true)
+      # Cheap verdict first, so a dead core is judged before the poll.
+      if [ "$code" != "200" ] && [ "$code" != "204" ]; then
+        kill "$cap" 2>/dev/null || true
+        wait "$cap" 2>/dev/null || true
+        health_gate=obs; log "health: (a) probe http code=[$code]"; return 1
+      fi
       line=""
       for _ in 1 2 3 4 5 6 7 8 9 10; do
         line=$($GREP -F "$PROBE_HOST" "$CAPTURE" 2>/dev/null | tail -1)
@@ -265,35 +276,46 @@ let
       done
       kill "$cap" 2>/dev/null || true
       wait "$cap" 2>/dev/null || true
-      # 200/204 accepted: the code only shows the core answered; the log line
-      # (required below) is what proves the flow actually went through a proxy.
-      case "$code" in
-        200|204) ;;
-        *) health_gate=a; log "health: (a) probe http code=[$code]"; return 1 ;;
-      esac
-      # Refuse when the route could not be observed: the code alone does not
-      # prove the flow went through a proxy (a `rule` profile could fetch DIRECT).
-      [ -n "$line" ] || { health_gate=a; log "health: (a) no log line for $PROBE_HOST"; return 1; }
-      # `using DIRECT` = routed DIRECT; `using G[DIRECT]` = the group's selected
-      # member is DIRECT -- both mean the flow did not go through a real node.
+      rest="''${line#*using }"
+      [ "$rest" != "$line" ] || { health_gate=obs; log "health: (a) no route line for $PROBE_HOST"; return 1; }
+      # `using DIRECT`/`using REJECT` = the RULE itself; and the MEMBER (the first
+      # bracket content) DIRECT/REJECT = the group selected a non-node. Judge the
+      # member exactly, so a node NAME containing "[DIRECT]" is not a false hit.
+      member=$(printf '%s' "$rest" | $SED -n 's/^[^[]*\[\([^]]*\)\].*/\1/p')
       case "$line" in
-        *"using DIRECT"*|*"[DIRECT]"*) health_gate=a; log "health: (a) probe routed DIRECT"; return 1 ;;
+        *"using DIRECT"*|*"using REJECT"*) health_gate=route; log "health: (a) rule routed DIRECT/REJECT"; return 1 ;;
       esac
-      group=$(printf '%s' "$line" | $SED -n -E 's/.*using ([^[]*)\[.*/\1/p')
-      [ -n "$group" ] || { health_gate=a; log "health: (a) no group in: $line"; return 1; }
-      # (2) Clash tests the selected node of that group directly.
+      case "$member" in
+        DIRECT|REJECT) health_gate=route; log "health: (a) member $member"; return 1 ;;
+      esac
+      # (b) Resolve the effective group against the live group list (a group name
+      # containing '[' would truncate a plain split), then Clash delay-tests the
+      # node that group has selected.
+      group=$(printf '%s' "$rest" | $SED -n 's/^\([^[]*\)\[.*/\1/p')
+      if [ -z "$group" ] || ! $CURL -s --max-time 2 --unix-socket "$MIHOMO_SOCK" "http://localhost/proxies/$group" 2>/dev/null | $GREP -q '"all"'; then
+        group=""
+        glist=$($TIMEOUT 3 $CURL -s --unix-socket "$MIHOMO_SOCK" http://localhost/proxies 2>/dev/null | $JQ -r '.proxies | to_entries[] | select(.value.all) | .key' 2>/dev/null)
+        while IFS= read -r g; do
+          [ -n "$g" ] || continue
+          case "$rest" in
+            "$g"[*) group="$g"; break ;;
+          esac
+        done < <(printf '%s\n' "$glist")
+      fi
+      [ -n "$group" ] || { health_gate=obs; log "health: (a) group not resolved: $rest"; return 1; }
       delay=$($TIMEOUT 3 $CURL -s --unix-socket "$MIHOMO_SOCK" \
         "http://localhost/proxies/$group/delay?url=$PROBE_URL&timeout=2000" 2>/dev/null \
         | $SED -n 's/.*"delay":\([0-9][0-9]*\).*/\1/p')
-      [ -n "$delay" ] || { health_gate=b; log "health: (b) delay empty for group [$group]"; return 1; }
-      # (3) the TUN carries packets: dial the fake-ip of a DIRECT name. Only in
-      # the TUN model -- the plain HTTP-proxy model has no fake-ip to dial.
+      [ -n "$delay" ] || { health_gate=node; log "health: (b) delay empty for group [$group]"; return 1; }
+      # (c) the TUN carries packets: a DNS query to the fake-ip is routed into the
+      # TUN and answered by the core's dns-hijack -- no third-party site whose port
+      # policy could fail a healthy host (an HTTP dial has that dependency).
       if [ "$REQUIRE_TUN" = "1" ]; then
         fip=$($TIMEOUT 2 $DIG +short @127.0.0.1 -p "$MIHOMO_DNS" "$TUN_PROBE_NAME" A 2>/dev/null \
           | $GREP -E "^$FAKE_IP_PREFIX\." | head -1)
-        [ -n "$fip" ] || { health_gate=c; log "health: (c) no fake-ip for $TUN_PROBE_NAME"; return 1; }
-        $TIMEOUT 3 $CURL -s -o /dev/null --connect-timeout 2 "http://$fip/" 2>/dev/null \
-          || { health_gate=c; log "health: (c) TUN self-test failed for $fip"; return 1; }
+        [ -n "$fip" ] || { health_gate=tun; log "health: (c) no fake-ip for $TUN_PROBE_NAME"; return 1; }
+        $TIMEOUT 3 $DIG +time=2 +tries=1 +short @"$fip" -p 53 "$TUN_PROBE_NAME" A 2>/dev/null \
+          | $GREP -q . || { health_gate=tun; log "health: (c) TUN self-test failed via $fip"; return 1; }
       fi
       return 0
     }
@@ -312,6 +334,7 @@ let
 
     sync_pass() {
       prev="$mode"
+      prearmed=0
 
       # No fragment at all (proxyKillSwitch off): the host is unenforced direct.
       if [ ! -s "$RULES" ]; then
@@ -334,7 +357,7 @@ let
         # no guard, no killswitch and no :33333 redirect while the gate decides.
         # The gate below then upgrades to proxy if the path is healthy.
         if ! rules_present; then
-          if rules_on_blocked; then mode=blocked; reason="reload"; fi
+          if rules_on_blocked; then mode=blocked; reason="reload"; prearmed=1; fi
         fi
         # tun_ok is 1 unless we require a TUN and it is not ready. In the plain
         # HTTP-proxy model (REQUIRE_TUN=0) a missing TUN is not a failure.
@@ -356,7 +379,7 @@ let
             if health_ok; then
               want=proxy; want_reason=""
             else
-              want=blocked; want_reason="node:$health_gate"
+              want=blocked; want_reason="$health_gate"
             fi
           fi
         else
@@ -386,7 +409,9 @@ let
 
       # Apply the fragment the want requires whenever it differs or its
       # post-condition does not hold (e.g. a manual nft flush emptied it).
-      if [ "$want" != "$mode" ] || ! mode_loaded "$want"; then
+      # The pre-arm already changed `mode`; force one apply so STATUS/REASON are
+      # written and verify/wake fire even when the gate reaches the same verdict.
+      if [ "$prearmed" = "1" ] || [ "$want" != "$mode" ] || ! mode_loaded "$want"; then
         applied=0
         case "$want" in
           proxy)
