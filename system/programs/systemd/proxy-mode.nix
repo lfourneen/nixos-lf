@@ -249,34 +249,38 @@ let
     #      carries packets (shape-only checks cannot see a stuck sing-tun).
     health_ok() {
       : > "$CAPTURE" 2>/dev/null || true
-      # Let the log stream end on its own (--max-time) and wait for it, so curl
-      # flushes the buffered line -- curl buffers `-o` output (even with -N), and
-      # a mid-stream kill drops it. The connection line is emitted within ~0.5 s.
-      $CURL -s --max-time 2 --unix-socket "$MIHOMO_SOCK" "http://localhost/logs?level=info" -o "$CAPTURE" 2>/dev/null &
+      # -N flushes each line as it arrives, so poll for the connection line and
+      # stop early -- fast, and it does not race the node dial. --max-time caps
+      # the reader if the line never comes.
+      $CURL -N -s --max-time 5 --unix-socket "$MIHOMO_SOCK" "http://localhost/logs?level=info" -o "$CAPTURE" 2>/dev/null &
       cap=$!
+      $SLEEP 0.2
       code=$($TIMEOUT 3 $CURL -s -o /dev/null -w '%{http_code}' --noproxy "" -x "http://127.0.0.1:$MIHOMO_MIXED" "$PROBE_URL" 2>/dev/null || true)
+      line=""
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        line=$($GREP -F "$PROBE_HOST" "$CAPTURE" 2>/dev/null | tail -1)
+        [ -n "$line" ] && break
+        $SLEEP 0.3
+      done
+      kill "$cap" 2>/dev/null || true
       wait "$cap" 2>/dev/null || true
-      line=$($GREP -F "$PROBE_HOST" "$CAPTURE" 2>/dev/null | tail -1)
       case "$code" in
         200|204) ;;
         *) log "health: (a) probe http code=[$code]"; return 1 ;;
       esac
-      [ -n "$line" ] || log "health: (a) no log line; route/node checks skipped"
-      if [ -n "$line" ]; then
-        case "$line" in
-          *"using DIRECT"*) log "health: (a) probe routed DIRECT"; return 1 ;;
-        esac
-        group=$(printf '%s' "$line" | $SED -n -E 's/.*using ([^[]*)\[.*/\1/p')
-        if [ -n "$group" ]; then
-          # (2) Clash tests the selected node of that group directly.
-          delay=$($TIMEOUT 3 $CURL -s --unix-socket "$MIHOMO_SOCK" \
-            "http://localhost/proxies/$group/delay?url=$PROBE_URL&timeout=2000" 2>/dev/null \
-            | $SED -n 's/.*"delay":\([0-9][0-9]*\).*/\1/p')
-          [ -n "$delay" ] || { log "health: (b) delay empty for group [$group]"; return 1; }
-        else
-          log "health: (b) no group parsed; node check skipped"
-        fi
-      fi
+      # Refuse when the route could not be observed: 200 alone does not prove the
+      # flow went through a proxy (a `rule` profile could have fetched DIRECT).
+      [ -n "$line" ] || { log "health: (a) no log line for $PROBE_HOST"; return 1; }
+      case "$line" in
+        *"using DIRECT"*) log "health: (a) probe routed DIRECT"; return 1 ;;
+      esac
+      group=$(printf '%s' "$line" | $SED -n -E 's/.*using ([^[]*)\[.*/\1/p')
+      [ -n "$group" ] || { log "health: (a) no group in: $line"; return 1; }
+      # (2) Clash tests the selected node of that group directly.
+      delay=$($TIMEOUT 3 $CURL -s --unix-socket "$MIHOMO_SOCK" \
+        "http://localhost/proxies/$group/delay?url=$PROBE_URL&timeout=2000" 2>/dev/null \
+        | $SED -n 's/.*"delay":\([0-9][0-9]*\).*/\1/p')
+      [ -n "$delay" ] || { log "health: (b) delay empty for group [$group]"; return 1; }
       # (3) the TUN carries packets: dial the fake-ip of a DIRECT name. Only in
       # the TUN model -- the plain HTTP-proxy model has no fake-ip to dial.
       if [ "$REQUIRE_TUN" = "1" ]; then
@@ -486,6 +490,10 @@ in
         Type = "simple";
         RuntimeDirectory = "proxy-mode";
         RuntimeDirectoryMode = "0755";
+        # Keep /run/proxy-mode across a restart: the `core-seen` marker must
+        # survive so a core that crashes after a proxy-mode restart is still read
+        # as a crash (block), not as a fresh boot (direct).
+        RuntimeDirectoryPreserve = true;
         # --once before the loop so the recorded mode is never stale.
         ExecStartPre = "${modeScript} --once";
         ExecStart = modeScript;
@@ -573,6 +581,12 @@ in
     # its own idempotent decision logic and stays the source of truth.
     systemd.services.proxy-net-wake = {
       description = "Wake the proxy supervisors on a Clash core state change";
+      # A single Clash start emits several TUN/socket events, so this oneshot is
+      # restarted 3-5x in ~1s; without this it hits the default StartLimit
+      # (5/10s), goes failed, and the .path that feeds it goes
+      # `unit-start-limit-hit` -- a permanently dead event layer. Match the other
+      # supervisors by never rate-limiting it.
+      unitConfig.StartLimitIntervalSec = 0;
       serviceConfig = {
         Type = "oneshot";
         ExecStart = pkgs.writeShellScript "proxy-net-wake" ''
