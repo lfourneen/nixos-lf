@@ -32,6 +32,12 @@ in
       # Fix the mixed port to align with the probe and forwarding ports in gost-relay.nix.
       mixed-port: ${toString port.mihomoMixed}
 
+      # Pin the log level: proxy-mode's health gate parses the core's connection
+      # log to confirm a probe was proxied (not DIRECT) and to learn the group it
+      # used. The GUI owns this key otherwise, and warning/silent would silently
+      # disable that layer of the gate.
+      log-level: info
+
       # Pin the mark the core sets on its own outbound sockets; the nft kill switch
       # exempts the core by this mark rather than by uid 0. Must match
       # my.machine.mihomoMark (nftables-verify asserts it at runtime).
