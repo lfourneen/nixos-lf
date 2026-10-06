@@ -17,5 +17,16 @@
     default = config.my.machine.tunDevice;
     description = "Clash TUN interface name; firewall rules and the home-side clash Merge template read this via osConfig.";
   };
+
+  # Single source of truth for the fake-ip pool. The home-side clash Merge
+  # template writes it into `dns.fake-ip-range` while TUN mode is on, and
+  # nftables-verify checks that the client resolver answers inside it. Only
+  # meaningful with tunMode: outside a TUN nothing maps a fake address back to
+  # its domain, so the template stays redir-host when tunMode is false.
+  options.my.proxy.fakeIpRange = lib.mkOption {
+    type = lib.types.str;
+    default = "198.18.0.1/16";
+    description = "Clash fake-ip pool (RFC 2544 benchmarking range); used with tunMode and asserted by nftables-verify.";
+  };
 }
 

@@ -5,6 +5,14 @@ let
   # compared against this exact text, so a gutted or stale ruleset shows up.
   fragment = pkgs.writeText "proxymode-rules.nft" config.my.proxy.proxyModeRules;
 
+  # Fake-ip is on iff the template was built with fake-ip, i.e. iff TUN mode is
+  # on; the pool's first two octets are what the client-resolver probe matches.
+  fakeIpEnabled = config.my.proxy.tunMode;
+  fakeIpRange = config.my.proxy.fakeIpRange;
+  fakeIpPrefix = lib.concatStringsSep "." (
+    lib.take 2 (lib.splitString "." (lib.head (lib.splitString "/" fakeIpRange)))
+  );
+
 in
 {
   # Compares the live nftables state with what this generation writes and with the
@@ -59,6 +67,9 @@ in
       MIHOMO_MIXED=${toString config.my.machine.ports.mihomoMixed}
       MIHOMO_DNS=${toString config.my.machine.ports.mihomoDns}
       CLIENT_DNS=${toString config.my.machine.ports.dnsmasq}
+      FAKEIP=${if fakeIpEnabled then "1" else "0"}
+      FAKE_IP_RANGE=${fakeIpRange}
+      FAKE_IP_PREFIX=${fakeIpPrefix}
       UNBOUND_PORT=${toString config.my.machine.ports.unbound}
       DOT_PORT=${toString config.my.machine.ports.dot}
       MIHOMO_MARK=0x${lib.toLower (lib.fixedWidthString 8 "0" (lib.toHexString config.my.machine.mihomoMark))}
@@ -268,24 +279,45 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
           cmp_rules "table ip lf_proxymode_nat" "$(expected_table ip lf_proxymode_nat)" "$(live_nat ip lf_proxymode_nat)"
           cmp_rules "table ip6 lf_proxymode_nat" "$(expected_table ip6 lf_proxymode_nat)" "$(live_nat ip6 lf_proxymode_nat)"
 
-          # A name the validating upstream refuses must not come back as an answer
-          # here. Judge only once dns-upstream has actually put the client resolver on
-          # mihomo -- proxy-mode's status leads dns-upstream's, and while they disagree
-          # the resolver is still on the non-validating DoT, which is Mode A by
-          # design, not a downgrade.
+          # What the client resolver must look like in proxy mode depends on the
+          # template's enhanced-mode. Judge only once dns-upstream has actually
+          # put the client resolver on mihomo -- proxy-mode's status leads
+          # dns-upstream's, and while they disagree the resolver is still on the
+          # Mode-A DoT upstream, which is by design, not a downgrade.
           dns_state=$($CAT /run/dns-upstream/status 2>/dev/null | $SED -E 's/[[:space:]]+//g')
           if [ "$dns_state" != "proxy" ]; then
-            warn "dns-upstream is [$dns_state], not proxy yet: the client resolver is not on the validating upstream, so DNSSEC is not judged"
+            warn "dns-upstream is [$dns_state], not proxy yet: the client resolver is not on mihomo, so its shape is not judged"
           else
             ctl=$($DIG +time=3 +tries=1 +short @127.0.0.1 -p "$CLIENT_DNS" example.com 2>/dev/null | $GREP -cE '^[0-9a-fA-F:]' || true)
             if [ "$ctl" = 0 ]; then
-              warn "the client resolver (:$CLIENT_DNS) did not answer a control query; DNS in proxy mode is broken, so validation is not judged"
+              warn "the client resolver (:$CLIENT_DNS) did not answer a control query; DNS in proxy mode is broken, so its shape is not judged"
+            elif [ "$FAKEIP" = 1 ]; then
+              # fake-ip synthesizes an answer locally for every unfiltered name, so
+              # DNSSEC is validated inside mihomo and is no longer observable at the
+              # client (dnssec-failed.org resolves to a fake address too, which is
+              # why the SERVFAIL probe below does not apply). The invariant that
+              # replaces it: an unfiltered name must come back INSIDE the fake-ip
+              # pool. A real answer would mean fake-ip is off while the TUN and the
+              # whole rule path expect it. dnsmasq is restarted asynchronously, so
+              # retry before judging.
+              fake=""
+              probe=""
+              for _ in 1 2 3 4 5; do
+                probe="$($DATE +%s%N).fake-ip-probe.example.com"
+                fake=$($DIG +time=3 +tries=1 +short @127.0.0.1 -p "$CLIENT_DNS" "$probe" A 2>/dev/null | $GREP -E "^$FAKE_IP_PREFIX\." | head -1 || true)
+                [ -n "$fake" ] && break
+                $SLEEP 1
+              done
+              [ -n "$fake" ] \
+                || fail "the client resolver (:$CLIENT_DNS) did not answer '$probe' inside the fake-ip pool ($FAKE_IP_RANGE): fake-ip is not in effect, so TUN flows cannot be mapped back to their domains"
             else
-              # dns-upstream restarts dnsmasq asynchronously, so the first probe can still
-              # hit the previous upstream: retry and pass as soon as the name is
-              # refused (SERVFAIL) or swallowed (no status). Only a resolver that
-              # keeps answering for every attempt counts as a downgrade. dig writes
-              # its diagnostics to stdout, so parse the status line, not a line count.
+              # redir-host: a name the validating upstream refuses must not come
+              # back as an answer here. dns-upstream restarts dnsmasq
+              # asynchronously, so the first probe can still hit the previous
+              # upstream: retry and pass as soon as the name is refused (SERVFAIL)
+              # or swallowed (no status). Only a resolver that keeps answering for
+              # every attempt counts as a downgrade. dig writes its diagnostics to
+              # stdout, so parse the status line, not a line count.
               refused=0
               st=""
               for _ in 1 2 3 4 5; do

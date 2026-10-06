@@ -65,7 +65,7 @@ Clash 关闭时主机就是普通直连：门户、DNS 与日常上网都无需�
 
 `systemd-resolved` 使用 `127.0.0.1:1054` 上的 dnsmasq，它的上游随模式变化。每个模式只有一个解析器，不存在常驻的第二个 server 可供回退：
 
-* 模式 B：`127.0.0.1:1053`（mihomo）。应答来自 mihomo 转发的 DoH 上游，由它完成 DNSSEC 校验：`dig +dnssec @127.0.0.1 -p 1053 cloudflare.com` 带 `ad` 标志与 RRSIG，`dnssec-failed.org` 返回 SERVFAIL。由于没有别的上游，这个拒绝会直接到达客户端，而不会被不做校验的解析器替换。`nftables-verify` 会校验这一点，但只在 `dns-upstream` 真的把解析器切到 `:1053` 之后（它的状态可能滞后于 `proxy-mode`）：要求 `:1054` 拒绝对 `dnssec-failed.org` 下随机标签的查询（SERVFAIL 或超时都算被拒绝），同时对照域名能正常解析，并带重试以挺过 dnsmasq 的异步重启。
+* 模式 B：`127.0.0.1:1053`（mihomo），`fake-ip` 模式——只要 `my.proxy.tunMode` 开启，Merge 模板就会固定 `enhanced-mode: fake-ip`；而 `dns-upstream` 只在核心运行时才把客户端解析器指向 mihomo，因此 fake-ip 恰好"在 Clash 开启时"生效。凡是未列入 `fake-ip-filter` 的域名都会得到 `fake-ip-range`（`198.18.0.1/16`）中的地址，并由 TUN 把该地址映射回域名，所以 DOMAIN/GEOSITE 规则依旧能匹配；过滤器里的 LAN、门户与联网探测域名则返回真实地址以保持可达。DNSSEC 在客户端已不可观测：mihomo 在本地合成应答，`dnssec-failed.org` 同样会拿到一个虚拟地址，而不再是客户端的 SERVFAIL。因此 `nftables-verify` 改为校验 fake-ip 形态，且只在 `dns-upstream` 真的把解析器切到 `:1053` 之后（它的状态可能滞后于 `proxy-mode`）：`:1054` 对一个随机未过滤标签的查询必须落在 `fake-ip-range` 内，同时对照域名能正常解析，并带重试以挺过 dnsmasq 的异步重启。
 * 模式 A：`127.0.0.1:1055`（unbound DoT 到 AliDNS）。unbound 不做校验（`enableRootTrustAnchor = false`，且上游会剥掉 RRSIG），因此模式 A 没有 DNSSEC 保护；对这个上游开启校验会让所有签名域名 SERVFAIL，所以保持关闭。
 * 模式 A 且加密链路不可达时：DHCP 下发的解析器（用 `dhcpcd -U` 读取）只在两个有界、有日志的时间窗内被追加——链路建立或加密链路失败后的 120 秒引导窗，以及 NetworkManager 报告 `portal`/`limited` 期间。窗口之外 DNS 会停止并在 `/run/dns-upstream/reason` 里说明原因，而不是退化为明文。`touch /run/dns-upstream/force-plaintext` 可手工强制启用明文兜底。
 
