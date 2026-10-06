@@ -28,74 +28,15 @@ A declarative NixOS system configuration using Nix flakes, featuring a customize
 
 ---
 
-## Proxy Architecture
+## Proxy
 
-Outbound traffic is handled by a chain of local components:
+Outbound traffic runs through a Clash-based chain. Its components, the three
+enforcement modes (A/B/C), DNS handling, the fail-closed rules and their
+limitations are documented in **[PROXY.md](PROXY.md)**.
 
-| Component | Port / interface | Role |
-|---|---|---|
-| Clash Verge (mihomo) | `127.0.0.1:7897`, TUN device `Mihomo` | proxy core and DNS resolver |
-| `gost-relay` (uid 987) | `127.0.0.1:33332` (HTTP), `127.0.0.1:33333` (transparent redirect) | local relay; forwards to mihomo while Clash runs, plain passthrough when it does not |
-| `dnsmasq` | `127.0.0.1:1054` | single DNS entry point for the system |
-| `unbound` | `127.0.0.1:1055` | encrypted (DoT) resolver used while mihomo is unavailable |
-| nftables | — | kill switch, transparent redirect |
-
-Applications that honour proxy settings are pointed at `127.0.0.1:33332` (session environment variables, GSettings, Flatpak overrides). TCP traffic from applications that ignore them is redirected to `127.0.0.1:33333` by nftables.
-
-### Modes
-
-`proxy-mode` loads the kill switch and the `:33333` redirect only while Clash runs, so the machine has two states with different guarantees:
-
-| | **Mode A — Clash core stopped** (the normal state on this machine) | **Mode B — Clash core running, TUN up** |
-|---|---|---|
-| how you get there | stop the core: `clash-off` (or `sudo systemctl stop clash-verge.service`). **Quitting the Clash Verge GUI does not stop the core in service mode**, so closing the window is not enough | start the core: `clash-on` (or open Clash Verge). `my.proxy.tunMode` decides whether Nix wants a TUN; the GUI decides whether one is created |
-| what is enforced | `nftables.service` loads `table inet filter` at boot with no dependency on Clash: `input policy drop`, the ct-state rules, the martian drop, the public-IPv6 drop, the `forward` chain and the masquerade pair. DNS goes to dnsmasq (:1054) and on to the encrypted DoT resolver (unbound :1055) | all of the above, plus: the TUN carries locally generated flows, mihomo's `dns-hijack` owns :53 for TUN-routed traffic, and the `proxymode_*` fragment adds the kill switch (non-root egress to public addresses on the uplinks is dropped), the `:33333` redirect and the guest policy |
-| what it guarantees | a direct connection with the real address and no kill switch; portal/LAN/CGNAT addresses stay reachable by design, and the DHCP plaintext resolvers are an accepted fallback inside two bounded windows (see DNS below) | every locally generated flow goes through mihomo or is dropped; if the core, the TUN or the node fails, DNS stops and egress is refused instead of falling back to a direct connection; hotspot and VM clients are refused rather than relayed |
-| what it does not protect | the source address and every destination are visible to the ISP and to anyone on the path; plaintext protocols stay readable; DNS filtering is a mitigation, not a wall; applications with their own DoH/DoT bypass this resolver chain | anything the profile sends DIRECT leaves from the real address; source- and device-bound sockets escape the TUN and are only contained by the kill switch; non-root UDP `3478/5349` (STUN/TURN) is dropped; a manual `sudo nft flush ruleset` removes every rule until the next `nftables.service` start |
-
-Mode A does not conceal the source address and does not encrypt what
-applications send. Mode B is only as strong as the checks that can see it, so
-`nftables-verify` reads kernel state — the TUN device, mihomo's own
-`table inet mihomo`, the FIB rules, the listeners, the live uid — instead of
-trusting the status files, and a failure raises an alert through
-`journalctl -t netsec-alert` and `/run/netsec/failed`.
-
-With Clash closed the host is plain direct-connected: the portal, DNS and ordinary browsing work with no warm-up, and `gost-relay` keeps serving `:33332` as a plain passthrough instead of refusing, so applications that only honour proxy variables (nix-daemon, Flatpak apps, hermes, curl) keep working. While Clash runs, `gost-relay` only ever forwards to `127.0.0.1:7897`: a missing core or node fails the connection instead of falling back to a direct one, and the mode is selected from the Clash core inside `clash-verge.service`'s cgroup rather than from a process name, so a crashed core stays fail-closed.
-
-The supervisors are event-driven. `proxy-net-watch.path` watches mihomo's control socket (and its directory) and `proxy-net-wake.service` wakes `proxy-mode`, `dns-upstream` and `gost-relay` together when the core starts or stops; a NetworkManager dispatcher hook does the same on a link change. Each loop keeps an adaptive backstop — fast while a transition or a degradation is in flight, up to 10/15/30 s once settled — so a switch is handled in the same instant and the steady state costs almost nothing.
-
-The recorded states are `/run/proxy-mode/status` (`proxy` | `direct` | `unenforced`) and `/run/gost-relay/status`, `/run/dns-upstream/status` + `/run/dns-upstream/reason` (shown by the `proxy-status` command in the Nushell config). `unenforced` means Clash is running and the enforcement fragment did not load: `nftables-verify` treats it as a failure, and `nftables.service`, `proxy-mode.service` and `nftables-verify.service` all alert through `netsec-alert@` when they fail. They describe the supervisors' state, not the path an individual connection takes.
-
-### DNS
-
-`systemd-resolved` uses dnsmasq on `127.0.0.1:1054`, and what dnsmasq forwards to depends on the mode. There is one resolver per mode and no permanent second server to fall through to:
-
-* Mode B: `127.0.0.1:1053` (mihomo) in `fake-ip` mode — the Merge template pins `enhanced-mode: fake-ip` whenever `my.proxy.tunMode` is on, and `dns-upstream` only points the client resolver at mihomo while the core runs, so fake-ip is active exactly while Clash is. Every name not listed in `fake-ip-filter` is answered with an address from `fake-ip-range` (`198.18.0.1/16`) and the TUN maps that address back to its domain, so DOMAIN/GEOSITE rules still match; LAN, portal and captive-probe names in the filter resolve for real so they stay reachable. DNSSEC is no longer observable at the client: mihomo synthesizes the answer locally, so `dnssec-failed.org` also gets a fake address instead of a client-side SERVFAIL. `nftables-verify` therefore asserts the fake-ip shape instead, once `dns-upstream` has actually put the resolver on `:1053` (its status can lag `proxy-mode`'s): a random unfiltered label queried at `:1054` has to come back inside `fake-ip-range` while a control name resolves, retrying to ride out the asynchronous dnsmasq restart.
-* Mode A: `127.0.0.1:1055` (unbound DoT to AliDNS). unbound does not validate (`enableRootTrustAnchor = false`, and the upstream strips RRSIGs), so Mode A has no DNSSEC protection; enabling validation with this upstream makes every signed name SERVFAIL, which is why it stays off.
-* Mode A, if the encrypted hop is unreachable: the DHCP resolvers (read with `dhcpcd -U`) are appended only inside two bounded, logged windows — a 120 s bootstrap window after the link comes up or the encrypted hop fails, and while NetworkManager reports `portal`/`limited`. Outside them DNS stops and says why in `/run/dns-upstream/reason` rather than becoming plaintext. `touch /run/dns-upstream/force-plaintext` overrides this by hand.
-
-Any plaintext resolver that is not dnsmasq's own upstream socket is redirected into dnsmasq (`:53` from the uplinks, IPv4 and IPv6, in both modes), so a hardcoded resolver in a portal/LAN/CGNAT range cannot leave in the clear.
-
-### Notes and limitations
-
-* The `:33333` redirect carries every TCP flow that is not routed into the TUN (source- and device-bound sockets, and anything after a manual flush), so `gost` is a single point of failure for those flows; `nftables-verify` checks that its listener is up. Flows that arrive through it are re-sourced to `127.0.0.1`, so per-source profile rules do not apply to them.
-* Only `unbound` (DoT, tcp/853) and `systemd-timesyncd` (udp/123) may reach the network directly for DNS and NTP. Plain queries to other public resolvers are dropped for processes outside that exempt set *unless* they are redirected into dnsmasq first.
-* The kill switch drops direct egress from any process that is not the proxy core, except loopback, LAN addresses, DNS/NTP, DHCP and multicast. The core is exempted by the packet mark it sets on its own sockets (`routing-mark`, pinned in the merge template and asserted by `nftables-verify`), not by uid: unmarked root traffic is dropped or redirected like anything else, so a core that is alive but not capturing cannot leak root egress. Explicit exceptions keep DHCP (`dhcpcd`) and the tailnet working.
-* `gost-relay` is excluded from the `:33333` redirect so that its passthrough relay cannot dial itself; its egress is still subject to the kill switch, which drops it whenever proxy mode is loaded (a stale mode costs a moment of refused traffic, never a direct leak).
-* A probe is only satisfied by a listener that belongs to `clash-verge.service`: the check reads the listener's cgroup, which a local process cannot forge, so merely listening on `127.0.0.1:7897` cannot attract traffic. The "Clash is on" decision requires the **core** in that cgroup; a GUI process alone no longer counts.
-* The mihomo external controller is a world-writable unix socket that does not enforce a secret, so any process running as the login user can reconfigure the core — including setting a node to DIRECT. Accepted for a single-user desktop; the merge profile cannot override the controller settings.
-* The probes require both a domestic name (resolved DIRECT) and one carried by the proxy group, so a failed probe means the chain cannot carry traffic, not merely that one upstream node is down.
-* `systemctl stop nftables.service` no longer removes the firewall: the teardown is the same `nft -f` transaction as the rules, and the module's deletions file is empty, so the loaded rules stay until the next start replaces them. The manual reset remains `sudo nft flush ruleset` (which also removes mihomo's own table until the TUN restarts).
-* **Mode A needs the core stopped, not just the window closed.** In service mode (`programs.clash-verge.serviceMode = true`) the core is owned by the always-on `clash-verge.service` helper, so quitting the GUI leaves it running and the host stays in Mode B. Use `clash-off` (or `sudo systemctl stop clash-verge.service`) to stop it and reach Mode A, and `clash-on` to start it again.
-* Guests and VMs: forwarded traffic never traverses the output chain and carries no uid, so the kill switch cannot see it. While Clash runs, `proxymode_forward` refuses guest traffic that would leave an uplink for a public destination (portal/LAN/CGNAT stays reachable); with Clash closed the hotspot/VM rules apply as before. Guest traffic is never proxied — it is carried by the TUN or refused.
-* Mode-A posture (`my.hardening.*`): the hotspot AP is **off** by default (its accepts are source-subnet based and therefore spoofable while `wlo1` is a client — enable it deliberately to share the uplink), and the tailnet may reach only the ports listed in `my.hardening.tailnet{Tcp,Udp}Ports` instead of every wildcard listener. The listening-capability grant (`dumpcap`/`usbmon`) is off: capture needs `sudo dumpcap`. The wireless connection keeps NetworkManager's own MAC policy unless `my.hardening.wifi.clonedMacAddress` is set (for example `stable`).
-* `nftables-verify` only checks and never mutates state; repair is explicit and opt-in: `systemctl start nftables-verify-repair.service`.
-* Documented trade-offs: Mode A keeps a bounded, logged plaintext DHCP-resolver window (see DNS above); in Mode B, `100.64.0.0/10` (and the tailnet) stay directly reachable by design through the early `local4` accept; and the A→B window is irreducible (enforcement trails the core) but bounded by the supervisors' backstop interval.
-
-### Repository notes
+## Repository notes
 
 * `system/programs/ssh.nix` is not imported (`system/programs/default.nix`), so no sshd unit and no `:22` listener are deployed. Enabling it also requires the `tcp dport 22` rule in `system/config/network.nix`.
-* `gost` runs from its store path only (`gost-relay` uses absolute paths): it is not on the main system PATH and is no longer copied into the initrd.
 
 ---
 ## Usage
