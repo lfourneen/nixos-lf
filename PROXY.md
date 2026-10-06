@@ -70,7 +70,7 @@ Ports, uids, the packet mark (`6666` → `0x00001a0a`) and the TUN device name a
 | `isClashServiceOn` | `clash-verge-service` in the same cgroup | the unit is up (core may be absent) |
 | `tun_ready` | `Mihomo` device up + FIB `table 2022` + a route via it | the TUN is actually capturing |
 | `mode_direct` | `GET /configs` over the control socket | mihomo is in `direct` mode |
-| `health_ok` | (a) HTTP 204 from `http://www.gstatic.com/generate_204` through `:7897` (plain HTTP, 0-byte body, so it is cheap to run often); (b) mihomo's log for it is neither `using DIRECT` nor `using G[DIRECT]` (the group's selected member is DIRECT) **and** Clash passes a `/proxies/<group>/delay` test on the group the log names; (c) the fake-ip of a DIRECT name is reachable through the TUN | the core, the **selected** node of the effective group, and the TUN data path are all working |
+| `health_ok` | (a) HTTP 200/204 from `http://www.gstatic.com/generate_204` through `:7897` (plain HTTP, 0-byte body); (b) mihomo's log for it is neither `using DIRECT`/`using REJECT` nor a group member named `DIRECT`/`REJECT`, the effective group is resolved against `GET /proxies`, and Clash passes a `/proxies/<group>/delay` test on it; (c) the fake-ip of a DIRECT name is answered by the core through the TUN (a DNS query to the fake-ip, hijacked by `dns-hijack`) | the core, the **selected** node of the effective group, and the TUN data path are all working |
 
 | | **Mode A** | **Mode B** | **Mode C** |
 |---|---|---|---|
@@ -106,7 +106,7 @@ State files (all under `/run`):
 | Path | Content |
 |---|---|
 | `/run/proxy-mode/status` | `proxy` \| `blocked` \| `direct` \| `unenforced` |
-| `/run/proxy-mode/reason` | `no-tun` \| `direct-mode` \| `node` \| `core-gone` \| empty |
+| `/run/proxy-mode/reason` | block reason: `no-tun` \| `direct-mode` \| `core-gone` \| `reload`, or the health layer that failed: `obs` (route unobservable) \| `route` (DIRECT/REJECT) \| `node` (selected node) \| `tun` (TUN) \| empty |
 | `/run/proxy-mode/core-seen` | boot-scoped marker (crash detection) |
 | `/run/gost-relay/status`, `/run/dns-upstream/status`, `/run/dns-upstream/reason` | relay mode, resolver mode, why |
 
@@ -154,7 +154,7 @@ It never mutates state. A mismatch raises `netsec-alert@` (journal + `/run/netse
 * Only `unbound` (DoT, tcp/853) and `systemd-timesyncd` (udp/123) may reach the network directly for DNS/NTP; other plaintext resolver queries are dropped unless redirected into `dnsmasq` first.
 * The kill switch exempts the core by its mark, not by uid: unmarked root traffic is dropped or redirected like anything else. DHCP and tailnet have explicit exceptions.
 * Mode C keeps the core alive, so mihomo's own `DIRECT` traffic still leaves; loopback stays open for local IPC, but the app-facing proxy ports (`7897`/`33332`/`33333`) are refused for non-root in both TCP and UDP.
-* Health is decided by `health_ok`: a cheap `http://` request through the mixed port, a Clash `/proxies/<group>/delay` on the group that request used (Clash-centric — it tests the **selected** node of the effective group, not "any subscription node that is not timing out"), and a fake-ip TUN self-test. TUN off/on is event-driven via rtnetlink; `direct` mode and node health are poll-bound with a 5 s cap, so a node failure cuts within seconds. One caveat: the delay endpoint cannot address a group whose name contains whitespace, so such a group is treated as unhealthy.
+* Health is decided by `health_ok`: a cheap `http://` request through the mixed port, a Clash `/proxies/<group>/delay` on the group that request used (Clash-centric — it tests the **selected** node of the effective group, not "any subscription node that is not timing out"; the group is resolved against `GET /proxies`), and a TUN self-test (a DNS query to the fake-ip, answered by the core through the TUN — no third-party site whose port policy could fail a healthy host). TUN off/on is event-driven via rtnetlink; `direct` mode and node health are poll-bound with a 5 s cap, so a node failure cuts within seconds. One caveat: the delay endpoint cannot address a group whose name contains whitespace, so such a group is treated as unhealthy.
 * The DNS listener (`:1053`) must belong to `clash-verge.service` by cgroup (`nftables-verify`), and `gost-relay` makes the same cgroup check for the mixed port (`:7897`), so a local process cannot attract traffic by binding either; the "Clash is on" decision requires the core, not just the GUI.
 * The mihomo external controller is a world-writable socket with no secret — any login-user process can reconfigure the core, including setting a node to DIRECT. Accepted for a single-user desktop; the Merge template cannot override it.
 * `systemctl stop nftables.service` does not remove the firewall (teardown is the same `nft -f` transaction, deletions file empty); the manual reset is `sudo nft flush ruleset`.
@@ -233,11 +233,11 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 | `isClashServiceOn` | 同一 cgroup 内的 `clash-verge-service` | 单元在运行（内核可能不在） |
 | `tun_ready` | `Mihomo` 设备 UP + FIB `table 2022` + 一条经它的路由 | TUN 确实在抓流量 |
 | `mode_direct` | 经控制口 `GET /configs` | mihomo 处于 `direct` 模式 |
-| `health_ok` | (a) 经 `:7897` 请求 `http://www.gstatic.com/generate_204` 得 200/204（纯 HTTP、0 字节，可高频）；(b) mihomo 该连接日志既不是 `using DIRECT` 也不是 `using G[DIRECT]`（组的所选成员是 DIRECT）**且** Clash 对日志中那个组 `/proxies/<组>/delay` 通过；(c) 一个 DIRECT 域名的 fake-ip 能经 TUN 连通 | 核心、实际生效组的**所选节点**、TUN 数据路径三者都正常 |
+| `health_ok` | (a) 经 `:7897` 请求 `http://www.gstatic.com/generate_204` 得 200/204（纯 HTTP、0 字节）；(b) mihomo 该连接日志既不是 `using DIRECT`/`using REJECT`，成员也不是 `DIRECT`/`REJECT`，实际生效的组对 `GET /proxies` 解析后，Clash 对其 `/proxies/<组>/delay` 通过；(c) 一个 DIRECT 域名的 fake-ip 由核心经 TUN 应答（对该 fake-ip 发 DNS 查询，被 `dns-hijack` 接管） | 核心、实际生效组的**所选节点**、TUN 数据路径三者都正常 |
 
 | | **模式 A** | **模式 B** | **模式 C** |
 |---|---|---|---|
-| 进入条件 | 内核停止（`clash-off`），或本次开机从未见过内核 | 内核在、TUN 就绪、节点健康 | 内核在，且满足任一：TUN 未就绪；`direct` 模式；核心在 service 仍在时消失；连续两次 `node_ok` 失败（启动时有一轮宽限） |
+| 进入条件 | 内核停止（`clash-off`），或本次开机从未见过内核 | 内核在、TUN 就绪、节点健康 | 内核在，且满足任一：TUN 未就绪；`direct` 模式；核心在 service 仍在时消失；一次 `health_ok` 失败（`reason` 记录失败层：`obs`/`route`/`node`/`tun`） |
 | nftables | 片段为空 | 装载 `proxyModeRules` | 装载 `blockedModeRules` |
 | 出站 | 直连，无断网保护 | 每条主机流要么被代理要么被丢弃；访客被拒 | 仅 loopback、核心 mark、root 对面向 Clash 的端口（`7897` mixed、`1053` DNS、`33332`/`33333` gost）与 fake-ip 网段（TUN 自测）的访问存活；非 root 对这些端口的流量（TCP 与 UDP）以及所有非 loopback/非核心流量都被丢弃 |
 | DNS | `unbound` DoT | `mihomo` fake-ip | `unbound`（其 DoT 出站已被切断，DNS 随之停止） |
@@ -268,7 +268,7 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 | 路径 | 内容 |
 |---|---|
 | `/run/proxy-mode/status` | `proxy` \| `blocked` \| `direct` \| `unenforced` |
-| `/run/proxy-mode/reason` | `no-tun` \| `direct-mode` \| `node` \| `core-gone` \| 空 |
+| `/run/proxy-mode/reason` | 阻断原因：`no-tun` \| `direct-mode` \| `core-gone` \| `reload`，或健康门失败层：`obs`（路由不可观测）\| `route`（DIRECT/REJECT）\| `node`（所选节点）\| `tun`（TUN）\| 空 |
 | `/run/proxy-mode/core-seen` | 单次开机内的崩溃检测标记 |
 | `/run/gost-relay/status`、`/run/dns-upstream/status`、`/run/dns-upstream/reason` | 中继模式、解析器模式、原因 |
 
@@ -316,7 +316,7 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 * 只有 `unbound`（DoT，tcp/853）与 `systemd-timesyncd`（udp/123）可直接出网做 DNS/NTP；其它明文解析器查询除非先被重定向进 `dnsmasq`，否则被丢弃。
 * 断网保护按 mark 而非 uid 豁免核心：未打标的 root 流量与其它流量一样被丢弃或重定向。DHCP 与 tailnet 有显式例外。
 * 模式 C 保留核心存活，因此 mihomo 自身判为 `DIRECT` 的流量仍会离开；loopback 保留供本机 IPC 使用，但面向应用的代理端口（`7897`/`33332`/`33333`）对非 root 的 TCP 与 UDP 都被拒绝。
-* 健康检查由 `health_ok` 决定：经 mixed 端口的一次廉价 `http://` 请求、对日志中那个组做 Clash 的 `/proxies/<group>/delay`（Clash 本位——测的是实际生效组的**所选节点**，而不是"订阅里任意一个没超时的节点"），以及一条 fake-ip 的 TUN 自测。TUN 开关是事件驱动（rtnetlink）；`direct` 模式与节点健康是轮询，封顶 5 秒，因此节点故障会在数秒内切断。一个注意点：delay 端点无法寻址名字含空白字符的组，这类组会按不健康处理。
+* 健康检查由 `health_ok` 决定：经 mixed 端口的一次廉价 `http://` 请求、对日志中那个组做 Clash 的 `/proxies/<group>/delay`（Clash 本位——测的是实际生效组的**所选节点**，而不是"订阅里任意一个没超时的节点"；组名会先对 `GET /proxies` 解析），以及一条 TUN 自测（对该 fake-ip 发 DNS 查询，由核心经 TUN 应答——不依赖任何第三方站点的端口策略）。TUN 开关是事件驱动（rtnetlink）；`direct` 模式与节点健康是轮询，封顶 5 秒，因此节点故障会在数秒内切断。一个注意点：delay 端点无法寻址名字含空白字符的组，这类组会按不健康处理。
 * DNS 监听（`:1053`）须按 cgroup 属于 `clash-verge.service`（`nftables-verify` 校验），`gost-relay` 对 mixed 端口（`:7897`）做同样的 cgroup 校验，因此本机进程无法靠绑定两者中的任一引走流量；“Clash 在运行”要求核心，而非仅 GUI。
 * mihomo 外部控制口是全局可写、无 secret 的 socket——登录用户的任意进程都能重配内核，包括把节点置为 DIRECT。单用户桌面下接受；Merge 模板无法覆写。
 * `systemctl stop nftables.service` 不会移除防火墙（拆除与装载是同一个 `nft -f` 事务，deletions 文件为空）；手工复位是 `sudo nft flush ruleset`。
