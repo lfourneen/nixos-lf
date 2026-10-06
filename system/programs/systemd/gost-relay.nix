@@ -240,15 +240,20 @@ in
 
           # Proxy mode owns the redirect + killswitch; with it off gost is a plain
           # passthrough (real IP, nothing loaded), which is what "direct" means.
-          if ${pkgs.coreutils}/bin/cat /run/proxy-mode/status 2>/dev/null | ${pkgs.gnugrep}/bin/grep -q '^proxy$'; then
-            proxy_mode=1
-          else
-            proxy_mode=0
-          fi
+          # `blocked` is proxy-mode's strict blackhole: offer nothing, not even a
+          # passthrough, so env-proxy consumers cannot slip out directly.
+          status="$(${pkgs.coreutils}/bin/cat /run/proxy-mode/status 2>/dev/null || true)"
+          proxy_mode=0
+          blocked=0
+          case "$status" in
+            proxy) proxy_mode=1 ;;
+            blocked) blocked=1 ;;
+          esac
 
           core_id=0
           core_e2e=0
           want="direct"
+          [ "$blocked" = 1 ] && want="closed"
           if [ "$proxy_mode" = 1 ]; then
             # Two signals: :${toString port.mihomoMixed} must be clash-verge's (identity) and answer a real
             # proxied request twice in a row; staying in proxy only needs identity.
