@@ -90,6 +90,7 @@ let
     IP=${pkgs.iproute2}/bin/ip
     SYSTEMCTL=${pkgs.systemd}/bin/systemctl
     GREP=${pkgs.gnugrep}/bin/grep
+    SED=${pkgs.gnused}/bin/sed
     CAT=${pkgs.coreutils}/bin/cat
     DATE=${pkgs.coreutils}/bin/date
     TIMEOUT=${pkgs.coreutils}/bin/timeout
@@ -265,7 +266,7 @@ let
         case "$line" in
           *"using DIRECT"*) log "health: (a) probe routed DIRECT"; return 1 ;;
         esac
-        group=$(printf '%s' "$line" | $SED -E 's/.*using ([^[]*)\[.*/\1/p')
+        group=$(printf '%s' "$line" | $SED -n -E 's/.*using ([^[]*)\[.*/\1/p')
         if [ -n "$group" ]; then
           # (2) Clash tests the selected node of that group directly.
           delay=$($TIMEOUT 3 $CURL -s --unix-socket "$MIHOMO_SOCK" \
@@ -494,10 +495,12 @@ in
         # Sandboxing. It shells out to nft (netlink), systemctl (D-Bus), ip and
         # curl (the node probe), and reads cgroupfs, so ProtectKernelTunables /
         # ProtectControlGroups stay off and AF_NETLINK / AF_INET are allowed;
-        # everything else is narrowed.
+        # everything else is narrowed. ProtectHome is deliberately OFF: the
+        # mihomo control socket lives under /run/user/<uid>/, which ProtectHome
+        # would make inaccessible, breaking the log capture, /configs and the
+        # node delay call.
         NoNewPrivileges = true;
         ProtectSystem = "strict";
-        ProtectHome = true;
         PrivateTmp = true;
         ProtectKernelModules = true;
         ProtectKernelLogs = true;
