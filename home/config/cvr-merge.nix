@@ -8,6 +8,10 @@ let
   # device name or TUN traffic stops matching them.
   tunDev = osConfig.my.proxy.tunDev;
 
+  # Fake-ip pool, pinned from the system option so the template and
+  # nftables-verify cannot drift.
+  fakeIpRange = osConfig.my.proxy.fakeIpRange;
+
   m = osConfig.my.machine;
   port = m.ports;
   # Portal/LAN/CGNAT bypass the TUN; same ranges as the firewall.
@@ -76,7 +80,37 @@ in
         enable: true
         listen: 127.0.0.1:${toString port.mihomoDns}
         ipv6: false
-        enhanced-mode: redir-host
+        # fake-ip only beside a TUN: the TUN is what maps an answer back to its
+        # domain. With no TUN (tunMode=false) nothing does, so a fake address
+        # would blackhole every name -- keep redir-host there. dns-upstream only
+        # points the client resolver at mihomo while the core runs, so this is
+        # "fake-ip whenever Clash is on" without any runtime switch.
+        enhanced-mode: ${if tunMode then "fake-ip" else "redir-host"}
+        fake-ip-range: ${fakeIpRange}
+        # Always-resolve names. The TUN route-exclude covers ranges, not names,
+        # so this filter is what keeps an ISP portal, LAN host or captive probe
+        # working by name. This list replaces the subscription's (merge wins by
+        # key), so it must stay complete on its own.
+        fake-ip-filter:
+          - '*.lan'
+          - '*.local'
+          - '*.localhost'
+          - '*.test'
+          - '*.home.arpa'
+          - '*.internal'
+          - localhost.ptlogin2.qq.com
+          - '+.stun.*.*'
+          - '+.stun.*.*.*'
+          - '+.stun.*.*.*.*'
+          - lens.l.google.com
+          - '+.srv.nintendo.net'
+          - '+.stun.playstation.net'
+          - '+.xboxlive.com'
+          - '+.msftncsi.com'
+          - '+.msftconnecttest.com'
+          - captive.apple.com
+          - connectivitycheck.gstatic.com
+          - connectivitycheck.android.com
         use-hosts: true
         respect-rules: true
         # Encrypted bootstrap (both are IP literals, so no bootstrap recursion).
@@ -111,8 +145,11 @@ in
           '+.chatgpt.com': [ https://1.1.1.1/dns-query ]
           '+.anthropic.com': [ https://1.1.1.1/dns-query ]
 
-      # redir-host loses the domain once the client dials a real IP; sniffing
-      # restores it so DOMAIN/GEOSITE rules match TUN traffic.
+      # Sniffing still matters with fake-ip: it recovers the domain for flows
+      # that arrive as a bare address (filtered/LAN names, pure-IP traffic), and
+      # it feeds QUIC where the TLS hello is unreadable. force-dns-mapping keeps
+      # the sniffed name in sync with the fake-ip mapping so DOMAIN/GEOSITE rules
+      # match TUN traffic.
       sniffer:
         enable: true
         force-dns-mapping: true
