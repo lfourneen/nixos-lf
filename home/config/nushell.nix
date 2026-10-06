@@ -212,9 +212,11 @@ in
       } catch { false })
       # One real request through gost; 204 is the only success.
       let probe = (try {
-        curl -s -o /dev/null -m 5 -x http://127.0.0.1:${gostHttp} -w '%{http_code}' https://www.gstatic.com/generate_204 | str trim
+        curl -s -o /dev/null -m 2 -x http://127.0.0.1:${gostHttp} -w '%{http_code}' https://www.gstatic.com/generate_204 | str trim
       } catch { "000" })
-      let ok = (($g == "proxy") and $listener and ($probe == "204"))
+      # Green only when the enforcement mode itself is `proxy`: a healthy-looking
+      # gost with mode `blocked`/`unenforced` must not read as OK.
+      let ok = (($p == "proxy") and ($g == "proxy") and $listener and ($probe == "204"))
       let color = if $ok { "green" } else { "red" }
       let r = (if ($why | is-empty) { "-" } else { $why })
       print $"(ansi $color)mode: ($p) ($r)(ansi reset)  egress: ($g)  DNS: ($d)  listener: (if $listener { 'up' } else { 'down' })  probe: ($probe)"

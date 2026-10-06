@@ -248,6 +248,7 @@ let
     #  (3) a fake-ip answer is reachable through the TUN, proving the TUN really
     #      carries packets (shape-only checks cannot see a stuck sing-tun).
     health_ok() {
+      health_gate=""
       : > "$CAPTURE" 2>/dev/null || true
       # -N flushes each line as it arrives, so poll for the connection line and
       # stop early -- fast, and it does not race the node dial. --max-time caps
@@ -264,31 +265,35 @@ let
       done
       kill "$cap" 2>/dev/null || true
       wait "$cap" 2>/dev/null || true
+      # 200/204 accepted: the code only shows the core answered; the log line
+      # (required below) is what proves the flow actually went through a proxy.
       case "$code" in
         200|204) ;;
-        *) log "health: (a) probe http code=[$code]"; return 1 ;;
+        *) health_gate=a; log "health: (a) probe http code=[$code]"; return 1 ;;
       esac
-      # Refuse when the route could not be observed: 200 alone does not prove the
-      # flow went through a proxy (a `rule` profile could have fetched DIRECT).
-      [ -n "$line" ] || { log "health: (a) no log line for $PROBE_HOST"; return 1; }
+      # Refuse when the route could not be observed: the code alone does not
+      # prove the flow went through a proxy (a `rule` profile could fetch DIRECT).
+      [ -n "$line" ] || { health_gate=a; log "health: (a) no log line for $PROBE_HOST"; return 1; }
+      # `using DIRECT` = routed DIRECT; `using G[DIRECT]` = the group's selected
+      # member is DIRECT -- both mean the flow did not go through a real node.
       case "$line" in
-        *"using DIRECT"*) log "health: (a) probe routed DIRECT"; return 1 ;;
+        *"using DIRECT"*|*"[DIRECT]"*) health_gate=a; log "health: (a) probe routed DIRECT"; return 1 ;;
       esac
       group=$(printf '%s' "$line" | $SED -n -E 's/.*using ([^[]*)\[.*/\1/p')
-      [ -n "$group" ] || { log "health: (a) no group in: $line"; return 1; }
+      [ -n "$group" ] || { health_gate=a; log "health: (a) no group in: $line"; return 1; }
       # (2) Clash tests the selected node of that group directly.
       delay=$($TIMEOUT 3 $CURL -s --unix-socket "$MIHOMO_SOCK" \
         "http://localhost/proxies/$group/delay?url=$PROBE_URL&timeout=2000" 2>/dev/null \
         | $SED -n 's/.*"delay":\([0-9][0-9]*\).*/\1/p')
-      [ -n "$delay" ] || { log "health: (b) delay empty for group [$group]"; return 1; }
+      [ -n "$delay" ] || { health_gate=b; log "health: (b) delay empty for group [$group]"; return 1; }
       # (3) the TUN carries packets: dial the fake-ip of a DIRECT name. Only in
       # the TUN model -- the plain HTTP-proxy model has no fake-ip to dial.
       if [ "$REQUIRE_TUN" = "1" ]; then
         fip=$($TIMEOUT 2 $DIG +short @127.0.0.1 -p "$MIHOMO_DNS" "$TUN_PROBE_NAME" A 2>/dev/null \
           | $GREP -E "^$FAKE_IP_PREFIX\." | head -1)
-        [ -n "$fip" ] || { log "health: (c) no fake-ip for $TUN_PROBE_NAME"; return 1; }
+        [ -n "$fip" ] || { health_gate=c; log "health: (c) no fake-ip for $TUN_PROBE_NAME"; return 1; }
         $TIMEOUT 3 $CURL -s -o /dev/null --connect-timeout 2 "http://$fip/" 2>/dev/null \
-          || { log "health: (c) TUN self-test failed for $fip"; return 1; }
+          || { health_gate=c; log "health: (c) TUN self-test failed for $fip"; return 1; }
       fi
       return 0
     }
@@ -324,6 +329,13 @@ let
         # vanished" into a block instead of a silent drop to Mode A.
         : > "$MARKER" 2>/dev/null || true
         core_gone_fails=0
+        # Enforcement vanished (a base-ruleset reload destroys lf_filter): fail
+        # closed at once, before the health gate, so the host is never left with
+        # no guard, no killswitch and no :33333 redirect while the gate decides.
+        # The gate below then upgrades to proxy if the path is healthy.
+        if ! rules_present; then
+          if rules_on_blocked; then mode=blocked; reason="reload"; fi
+        fi
         # tun_ok is 1 unless we require a TUN and it is not ready. In the plain
         # HTTP-proxy model (REQUIRE_TUN=0) a missing TUN is not a failure.
         tun_ok=1
@@ -339,11 +351,12 @@ let
             # The core keeps its egress in blocked, so this runs every pass and
             # the node is picked up the moment it recovers. One failure cuts
             # immediately (the probe is http/0-byte, so it is cheap to run often
-            # and a slow start only costs a short blocked window).
+            # and a slow start only costs a short blocked window). The reason
+            # names the failing layer (a/b/c) for `proxy-status`.
             if health_ok; then
               want=proxy; want_reason=""
             else
-              want=blocked; want_reason="node"
+              want=blocked; want_reason="node:$health_gate"
             fi
           fi
         else
@@ -533,6 +546,30 @@ in
         # socket recreate) fires the coordinator.
         PathChanged = [ mihomoSock mihomoDir ];
         Unit = "proxy-net-wake.service";
+      };
+    };
+
+    # Self-heal for the event layer: if the .path ever ends up not armed (a
+    # future start-limit, or a manual stop), re-arm it, so the event layer can
+    # never stay silently dead (audit P1). The loops' backstop polling keeps the
+    # host enforcing even while the .path is down.
+    systemd.services.proxy-net-watch-recover = {
+      description = "Re-arm the proxy event .path if it is not active";
+      serviceConfig = { Type = "oneshot"; };
+      script = ''
+        if ! ${pkgs.systemd}/bin/systemctl is-active --quiet proxy-net-watch.path; then
+          ${pkgs.systemd}/bin/systemctl reset-failed proxy-net-watch.path 2>/dev/null || true
+          ${pkgs.systemd}/bin/systemctl start proxy-net-watch.path 2>/dev/null || true
+        fi
+      '';
+    };
+    systemd.timers.proxy-net-watch-recover = {
+      description = "Check the proxy event .path every minute";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "1min";
+        OnUnitActiveSec = "1min";
+        AccuracySec = "10s";
       };
     };
 
