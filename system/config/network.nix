@@ -56,6 +56,9 @@ let
   # TUN device name; home/cvr-merge.nix pins the same value via osConfig so the
   # firewall rules and the clash Merge template can't drift apart.
   tunDev = config.my.proxy.tunDev;
+  # Network form of the fake-ip pool; the Mode-C guard exempts root to it so
+  # proxy-mode's own TUN self-test can run while blocked.
+  fakeIpNet = config.my.proxy.fakeIpNet;
 
   # Force QUIC-heavy apps off UDP/443. Non-TUN only (under TUN it breaks
   # QUIC sites); kept for the fallback model.
@@ -110,6 +113,9 @@ let
     destroy table ip lf_proxymode_nat
     destroy table ip6 lf_proxymode_nat
 
+    # Leaving Mode C: the guard must be empty or its drop would refuse everything.
+    flush chain inet lf_filter lf_blocked_guard
+
     flush chain inet lf_filter proxymode_drops
     # The proxy core marks its own outbound sockets (routing-mark): allow it, it
     # must reach the nodes directly.
@@ -150,6 +156,53 @@ let
         meta mark != ${coreMark} meta skuid != ${redirectExemptUidSet} ip6 daddr != { ${redirectExempt6} } tcp dport != { 53, ${toString port.dot} } counter redirect to :${toString port.gostRedirect}
       }
     }
+  '';
+
+  # Fragment proxy-mode.service applies while Clash runs but its path is not the
+  # strict TUN one we require: the TUN is missing/unready, mihomo is in `direct`
+  # mode, or the node is dead. It fills the first-evaluated `lf_blocked_guard`
+  # chain with a hard cut that keeps ONLY loopback and the core's marked sockets:
+  # the core stays reachable so it can recover a node or be driven from the GUI,
+  # loopback keeps local IPC working, and every other egress -- LAN, DHCP, DNS,
+  # NTP, tailnet, all other uids -- is dropped. Unlike the normal refusal there
+  # is no core-mark exemption question here: only the core is exempt, so a
+  # TUN-less or DIRECT-mode core cannot leak from any other process, and the
+  # redirect is torn down so non-TUN flows are refused, not relayed.
+  blockedModeRules = lib.optionalString proxyKillSwitch ''
+    # Tear the normal fragment down inside the same load: no stale redirect and
+    # no stale drop can survive next to the guard.
+    destroy table ip lf_proxymode_nat
+    destroy table ip6 lf_proxymode_nat
+    flush chain inet lf_filter proxymode_drops
+    flush chain inet lf_filter proxymode_tail
+    flush chain inet lf_filter proxymode_forward
+
+    flush chain inet lf_filter lf_blocked_guard
+    # Every Clash-facing port on loopback is refused for non-root, TCP and UDP,
+    # across all of 127.0.0.0/8 and ::1: mihomo's mixed port (bound TCP and UDP)
+    # and DNS listener, plus gost's HTTP + redirect listeners. Loopback stays up
+    # for local IPC, so without this an application could dial the core or gost
+    # (or use the core as a resolver) and be proxied straight through Mode C.
+    # Root is allowed because proxy-mode's own node probe dials the mixed port.
+    add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip daddr 127.0.0.0/8 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoDns}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
+    add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip6 daddr ::1 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoDns}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
+    # Local IPC (and the local resolver) keeps working.
+    add rule inet lf_filter lf_blocked_guard ip daddr 127.0.0.0/8 accept
+    add rule inet lf_filter lf_blocked_guard ip6 daddr ::1 accept
+    # The core keeps its egress so it can reach its nodes and recover.
+    add rule inet lf_filter lf_blocked_guard meta mark ${coreMark} accept
+    # Root may reach the fake-ip network: it is only routed via the TUN, and
+    # proxy-mode's own TUN self-test dials it, so the self-test still runs while
+    # blocked.
+    add rule inet lf_filter lf_blocked_guard meta skuid 0 ip daddr ${fakeIpNet} accept
+    # Everything else, on any interface, to any other destination: gone.
+    add rule inet lf_filter lf_blocked_guard counter drop
+
+    # Guests/VMs are forwarded traffic: the output guard never sees them, so they
+    # are refused public destinations here (LAN/portal stays reachable; the
+    # forward chain's early `jump proxymode_forward` runs before its accepts).
+    add rule inet lf_filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}", "${m.waydroidBridge}" } oifname { "${wired}", "${wireless}" } ip daddr != { ${local4} } counter drop
+    add rule inet lf_filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}", "${m.waydroidBridge}" } oifname { "${wired}", "${wireless}" } ip6 daddr != { ${local6} } counter drop
   '';
 
   # TPROXY bridges whose egress goes through mihomo (tproxy-port, see
@@ -193,6 +246,7 @@ in
 
   # The mode-dependent rules are applied by proxy-mode.service (see proxy-mode.nix).
   my.proxy.proxyModeRules = proxyModeRules;
+  my.proxy.blockedModeRules = blockedModeRules;
 
   # Pin NIC names so they survive kernel naming changes. Wired matches by
   # hardware MAC only: Path can change if PCIe bus numbers shift.
@@ -549,9 +603,17 @@ in
         chain proxymode_forward { }
         chain proxymode_drops { }
         chain proxymode_tail { }
+        # Filled by proxy-mode.service only in the `blocked` state (see below).
+        chain lf_blocked_guard { }
 
         chain output {
           type filter hook output priority 0; policy accept;
+
+          # Mode-C guard, evaluated before every accept below: filled only while
+          # proxy-mode records `blocked`, it keeps loopback and the core's marked
+          # sockets and drops all other egress. Empty in every other mode (a jump
+          # to an empty chain is a no-op), so the rest of the chain stays in charge.
+          jump lf_blocked_guard
 
           ip daddr { ${local4} } accept
           ip6 daddr { ${local6} } accept

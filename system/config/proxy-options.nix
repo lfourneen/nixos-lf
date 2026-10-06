@@ -28,5 +28,14 @@
     default = "198.18.0.1/16";
     description = "Clash fake-ip pool (RFC 2544 benchmarking range); used with tunMode and asserted by nftables-verify.";
   };
+
+  # Network form of the same pool. The Mode-C guard lets root reach it (the TUN
+  # is the only route there) so proxy-mode's own TUN self-test can run while
+  # blocked; root can already use the mixed port, so this adds no capability.
+  options.my.proxy.fakeIpNet = lib.mkOption {
+    type = lib.types.str;
+    default = "198.18.0.0/16";
+    description = "Network form of the fake-ip pool; the Mode-C guard exempts root to it for the TUN self-test.";
+  };
 }
 

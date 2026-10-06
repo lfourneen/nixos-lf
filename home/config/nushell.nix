@@ -204,6 +204,8 @@ in
       }
       let g = (do $read "/run/gost-relay/status")
       let d = (do $read "/run/dns-upstream/status")
+      let p = (do $read "/run/proxy-mode/status")
+      let why = (do $read "/run/proxy-mode/reason")
       # ${gostHttp} = gost's HTTP listener (the port every proxy-aware consumer uses).
       let listener = (try {
         ss -H -tln | lines | any {|l| $l | str contains "127.0.0.1:${gostHttp}" }
@@ -214,7 +216,8 @@ in
       } catch { "000" })
       let ok = (($g == "proxy") and $listener and ($probe == "204"))
       let color = if $ok { "green" } else { "red" }
-      print $"(ansi $color)egress: ($g)(ansi reset)  DNS: ($d)  listener: (if $listener { 'up' } else { 'down' })  probe: ($probe)"
+      let r = (if ($why | is-empty) { "-" } else { $why })
+      print $"(ansi $color)mode: ($p) ($r)(ansi reset)  egress: ($g)  DNS: ($d)  listener: (if $listener { 'up' } else { 'down' })  probe: ($probe)"
     }
 
     # True while the Clash Verge GUI runs in the user session. The root

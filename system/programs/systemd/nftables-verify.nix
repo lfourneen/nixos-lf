@@ -68,6 +68,7 @@ in
       MIHOMO_DNS=${toString config.my.machine.ports.mihomoDns}
       CLIENT_DNS=${toString config.my.machine.ports.dnsmasq}
       FAKEIP=${if fakeIpEnabled then "1" else "0"}
+      REQUIRE_TUN=${if fakeIpEnabled then "1" else "0"}
       FAKE_IP_RANGE=${fakeIpRange}
       FAKE_IP_PREFIX=${fakeIpPrefix}
       UNBOUND_PORT=${toString config.my.machine.ports.unbound}
@@ -170,11 +171,11 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
       mode_now=""
       for _ in 1 2 3 4 5 6 7 8; do
         mode_now=$($CAT "$STATUS" 2>/dev/null | $SED -E 's/[[:space:]]+//g' || echo unknown)
-        if [ "$mode_now" = proxy ] && ! $IP link show dev "$TUNDEV" >/dev/null 2>&1; then
+        if [ "$REQUIRE_TUN" = "1" ] && [ "$mode_now" = proxy ] && ! $IP link show dev "$TUNDEV" >/dev/null 2>&1; then
           sleep 1
           continue
         fi
-        if [ "$mode_now" = direct ] && $IP link show dev "$TUNDEV" >/dev/null 2>&1; then
+        if [ "$REQUIRE_TUN" = "1" ] && [ "$mode_now" = direct ] && $IP link show dev "$TUNDEV" >/dev/null 2>&1; then
           sleep 1
           continue
         fi
@@ -182,7 +183,7 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
       done
 
       # --- static skeleton ---
-      for c in input output forward proxymode_drops proxymode_tail proxymode_forward; do
+      for c in input output forward proxymode_drops proxymode_tail proxymode_forward lf_blocked_guard; do
         $NFT list chain inet lf_filter "$c" >/dev/null 2>&1 \
           || fail "inet lf_filter $c is missing: the static ruleset did not load completely"
       done
@@ -246,16 +247,20 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
         proxy)
           [ "$core" = on ] \
             || fail "/run/proxy-mode/status says proxy but no Clash core is in clash-verge.service's cgroup"
-          $IP link show dev "$TUNDEV" >/dev/null 2>&1 \
-            || fail "proxy mode is recorded but the $TUNDEV device does not exist: nothing is captured"
-          $IP -o link show dev "$TUNDEV" | $GREP -q ',UP' \
-            || fail "the $TUNDEV device exists but is not up"
-          $NFT list tables | $GREP -qx 'table inet mihomo' \
-            || fail "mihomo's own inet table is missing: its auto-redirect and dns-hijack rules are gone until the TUN restarts"
-          $IP rule show | $GREP -q 'lookup 2022' \
-            || fail "no FIB rule selects sing-tun's table 2022: the routing half of the capture is gone"
-          $IP route show table 2022 | $GREP -q "dev $TUNDEV" \
-            || fail "table 2022 carries no route via $TUNDEV"
+          # The TUN half is only required in the TUN model; the plain HTTP-proxy
+          # model (my.proxy.tunMode=false) deliberately has none.
+          if [ "$REQUIRE_TUN" = "1" ]; then
+            $IP link show dev "$TUNDEV" >/dev/null 2>&1 \
+              || fail "proxy mode is recorded but the $TUNDEV device does not exist: nothing is captured"
+            $IP -o link show dev "$TUNDEV" | $GREP -q ',UP' \
+              || fail "the $TUNDEV device exists but is not up"
+            $NFT list tables | $GREP -qx 'table inet mihomo' \
+              || fail "mihomo's own inet table is missing: its auto-redirect and dns-hijack rules are gone until the TUN restarts"
+            $IP rule show | $GREP -q 'lookup 2022' \
+              || fail "no FIB rule selects sing-tun's table 2022: the routing half of the capture is gone"
+            $IP route show table 2022 | $GREP -q "dev $TUNDEV" \
+              || fail "table 2022 carries no route via $TUNDEV"
+          fi
           $SS -lntH | $GREP -q "127\.0\.0\.1:$GOST_REDIRECT" \
             || fail "nothing listens on gost's :$GOST_REDIRECT: flows the TUN does not carry have no path"
           $SS -lntH | $GREP -q "127\.0\.0\.1:$MIHOMO_MIXED" \
@@ -278,6 +283,12 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
           cmp_rules "chain proxymode_forward" "$(expected_chain proxymode_forward)" "$(live_chain proxymode_forward)"
           cmp_rules "table ip lf_proxymode_nat" "$(expected_table ip lf_proxymode_nat)" "$(live_nat ip lf_proxymode_nat)"
           cmp_rules "table ip6 lf_proxymode_nat" "$(expected_table ip6 lf_proxymode_nat)" "$(live_nat ip6 lf_proxymode_nat)"
+
+          # The Mode-C guard must be empty in proxy mode, or its terminal drop
+          # would cut egress while the proxy fragment claims to carry it.
+          if $NFT list chain inet lf_filter lf_blocked_guard 2>/dev/null | $GREP -q 'drop'; then
+            fail "proxy mode is recorded but lf_blocked_guard still drops: proxy traffic would be cut"
+          fi
 
           # What the client resolver must look like in proxy mode depends on the
           # template's enhanced-mode. Judge only once dns-upstream has actually
@@ -333,11 +344,39 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
             fi
           fi
           ;;
+        blocked)
+          [ "$core" = on ] \
+            || fail "/run/proxy-mode/status says blocked but no Clash core is in clash-verge.service's cgroup"
+          # Mode C is carried by lf_blocked_guard: loopback and the core's mark
+          # survive, everything else is dropped. The normal fragment and the
+          # redirect must be torn down so nothing lingers beside the guard.
+          guard=$($NFT list chain inet lf_filter lf_blocked_guard 2>/dev/null || true)
+          $GREP -q "127\.0\.0\.0/8 accept" <<<"$guard" \
+            || fail "blocked mode is recorded but lf_blocked_guard keeps no loopback accept"
+          $GREP -q "meta mark $MIHOMO_MARK accept" <<<"$guard" \
+            || fail "blocked mode is recorded but lf_blocked_guard keeps no core-mark accept: the core cannot recover a node"
+          $GREP -q "skuid != 0" <<<"$guard" \
+            || fail "blocked mode is recorded but lf_blocked_guard does not refuse non-root proxy ports on loopback: an app could bypass the cut through 7897/33332/33333"
+          $GREP -q " drop" <<<"$guard" \
+            || fail "blocked mode is recorded but lf_blocked_guard has no terminal drop: nothing is cut"
+          if $NFT list table ip lf_proxymode_nat >/dev/null 2>&1; then
+            fail "blocked mode is recorded but the IPv4 redirect table is still loaded"
+          fi
+          if $NFT list table ip6 lf_proxymode_nat >/dev/null 2>&1; then
+            fail "blocked mode is recorded but the IPv6 redirect table is still loaded"
+          fi
+          drops=$(live_chain proxymode_drops)
+          [ -z "$drops" ] \
+            || fail "blocked mode is recorded but proxymode_drops still holds rules: the normal fragment was not torn down"
+          fwd=$(live_chain proxymode_forward)
+          [ -n "$fwd" ] \
+            || fail "blocked mode is recorded but proxymode_forward is empty: guest/VM egress is not refused"
+          ;;
         unenforced)
           fail "proxy-mode recorded 'unenforced': Clash is running but the enforcement fragment is not loaded"
           ;;
         direct)
-          for c in proxymode_drops proxymode_tail proxymode_forward; do
+          for c in proxymode_drops proxymode_tail proxymode_forward lf_blocked_guard; do
             n=$(live_chain "$c" | $GREP -c . || true)
             [ "$n" = 0 ] || fail "direct mode is recorded, but inet lf_filter $c still holds $n rule(s)"
           done
@@ -347,7 +386,7 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
           if $NFT list table ip6 lf_proxymode_nat >/dev/null 2>&1; then
             fail "direct mode is recorded, but the IPv6 redirect table is still loaded"
           fi
-          if $IP link show dev "$TUNDEV" >/dev/null 2>&1; then
+          if [ "$REQUIRE_TUN" = "1" ] && $IP link show dev "$TUNDEV" >/dev/null 2>&1; then
             fail "direct mode is recorded but the $TUNDEV device exists: the GUI's tun.enable is overriding my.proxy.tunMode"
           fi
           ;;

@@ -163,6 +163,11 @@ in
         dns_ok() {
           # baidu is DIRECT-policy, gstatic goes through the node (respect-rules):
           # requiring both proves the core and the node, not just a live core.
+          # NOTE: with fake-ip (the TUN template), mihomo synthesizes an answer
+          # locally, so an unreachable upstream no longer makes this probe fail --
+          # node death is detected by proxy-mode's route-aware probe instead. This
+          # still catches a hung/dead mihomo DNS handler (no answer at all), which
+          # is what keeps the DoT fallback below meaningful.
           for name in www.baidu.com www.gstatic.com; do
             ${pkgs.dnsutils}/bin/dig +time=2 +tries=1 +short @127.0.0.1 -p ${toString port.mihomoDns} \
               "$name" 2>/dev/null | ${pkgs.gnugrep}/bin/grep -q . || return 1
@@ -182,6 +187,14 @@ in
 
         nm_connectivity() {
           ${pkgs.networkmanager}/bin/nmcli -t networking connectivity 2>/dev/null || echo unknown
+        }
+
+        # The client resolver belongs on mihomo only while proxy-mode records the
+        # strict `proxy` state. In `blocked` (TUN missing, or node down) and in
+        # `direct` it must not: fake-ip would hand out addresses with no route, and
+        # mihomo's own upstreams are refused anyway.
+        proxy_mode_ok() {
+          ${pkgs.gnugrep}/bin/grep -q '^proxy$' /run/proxy-mode/status 2>/dev/null
         }
 
         # ---- Mode A (Clash closed) --------------------------------------------
@@ -265,8 +278,10 @@ in
         last_ident=""
 
         while true; do
-          if ! $CLASH_ON || ! dns_listener_up; then
-            # Mode A. A change of uplink identity opens the bootstrap window.
+          if ! $CLASH_ON || ! dns_listener_up || ! proxy_mode_ok; then
+            # Mode A, or Clash is on but proxy-mode is `blocked`/`direct`: use the
+            # encrypted resolver, because mihomo is not the path the host trusts.
+            # A change of uplink identity opens the bootstrap window.
             ident="$(dhcp_identity)"
             if [ "$ident" != "$last_ident" ]; then
               last_ident="$ident"
