@@ -5,8 +5,9 @@
 #
 # Copied:  home/ (incl. wallpapers), overlays/ (incl. local-apps/*.AppImage),
 #          system/ (incl. secrets/secrets.yaml), flake.nix, flake.lock, .sops.yaml
-# Skipped: .git/, .gitignore, scripts/, *.md (GitHub-only READMEs), LICENSE,
-#          and junk (result*, *.swp, *~, *.bak, .DS_Store, .direnv/).
+# Skipped: .git/, .gitignore, scripts/, *.md (GitHub-only READMEs, except
+#          system/programs/hermes-skills/** which the Hermes build needs),
+#          LICENSE, and junk (result*, *.swp, *~, *.bak, .DS_Store, .direnv/).
 # IMPORTANT: do NOT filter by .gitignore — that would drop the AppImage and
 # secrets.yaml and break the build.
 #
@@ -80,6 +81,10 @@ excludes=(
   --exclude '.git/' --exclude '.direnv/'
   --exclude 'result' --exclude 'result-*'
   --exclude '*.swp' --exclude '*~' --exclude '*.bak' --exclude '.DS_Store'
+  # Hermes skills are *.md and the build needs them: re-include before the *.md
+  # cut. rsync uses the first matching rule, so these must precede --exclude.
+  --include 'programs/hermes-skills/'
+  --include 'programs/hermes-skills/**'
   --exclude '*.md'
 )
 
