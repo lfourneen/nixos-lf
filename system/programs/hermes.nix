@@ -44,6 +44,14 @@ let
     + lib.concatStringsSep "," config.my.machine.privateV4
     + ",192.168.1.1,*.local";
 
+  # Agent Mail (Agently / Tencent QQ Mail). The package and its `agently-check`
+  # upstream-drift checker live in agently-cli.nix; the skill beside it is
+  # installed into HERMES_HOME/skills/. Credentials land in /var/lib/hermes
+  # (persisted), so one interactive `agently-cli auth login` as the hermes user
+  # covers the service too.
+  agently-cli = pkgs.callPackage ./agently-cli.nix { };
+  agently-check = agently-cli.passthru.check;
+
 in
 {
   services.hermes-agent = {
@@ -69,6 +77,10 @@ in
     hermesHomeFiles = {
       # Nix owns SOUL.md; memories/USER.md is Hermes runtime state.
       "SOUL.md" = soulMdFile;
+
+      # Agently Mail skill: HERMES_HOME/skills/<name>/SKILL.md is indexed into
+      # the system prompt and loaded on demand.
+      "skills/agently-mail/SKILL.md" = ./hermes-skills/agently-mail/SKILL.md;
 
       # SKILL example. Skills are indexed into the system prompt (name +
       # description only) and their body loads on demand via skill_view.
@@ -284,8 +296,17 @@ in
 
       # Runtime
       nodejs
+
+      # Agent Mail (Agently / Tencent QQ Mail)
+      agently-cli
+      agently-check
     ];
   };
+
+  environment.systemPackages = [ 
+    agently-cli 
+    agently-check 
+  ];
 
   systemd.tmpfiles.rules = [
     "d /var/lib/hermes 0770 hermes hermes - -"
