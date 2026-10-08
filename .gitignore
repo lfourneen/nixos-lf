@@ -13,3 +13,9 @@ audit/
 # Nix
 .nix-cache/
 
+# IDE project files (CLion/JetBrains): keep local, never tracked. If CLion
+# re-stages them, turn off "When files are created: Add silently" in
+# Settings > Version Control > Confirmation.
+.idea/
+*.iml
+
