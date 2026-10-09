@@ -37,6 +37,9 @@ let
 
     # ADB
     SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", MODE="0666", GROUP="plugdev"
+
+    # Grant the active local session access before 73-seat-late.rules runs uaccess.
+    SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0547", ATTR{idProduct}=="1002", MODE="0660", TAG+="uaccess"
   '';
 
 in
