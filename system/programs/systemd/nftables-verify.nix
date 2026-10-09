@@ -5,6 +5,11 @@ let
   # compared against this exact text, so a gutted or stale ruleset shows up.
   fragment = pkgs.writeText "proxymode-rules.nft" config.my.proxy.proxyModeRules;
 
+  # The blocked fragment fills lf_blocked_guard; compare it against that text so a
+  # partial Mode C (a missing IPv6 cut, a changed port set, a lost terminal drop)
+  # cannot pass.
+  blockedFragment = pkgs.writeText "blockedmode-rules.nft" config.my.proxy.blockedModeRules;
+
   # Fake-ip is on iff the template was built with fake-ip, i.e. iff TUN mode is
   # on; the pool's first two octets are what the client-resolver probe matches.
   fakeIpEnabled = config.my.proxy.tunMode;
@@ -61,6 +66,7 @@ in
       SLEEP=${pkgs.coreutils}/bin/sleep
 
       FRAGMENT=${fragment}
+      BLOCKED_FRAGMENT=${blockedFragment}
       STATUS=/run/proxy-mode/status
       TUNDEV=${config.my.proxy.tunDev}
       GOST_REDIRECT=${toString config.my.machine.ports.gostRedirect}
@@ -115,6 +121,11 @@ in
       }
       expected_chain() {
         $GREP -E "^[[:space:]]*add rule inet lf_filter $1 " "$FRAGMENT" \
+          | $SED -E "s/^[[:space:]]*add rule inet lf_filter $1 //"
+      }
+      # lf_blocked_guard's rules live in the blocked fragment, not the proxy one.
+      expected_blocked_chain() {
+        $GREP -E "^[[:space:]]*add rule inet lf_filter $1 " "$BLOCKED_FRAGMENT" \
           | $SED -E "s/^[[:space:]]*add rule inet lf_filter $1 //"
       }
       # The nat tables are inline in the fragment, not `add rule` lines, so their
@@ -194,6 +205,16 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
       $GREP -q 'jump proxymode_tail' <<<"$out" || fail "chain output no longer jumps to proxymode_tail"
       $NFT list chain inet lf_filter forward | $GREP -q 'jump proxymode_forward' \
         || fail "chain forward no longer jumps to proxymode_forward"
+      # The Mode-C guard must be a base chain on the output hook at priority
+      # -200, i.e. before mihomo's own redirect. As a plain chain reached by a
+      # `jump` it would run after the redirect and Mode C would not cut
+      # non-root TCP; with no hook at all its rules are listed but never
+      # traversed, so Mode C would silently become no enforcement.
+      $NFT list chain inet lf_filter lf_blocked_guard | $GREP -q 'hook output priority -200' \
+        || fail "lf_blocked_guard is not the output-hook base chain at priority -200: Mode C is not enforced"
+      if $GREP -q 'jump lf_blocked_guard' <<<"$out"; then
+        fail "chain output still jumps to lf_blocked_guard: the guard must be its own output-hook base chain"
+      fi
 
       # The client resolver and the encrypted fallback must actually be listening
       # where the static :53 redirect and the fallback point. dnsmasq is restarted
@@ -261,9 +282,12 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
             $IP route show table 2022 | $GREP -q "dev $TUNDEV" \
               || fail "table 2022 carries no route via $TUNDEV"
           fi
-          $SS -lntH | $GREP -q "127\.0\.0\.1:$GOST_REDIRECT" \
+          # gost is torn down in Mode C and re-bound on recovery, and a mode change
+          # fires this check immediately, so retry before judging (like the
+          # resolver checks above) instead of alerting on the transition race.
+          listening "$GOST_REDIRECT" \
             || fail "nothing listens on gost's :$GOST_REDIRECT: flows the TUN does not carry have no path"
-          $SS -lntH | $GREP -q "127\.0\.0\.1:$MIHOMO_MIXED" \
+          listening "$MIHOMO_MIXED" \
             || fail "nothing listens on mihomo's :$MIHOMO_MIXED"
           $SS -lnteH "sport = :$MIHOMO_DNS" | $GREP -q 'cgroup:/system.slice/clash-verge.service' \
             || fail "the DNS listener on :$MIHOMO_DNS does not belong to clash-verge.service: something else answers DNS"
@@ -359,6 +383,10 @@ $($DIFF <(printf '%s\n' "$exp") <(printf '%s\n' "$liv") || true)"
             || fail "blocked mode is recorded but lf_blocked_guard does not refuse non-root proxy ports on loopback: an app could bypass the cut through 7897/33332/33333"
           $GREP -q " drop" <<<"$guard" \
             || fail "blocked mode is recorded but lf_blocked_guard has no terminal drop: nothing is cut"
+          # Compare the whole guard against this generation's blocked fragment: a
+          # missing IPv6 cut, a changed port set or a lost DHCP accept would all
+          # pass the substring greps above.
+          cmp_rules "chain lf_blocked_guard" "$(expected_blocked_chain lf_blocked_guard)" "$(live_chain lf_blocked_guard)"
           if $NFT list table ip lf_proxymode_nat >/dev/null 2>&1; then
             fail "blocked mode is recorded but the IPv4 redirect table is still loaded"
           fi

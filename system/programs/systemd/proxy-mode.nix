@@ -33,7 +33,8 @@ let
   # A DIRECT-routed name used for the TUN self-test: its fake-ip answer is only
   # reachable through the TUN, so a successful connect proves the TUN carries
   # packets. It is a domestic name so the test does not depend on the node.
-  tunProbeName = "www.baidu.com";
+  # Single source: home/config/cvr-merge.nix asserts it is not fake-ip-filtered.
+  tunProbeName = config.my.proxy.tunProbeName;
 
   # First two octets of the fake-ip pool, to recognise a fake answer.
   fakeIpPrefix = lib.concatStringsSep "." (
@@ -93,7 +94,6 @@ let
     SED=${pkgs.gnused}/bin/sed
     JQ=${pkgs.jq}/bin/jq
     CAT=${pkgs.coreutils}/bin/cat
-    DATE=${pkgs.coreutils}/bin/date
     TIMEOUT=${pkgs.coreutils}/bin/timeout
     SLEEP=${pkgs.coreutils}/bin/sleep
     CURL=${pkgs.curl}/bin/curl
@@ -103,18 +103,25 @@ let
     REQUIRE_TUN=${if requireTun then "1" else "0"}
     MIHOMO_MIXED=${toString port.mihomoMixed}
     MIHOMO_DNS=${toString port.mihomoDns}
+    GOST_REDIRECT=${toString port.gostRedirect}
     MIHOMO_SOCK=${mihomoSock}
     CORE_MARK=${coreMark}
     PROBE_URL=${probeUrl}
     PROBE_HOST=${probeHost}
+    # Range the probe's source port is taken from. A single fixed port cannot be
+    # reused: once curl closes, that port sits in TIME_WAIT (~60 s) and the next
+    # bind fails, which would blackhole a healthy Mode B. Each probe takes a fresh
+    # port from the range, and `%{local_port}` reports which so the log line can be
+    # matched exactly. Kept below the ephemeral range and away from vetted ports.
+    PROBE_LOCAL_RANGE=15010-15090
     TUN_PROBE_NAME=${tunProbeName}
     FAKE_IP_PREFIX=${fakeIpPrefix}
 
     mode=""
-    reason=""           # "no-tun" | "direct-mode" | "node" | "core-gone" | ""
+    reason=""           # "no-tun" | "direct-mode" | "node" | "core-gone" | "obs" | ""
     core_gone_fails=0   # consecutive passes with the core gone but the service up
+    obs_fails=0         # consecutive `obs` health failures (2-strike hysteresis)
     fails=0
-    first=1
     once=0
     changed=1
     nap_pid=""
@@ -138,15 +145,20 @@ let
     # loop reacts at once instead of waiting out the backstop interval. SIGWINCH
     # (not SIGUSR1) because its default action is to be ignored: a wake that lands
     # before this trap is installed cannot kill the process. The interval adapts
-    # (2 s while transitioning/degraded, up to 30 s when stable), so the steady
-    # state is almost free while staying responsive.
-    trap ':' WINCH
+    # while the mode is settled, bounded by cap_for (5 s enforced / 60 s direct).
+    trap 'woken=1' WINCH
+    # woken=1 when a wake arrived (during a nap OR while a pass was running). The
+    # wait's exit status is not discarded, and the flag is consumed at the next
+    # decision round, so a wake landing inside a pass is not lost.
+    woken=1
     nap() {
       ${pkgs.coreutils}/bin/sleep "$1" &
       nap_pid=$!
-      wait "$nap_pid" 2>/dev/null || true
+      wait "$nap_pid" 2>/dev/null
+      rc=$?
       kill "$nap_pid" 2>/dev/null || true
       nap_pid=""
+      [ "$rc" -gt 128 ] && woken=1
     }
 
     # Ask for an immediate verification. A start issued here rides the activation
@@ -167,11 +179,11 @@ let
       done
     }
 
-    now() { $DATE +%s; }
-
     # --- live state readers -------------------------------------------------
-    rules_loaded() { $NFT list table ip lf_proxymode_nat >/dev/null 2>&1; }
-    rules_loaded6() { $NFT list table ip6 lf_proxymode_nat >/dev/null 2>&1; }
+    # Table existence is not enough: `nft flush table` leaves an empty table that
+    # would pass, so require the redirect rule itself.
+    rules_loaded() { $NFT list table ip lf_proxymode_nat 2>/dev/null | $GREP -q "redirect to :$GOST_REDIRECT"; }
+    rules_loaded6() { $NFT list table ip6 lf_proxymode_nat 2>/dev/null | $GREP -q "redirect to :$GOST_REDIRECT"; }
     chains_loaded() { $NFT list chain inet lf_filter proxymode_drops 2>/dev/null | $GREP -q 'counter'; }
     # The proxy fragment exempts the core by its mark; the blocked one must not
     # in proxymode_drops (its only exemption lives in the guard chain).
@@ -179,6 +191,18 @@ let
     # The Mode-C guard is filled iff its terminal drop is present. nft prints it
     # as "counter packets N bytes N drop", so match the verdict, not the counter.
     guard_active() { $NFT list chain inet lf_filter lf_blocked_guard 2>/dev/null | $GREP -q 'drop'; }
+    # The guard is only enforcement while it is still a base chain on the `output`
+    # hook. A static-ruleset refactor that removed the hook (or reverted it to a
+    # plain chain plus a `jump`) would leave the rules listed but never traversed,
+    # which guard_active() alone cannot see. Assert the hook.
+    guard_reachable() { $NFT list chain inet lf_filter lf_blocked_guard 2>/dev/null | $GREP -q 'hook output'; }
+    # Guest/VM refusal lives in proxymode_forward (both fragments fill it); an
+    # emptied chain would silently drop the refusal, so probe its content too.
+    forward_loaded() { $NFT list chain inet lf_filter proxymode_forward 2>/dev/null | $GREP -q 'counter'; }
+    # Percent-encode a Clash name for a URL path: a group/node name is profile
+    # data and may contain '/', '?', '#', '%' or a space, any of which would
+    # otherwise make the request fail and be misread as a dead node.
+    urlenc() { printf '%s' "$1" | $JQ -sRr @uri; }
 
     # Anything that would still redirect or drop after a tear-down.
     rules_present() {
@@ -186,15 +210,18 @@ let
       rules_loaded && return 0
       rules_loaded6 && return 0
       chains_loaded && return 0
+      forward_loaded && return 0
       return 1
     }
-    proxy_loaded() { rules_loaded && rules_loaded6 && chains_loaded && drops_has_core_mark && ! guard_active; }
+    proxy_loaded() { rules_loaded && rules_loaded6 && chains_loaded && forward_loaded && drops_has_core_mark && guard_reachable && ! guard_active; }
     blocked_loaded() {
+      guard_reachable || return 1
       guard_active || return 1
       drops_has_core_mark && return 1
       rules_loaded && return 1
       rules_loaded6 && return 1
       chains_loaded && return 1
+      forward_loaded || return 1
       return 0
     }
     # Does the live state already match the wanted mode?
@@ -261,38 +288,51 @@ let
       $CURL -N -s --max-time 3 --unix-socket "$MIHOMO_SOCK" "http://localhost/logs?level=info" -o "$CAPTURE" 2>/dev/null &
       cap=$!
       $SLEEP 0.2
-      code=$($TIMEOUT 3 $CURL -s -o /dev/null -w '%{http_code}' --noproxy "" -x "http://127.0.0.1:$MIHOMO_MIXED" "$PROBE_URL" 2>/dev/null || true)
+      probe_out=$($TIMEOUT 3 $CURL -s -o /dev/null -w '%{http_code} %{local_port}' --noproxy "" --local-port "$PROBE_LOCAL_RANGE" -x "http://127.0.0.1:$MIHOMO_MIXED" "$PROBE_URL" 2>/dev/null || true)
+      code=''${probe_out%% *}
+      src=''${probe_out##* }
+      case "$src" in *[!0-9]*) src="" ;; esac
       # Cheap verdict first, so a dead core is judged before the poll.
       if [ "$code" != "200" ] && [ "$code" != "204" ]; then
         kill "$cap" 2>/dev/null || true
         wait "$cap" 2>/dev/null || true
         health_gate=obs; log "health: (a) probe http code=[$code]"; return 1
       fi
-      line=""
+      # Match the line for THIS probe on its own source port; a host-only match is
+      # kept as a fallback for a log format that reports the source differently.
+      line=""; fallback=""
       for _ in 1 2 3 4 5 6 7 8 9 10; do
-        line=$($GREP -F "$PROBE_HOST" "$CAPTURE" 2>/dev/null | tail -1)
-        [ -n "$line" ] && break
+        if [ -n "$src" ]; then
+          line=$($GREP -F "127.0.0.1:$src --> $PROBE_HOST" "$CAPTURE" 2>/dev/null | tail -1)
+          [ -n "$line" ] && break
+        fi
+        fallback=$($GREP -F "$PROBE_HOST" "$CAPTURE" 2>/dev/null | tail -1)
         $SLEEP 0.3
       done
+      [ -n "$line" ] || line="$fallback"
       kill "$cap" 2>/dev/null || true
       wait "$cap" 2>/dev/null || true
       rest="''${line#*using }"
       [ "$rest" != "$line" ] || { health_gate=obs; log "health: (a) no route line for $PROBE_HOST"; return 1; }
       # `using DIRECT`/`using REJECT` = the RULE itself; and the MEMBER (the first
       # bracket content) DIRECT/REJECT = the group selected a non-node. Judge the
-      # member exactly, so a node NAME containing "[DIRECT]" is not a false hit.
+      # policy text EXACTLY (everything before the first '[' or the closing quote)
+      # so a group named `DIRECT-中转` is not a false `DIRECT` hit, and keep
+      # the member check as the second line of defence.
       member=$(printf '%s' "$rest" | $SED -n 's/^[^[]*\[\([^]]*\)\].*/\1/p')
-      case "$line" in
-        *"using DIRECT"*|*"using REJECT"*) health_gate=route; log "health: (a) rule routed DIRECT/REJECT"; return 1 ;;
+      pol="''${rest%%\[*}"; pol="''${pol%%\"*}"
+      case "$pol" in
+        DIRECT|REJECT) health_gate=route; log "health: (a) rule routed $pol"; return 1 ;;
       esac
       case "$member" in
         DIRECT|REJECT) health_gate=route; log "health: (a) member $member"; return 1 ;;
       esac
       # (b) Resolve the effective group against the live group list (a group name
       # containing '[' would truncate a plain split), then Clash delay-tests the
-      # node that group has selected.
+      # node that group has selected. Names are URL-encoded: a group is profile
+      # data and may contain '/', '?', '#' or a space.
       group=$(printf '%s' "$rest" | $SED -n 's/^\([^[]*\)\[.*/\1/p')
-      if [ -z "$group" ] || ! $CURL -s --max-time 2 --unix-socket "$MIHOMO_SOCK" "http://localhost/proxies/$group" 2>/dev/null | $GREP -q '"all"'; then
+      if [ -z "$group" ] || ! $CURL -s --max-time 2 --unix-socket "$MIHOMO_SOCK" "http://localhost/proxies/$(urlenc "$group")" 2>/dev/null | $GREP -q '"all"'; then
         group=""
         glist=$($TIMEOUT 3 $CURL -s --unix-socket "$MIHOMO_SOCK" http://localhost/proxies 2>/dev/null | $JQ -r '.proxies | to_entries[] | select(.value.all) | .key' 2>/dev/null)
         while IFS= read -r g; do
@@ -303,10 +343,27 @@ let
         done < <(printf '%s\n' "$glist")
       fi
       [ -n "$group" ] || { health_gate=obs; log "health: (a) group not resolved: $rest"; return 1; }
-      delay=$($TIMEOUT 3 $CURL -s --unix-socket "$MIHOMO_SOCK" \
-        "http://localhost/proxies/$group/delay?url=$PROBE_URL&timeout=2000" 2>/dev/null \
-        | $SED -n 's/.*"delay":\([0-9][0-9]*\).*/\1/p')
-      [ -n "$delay" ] || { health_gate=node; log "health: (b) delay empty for group [$group]"; return 1; }
+      # Delay-test the group's selected node; if the group endpoint gives no
+      # answer, fall back to the member itself (a node-only rule names a node).
+      # A reply without a "delay" means the node failed the test (`node`); no
+      # reply at all is a probe/locating failure and retries as `obs`.
+      delay=""; answered=0
+      for target in "$group" "$member"; do
+        [ -n "$target" ] || continue
+        resp=$($TIMEOUT 6 $CURL -s --unix-socket "$MIHOMO_SOCK" \
+          "http://localhost/proxies/$(urlenc "$target")/delay?url=$PROBE_URL&timeout=5000" 2>/dev/null)
+        [ -n "$resp" ] && answered=1
+        delay=$(printf '%s' "$resp" | $SED -n 's/.*"delay":\([0-9][0-9]*\).*/\1/p')
+        [ -n "$delay" ] && break
+      done
+      if [ -z "$delay" ]; then
+        if [ "$answered" = 1 ]; then
+          health_gate=node; log "health: (b) node test failed for [$group]"
+        else
+          health_gate=obs; log "health: (b) delay endpoint unreachable for [$group]"
+        fi
+        return 1
+      fi
       # (c) the TUN carries packets: a DNS query to the fake-ip is routed into the
       # TUN and answered by the core's dns-hijack -- no third-party site whose port
       # policy could fail a healthy host (an HTTP dial has that dependency).
@@ -342,7 +399,6 @@ let
         mode=direct; reason=""
         printf 'direct\n' > "$STATUS"
         printf '\n' > "$REASON" 2>/dev/null || true
-        first=0
         changed=1
         return 0
       fi
@@ -372,14 +428,29 @@ let
             want=blocked; want_reason="direct-mode"
           else
             # The core keeps its egress in blocked, so this runs every pass and
-            # the node is picked up the moment it recovers. One failure cuts
-            # immediately (the probe is http/0-byte, so it is cheap to run often
-            # and a slow start only costs a short blocked window). The reason
-            # names the failing layer (a/b/c) for `proxy-status`.
+            # the node is picked up the moment it recovers. The reason names the
+            # failing layer (a/b/c) for `proxy-status`.
+            #
+            # Hysteresis for the `obs` layer ONLY: a transient inability to read
+            # the route (a probe hiccup, an empty delay answer while the node is
+            # fine) must not blackhole the whole host; require two consecutive
+            # `obs` failures. The other layers keep an immediate cut because they
+            # are deterministic.
             if health_ok; then
+              obs_fails=0
               want=proxy; want_reason=""
             else
-              want=blocked; want_reason="$health_gate"
+              if [ "$health_gate" = "obs" ]; then
+                obs_fails=$((obs_fails + 1))
+              else
+                obs_fails=0
+              fi
+              if [ "$health_gate" = "obs" ] && [ "$mode" = "proxy" ] && [ "$obs_fails" -lt 2 ]; then
+                want=proxy; want_reason="obs:$obs_fails/2"
+              else
+                want=blocked
+                [ "$health_gate" = "obs" ] && want_reason="obs:2/2" || want_reason="$health_gate"
+              fi
             fi
           fi
         else
@@ -398,7 +469,10 @@ let
           else
             # One pass of grace: clash-off stops the service too, and the helper
             # can still be in the cgroup for a moment after the core is gone.
-            want="''${mode:-direct}"; want_reason="$reason"
+            # An UNKNOWN previous mode must resolve fail-closed: `${mode:-blocked}`,
+            # never `direct`, or a supervisor restart with the core gone tears the
+            # enforcement down for one pass.
+            want="''${mode:-blocked}"; want_reason="$reason"
           fi
         else
           core_gone_fails=0
@@ -484,6 +558,13 @@ let
         cap=$(cap_for "$mode")
         [ "$interval" -lt "$cap" ] && interval=$(( interval * 2 > cap ? cap : interval * 2 ))
       fi
+      # A wake that arrived during the pass must not wait a whole interval for the
+      # next decision: re-run at once (the flag is pre-cleared so this repeats at
+      # most once per event).
+      if [ "$woken" = 1 ] && [ "$changed" = 1 ]; then
+        woken=0
+        continue
+      fi
       nap "$interval"
     done
   '';
@@ -559,6 +640,14 @@ in
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
       };
     };
+
+    # Make re-application synchronous with a ruleset (re)load: the static load
+    # recreates the fragment chains empty, and `chain output` is policy accept,
+    # so waiting for the asynchronous wake leaves a window with no kill switch
+    # and no redirect. Run one pass before the unit reports started (mkBefore so
+    # it precedes network.nix's `--no-block proxy-net-wake`).
+    systemd.services.nftables.serviceConfig.ExecStartPost =
+      lib.mkBefore [ "${modeScript} --once" ];
 
     # Event trigger: the mihomo control socket is created when the core starts and
     # removed when it stops (or restarts), so watching it turns the supervisors

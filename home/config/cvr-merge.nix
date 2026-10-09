@@ -20,8 +20,56 @@ let
   # No trailing newline: the interpolation line supplies it.
   yamlItems = indent: xs: lib.concatStringsSep "\n" (map (x: "${indent}- ${x}") xs);
 
+  # Always-resolve names (never handed a fake IP). The TUN route-exclude covers
+  # ranges, not names, so this is what keeps an ISP portal, LAN host or captive
+  # probe working by name. It replaces the subscription's list (merge wins by
+  # key), so it must stay complete on its own.
+  fakeIpFilter = [
+    "*.lan"
+    "*.local"
+    "*.localhost"
+    "*.test"
+    "*.home.arpa"
+    "*.internal"
+    "localhost.ptlogin2.qq.com"
+    "+.stun.*.*"
+    "+.stun.*.*.*"
+    "+.stun.*.*.*.*"
+    "lens.l.google.com"
+    "+.srv.nintendo.net"
+    "+.stun.playstation.net"
+    "+.xboxlive.com"
+    "+.msftncsi.com"
+    "+.msftconnecttest.com"
+    "capture.apple.com"
+    "connectivitycheck.gstatic.com"
+    "connectivitycheck.android.com"
+  ];
+
+  # The TUN self-test name must get a fake-ip answer, so it must not be matched
+  # by fakeIpFilter; a routine edit that adds e.g. "+.baidu.com" would otherwise
+  # silently break the health gate's TUN layer and pin the host in Mode C.
+  tunProbeName = osConfig.my.proxy.tunProbeName;
+  suffixOf = p: lib.removePrefix "+." (lib.removePrefix "*." (lib.removePrefix "." p));
+  probeFiltered = lib.any (p:
+    let s = suffixOf p;
+    in p == tunProbeName || (s != p && (tunProbeName == s || lib.hasSuffix ".${s}" tunProbeName))
+  ) fakeIpFilter;
+
 in
 {
+  assertions = [
+    {
+      assertion = !probeFiltered;
+      message = ''
+        cvr-merge.nix: my.proxy.tunProbeName (${tunProbeName}) is matched by a
+        fake-ip-filter entry, so it would resolve to a real IP and proxy-mode's
+        TUN self-test would fail, pinning the host in Mode C. Remove that filter
+        entry, or change my.proxy.tunProbeName.
+      '';
+    }
+  ];
+
   home.file.".local/share/io.github.clash-verge-rev.clash-verge-rev/profiles/Merge.yaml" = {
     text = ''
       # Profile Enhancement Merge Template for Clash Verge
@@ -36,6 +84,13 @@ in
 
       # Fix the mixed port to align with the probe and forwarding ports in gost-relay.nix.
       mixed-port: ${toString port.mihomoMixed}
+
+      # Pin the routing mode and IPv6. The GUI owns both keys, and `direct` would
+      # be turned into Mode C by the health gate; a rebuild must not change either
+      # silently. (The GUI still injects `secret`/ports after the merge, so a pin
+      # here is defence in depth, not a guarantee.)
+      mode: rule
+      ipv6: true
 
       # Pin the log level: proxy-mode's health gate parses the core's connection
       # log to confirm a probe was proxied (not DIRECT) and to learn the group it
@@ -103,25 +158,7 @@ in
         # working by name. This list replaces the subscription's (merge wins by
         # key), so it must stay complete on its own.
         fake-ip-filter:
-          - '*.lan'
-          - '*.local'
-          - '*.localhost'
-          - '*.test'
-          - '*.home.arpa'
-          - '*.internal'
-          - localhost.ptlogin2.qq.com
-          - '+.stun.*.*'
-          - '+.stun.*.*.*'
-          - '+.stun.*.*.*.*'
-          - lens.l.google.com
-          - '+.srv.nintendo.net'
-          - '+.stun.playstation.net'
-          - '+.xboxlive.com'
-          - '+.msftncsi.com'
-          - '+.msftconnecttest.com'
-          - captive.apple.com
-          - connectivitycheck.gstatic.com
-          - connectivitycheck.android.com
+      ${yamlItems "    " (map (x: "'${x}'") fakeIpFilter)}
         use-hosts: true
         respect-rules: true
         # Encrypted bootstrap (both are IP literals, so no bootstrap recursion).

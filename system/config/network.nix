@@ -123,8 +123,10 @@ let
     # DHCP on the uplinks (dhcpcd is root and unmarked).
     add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
     add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept
-    # Tailscale WireGuard endpoint (root, unmarked).
-    add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } udp dport 41641 accept
+    # Tailscale WireGuard endpoint (tailscaled runs as root and does not carry
+    # the core's mark). Scoped to uid 0 so it cannot double as a general
+    # UDP/41641 egress channel for any other local process.
+    add rule inet lf_filter proxymode_drops meta skuid 0 oifname { "${wired}", "${wireless}" } udp dport 41641 accept
     # Everything else leaving an uplink for a non-local destination is dropped,
     # root included.
     add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } ip daddr != { ${exempt4} } counter drop
@@ -160,14 +162,15 @@ let
 
   # Fragment proxy-mode.service applies while Clash runs but its path is not the
   # strict TUN one we require: the TUN is missing/unready, mihomo is in `direct`
-  # mode, or the node is dead. It fills the first-evaluated `lf_blocked_guard`
-  # chain with a hard cut that keeps ONLY loopback and the core's marked sockets:
+  # mode, or the node is dead. It fills the `output`-hook base chain
+  # `lf_blocked_guard` (priority -200, before mihomo's own redirect) with a hard
+  # cut that keeps ONLY loopback, the core's marked sockets and DHCP renewal:
   # the core stays reachable so it can recover a node or be driven from the GUI,
-  # loopback keeps local IPC working, and every other egress -- LAN, DHCP, DNS,
-  # NTP, tailnet, all other uids -- is dropped. Unlike the normal refusal there
-  # is no core-mark exemption question here: only the core is exempt, so a
-  # TUN-less or DIRECT-mode core cannot leak from any other process, and the
-  # redirect is torn down so non-TUN flows are refused, not relayed.
+  # loopback keeps local IPC working, DHCP keeps the lease, and every other
+  # egress -- LAN, DNS, NTP, tailnet, all other uids -- is dropped. Only the core
+  # is exempted by mark; a TUN-less or DIRECT-mode core cannot leak from any
+  # other process, and the redirect is torn down so non-TUN flows are refused,
+  # not relayed.
   blockedModeRules = lib.optionalString proxyKillSwitch ''
     # Tear the normal fragment down inside the same load: no stale redirect and
     # no stale drop can survive next to the guard.
@@ -179,13 +182,16 @@ let
 
     flush chain inet lf_filter lf_blocked_guard
     # Every Clash-facing port on loopback is refused for non-root, TCP and UDP,
-    # across all of 127.0.0.0/8 and ::1: mihomo's mixed port (bound TCP and UDP)
-    # and DNS listener, plus gost's HTTP + redirect listeners. Loopback stays up
-    # for local IPC, so without this an application could dial the core or gost
-    # (or use the core as a resolver) and be proxied straight through Mode C.
-    # Root is allowed because proxy-mode's own node probe dials the mixed port.
-    add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip daddr 127.0.0.0/8 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoDns}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
-    add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip6 daddr ::1 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoDns}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
+    # across all of 127.0.0.0/8 and ::1: mihomo's mixed port (bound TCP and UDP),
+    # DNS listener and optional TPROXY inbound, plus gost's HTTP + redirect
+    # listeners. Loopback stays up for local IPC, so without this an application
+    # could dial the core or gost (or use the core as a resolver) and be proxied
+    # straight through Mode C. Root is allowed because proxy-mode's own node
+    # probe dials the mixed port. (The core's per-start dynamic inbounds are not
+    # enumerable here; the terminal drop below is what cuts a flow whose real
+    # destination the guard still sees.)
+    add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip daddr 127.0.0.0/8 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoDns}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
+    add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip6 daddr ::1 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoDns}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
     # Local IPC (and the local resolver) keeps working.
     add rule inet lf_filter lf_blocked_guard ip daddr 127.0.0.0/8 accept
     add rule inet lf_filter lf_blocked_guard ip6 daddr ::1 accept
@@ -195,6 +201,14 @@ let
     # proxy-mode's own TUN self-test dials it, so the self-test still runs while
     # blocked.
     add rule inet lf_filter lf_blocked_guard meta skuid 0 ip daddr ${fakeIpNet} accept
+    # DHCP stays alive on the uplinks. It is L2-local (the client request is
+    # sport 68 -> dport 67; the reply, and the hotspot/Waydroid server's own
+    # reply on wlo1, is sport 67 -> dport 68), so it cannot leak a public flow.
+    # An unconditional terminal drop would otherwise lose the lease, and with no
+    # lease there is no node, so the host could never leave Mode C.
+    add rule inet lf_filter lf_blocked_guard oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept
+    add rule inet lf_filter lf_blocked_guard oifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
+    add rule inet lf_filter lf_blocked_guard oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept
     # Everything else, on any interface, to any other destination: gone.
     add rule inet lf_filter lf_blocked_guard counter drop
 
@@ -441,9 +455,11 @@ in
 
         MulticastDNS = "no";
 
-        # DNS is always set, so resolved's FallbackDNS would never be consulted; it
-        # is omitted rather than left as dead config.
         DNS = [ "127.0.0.1:${toString port.dnsmasq}" ];
+
+        # DNS is always set, so the fallback is never consulted; clear it rather
+        # than leave resolved's built-in public resolvers as dead config.
+        FallbackDNS = [ ];
 
         # Must be "no": opportunistic DoT tries cert validation against IPs and kills fallback
         DNSOverTLS = "no";
@@ -603,17 +619,23 @@ in
         chain proxymode_forward { }
         chain proxymode_drops { }
         chain proxymode_tail { }
-        # Filled by proxy-mode.service only in the `blocked` state (see below).
-        chain lf_blocked_guard { }
+        # Mode-C guard: a base chain on the `output` hook at priority -200, i.e.
+        # evaluated BEFORE mihomo's own nat/output auto-redirect (priority -150).
+        # It must run before the redirect, or a locally generated non-root TCP
+        # flow is rewritten to 127.0.0.1:<redirect-inbound> before the guard sees
+        # it and slips through. Filled by proxy-mode.service only in the
+        # `blocked` state; empty in every other mode (policy accept = no-op).
+        chain lf_blocked_guard {
+          type filter hook output priority -200; policy accept;
+        }
 
         chain output {
           type filter hook output priority 0; policy accept;
 
-          # Mode-C guard, evaluated before every accept below: filled only while
-          # proxy-mode records `blocked`, it keeps loopback and the core's marked
-          # sockets and drops all other egress. Empty in every other mode (a jump
-          # to an empty chain is a no-op), so the rest of the chain stays in charge.
-          jump lf_blocked_guard
+          # The Mode-C guard is a separate base chain on this same hook at
+          # priority -200 (declared above), so it is evaluated before every
+          # accept here AND before mihomo's nat/output redirect. It is empty
+          # outside `blocked`, so it is a no-op the rest of the time.
 
           ip daddr { ${local4} } accept
           ip6 daddr { ${local6} } accept

@@ -72,10 +72,10 @@ in
         # flight, long once the path is settled (dot or proxy). Events still drive
         # the transitions, so the cap only bounds a missed event.
         cap_for() { case "$1" in dot|proxy) echo 60 ;; *) echo 15 ;; esac; }
-        trap ':' WINCH
-        # woken=1 when the nap was cut short by the coordinator's SIGWINCH (a real
-        # Clash/link event); the loop then re-evaluates at once for the second
-        # confirmation instead of waiting a whole interval.
+        trap 'woken=1' WINCH
+        # woken=1 when a wake arrived (during a nap OR while a probe was running);
+        # the flag is consumed at the next decision round, so an event that lands
+        # inside the ~10 s Mode-A probe path is not lost.
         woken=1
         nap() {
           ${pkgs.coreutils}/bin/sleep "$1" &
@@ -84,7 +84,7 @@ in
           rc=$?
           kill "$nap_pid" 2>/dev/null || true
           nap_pid=""
-          if [ "$rc" -gt 128 ]; then woken=1; else woken=0; fi
+          [ "$rc" -gt 128 ] && woken=1
         }
 
         # dhcpcd >= 10 writes an opaque lease blob, so parsing the file never
@@ -145,10 +145,16 @@ in
 
           # Only restart when the upstream really changed: dnsmasq's StartLimit
           # (5 per 10s) must not be hit by a flapping probe, and a redundant
-          # write needs no restart. The cache flush is cheap, so keep it.
+          # write needs no restart. Record the new upstream only once the
+          # restart has actually converged; otherwise the next round re-issues it
+          # (a restart left `last_conf` claiming a state dnsmasq never reached).
           if [ "$new_conf" != "''${last_conf:-}" ]; then
-            last_conf="$new_conf"
-            ${pkgs.systemd}/bin/systemctl restart --no-block dnsmasq.service || true
+            if ${pkgs.systemd}/bin/systemctl restart dnsmasq.service 2>/dev/null \
+               && ${pkgs.systemd}/bin/systemctl is-active --quiet dnsmasq.service; then
+              last_conf="$new_conf"
+            else
+              echo "dns-upstream: dnsmasq restart did not converge; retrying" >&2
+            fi
           fi
           ${pkgs.systemd}/bin/resolvectl flush-caches
         }
@@ -177,12 +183,14 @@ in
 
         # Health of the encrypted path itself: dnsmasq's own failover is a hang
         # (one failed upstream means the client waits ~8 s for no SERVFAIL).
+        # Probe a per-round random label: it can never be answered from cache, so
+        # a stale cached name cannot make a cut DoT path look healthy. A live
+        # resolver answers it (NXDOMAIN is fine); a cut one times out.
         dot_ok() {
-          for name in example.com www.baidu.com; do
-            ${pkgs.dnsutils}/bin/dig +time=3 +tries=1 +short @127.0.0.1 -p ${toString port.unbound} "$name" 2>/dev/null \
-              | ${pkgs.gnugrep}/bin/grep -q . || return 1
-          done
-          return 0
+          st=$(${pkgs.dnsutils}/bin/dig +time=3 +tries=1 @127.0.0.1 -p ${toString port.unbound} \
+            "$(${pkgs.coreutils}/bin/date +%s%N).probe.example.com" A 2>/dev/null \
+            | ${pkgs.gnugrep}/bin/grep -oE 'status: [A-Z]+' | head -1)
+          [ "$st" = "status: NOERROR" ] || [ "$st" = "status: NXDOMAIN" ]
         }
 
         nm_connectivity() {
@@ -205,14 +213,27 @@ in
         # mode_a_state() must run in the current shell: it updates dot_fails, so a
         # subshell would re-open the window on every tick.
         PL_TTL=120
+        PL_TOTAL=300        # total plaintext seconds allowed per uplink identity
         window_until=0
+        budget_until=0      # 0 = unspent; else the absolute end of the total budget
         dot_fails=0
         MODE_A_STATE=""
         state_reason="mode-a: starting, encrypted upstream first"
 
         now_epoch() { ${pkgs.coreutils}/bin/date +%s; }
-        open_window() { window_until=$(( $(now_epoch) + PL_TTL )); }
+        # Open a plaintext window, capped by the per-identity total budget: the
+        # window never outlives budget_until, and once the budget is spent it does
+        # not reopen, so a sustained NetworkManager `limited`/`portal` verdict can
+        # no longer keep cleartext DNS open indefinitely.
+        open_window() {
+          now=$(now_epoch)
+          [ "$budget_until" = 0 ] && budget_until=$(( now + PL_TOTAL ))
+          w=$(( now + PL_TTL ))
+          [ "$w" -gt "$budget_until" ] && w=$budget_until
+          [ "$w" -gt "$now" ] && window_until=$w
+        }
         window_open() { [ "$(now_epoch)" -lt "$window_until" ]; }
+        budget_spent() { [ "$budget_until" != 0 ] && [ "$(now_epoch)" -ge "$budget_until" ]; }
 
         # The reason file tracks the current state, so a recovery clears "degraded".
         write_reason() {
@@ -255,6 +276,11 @@ in
 
           conn="$(nm_connectivity)"
           if [ "$conn" = "portal" ] || [ "$conn" = "limited" ]; then
+            if budget_spent; then
+              state_reason="mode-a: plaintext budget ($PL_TOTAL s) spent for this uplink; DoT down, fail-closed (DNS stops). Remedies: touch /run/dns-upstream/force-plaintext, or fix tcp/853"
+              MODE_A_STATE="degraded-dot-only"
+              return 0
+            fi
             open_window
             state_reason="mode-a: captive portal (NetworkManager=$conn), DoT unreachable -> plaintext DNS$plaintext_note"
             MODE_A_STATE="portal-plaintext"
@@ -285,6 +311,8 @@ in
             ident="$(dhcp_identity)"
             if [ "$ident" != "$last_ident" ]; then
               last_ident="$ident"
+              # A new link gets a fresh plaintext budget.
+              budget_until=0
               open_window
               echo "dns-upstream: uplink identity changed; plaintext bootstrap window opened" >&2
             fi

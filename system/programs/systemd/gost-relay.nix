@@ -102,10 +102,10 @@ in
         interval=5
         MIN=2
         MAX=30
-        trap ':' WINCH
-        # woken=1 when the nap was cut short by the coordinator's SIGWINCH (a real
-        # Clash/link event); the loop then re-evaluates at once for the second
-        # confirmation instead of waiting a whole interval.
+        trap 'woken=1' WINCH
+        # woken=1 when a wake arrived (during a nap OR while a probe was running);
+        # the flag is consumed at the next decision round, so an event that lands
+        # inside a probe is not lost.
         woken=1
         nap() {
           ${pkgs.coreutils}/bin/sleep "$1" &
@@ -114,7 +114,7 @@ in
           rc=$?
           kill "$nap_pid" 2>/dev/null || true
           nap_pid=""
-          if [ "$rc" -gt 128 ]; then woken=1; else woken=0; fi
+          [ "$rc" -gt 128 ] && woken=1
         }
 
         # State-file contract: one mode word plus a newline, rewritten every round
@@ -130,21 +130,30 @@ in
             | ${pkgs.gnugrep}/bin/grep -q 'cgroup:/system.slice/clash-verge.service'
         }
 
-        # Observe the sockets with ss(8): never connect() to :${toString port.gostRedirect} - one
-        # connection starts the redirect self-loop. Empty output means "cannot
-        # inspect": treat as ok and let the pid check stay authoritative.
+        # Observe the sockets with ss(8): never connect() to the redirect port -
+        # one connection starts the redirect self-loop. Exactly one listener per
+        # port: a leftover child from an earlier start shares the ports through
+        # SO_REUSEPORT and does not serve the same way, so count, never merely
+        # grep. Empty ss output means "cannot inspect": treat as failure.
         listen_ok() {
           listening="$(${pkgs.iproute2}/bin/ss -ltn 2>/dev/null)"
-          [ -n "$listening" ] || return 0
-          case "$listening" in
-            *127.0.0.1:${toString port.gostHttp}*) ;;
-            *) return 1 ;;
-          esac
-          case "$listening" in
-            *127.0.0.1:${toString port.gostRedirect}*) ;;
-            *) return 1 ;;
-          esac
+          [ -n "$listening" ] || return 1
+          for spec in "127.0.0.1:${toString port.gostHttp}" "127.0.0.1:${toString port.gostRedirect}" "[::1]:${toString port.gostRedirect}"; do
+            n=$(printf '%s\n' "$listening" | ${pkgs.gnugrep}/bin/grep -cF "$spec")
+            [ "$n" = 1 ] || return 1
+          done
           return 0
+        }
+
+        # A direct connect() to the redirect port makes gost re-enter its own
+        # listener and dial itself until the fd limit. The signature is an
+        # established socket whose peer is the redirect listener; a legitimate
+        # redirected flow's peer is the real destination. Count them so the loop
+        # can restart instead of wedging the unit.
+        selfloop_count() {
+          ${pkgs.iproute2}/bin/ss -tnH 2>/dev/null \
+            | ${pkgs.gawk}/bin/awk -v p4="127.0.0.1:${toString port.gostRedirect}" -v p6="[::1]:${toString port.gostRedirect}" \
+                '$1 == "ESTAB" && ($5 == p4 || $5 == p6) { n++ } END { print n + 0 }'
         }
 
         stop_current() {
@@ -166,6 +175,10 @@ in
         }
 
         start_gost() {
+          # Reap the previous child first: this function is only reached when the
+          # mode actually changed, and without this the old process keeps its
+          # SO_REUSEPORT sockets and serves a share of the traffic forever.
+          stop_current
           # proxy: only forward to mihomo, never dialing a target itself. direct:
           # passthrough, which is what "Clash is off" means.
           if [ "$1" = "proxy" ]; then
@@ -195,10 +208,15 @@ in
           proxy_pid="$new_pid"
           echo "gost-relay status -> $1 (pid $new_pid)"
 
+          # Do not record a mode with nothing serving it: give the child one more
+          # second to bind, then fail so the caller records `closed`.
+          if ! listen_ok; then sleep 1; fi
           if ! listen_ok; then
-            echo "gost-relay: WARN status=$1 but 127.0.0.1:${toString port.gostHttp}/${toString port.gostRedirect} are not both listening" >&2
+            echo "gost-relay: status=$1 but 127.0.0.1:${toString port.gostHttp}/${toString port.gostRedirect} are not exactly one listener each" >&2
             ${pkgs.systemd}/bin/systemd-cat -t gost-relay -p warning ${pkgs.coreutils}/bin/echo \
-              "gost-relay: status=$1 without bound listeners" || true
+              "gost-relay: status=$1 without exactly one listener per port" || true
+            stop_current
+            return 1
           fi
         }
 
@@ -236,25 +254,28 @@ in
                 mode="closed"
               fi
             fi
+            # One stray connect() to the redirect port can spawn hundreds of
+            # self-connected sockets; restart before it reaches the fd limit.
+            if [ -n "$proxy_pid" ]; then
+              nloop=$(selfloop_count)
+              if [ "$nloop" -ge 128 ]; then
+                echo "gost-relay: redirect self-loop detected ($nloop sockets on :${toString port.gostRedirect}); restarting" >&2
+                stop_current
+                mode="closed"
+              fi
+            fi
           fi
 
-          # Proxy mode owns the redirect + killswitch; with it off gost is a plain
-          # passthrough (real IP, nothing loaded), which is what "direct" means.
-          # `blocked` is proxy-mode's strict blackhole: offer nothing, not even a
-          # passthrough, so env-proxy consumers cannot slip out directly.
+          # Only an explicit `direct` status is a passthrough. Every other value
+          # -- including `unenforced` and an unreadable/absent file -- means
+          # enforcement is missing, so offer nothing rather than a bare relay.
           status="$(${pkgs.coreutils}/bin/cat /run/proxy-mode/status 2>/dev/null || true)"
-          proxy_mode=0
-          blocked=0
-          case "$status" in
-            proxy) proxy_mode=1 ;;
-            blocked) blocked=1 ;;
-          esac
+          want="closed"
+          [ "$status" = "direct" ] && want="direct"
 
           core_id=0
           core_e2e=0
-          want="direct"
-          [ "$blocked" = 1 ] && want="closed"
-          if [ "$proxy_mode" = 1 ]; then
+          if [ "$status" = "proxy" ]; then
             # Two signals: :${toString port.mihomoMixed} must be clash-verge's (identity) and answer a real
             # proxied request twice in a row; staying in proxy only needs identity.
             if core_up; then core_id=1; fi
@@ -276,7 +297,7 @@ in
           if [ "$want" != "$mode" ]; then
             case "$want" in
               proxy)
-                if start_gost proxy; then mode="proxy"; good=0; fi
+                if start_gost proxy; then mode="proxy"; good=0; else mode="closed"; fi
                 ;;
               direct)
                 # Passthrough from the first round: nothing points at a core when
@@ -284,6 +305,8 @@ in
                 if start_gost direct; then
                   mode="direct"
                   echo "gost-relay: Clash is off; passthrough relay on 127.0.0.1:${toString port.gostHttp}" >&2
+                else
+                  mode="closed"
                 fi
                 ;;
               *)
