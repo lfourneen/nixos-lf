@@ -37,5 +37,15 @@
     default = "198.18.0.0/16";
     description = "Network form of the fake-ip pool; the Mode-C guard exempts root to it for the TUN self-test.";
   };
+
+  # The name proxy-mode's TUN self-test resolves. It must receive a fake-ip
+  # answer, so it must not be caught by the Merge template's fake-ip-filter; the
+  # home side asserts that at build time (a filtered name would break the TUN
+  # layer of the health gate and lock the host in Mode C).
+  options.my.proxy.tunProbeName = lib.mkOption {
+    type = lib.types.str;
+    default = "www.baidu.com";
+    description = "Name used for proxy-mode's TUN self-test; must not match a fake-ip-filter entry.";
+  };
 }
 
