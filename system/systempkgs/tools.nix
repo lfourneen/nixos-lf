@@ -44,6 +44,9 @@
     dhcpcd
     networkmanagerapplet
 
+    # Test
+    jmeter
+
     # Monitoring
     btop
     fastfetch

@@ -62,6 +62,18 @@
 
     # Go
     go
+
+    # FPGA / HDL
+    verible
+    svls
+    verilator
+    yosys
+    python313Packages.cocotb
+    surfer
+
+    # waveform conversion / runtime for wave-mcp
+    zlib
+    gtkwave
   ];
 }
 
