@@ -44,6 +44,18 @@ let
     + lib.concatStringsSep "," config.my.machine.privateV4
     + ",192.168.1.1,*.local";
 
+  # Proxy env for MCP servers that reach the network. Hermes only passes the
+  # env keys listed per-server (plus safe defaults) to the MCP subprocess, so
+  # every network-facing server has to opt the proxy in explicitly.
+  mcpProxyEnv = {
+    HTTP_PROXY = gostHttp;
+    HTTPS_PROXY = gostHttp;
+    # Lowercase twins: some clients read only these.
+    http_proxy = gostHttp;
+    https_proxy = gostHttp;
+    NO_PROXY = noProxy;
+  };
+
   # Agent Mail (Agently / Tencent QQ Mail). The package and its `agently-check`
   # upstream-drift checker live in agently-cli.nix; the skill beside it is
   # installed into HERMES_HOME/skills/. Credentials land in /var/lib/hermes
@@ -166,14 +178,7 @@ in
         fetch = {
           command = "${pkgs.mcp-server-fetch}/bin/mcp-server-fetch";
           args = [];
-
-          env = { 
-            HTTP_PROXY = "${gostHttp}"; 
-            HTTPS_PROXY = "${gostHttp}"; 
-            # Lowercase twins: some clients read only these.
-            http_proxy = "${gostHttp}"; 
-            https_proxy = "${gostHttp}"; 
-          };
+          env = mcpProxyEnv;
         };
 
         filesystem = {
@@ -194,6 +199,69 @@ in
         time = {
           command = "${pkgs.mcp-server-time}/bin/mcp-server-time";
           args = [];
+        };
+
+        # Up-to-date library/framework docs (no API key required).
+        context7 = {
+          command = "${lib.getExe pkgs.context7-mcp}";
+          args = [ ];
+          env = mcpProxyEnv;
+        };
+
+        # Convert any document to markdown; may fetch URLs, so needs the proxy.
+        markitdown = {
+          command = "${lib.getExe pkgs.markitdown-mcp}";
+          args = [ ];
+          env = mcpProxyEnv;
+        };
+
+        # Large-PDF chunked search (bundles tesseract for scanned pages).
+        pdf = {
+          command = "${lib.getExe pkgs.unstable.pdf-mcp}";
+          args = [ ];
+        };
+
+        # Knowledge-graph memory (complements the holographic memory plugin).
+        memory = {
+          command = "${lib.getExe pkgs.mcp-server-memory}";
+          args = [ ];
+          env = {
+            MEMORY_FILE_PATH = "/var/lib/hermes/.hermes/memory.json";
+          };
+        };
+
+        git = {
+          command = "${lib.getExe pkgs.mcp-server-git}";
+          args = [ "--repository" "/var/lib/hermes/workspace" ];
+        };
+
+        # Web search, no API key. open-websearch intentionally ignores the
+        # HTTP_PROXY env vars and uses USE_PROXY/PROXY_URL instead; SEARCH_MODE
+        # is pinned to "request" so it never tries to download Playwright.
+        open-websearch = {
+          command = "${lib.getExe pkgs.unstable.open-websearch}";
+          args = [ ];
+          env = {
+            MODE = "stdio";
+            DEFAULT_SEARCH_ENGINE = "duckduckgo";
+            SEARCH_MODE = "request";
+            USE_PROXY = "true";
+            PROXY_URL = gostHttp;
+          };
+        };
+
+        # agent-browser (vercel-labs) as an MCP server, driving the Nix
+        # Chromium through gost. --no-sandbox is required because the service
+        # sandbox blocks Chrome's setuid/user-namespace sandbox.
+        agent-browser = {
+          command = "${lib.getExe pkgs.unstable.agent-browser}";
+          args = [ "mcp" ];
+          env = {
+            AGENT_BROWSER_EXECUTABLE_PATH = "${lib.getExe pkgs.chromium}";
+            AGENT_BROWSER_PROXY = gostHttp;
+            AGENT_BROWSER_PROXY_BYPASS = "localhost,127.0.0.1,::1";
+            AGENT_BROWSER_ARGS = "--no-sandbox";
+          };
         };
 
         playwright = {
@@ -296,6 +364,49 @@ in
 
       # Runtime
       nodejs
+      uv
+
+      # Browser automation tooling
+      chromium
+      pkgs.unstable.agent-browser
+
+      # Code intelligence
+      ast-grep
+      repomix
+      difftastic
+      tokei
+      hyperfine
+
+      # Data processing
+      duckdb
+      qsv
+      csvkit
+      miller
+
+      # Document & media
+      typst
+      qpdf
+      exiftool
+      tesseract
+      ffmpeg
+      yt-dlp
+
+      # Web & markup parsing
+      htmlq
+      xmlstarlet
+      xh
+
+      # Security scanning & sandbox
+      semgrep
+      gitleaks
+      trufflehog
+      nono
+
+      # Terminal UX
+      bat
+      glow
+      zoxide
+      fzf
 
       # Agent Mail (Agently / Tencent QQ Mail)
       agently-cli
