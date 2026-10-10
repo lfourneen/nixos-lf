@@ -62,9 +62,20 @@
     # MCP
     context7-mcp
     mcp-nixos
+    mcp-server-fetch
+    pkgs.unstable.pdf-mcp
+    pkgs.unstable.open-websearch
+    pybibget
+    python3Packages.arxiv2bib
 
     # Document
     texliveFull
+    poppler-utils
+    pandoc
+    tesseract
+    ocrmypdf
+    qpdf
+    mupdf
 
     # AI agents
     dsh
