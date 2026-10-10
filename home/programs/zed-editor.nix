@@ -52,7 +52,7 @@
       "git-firefly"
 
       # Themes & Icons
-      "jetbrains-themes"
+      "github-dark-default"
       "material-icon-theme"
 
       # MCP servers
@@ -94,6 +94,7 @@
 
       git_panel = {
         dock = "left";
+        entry_primary_click_action = "file_diff";
       };
 
       project_panel = {
@@ -113,7 +114,7 @@
       theme = {
         mode = "dark";
         light = "Ayu Light";
-        dark = "JetBrains Islands Dark";
+        dark = "GitHub Dark Default";
       };
 
       languages = {
