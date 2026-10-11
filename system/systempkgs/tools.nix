@@ -80,7 +80,6 @@
     # AI agents
     dsh
     dsh-desktop
-    oh-my-codex
     oh-my-opencode
 
     # Media
