@@ -71,7 +71,6 @@
               # LLM agents overlay
               (final: prev: {
                 dsh = inputs.llm-agents.packages.${prev.stdenv.hostPlatform.system}.dsh;
-                oh-my-codex = inputs.llm-agents.packages.${prev.stdenv.hostPlatform.system}.oh-my-codex;
                 oh-my-opencode = inputs.llm-agents.packages.${prev.stdenv.hostPlatform.system}.oh-my-opencode;
               })
 
