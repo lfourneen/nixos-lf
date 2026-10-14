@@ -59,6 +59,17 @@
     neovim
     vim
 
+    # Reverse engineering
+    apktool
+    binwalk
+    jadx
+    mitmproxy
+    python3Packages.pwntools
+    rizin
+    sigrok-cli
+    unstable.ghidra
+    wabt
+
     # MCP
     context7-mcp
     mcp-nixos

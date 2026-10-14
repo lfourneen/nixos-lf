@@ -1,4 +1,4 @@
-{ config, ... }:
+{ config, pkgs, ... }:
 
 {
   environment = {
@@ -20,6 +20,10 @@
       XMODIFIERS = "@im=fcitx";
       GLFW_IM_MODULE = "fcitx";   # For games/tools using GLFW
       SDL_IM_MODULE = "fcitx";    # For SDL apps (games)
+
+      # REA (MCP) native analysis engine: Ghidra is located via an env var,
+      # not PATH.
+      GHIDRA_INSTALL_DIR = "${pkgs.unstable.ghidra}/lib/ghidra";
 
       # Proxy
       #http_proxy = "";
