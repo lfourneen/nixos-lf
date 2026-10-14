@@ -192,6 +192,10 @@ in
           '+.openai.com': [ https://1.1.1.1/dns-query ]
           '+.chatgpt.com': [ https://1.1.1.1/dns-query ]
           '+.anthropic.com': [ https://1.1.1.1/dns-query ]
+        # `fallback` / `fallback-filter` are deliberately not declared: the
+        # global extension script drops every subscription's DNS key that is
+        # not listed here, so a leaky `fallback` or a `geosite:gfw` reference
+        # cannot survive into the core. See Script.js below.
 
       # Sniffing still matters with fake-ip: it recovers the domain for flows
       # that arrive as a bare address (filtered/LAN names, pure-IP traffic), and
@@ -212,13 +216,51 @@ in
             ports: [ 443, 8443 ]
 
       # Force domains through the proxy group: prepend-rules wins by order, so its
-      # entries beat GEOIP,CN,DIRECT. Fill in, e.g. DOMAIN-SUFFIX,your.example,<代理组名>
+      # entries beat GEOIP,CN,DIRECT. Fill in, e.g. DOMAIN-SUFFIX,your.example,<proxy-group-name>
       prepend-rules: []
 
       # Keep the TCP controller off and never ship the default secret; replace the
       # placeholder with `openssl rand -hex 16`. Verge may override both keys.
       external-controller: ""
-      secret: "<在此填入随机值>"
+      secret: "<fill in a random value>"
+    '';
+    force = true;
+  };
+
+  # Global extension script. Runs after the global Merge and before the
+  # per-profile extensions, so it is the last writer of `dns` for the merged
+  # config: any `dns` key a subscription adds that the Merge template does not
+  # declare (a leaky `fallback`, a `geosite:gfw` that fails to load, ...) is
+  # dropped by name-agnostic whitelist, no matter what the airport calls it.
+  # Keep DNS_KEYS in sync with the `dns:` block in Merge.yaml above.
+  home.file.".local/share/io.github.clash-verge-rev.clash-verge-rev/profiles/Script.js" = {
+    text = ''
+      // Managed by home/config/cvr-merge.nix -- do not edit in the GUI.
+      const DNS_KEYS = new Set([
+        "enable", "listen", "ipv6", "enhanced-mode", "fake-ip-range",
+        "fake-ip-filter", "use-hosts", "respect-rules",
+        "default-nameserver", "proxy-server-nameserver", "nameserver",
+        "nameserver-policy",
+      ]);
+      const GEOSITE_KEYS = new Set(["geosite:cn", "geosite:geolocation-!cn"]);
+
+      function main(config) {
+        const dns = config && config.dns;
+        if (dns && typeof dns === "object") {
+          for (const key of Object.keys(dns)) {
+            if (!DNS_KEYS.has(key)) delete dns[key];
+          }
+          const policy = dns["nameserver-policy"];
+          if (policy && typeof policy === "object") {
+            for (const key of Object.keys(policy)) {
+              if (key.startsWith("geosite:") && !GEOSITE_KEYS.has(key)) {
+                delete policy[key];
+              }
+            }
+          }
+        }
+        return config;
+      }
     '';
     force = true;
   };
