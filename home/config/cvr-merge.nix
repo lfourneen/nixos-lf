@@ -46,6 +46,29 @@ let
     "connectivitycheck.android.com"
   ];
 
+  # IP-check / leak-test endpoints that must not egress DIRECT (a CN probe then
+  # reports the real home IP as a "backup exit"). Suffixes cover subdomains.
+  probeDomains = [
+    "ip.cn" "ip138.com" "cip.cc" "ipip.net" "ip.sb" "ipw.cn" "ip125.com"
+    "ip111.cn" "ip.3322.net" "ip.skk.moe" "ping0.cc" "ippure.com"
+    "iplark.com" "ipcheck.ing" "ip.gs" "ipaddress.com" "ip.me" "ipinfo.io"
+    "ip-api.com" "ipapi.co" "ipapi.is" "ipify.org" "icanhazip.com"
+    "ifconfig.me" "ifconfig.co" "ident.me" "seeip.org" "checkip.amazonaws.com"
+    "checkip.dyndns.org" "test-ipv6.com" "whatismyipaddress.com"
+    "whatismyip.com" "myip.com" "ipchicken.com" "2ip.io" "whoer.net"
+    "browserleaks.com" "ipleak.net" "dnsleaktest.com" "dnsleak.com"
+    "dnschecker.org" "ip2location.com" "dns-detect.alicdn.com" "itdog.cn"
+    "17ce.com" "boce.com" "tool.lu" "ping.pe"
+    # Cross-network CDN/trace targets such as ip.net.coffee's "domestic" probes;
+    # a CN-fronted /cdn-cgi/trace here reports the real v4 and v6 on the Direct path.
+    "cloudflare-cn.com" "qualcomm.cn" "perfops.byte-test.com"
+    # Common CN IP-echo endpoints.
+    "chinaz.com" "pv.sohu.com"
+    # NetEase CDN: a HEAD replies with the cdn-user-ip header (real IP on Direct).
+    "necaptcha.nosdn.127.net"
+  ];
+  probeDomainsJs = "[ " + lib.concatStringsSep ", " (map (d: "\"${d}\"") probeDomains) + " ]";
+
   # The TUN self-test name must get a fake-ip answer, so it must not be matched
   # by fakeIpFilter; a routine edit that adds e.g. "+.baidu.com" would otherwise
   # silently break the health gate's TUN layer and pin the host in Mode C.
@@ -215,8 +238,8 @@ in
           QUIC:
             ports: [ 443, 8443 ]
 
-      # Force domains through the proxy group: prepend-rules wins by order, so its
-      # entries beat GEOIP,CN,DIRECT. Fill in, e.g. DOMAIN-SUFFIX,your.example,<proxy-group-name>
+      # Manual extra proxy rules (order beats GEOIP,CN,DIRECT); the probe domains
+      # are added by Script.js instead, via the subscription's own catch-all group.
       prepend-rules: []
 
       # Keep the TCP controller off and never ship the default secret; replace the
@@ -227,12 +250,9 @@ in
     force = true;
   };
 
-  # Global extension script. Runs after the global Merge and before the
-  # per-profile extensions, so it is the last writer of `dns` for the merged
-  # config: any `dns` key a subscription adds that the Merge template does not
-  # declare (a leaky `fallback`, a `geosite:gfw` that fails to load, ...) is
-  # dropped by name-agnostic whitelist, no matter what the airport calls it.
-  # Keep DNS_KEYS in sync with the `dns:` block in Merge.yaml above.
+  # Global extension script (after Merge, before per-profile extensions):
+  # (1) keep only the dns keys the Merge template declares (DNS_KEYS must match
+  # that block); (2) prepend probeDomains as proxy rules via the catch-all group.
   home.file.".local/share/io.github.clash-verge-rev.clash-verge-rev/profiles/Script.js" = {
     text = ''
       // Managed by home/config/cvr-merge.nix -- do not edit in the GUI.
@@ -243,6 +263,19 @@ in
         "nameserver-policy",
       ]);
       const GEOSITE_KEYS = new Set(["geosite:cn", "geosite:geolocation-!cn"]);
+      const PROBE_DOMAINS = ${probeDomainsJs};
+
+      // Catch-all group name differs per subscription, so take it from the
+      // final MATCH rule instead of hardcoding (a stale name fails the config).
+      function catchAllPolicy(rules) {
+        for (let i = rules.length - 1; i >= 0; i--) {
+          const r = rules[i];
+          if (typeof r === "string" && r.slice(0, 6) === "MATCH,") {
+            return r.slice(6).trim();
+          }
+        }
+        return null;
+      }
 
       function main(config) {
         const dns = config && config.dns;
@@ -257,6 +290,19 @@ in
                 delete policy[key];
               }
             }
+          }
+        }
+
+        const rules = config && config.rules;
+        if (Array.isArray(rules) && rules.length) {
+          const policy = catchAllPolicy(rules);
+          if (policy && policy !== "DIRECT" && policy !== "REJECT") {
+            const inject = [];
+            for (const d of PROBE_DOMAINS) {
+              const rule = "DOMAIN-SUFFIX," + d + "," + policy;
+              if (rules.indexOf(rule) === -1) inject.push(rule);
+            }
+            if (inject.length) config.rules = inject.concat(rules);
           }
         }
         return config;
