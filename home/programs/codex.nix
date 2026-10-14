@@ -1,42 +1,15 @@
-{ config, pkgs, lib, osConfig, ... }:
+{ config, pkgs, lib, ... }:
 
 let
-  # DeepSeek key from sops, injected at runtime (never written to the store).
-  deepseekKeyFile = lib.attrByPath
-    [ "sops" "secrets" "deepseek-codex-api-key" "path" ]
-    "/run/secrets/deepseek-codex-api-key"
-    osConfig;
-
-  codex = pkgs.symlinkJoin {
-    name = "codex-${pkgs.unstable.codex.version}";
-    inherit (pkgs.unstable.codex) version;
-    paths = [ pkgs.unstable.codex ];
-    nativeBuildInputs = [ pkgs.makeWrapper ];
-    postBuild = ''
-      wrapProgram $out/bin/codex \
-        --run 'if [ -r ${deepseekKeyFile} ]; then export DEEPSEEK_API_KEY="$(cat ${deepseekKeyFile})"; fi'
-    '';
-  };
-
   codexConfig = config.home.file.".codex/config.toml".source;
 
 in
 {
   programs.codex = {
     enable = true;
-    package = codex;
+    package = pkgs.unstable.codex;
     enableMcpIntegration = true;
     settings = {
-      model = "deepseek-flash";
-      model_provider = "deepseek";
-      model_providers = {
-        deepseek = {
-          name = "DeepSeek";
-          base_url = "https://api.deepseek.com/v1";
-          env_key = "DEEPSEEK_API_KEY";
-          wire_api = "responses";
-        };
-      };
       mcp_servers = {
         mcp-nixos = {
           command = "mcp-nixos";

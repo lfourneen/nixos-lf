@@ -10,9 +10,6 @@
       "hermes_api_key" = {};
       "qq_app_id" = {};
       "qq_client_secret" = {};
-
-      # Codex DeepSeek key (used by home/programs/codex.nix).
-      "deepseek-codex-api-key".owner = "lfour";
     };
 
     templates."hermes.env" = {
