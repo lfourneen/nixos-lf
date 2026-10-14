@@ -49,7 +49,6 @@
 
           # --- Tracking protection / anti-fingerprinting --------------------
           "privacy.fingerprintingProtection" = true;
-          "privacy.fingerprintingProtection.overrides" = "-FontVisibilityBaseSystem,-FontVisibilityLangPack";
           "privacy.trackingprotection.enabled" = true;
           "privacy.trackingprotection.socialtracking.enabled" = true;
           "privacy.trackingprotection.emailtracking.enabled" = true;
