@@ -7,15 +7,18 @@ let
   wireless = m.wireless.name;
   port = m.ports;
   join = lib.concatStringsSep ", ";
+  privateEgress = config.my.hardening.allowPrivateEgress;
+  allowedPrivate4 = lib.optionals privateEgress m.privateV4;
+  allowedPrivate6 = lib.optionals privateEgress (m.linkLocalV6 ++ m.ulaV6);
 
   # Ranges the TUN leaves alone and the kill switch treats as reachable.
   multicast4 = m.multicastV4 ++ [ m.limitedBroadcastV4 ];
   local4 = join m.privateV4;
-  exempt4 = join (m.privateV4 ++ multicast4);
-  redirectExempt4 = join ([ "127.0.0.0/8" ] ++ m.privateV4 ++ multicast4);
+  exempt4 = join (allowedPrivate4 ++ multicast4);
+  redirectExempt4 = join ([ "127.0.0.0/8" ] ++ allowedPrivate4 ++ multicast4);
   local6 = join (m.linkLocalV6 ++ m.ulaV6);
-  exempt6 = join (m.linkLocalV6 ++ m.ulaV6 ++ m.multicastV6);
-  redirectExempt6 = join ([ "::1" ] ++ m.linkLocalV6 ++ m.ulaV6 ++ m.multicastV6);
+  exempt6 = join (allowedPrivate6 ++ m.multicastV6);
+  redirectExempt6 = join ([ "::1" ] ++ allowedPrivate6 ++ m.multicastV6);
 
   # Trusted LANs allowed to reach host services (private/CGNAT IP != trust).
   # Empty = none; add e.g. "192.168.1.0/24". Tailnet/hotspot/VM are built in.
@@ -120,13 +123,19 @@ let
     # The proxy core marks its own outbound sockets (routing-mark): allow it, it
     # must reach the nodes directly.
     add rule inet lf_filter proxymode_drops meta mark ${coreMark} accept
-    # DHCP on the uplinks (dhcpcd is root and unmarked).
+    # DHCP clients on the uplinks: NM is root, dhcpcd has its pinned UID.
+    add rule inet lf_filter proxymode_drops meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept
     add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
-    add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept
-    # Tailscale WireGuard endpoint (tailscaled runs as root and does not carry
-    # the core's mark). Scoped to uid 0 so it cannot double as a general
-    # UDP/41641 egress channel for any other local process.
-    add rule inet lf_filter proxymode_drops meta skuid 0 oifname { "${wired}", "${wireless}" } udp dport 41641 accept
+    add rule inet lf_filter proxymode_drops meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept
+    # Tailscale transport (tailscaled runs as root and does not carry the core's
+    # mark). Its outbound UDP must be allowed to arbitrary ports: peer
+    # hole-punching and STUN do not use the 41641 endpoint port, and bounding it
+    # to 41641 degraded Tailscale to a DERP relay (netcheck reported UDP: false).
+    # uid 0 is the only identity the build-time nft parse accepts (socket cgroupv2
+    # is unsupported in the LKL kernel), and it does not widen the trust boundary:
+    # root can already set the core's routing mark. Scoped to the uplinks and to
+    # this fragment -- Mode C still cuts the tailnet.
+    add rule inet lf_filter proxymode_drops meta skuid 0 oifname { "${wired}", "${wireless}" } meta l4proto udp accept
     # Everything else leaving an uplink for a non-local destination is dropped,
     # root included.
     add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } ip daddr != { ${exempt4} } counter drop
@@ -201,14 +210,14 @@ let
     # proxy-mode's own TUN self-test dials it, so the self-test still runs while
     # blocked.
     add rule inet lf_filter lf_blocked_guard meta skuid 0 ip daddr ${fakeIpNet} accept
-    # DHCP stays alive on the uplinks. It is L2-local (the client request is
-    # sport 68 -> dport 67; the reply, and the hotspot/Waydroid server's own
-    # reply on wlo1, is sport 67 -> dport 68), so it cannot leak a public flow.
-    # An unconditional terminal drop would otherwise lose the lease, and with no
-    # lease there is no node, so the host could never leave Mode C.
-    add rule inet lf_filter lf_blocked_guard oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept
-    add rule inet lf_filter lf_blocked_guard oifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
-    add rule inet lf_filter lf_blocked_guard oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept
+    # Retain pinned DHCP clients, including unicast renewals. Server replies
+    # are only needed for the explicitly enabled AP and its own subnet.
+    add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept
+    ${lib.optionalString hotspotEnable ''add rule inet lf_filter lf_blocked_guard oifname "${wireless}" ip saddr ${m.hotspot.address} ip daddr ${m.hotspot.subnet} udp sport 67 udp dport 68 accept''}
+    add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept
+    # Link maintenance has no application payload; without ND an IPv6-only
+    # uplink cannot recover once its neighbour cache expires in Mode C.
+    add rule inet lf_filter lf_blocked_guard oifname { "${wired}", "${wireless}" } ip6 hoplimit 255 meta l4proto icmpv6 icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept
     # Everything else, on any interface, to any other destination: gone.
     add rule inet lf_filter lf_blocked_guard counter drop
 
@@ -238,10 +247,21 @@ in
   # The nft rules match these daemons by uid, so the accounts are pinned.
   users.users.unbound.uid = m.uids.unbound;
   users.users.dnsmasq.uid = m.uids.dnsmasq;
+  users.users.dhcpcd.uid = m.uids.dhcpcd;
 
   # A null or shared uid makes an exemption match nothing or the wrong daemon;
   # uniqueness is what the evaluator can check.
   assertions = [
+    {
+      assertion = lib.count (u: u.uid == m.uids.dhcpcd) (lib.attrValues config.users.users) == 1;
+      message = "The pinned dhcpcd UID must belong to exactly one account.";
+    }
+    {
+      assertion = lib.length (lib.unique (lib.attrValues port)) == lib.length (lib.attrValues port)
+        && m.mihomoMark > 0 && m.mihomoMark <= 4294967295
+        && builtins.match "[a-zA-Z0-9_.-]{1,15}" tunDev != null;
+      message = "Proxy ports must be distinct; the routing mark and TUN interface name must be valid.";
+    }
     {
       assertion = lib.count (u: u.uid == unboundUid) (lib.attrValues config.users.users) == 1;
       message = ''
@@ -348,6 +368,13 @@ in
         nohook resolv.conf
         nohook ntp.conf
       '';
+      runHook = ''
+        case "$reason" in
+          BOUND|RENEW|REBIND|REBOOT|EXPIRE|FAIL|NAK|NOCARRIER|CARRIER|STOP|BOUND6|RENEW6|REBIND6|EXPIRE6|ROUTERADVERT)
+            ${pkgs.systemd}/bin/systemctl --no-ask-password start --no-block proxy-net-wake.service 2>/dev/null || true
+            ;;
+        esac
+      '';
     };
 
     proxy = {
@@ -355,6 +382,17 @@ in
       noProxy = "127.0.0.1,localhost,::1,${join m.privateV4},*.local";
     };
   };
+
+  # dhcpcd runs without root. Its exit hook may only start this fixed wakeup
+  # coordinator, not manage arbitrary units or change their properties.
+  security.polkit.extraConfig = ''
+    polkit.addRule(function(action, subject) {
+      if (subject.user == "dhcpcd" && action.id == "org.freedesktop.systemd1.manage-units"
+          && action.lookup("unit") == "proxy-net-wake.service" && action.lookup("verb") == "start") {
+        return polkit.Result.YES;
+      }
+    });
+  '';
 
   # Uppercase proxy vars for tools that ignore the lowercase *_proxy ones
   environment.sessionVariables = {
@@ -412,10 +450,10 @@ in
       no-hosts = true;
       strict-order = true;    # order within the mode's own list; see the note below
       cache-size = 4096;
-      "neg-ttl" = "30";       # cap negative caching (e.g. mihomo's empty AAAA) to 30s
-      conf-file = "/run/dns-upstream/servers.conf";  # written by dns-upstream.service
-      # No static second server: a SERVFAIL from the validating upstream would fall
-      # through to the non-validating DoT one under strict-order.
+      "neg-ttl" = "30";       # default negative TTL when an upstream supplies no SOA TTL
+      servers-file = "/run/dns-upstream/servers.conf";  # hot-reloaded with SIGHUP
+      # No static second server outside the mode's own list; transport
+      # encryption does not by itself establish local DNSSEC validation.
     };
   };
 
@@ -472,7 +510,7 @@ in
         # the TCP twin never bound (resolved already holds 127.0.0.53/54:53 and
         # logs EADDRINUSE), so clients get no TCP DNS. Do not re-bind this to a
         # concrete address, which only exists while the hotspot is up.
-        DNSStubListenerExtra = [ "udp:0.0.0.0:53" ];
+        DNSStubListenerExtra = lib.optionals config.my.hardening.externalDns [ "udp:0.0.0.0:53" ];
       };
     };
   };
@@ -501,8 +539,8 @@ in
       # Our own tables only, under private lf_* names so a reload can never clobber
       # the shared iptables-nft tables (`ip nat`, `ip6 nat`, `ip mangle`) used by
       # libvirt / Docker / NetworkManager. `destroy` is delete-if-exists, so this
-      # stays idempotent. The mode fragment's NAT tables are torn down too, so a
-      # reload leaves a clean slate (proxy-mode then re-applies within the backstop).
+      # stays idempotent. The loader appends the selected safety fragment to
+      # this static text and commits both in a single nft transaction.
       destroy table inet lf_filter
       destroy table ip lf_nat
       destroy table ip6 lf_nat
@@ -532,6 +570,7 @@ in
           # DHCP client replies on the uplinks, before the martian drop below so an
           # OFFER/ACK sourced from 0.0.0.0 is not caught by it.
           iifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
+          iifname { "${wired}", "${wireless}" } udp sport 547 udp dport 546 accept
 
           # Waydroid bridge: its dnsmasq serves DHCP (67) and DNS (53) on the
           # gateway. DHCP is sourced from 0.0.0.0, so it cannot be source-scoped
@@ -555,7 +594,7 @@ in
           iifname "tailscale0" udp dport { ${tailnetUdp} } accept
 
           # ICMPv6 essentials before the public-IPv6 drop
-          meta l4proto ipv6-icmp icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert, packet-too-big, echo-request, destination-unreachable, time-exceeded } accept
+          meta l4proto icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert, packet-too-big, echo-request, destination-unreachable, time-exceeded } accept
 
           # Block all public IPv6 inbound
           ip6 saddr != { ::1, fe80::/10, fc00::/7 } drop
@@ -577,7 +616,7 @@ in
           ${trustedLanRules}
 
           # libvirt VMs -> host only.
-          ${hostServices vmSrc}
+          ${lib.optionalString config.my.hardening.guestHostServices (hostServices vmSrc)}
 
           # Counted: dmesg is restricted, so this is the only view of what is refused.
           counter drop
@@ -629,6 +668,14 @@ in
           type filter hook output priority -200; policy accept;
         }
 
+        # Only NAT may deliver traffic to gost's transparent listener. Reject
+        # explicit loopback connects before NAT, preventing recursive self-dials.
+        chain redirect_guard {
+          type filter hook output priority -201; policy accept;
+          ip daddr 127.0.0.0/8 tcp dport ${toString port.gostRedirect} reject with tcp reset
+          ip6 daddr ::1 tcp dport ${toString port.gostRedirect} reject with tcp reset
+        }
+
         chain output {
           type filter hook output priority 0; policy accept;
 
@@ -637,8 +684,8 @@ in
           # accept here AND before mihomo's nat/output redirect. It is empty
           # outside `blocked`, so it is a no-op the rest of the time.
 
-          ip daddr { ${local4} } accept
-          ip6 daddr { ${local6} } accept
+          ${lib.optionalString privateEgress ''ip daddr { ${local4} } accept''}
+          ${lib.optionalString privateEgress ''ip6 daddr { ${local6} } accept''}
           ip daddr 127.0.0.0/8 accept
           ip6 daddr ::1 accept
 
@@ -705,9 +752,8 @@ in
     '';
   };
 
-  # nftables is a oneshot with Restart=no, so a failed load would leave the host
-  # with no firewall at all (resolved holds udp/0.0.0.0:53). Retry on failure;
-  # on-failure is the only restart mode systemd allows for oneshot units.
+  # Retry a failed first load; subsequent failed transactions preserve the old
+  # policy. on-failure is the restart mode supported for oneshot units.
   systemd.services.nftables = {
     # Three failed loads leave the host with no ruleset; the failure has to be
     # visible (nftables-recover.nix also retries it periodically).
@@ -715,11 +761,7 @@ in
     serviceConfig = {
       Restart = "on-failure";
       RestartSec = "2s";
-      # A reload re-creates the fragment chains empty while the fragment's own
-      # tables survive, so proxy-mode's "rules loaded" probe still returns true and
-      # it would not re-apply. Wake the supervisors right after every load.
-      # mkAfter: the module's own ExecStartPost (saving the deletions file) must stay.
-      ExecStartPost = lib.mkAfter [ "${pkgs.systemd}/bin/systemctl start --no-block proxy-net-wake.service" ];
+      # proxy-mode.nix supplies the atomic static+mode loader for start/reload.
     };
     unitConfig.StartLimitBurst = 3;
   };
@@ -808,7 +850,7 @@ in
     "net.core.default_qdisc" = "fq";
     "net.ipv4.tcp_congestion_control" = "bbr";
 
-    # Cap buffers at 16 MiB to avoid bufferbloat
+    # Socket autotuning ceilings; these do not manage queues at the WAN bottleneck.
     "net.core.rmem_max" = 16777216;
     "net.core.wmem_max" = 16777216;
     "net.core.rmem_default" = 262144;

@@ -19,8 +19,8 @@ in
     };
     
     # Global override: route all Flatpak apps through gost's HTTP listener,
-    # since the killswitch only exempts uid 0 and gost and sandboxes can't
-    # read the host dconf proxy settings.
+    # since sandboxes cannot reliably read host dconf proxy settings. The
+    # kernel policy exempts the core mark, not arbitrary root traffic.
     overrides.settings.global = {
       Environment = {
         HTTP_PROXY = "${gostHttp}";
@@ -128,8 +128,8 @@ in
     ];
   };
 
-  # Runs as root, outside the killswitch and without any *_PROXY, so only order
-  # it behind gost-relay (wants, not requires: gost-relay is fail-open).
+  # Order install/update startup behind the relay. Root traffic remains subject
+  # to the same mark-based kernel policy; A passthrough is an explicit mode.
   systemd.services.flatpak-managed-install = {
     wants = [ "gost-relay.service" ];
     after = [ "gost-relay.service" ];

@@ -5,6 +5,23 @@
   # machine is reachable, not how private it is: a direct connection exposes the
   # real address either way, and nothing here needs the proxy to be running.
   options.my.hardening = {
+    allowPrivateEgress = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Keep direct LAN/CGNAT/ULA access in B. Disable to subject host private-address flows to the proxy policy too (including tailnet).";
+    };
+    guestHostServices = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Allow the existing desktop-service port list from libvirt guests; disable for untrusted guests.";
+    };
+
+    externalDns = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Expose a firewall-gated UDP DNS stub for explicitly configured LAN clients.";
+    };
+
     hotspot.enable = lib.mkOption {
       type = lib.types.bool;
       default = false;

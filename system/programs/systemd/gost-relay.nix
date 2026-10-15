@@ -5,10 +5,6 @@ let
   port = m.ports;
   gostUid = m.uids.gost;
 
-  # Health-probe target for the "core really answers" gate: domestic and highly
-  # reachable, so it proves mihomo's own chain rather than the node.
-  healthProbeUrl = "https://www.baidu.com/";
-
 in
 {
   # Dedicated user so clash's tun.exclude-uid and network.nix nft rules can
@@ -53,14 +49,19 @@ in
       # Bound the blast radius of the :${toString port.gostRedirect} redirect self-loop; systemd sets both
       # the soft and the hard limit from this one option.
       LimitNOFILE = 8192;
+      MemoryHigh = "128M";
+      MemoryMax = "512M";
+      TasksMax = 512;
+      LockPersonality = true;
+      SystemCallArchitectures = "native";
+      RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
 
       # Unit-level backstop: the supervisor's own stop path is bounded, so a stuck
       # child can never wedge `systemctl stop`.
       TimeoutStopSec = 15;
 
-      # Sandboxing. Deliberately not set (still need sandbox testing):
-      # SystemCallFilter, RestrictAddressFamilies, ProtectProc/ProcSubset,
-      # SystemCallArchitectures, LockPersonality. UMask/RuntimeDirectoryMode stay
+      # Go still needs its normal syscall set; process/address-space confinement
+      # is applied separately from a syscall allowlist. UMask/RuntimeDirectoryMode stay
       # as-is so `proxy-status` can read the state file.
       NoNewPrivileges = true;
       ProtectSystem = "strict";
@@ -83,9 +84,7 @@ in
       ExecStart = "${pkgs.writeShellScript "gost-launcher" ''
         mode="closed"          # closed = nothing listening; proxy = chained to mihomo
         proxy_pid=""
-        good=0
         listen_fail=0
-        degraded=0
 
         # The nat redirect excludes this uid so a passthrough relay cannot dial itself;
         # a drifted runtime uid would silently widen that exclusion.
@@ -110,8 +109,7 @@ in
         nap() {
           ${pkgs.coreutils}/bin/sleep "$1" &
           nap_pid=$!
-          wait "$nap_pid" 2>/dev/null
-          rc=$?
+          if [ "$woken" = 0 ]; then wait "$nap_pid" 2>/dev/null; rc=$?; else rc=129; fi
           kill "$nap_pid" 2>/dev/null || true
           nap_pid=""
           [ "$rc" -gt 128 ] && woken=1
@@ -120,7 +118,8 @@ in
         # State-file contract: one mode word plus a newline, rewritten every round
         # (so its mtime only proves the supervisor is alive); `proxy-status` reads it.
         write_state() {
-          printf '%s\n' "$1" > /run/gost-relay/status
+          printf '%s\n' "$1" > /run/gost-relay/status.$$
+          mv -f /run/gost-relay/status.$$ /run/gost-relay/status
         }
 
         # Identity, not reachability: an impostor can bind :${toString port.mihomoMixed} but cannot land in
@@ -183,15 +182,15 @@ in
           # passthrough, which is what "Clash is off" means.
           if [ "$1" = "proxy" ]; then
             "${pkgs.gost}/bin/gost" \
-                "-L=http://127.0.0.1:${toString port.gostHttp}?reuseport=true" \
-                "-L=redirect://127.0.0.1:${toString port.gostRedirect}?reuseport=true" \
-                "-L=redirect://[::1]:${toString port.gostRedirect}?reuseport=true" \
+                "-L=http://127.0.0.1:${toString port.gostHttp}" \
+                "-L=redirect://127.0.0.1:${toString port.gostRedirect}" \
+                "-L=redirect://[::1]:${toString port.gostRedirect}" \
                 -F=http://127.0.0.1:${toString port.mihomoMixed} &
           else
             "${pkgs.gost}/bin/gost" \
-                "-L=http://127.0.0.1:${toString port.gostHttp}?reuseport=true" \
-                "-L=redirect://127.0.0.1:${toString port.gostRedirect}?reuseport=true" \
-                "-L=redirect://[::1]:${toString port.gostRedirect}?reuseport=true" &
+                "-L=http://127.0.0.1:${toString port.gostHttp}" \
+                "-L=redirect://127.0.0.1:${toString port.gostRedirect}" \
+                "-L=redirect://[::1]:${toString port.gostRedirect}" &
           fi
           new_pid=$!
 
@@ -231,6 +230,7 @@ in
         write_state closed
 
         while true; do
+          woken=0
           # A crash after the 1s start check would leave both ports unbound while
           # the state file still claims a mode. Heal it first, back to unknown.
           if [ -n "$proxy_pid" ] && ! kill -0 "$proxy_pid" 2>/dev/null; then
@@ -273,31 +273,19 @@ in
           want="closed"
           [ "$status" = "direct" ] && want="direct"
 
-          core_id=0
           core_e2e=0
           if [ "$status" = "proxy" ]; then
-            # Two signals: :${toString port.mihomoMixed} must be clash-verge's (identity) and answer a real
-            # proxied request twice in a row; staying in proxy only needs identity.
-            if core_up; then core_id=1; fi
-
-            if ${pkgs.coreutils}/bin/timeout 3 ${pkgs.curl}/bin/curl -s -o /dev/null \
-                 -w '%{http_code}' --noproxy "" -x http://127.0.0.1:${toString port.mihomoMixed} \
-                 ${healthProbeUrl} 2>/dev/null \
-               | ${pkgs.gnugrep}/bin/grep -qE '^(200|204)$'; then
-              core_e2e=1
-            fi
-            if [ "$core_e2e" = 1 ]; then good=$((good+1)); else good=0; fi
-
-            want="closed"
-            if [ "$core_id" = 1 ] && { [ "$mode" = "proxy" ] || [ "$good" -ge 2 ]; }; then
-              want="proxy"
+            # proxy-mode already checked the selected node and TUN before
+            # publishing proxy. Do not impose a second site's warm-up outage.
+            if core_up; then
+              core_e2e=1; want="proxy"
             fi
           fi
 
           if [ "$want" != "$mode" ]; then
             case "$want" in
               proxy)
-                if start_gost proxy; then mode="proxy"; good=0; else mode="closed"; fi
+                if start_gost proxy; then mode="proxy"; else mode="closed"; fi
                 ;;
               direct)
                 # Passthrough from the first round: nothing points at a core when
@@ -319,27 +307,8 @@ in
             esac
           fi
 
-          # Identity holds but the proxied probe fails: there is nothing better to
-          # fail over to, so keep serving and log it - once, then every 12th round.
-          if [ "$mode" = "proxy" ] && [ "$core_id" = 1 ] && [ "$core_e2e" = 0 ]; then
-            degraded=$((degraded + 1))
-            if [ "$degraded" = 1 ] || [ $((degraded % 12)) -eq 0 ]; then
-              echo "gost-relay: WARN :${toString port.mihomoMixed} is clash-verge's but the proxied probe ${healthProbeUrl} failed for $degraded round(s); staying proxy" >&2
-            fi
-          else
-            if [ "$degraded" -gt 0 ]; then
-              if [ "$core_e2e" = 1 ]; then
-                echo "gost-relay: proxied probe recovered after $degraded degraded round(s)" >&2
-              else
-                echo "gost-relay: degraded streak ended (core unverified or mode changed) after $degraded round(s)" >&2
-              fi
-            fi
-            degraded=0
-          fi
-
-          # Settled (proxy with a working probe, or passthrough) => back off; a
-          # pending transition, a closed/undecided state or a degraded probe stays
-          # fast so the switch is not delayed.
+          # A verified-core relay or direct passthrough may back off. Closed
+          # and undecided states continue retrying quickly.
           changed=1
           if [ "$mode" = "$want" ]; then
             case "$mode" in
@@ -357,7 +326,7 @@ in
           # An event wake while a switch is still in flight must not wait a whole
           # interval for the second confirmation: re-evaluate at once (the woken
           # flag is pre-cleared so this repeats at most once).
-          if [ "$woken" = 1 ] && [ "$changed" = 1 ]; then
+          if [ "$woken" = 1 ]; then
             woken=0
             continue
           fi

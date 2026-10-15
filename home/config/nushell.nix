@@ -192,6 +192,7 @@ in
       # all_proxy comes from /etc/set-environment too; clear it as well so
       # proxy-off is symmetric.
       hide-env all_proxy
+      hide-env --ignore-errors HTTP_PROXY HTTPS_PROXY ALL_PROXY
       print $"(ansi yellow)Proxy disabled.(ansi reset)"
     }
 
@@ -204,8 +205,12 @@ in
       }
       let g = (do $read "/run/gost-relay/status")
       let d = (do $read "/run/dns-upstream/status")
-      let p = (do $read "/run/proxy-mode/status")
-      let why = (do $read "/run/proxy-mode/reason")
+      let state = (try { open /run/proxy-mode/state.json } catch { {mode: unknown, reason: unknown, version: -1} })
+      let p = $state.mode
+      let why = $state.reason
+      let verified = (do $read "/run/netsec/result")
+      let verified_version = (do $read "/run/netsec/verified-version")
+      let alarm = ("/run/netsec/failed" | path exists)
       # ${gostHttp} = gost's HTTP listener (the port every proxy-aware consumer uses).
       let listener = (try {
         ss -H -tln | lines | any {|l| $l | str contains "127.0.0.1:${gostHttp}" }
@@ -216,10 +221,10 @@ in
       } catch { "000" })
       # Green only when the enforcement mode itself is `proxy`: a healthy-looking
       # gost with mode `blocked`/`unenforced` must not read as OK.
-      let ok = (($p == "proxy") and ($g == "proxy") and $listener and ($probe == "204"))
+      let ok = (($p == "proxy") and ($g == "proxy") and ($d == "proxy") and $listener and ($probe == "204") and ($verified == "ok") and ($verified_version == ($state.version | into string)) and (not $alarm))
       let color = if $ok { "green" } else { "red" }
       let r = (if ($why | is-empty) { "-" } else { $why })
-      print $"(ansi $color)mode: ($p) ($r)(ansi reset)  egress: ($g)  DNS: ($d)  listener: (if $listener { 'up' } else { 'down' })  probe: ($probe)"
+      print $"(ansi $color)mode: ($p) ($r)(ansi reset)  egress: ($g)  DNS: ($d)  verify: ($verified)  alarm: ($alarm)  listener: (if $listener { 'up' } else { 'down' })  probe: ($probe)"
     }
 
     # True while the Clash Verge GUI runs in the user session. The root
@@ -235,29 +240,38 @@ in
     # helper, so quitting the GUI does NOT stop it -- stopping the unit does.
     def clash-off [] {
       print $"(ansi yellow_bold)Stopping the Clash core \(service mode\)...(ansi reset)"
-      sudo systemctl stop clash-verge.service
+      if (clash-gui-running) {
+        pkill -u $env.USER -f '(^|/)clash-verge( |$)' | complete | ignore
+      }
+      sudo proxy-control off
       if $env.LAST_EXIT_CODE != 0 {
         print $"(ansi red_bold)Failed to stop the core ✗(ansi reset)"
         return
       }
-      # clash-on opens the GUI, so close it too: a live controller can drive the
-      # core back on and silently re-enter Mode B. pkill sends SIGTERM.
-      if (clash-gui-running) {
-        pkill -u $env.USER -f '(^|/)clash-verge( |$)' | complete | ignore
-        print $"(ansi green_bold)Clash core + GUI stopped -> Mode A \(direct\) ✓(ansi reset)"
+      if (proxy-control wait direct | complete).exit_code == 0 {
+        print $"(ansi green_bold)Mode A ready \(direct\) ✓(ansi reset)"
       } else {
-        print $"(ansi green_bold)Clash core stopped -> Mode A \(direct\) ✓(ansi reset)"
+        proxy-status
       }
     }
 
     # Start the Clash core again (service + GUI) -> Mode B.
     def clash-on [] {
       print $"(ansi yellow_bold)Starting the Clash Verge service and GUI...(ansi reset)"
-      sudo systemctl start clash-verge.service
+      sudo proxy-control on
+      if $env.LAST_EXIT_CODE != 0 {
+        print $"(ansi red_bold)Core start failed; protection remains active.(ansi reset)"
+        return
+      }
       if not (clash-gui-running) {
         job spawn { ^clash-verge }
       }
-      print $"(ansi green_bold)Clash Verge starting -> Mode B ✓(ansi reset)"
+      print $"(ansi yellow)Waiting for A -> C -> B...(ansi reset)"
+      if (proxy-control wait proxy | complete).exit_code == 0 {
+        print $"(ansi green_bold)Mode B ready ✓(ansi reset)"
+      } else {
+        proxy-status
+      }
     }
 
     # Live outbound TCP audit (needs root). connect(2) is pre-NAT, so
@@ -265,7 +279,7 @@ in
     # bpftrace (BTF) works on new kernels where bcc's headers fail.
     # A public daddr is therefore no proof of a leak: only call it one when no
     # gost session matches, conntrack shows no :${gostRedirect} redirect, and the uid is
-    # not exempt (0). Watch gost for the matching destination as a check.
+    # not carrying the core's routing mark. Watch gost/conntrack to correlate it.
     def egress-audit [...args] {
       sudo bpftrace /run/current-system/sw/share/bpftrace/tools/tcpconnect.bt ...$args
     }
