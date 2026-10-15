@@ -23,6 +23,9 @@
     tree
     usbutils
 
+    # Sandbox
+    bubblewrap
+
     # Search & files
     ripgrep-all
 
