@@ -1,4 +1,4 @@
-{ lib, ... }:
+{ lib, config, ... }:
 
 {
   # Declarative browser policy. Everything here lands in each browser's
@@ -18,6 +18,11 @@
   # one, edit it here and rebuild.
   options.my.browser = {
     zen = {
+      dohOnly = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Require browser DoH even in Mode A; false permits the managed system resolver when DoH is unavailable.";
+      };
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -28,13 +33,12 @@
         type = lib.types.attrsOf (lib.types.oneOf [ lib.types.bool lib.types.int lib.types.float lib.types.str ]);
         default = {
           # --- DNS security -------------------------------------------------
-          # DoH-only (mode 3) to Cloudflare. In this repo DNS already exits
-          # encrypted (dnsmasq -> mihomo, or unbound DoT); this keeps the
-          # browser's own resolver encrypted too.
-          "network.trr.mode" = 3;
+          # Prefer DoH, with the managed encrypted system resolver as fallback
+          # in A. Strict browser-only DoH remains an explicit option.
+          "network.trr.mode" = if config.my.browser.zen.dohOnly then 3 else 2;
           "network.trr.uri" = "https://mozilla.cloudflare-dns.com/dns-query";
 
-          # ECH needs the HTTPS/SVCB RR, which only a DoH resolver returns.
+          # ECH discovery uses HTTPS/SVCB records; these also exist in ordinary DNS.
           "network.dns.echconfig.enabled" = true;
           "network.dns.http3_echconfig.enabled" = true;
           "network.dns.force_waiting_https_rr" = true;

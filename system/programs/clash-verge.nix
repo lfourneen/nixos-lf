@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, config, ... }:
 
 {
   # Service Mode: core runs as root, which `proxyKillSwitch` in network.nix
@@ -24,8 +24,9 @@
       });
     };
     serviceMode = true;
-    group = "users";
+    group = "clash-verge-control";
   };
+  users.groups.clash-verge-control.members = [ config.my.machine.desktopUser ];
 
   # The service persists its "desired state" (core up + TUN) under
   # /var/lib/clash-verge-service; without this it logs "Failed to persist

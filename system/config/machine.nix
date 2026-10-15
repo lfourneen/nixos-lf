@@ -60,6 +60,7 @@
     uids = {
       unbound = lib.mkOption { type = lib.types.int; default = 983; };
       dnsmasq = lib.mkOption { type = lib.types.int; default = 985; };
+      dhcpcd = lib.mkOption { type = lib.types.int; default = 986; };
       gost = lib.mkOption { type = lib.types.int; default = 987; };
     };
 
