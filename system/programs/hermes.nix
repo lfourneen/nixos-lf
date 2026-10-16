@@ -408,6 +408,7 @@ in
 
       # Runtime
       nodejs
+      python313Packages.numpy
       uv
 
       # Browser automation tooling
