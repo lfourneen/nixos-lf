@@ -28,7 +28,9 @@ let
 
       XDG_SESSION_TYPE "wayland"
       XDG_CURRENT_DESKTOP "niri"
-      DISPLAY ":0"
+      // DISPLAY is managed automatically by niri's xwayland-satellite
+      // integration (niri creates the X11 socket and sets DISPLAY). Do not
+      // hardcode ":0" here: it would override niri's value and break X apps.
 
       // Proxy
       http_proxy "http://127.0.0.1:${gostHttp}"
