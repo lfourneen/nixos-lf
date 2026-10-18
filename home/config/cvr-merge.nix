@@ -67,7 +67,14 @@ let
     # NetEase CDN: a HEAD replies with the cdn-user-ip header (real IP on Direct).
     "necaptcha.nosdn.127.net"
   ];
-  probeDomainsJs = "[ " + lib.concatStringsSep ", " (map (d: "\"${d}\"") probeDomains) + " ]";
+  # Prepend-forced through the proxy, the subscription sends these DIRECT which times out
+  forcedProxyDomains = probeDomains ++ [ 
+    "dl.google.com" 
+    "dl-ssl.google.com" 
+    "dl.googleusercontent.com"
+  ];
+  forcedProxyDomainsJs =
+    "[ " + lib.concatStringsSep ", " (map (d: "\"${d}\"") forcedProxyDomains) + " ]";
 
   # The TUN self-test name must get a fake-ip answer, so it must not be matched
   # by fakeIpFilter; a routine edit that adds e.g. "+.baidu.com" would otherwise
@@ -253,7 +260,7 @@ in
 
   # Global extension script (after Merge, before per-profile extensions):
   # (1) keep only the dns keys the Merge template declares (DNS_KEYS must match
-  # that block); (2) prepend probeDomains as proxy rules via the catch-all group.
+  # that block); (2) prepend forcedProxyDomains via the catch-all group.
   home.file.".local/share/io.github.clash-verge-rev.clash-verge-rev/profiles/Script.js" = {
     text = ''
       // Managed by home/config/cvr-merge.nix -- do not edit in the GUI.
@@ -264,7 +271,7 @@ in
         "nameserver-policy",
       ]);
       const GEOSITE_KEYS = new Set(["geosite:cn", "geosite:geolocation-!cn"]);
-      const PROBE_DOMAINS = ${probeDomainsJs};
+      const FORCED_PROXY_DOMAINS = ${forcedProxyDomainsJs};
 
       // Catch-all group name differs per subscription, so take it from the
       // final MATCH rule instead of hardcoding (a stale name fails the config).
@@ -299,7 +306,7 @@ in
           const policy = catchAllPolicy(rules);
           if (policy && policy !== "DIRECT" && policy !== "REJECT") {
             const inject = [];
-            for (const d of PROBE_DOMAINS) {
+            for (const d of FORCED_PROXY_DOMAINS) {
               const rule = "DOMAIN-SUFFIX," + d + "," + policy;
               if (rules.indexOf(rule) === -1) inject.push(rule);
             }
