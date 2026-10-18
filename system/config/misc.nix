@@ -121,6 +121,13 @@
     emoji     = [ "Twitter Color Emoji" ];
   };
 
+  # Large repos plus editors/browsers can exhaust inotify watches; raise the
+  # per-user budget so recursive watchers do not fail with ENOSPC.
+  boot.kernel.sysctl = {
+    "fs.inotify.max_user_watches" = 1048576;
+    "fs.inotify.max_user_instances" = 1024;
+  };
+
   # NixOS Version
   system.stateVersion = "26.05";
 
