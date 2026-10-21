@@ -32,7 +32,7 @@
     };
 
     noctalia.url = "github:noctalia-dev/noctalia/cachix";
-    
+
     nix-flatpak.url = "github:gmodena/nix-flatpak";
 
     hermes-agent.url = "github:NousResearch/hermes-agent/v0.22.2";
@@ -45,7 +45,7 @@
   let
     system = "x86_64-linux";
 
-  in 
+  in
   {
     checks.${system} = let
       pkgs = nixpkgs.legacyPackages.${system};
@@ -90,7 +90,7 @@
               # LLM agents overlay
               (final: prev: {
                 dsh = inputs.llm-agents.packages.${prev.stdenv.hostPlatform.system}.dsh;
-                oh-my-opencode = inputs.llm-agents.packages.${prev.stdenv.hostPlatform.system}.oh-my-opencode;
+                #oh-my-opencode = inputs.llm-agents.packages.${prev.stdenv.hostPlatform.system}.oh-my-opencode;
               })
 
               # Shared nixpkgs-unstable as pkgs.unstable.*
@@ -128,7 +128,7 @@
         # File System
         inputs.disko.nixosModules.default
         inputs.impermanence.nixosModules.impermanence
-        
+
         # Sops(secrets managemnet)
         inputs.sops-nix.nixosModules.sops
 
@@ -141,4 +141,3 @@
     };
   };
 }
-
