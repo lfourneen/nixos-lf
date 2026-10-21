@@ -12,7 +12,7 @@
     duf
     fd
     file
-    iotop 
+    iotop
     lsd
     lshw
     lsof
@@ -94,16 +94,14 @@
     # AI agents
     dsh
     dsh-desktop
-    oh-my-opencode
 
     # Media
     ffmpeg-full
-    
+
     # Rust
     dioxus-cli
-    
+
     # Flatpak
     flatpak-builder
   ];
 }
-
