@@ -81,6 +81,9 @@ sudo nixos-rebuild switch --flake .#yourname
 │   ├── sync-to-git.sh      # Copy /etc/nixos to ~/Projects/Nix/nixos with relaxed permissions
 │   └── push-to-dir.sh      # Push repo config back to /etc/nixos with secure permissions
 │
+├── tests/                  # Regression sources referenced by flake checks
+│   └── netsec/             # Network policy, profile and VM checks
+│
 └── system/                 # System-wide configuration
     ├── config/             # System configs
     ├── hardware/           # Hardware-specific configurations
@@ -96,7 +99,7 @@ sudo nixos-rebuild switch --flake .#yourname
 ## Scripts
 
 * **`scripts/sync-to-git.sh`** — Copies `/etc/nixos` to `~/Projects/Nix/nixos` (creating `~/Projects/Nix` if needed), changes ownership to the current user, and sets permissive permissions (dirs 755 / files 644) so the config can be committed to Git.
-* **`scripts/push-to-dir.sh`** — Reverse of the above. Copies `home/`, `overlays/`, `system/`, and `flake.nix` from the repo into `/etc/nixos` and applies secure permissions (dirs 700 / files 600). Must be run with `sudo`.
+* **`scripts/push-to-dir.sh`** — Reverse of the above. Copies `home/`, `overlays/`, `system/`, `tests/`, `flake.nix`, `flake.lock`, and `.sops.yaml` from the repo into `/etc/nixos` and applies secure permissions (dirs 700 / files 600). Run as your normal user; the script uses `sudo` internally. `tests/` supplies the flake check sources; copying it does not execute tests.
 
 ---
 

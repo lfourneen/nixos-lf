@@ -68,11 +68,15 @@ let
     "necaptcha.nosdn.127.net"
   ];
   # Prepend-forced through the proxy, the subscription sends these DIRECT which times out
-  forcedProxyDomains = probeDomains ++ [ 
+  healthProbeHosts = lib.filter (host: host != null) (map (url:
+    let parts = builtins.match "https?://([a-zA-Z0-9.-]+)(:[0-9]+)?(/.*)?" url;
+    in if parts == null then null else builtins.head parts
+  ) osConfig.my.proxy.nodeProbeUrls);
+  forcedProxyDomains = lib.unique (probeDomains ++ healthProbeHosts ++ [
     "dl.google.com" 
     "dl-ssl.google.com" 
     "dl.googleusercontent.com"
-  ];
+  ]);
   forcedProxyDomainsJs =
     "[ " + lib.concatStringsSep ", " (map (d: "\"${d}\"") forcedProxyDomains) + " ]";
 
@@ -114,13 +118,16 @@ in
 
       # Fix the mixed port to align with the probe and forwarding ports in gost-relay.nix.
       mixed-port: ${toString port.mihomoMixed}
+      port: 0
+      socks-port: 0
+      redir-port: 0
 
       # Pin the routing mode and IPv6. The GUI owns both keys, and `direct` would
       # be turned into Mode C by the health gate; a rebuild must not change either
       # silently. (The GUI still injects `secret`/ports after the merge, so a pin
       # here is defence in depth, not a guarantee.)
       mode: rule
-      ipv6: true
+      ipv6: ${lib.boolToString osConfig.networking.enableIPv6}
 
       # Pin the log level: proxy-mode's health gate parses the core's connection
       # log to confirm a probe was proxied (not DIRECT) and to learn the group it
@@ -140,7 +147,7 @@ in
       bind-address: "*"
 
       # TPROXY inbound for the optional VM transparent proxy (vmTransparentProxy).
-      tproxy-port: ${toString port.mihomoTproxy}
+      tproxy-port: ${toString (if osConfig.my.proxy.transparentGuestInterfaces == [ ] then 0 else port.mihomoTproxy)}
       # `enable` must always be listed here: the GUI owns tun.enable, so without
       # this key a rebuild with tunMode = false leaves the TUN up with an empty
       # exclusion list. This template wins per key, and nftables-verify reports the
@@ -155,7 +162,7 @@ in
       #
       # auto-redirect needs the sing-tun patch applied in
       # system/programs/clash-verge.nix.
-        stack: mixed
+        stack: ${osConfig.my.proxy.tunStack}
         device: ${tunDev}
         auto-route: true
         iproute2-table-index: ${toString osConfig.my.proxy.routeTable}
@@ -164,7 +171,9 @@ in
         dns-hijack:
           - any:53
           - tcp://any:53
-        mtu: 1500
+        mtu: ${toString osConfig.my.proxy.tunMtu}
+      ${lib.optionalString osConfig.networking.enableIPv6 "  inet6-address: [ \"${osConfig.my.proxy.tunIpv6Address}\" ]\n"}
+      ${lib.optionalString (osConfig.my.proxy.tunStack == "mips") "  congestion-controller: ${osConfig.my.proxy.tunCongestionControl}\n"}
         # Portal/LAN/CGNAT targets must bypass the TUN, else the ISP login page is
         # unreachable.
         route-exclude-address:

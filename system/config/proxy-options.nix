@@ -17,12 +17,65 @@ in
   config.assertions = [{
     assertion = valid;
     message = "my.proxy.fakeIpRange must be an IPv4 CIDR with prefix length 8..30.";
+  } {
+    assertion = config.my.proxy.routeTable <= 4294967295
+      && !(builtins.elem config.my.proxy.routeTable [ 52 100 253 254 255 ]);
+    message = "Mihomo route table must not collide with Tailscale, TPROXY or built-in routing tables.";
+  } {
+    assertion = lib.all (url: builtins.match "https?://[^[:space:]]+" url != null) config.my.proxy.nodeProbeUrls;
+    message = "Proxy health targets must be non-empty HTTP(S) URLs without whitespace.";
   }];
 
   options.my.proxy.routeTable = lib.mkOption {
     type = lib.types.ints.positive;
     default = 2022;
     description = "Mihomo TUN iproute2-table-index, shared by the template and checks.";
+  };
+
+  options.my.proxy.tunStack = lib.mkOption {
+    type = lib.types.enum [ "system" "gvisor" "mixed" "mips" ];
+    default = "mixed";
+    description = "Explicit TUN stack; mixed remains the measured baseline, mips is opt-in.";
+  };
+  options.my.proxy.tunMtu = lib.mkOption {
+    type = lib.types.ints.between 1280 9000;
+    default = 1500;
+    description = "TUN MTU. Change only after PMTU measurements.";
+  };
+  options.my.proxy.tunCongestionControl = lib.mkOption {
+    type = lib.types.enum [ "cubic" "reno" "bbr" "bbr3" ];
+    default = "cubic";
+    description = "Mihomo mips-stack TCP congestion controller; separate from host TCP.";
+  };
+  options.my.proxy.tunIpv6Address = lib.mkOption {
+    type = lib.types.str;
+    default = "fdfe:dcba:9876::1/126";
+    description = "Stable IPv6 TUN address, including on IPv4-only uplinks.";
+  };
+  options.my.proxy.healthBudgetSeconds = lib.mkOption {
+    type = lib.types.ints.between 8 30;
+    default = 12;
+    description = "Total deadline for a selected-node health probe, across all targets.";
+  };
+  options.my.proxy.guestInterfaces = lib.mkOption {
+    type = lib.types.nonEmptyListOf lib.types.str;
+    default = [ config.my.machine.wireless.name config.my.machine.vmBridge config.my.machine.waydroidBridge ];
+    description = "All routed guest ingress interfaces; policy applies before NAT and conntrack accepts.";
+  };
+  options.my.proxy.transparentGuestInterfaces = lib.mkOption {
+    type = lib.types.listOf lib.types.str;
+    default = [ ];
+    description = "Opt-in IPv4 guest TPROXY interfaces, permitted only in healthy proxy mode.";
+  };
+  options.my.proxy.splitDnsProfileUuids = lib.mkOption {
+    type = lib.types.listOf lib.types.str;
+    default = [ ];
+    description = "NetworkManager profile UUIDs allowed to retain explicit split-DNS settings.";
+  };
+  options.my.proxy.plaintextBootBudgetSeconds = lib.mkOption {
+    type = lib.types.nullOr lib.types.ints.positive;
+    default = null;
+    description = "Optional boot-wide plaintext deadline, independent of DHCP and reconnects; null retains per-session budgets.";
   };
 
   options.my.proxy.nodeProbeUrls = lib.mkOption {

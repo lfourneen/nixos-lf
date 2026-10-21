@@ -48,7 +48,7 @@ in
       RemoveIPC = true;
       CapabilityBoundingSet = "";
       RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
-      ReadWritePaths = [ "/run/dns-upstream" ];
+      ReadWritePaths = [ "/run/dns-upstream" "/run/netsec/requests" ];
 
       ExecStart = "${pkgs.writeShellScript "dns-upstream-loop" ''
         PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.systemd pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.gnugrep pkgs.networkmanager ]}
@@ -93,6 +93,16 @@ in
         open_window() {
           now=$(now_mono)
           [ "$budget_until" != 0 ] || budget_until=$((now + PL_TOTAL))
+          ${lib.optionalString (config.my.proxy.plaintextBootBudgetSeconds != null) ''
+          if [ -r "$runtime/boot-budget" ]; then
+            read -r boot_until < "$runtime/boot-budget"
+          else
+            boot_until=$((now + ${toString config.my.proxy.plaintextBootBudgetSeconds}))
+            atomic_write "$runtime/boot-budget" "$boot_until"
+          fi
+          [[ "$boot_until" =~ ^[0-9]+$ ]] || return 1
+          [ "$budget_until" -le "$boot_until" ] || budget_until=$boot_until
+          ''}
           window_until=$((now + PL_TTL))
           [ "$window_until" -le "$budget_until" ] || window_until=$budget_until
           save_budget
@@ -123,7 +133,7 @@ in
           # Re-check after slow probes: a concurrent on request must never
           # publish a plaintext resolver list after A has ended.
           if [[ "$target" == *plaintext ]] \
-             && { [ "$(cat /run/proxy-mode/status 2>/dev/null)" != direct ] || $CLASH_ON; }; then
+             && { [ "$(jq -r '.mode // "unknown"' /run/proxy-mode/state.json 2>/dev/null)" != direct ] || $CLASH_ON; }; then
             target=blocked
             state_reason='proxy transition: encrypted resolver only'
             new_conf='server=127.0.0.1#${toString port.unbound}'
@@ -149,14 +159,24 @@ in
           current="$target"
           atomic_write "$runtime/reason" "$state_reason"
           atomic_write "$runtime/status" "$current"
-          if [ "$notify" = 1 ]; then systemctl start --no-block nftables-verify.service 2>/dev/null || true; fi
+          now=$(now_mono)
+          override=false
+          [ ! -e "$runtime/force-plaintext" ] || override=true
+          jq -n --arg mode "$current" --arg reason "$state_reason" --arg session "$last_ident" \
+            --argjson budget "$budget_until" --argjson window "$window_until" \
+            --argjson now "$now" --argjson override "$override" \
+            '{mode:$mode,reason:$reason,session:$session,budget_until:$budget,window_until:$window,
+              remaining_seconds:([$budget-$now,0]|max),plaintext_override:$override,monotonic_seconds:$now}' \
+              > "$runtime/state.json.$$"
+          mv -f "$runtime/state.json.$$" "$runtime/state.json"
+          if [ "$notify" = 1 ]; then ${config.my.proxy.requestVerify}; fi
         }
 
         # A safe seed exists from tmpfiles. Reconcile every pass, including a
         # failed reload and same-status DHCP DNS changes; no state-only shortcut.
         while true; do
           woken=0
-          mode=$(cat /run/proxy-mode/status 2>/dev/null || echo unknown)
+          mode=$(jq -r '.mode // "unknown"' /run/proxy-mode/state.json 2>/dev/null || echo unknown)
           new_status=blocked
           state_reason="mode-$mode: encrypted resolver only"
           servers=""

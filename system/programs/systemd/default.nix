@@ -11,6 +11,8 @@
     ./libvirtd.nix  
     ./nix-daemon.nix
     ./netsec-alert.nix
+    ./network-bootstrap.nix
+    ./network-observe.nix
     ./nftables-recover.nix
     ./nftables-verify.nix
     ./ntsync.nix  

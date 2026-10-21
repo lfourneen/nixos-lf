@@ -13,6 +13,7 @@ in
     after = [ "nftables.service" "proxy-mode.service" "clash-verge.service" "dnsmasq.service" "unbound.service" ];
     wants = [ "nftables.service" "proxy-mode.service" ];
     wantedBy = [ "multi-user.target" ];
+    unitConfig.StartLimitIntervalSec = 0;
     serviceConfig = {
       Type = "oneshot";
       NoNewPrivileges = true;
@@ -32,12 +33,27 @@ in
       snapshot=/run/netsec/rules.$$.json
       completed=0
       degraded=0
+      version=0
+      shopt -s nullglob
+      requests=(/run/netsec/requests/request.*)
       atomic_write() { printf '%s\n' "$2" > "$1.$$" && mv -f "$1.$$" "$1"; }
+      still_current() { [ "$(cat /run/proxy-mode/version 2>/dev/null)" = "$version" ]; }
+      ack_requests() { if [ "''${#requests[@]}" -gt 0 ]; then rm -f -- "''${requests[@]}"; fi; }
+      publish_result() {
+        local result="$1" detail="$2"
+        jq -n --arg result "$result" --arg detail "$detail" --argjson version "$version" \
+          --arg checked "$(date -Iseconds)" \
+          '{result:$result,version:$version,checked_at:$checked,detail:$detail}' > /run/netsec/state.json.$$
+        mv -f /run/netsec/state.json.$$ /run/netsec/state.json
+        atomic_write "$RESULT" "$result"
+        atomic_write /run/netsec/verified-version "$version"
+      }
       fail() {
         completed=1
         echo "nftables-verify: FAIL: $1" >&2
         atomic_write "$FLAG" "nftables-verify: $1" || true
-        atomic_write "$RESULT" failed || true
+        publish_result failed "$1" || true
+        ack_requests
         ${pkgs.systemd}/bin/systemd-cat -t netsec-alert -p err ${pkgs.coreutils}/bin/echo "netsec-alert: $1" || true
         wall "NETSEC ALERT: $1" || true
         exit 0
@@ -46,7 +62,11 @@ in
         rc=$?
         trap - EXIT
         rm -f "$snapshot"
-        if [ "$completed" != 1 ]; then fail "verifier terminated before completion (exit $rc)"; fi
+        if [ "$completed" != 1 ]; then
+          if [ -e "/proc/$$/fd/9" ]; then flock -x -w 10 9 || true; fi
+          if [ "$version" != 0 ] && ! still_current; then exit 0; fi
+          fail "verifier terminated before completion (exit $rc)"
+        fi
         exit 0
       }
       trap on_exit EXIT
@@ -56,8 +76,9 @@ in
       mkdir -p /run/proxy-mode
       exec 9>/run/proxy-mode/lock
       flock -s -w 10 9 || fail 'cannot acquire policy snapshot lock'
-      version=$(cat /run/proxy-mode/version)
-      mode=$(cat /run/proxy-mode/status)
+      state=$(cat /run/proxy-mode/state.json)
+      version=$(printf '%s' "$state" | jq -er '.policy_version // .version')
+      mode=$(printf '%s' "$state" | jq -er '.mode')
       case "$mode" in proxy|blocked|direct) ;; *) fail "invalid enforcement mode: $mode" ;; esac
       $NFT -j list ruleset > "$snapshot" || fail 'cannot read kernel nftables state'
       chmod 600 "$snapshot"
@@ -67,8 +88,10 @@ in
 
       # Ignore a liveness result collected across a newer commit; the mode-change
       # notification will schedule another check, and the timer remains a backstop.
-      still_current() { [ "$(cat /run/proxy-mode/version 2>/dev/null)" = "$version" ]; }
-      live_fail() { if still_current; then fail "$1"; else completed=1; exit 0; fi; }
+      live_fail() {
+        flock -x -w 10 9 || fail 'cannot acquire failure publication lock'
+        if still_current; then fail "$1"; else completed=1; exit 0; fi
+      }
       listening() {
         for _ in 1 2 3 4 5; do
           if ss -lntH "sport = :$1" | grep -Fq "127.0.0.1:$1"; then return 0; fi
@@ -88,6 +111,8 @@ in
       case "$mode" in
         proxy)
           $IS_CLASH_ON || live_fail 'proxy mode without a core in the service cgroup'
+          ${pkgs.python3}/bin/python3 ${./netsec/health.py} ${config.my.proxy.healthSettings} --fast >/dev/null \
+            || live_fail 'core configuration differs from managed proxy invariants'
           ${lib.optionalString config.my.proxy.tunMode ''
           ip -o link show dev ${lib.escapeShellArg config.my.proxy.tunDev} | grep -q ',UP' || live_fail 'TUN down'
           $NFT list table inet mihomo >/dev/null || live_fail 'mihomo auto-redirect table missing'
@@ -132,15 +157,26 @@ in
           ''}
           ;;
       esac
+      # Hold the writer lock through publication; requests arriving after our
+      # capture remain in the immutable queue for the .path to schedule again.
+      flock -x -w 10 9 || fail 'cannot acquire result publication lock'
       if ! still_current; then completed=1; exit 0; fi
       # Do not erase an alert owned by a different failing unit.
       if [ -e "$FLAG" ] && grep -q '^nftables-verify:' "$FLAG"; then rm -f "$FLAG"; fi
       if [ "$degraded" = 1 ]; then result=degraded; else result=ok; fi
-      atomic_write "$RESULT" "$result"
-      atomic_write /run/netsec/verified-version "$version"
+      publish_result "$result" "$mode"
+      ack_requests
       completed=1
       echo "nftables-verify: $result (mode: $mode, version: $version)"
     '';
+  };
+
+  systemd.paths.nftables-verify-pending = {
+    wantedBy = [ "multi-user.target" ];
+    pathConfig = {
+      DirectoryNotEmpty = "/run/netsec/requests";
+      Unit = "nftables-verify.service";
+    };
   };
 
   systemd.timers.nftables-verify = {

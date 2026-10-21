@@ -7,6 +7,8 @@ import sys
 
 
 TABLES = {"lf_filter", "lf_nat", "lf_mangle", "lf_proxymode_nat"}
+DYNAMIC_CHAINS = {"proxymode_drops", "proxymode_tail", "proxymode_forward",
+                  "lf_blocked_guard", "lf_guest_guard", "proxymode_tproxy"}
 
 # `nft -e` echoes the applied object with the protocol as its number, while
 # `nft -j list ruleset` prints the name. Canonicalise both to the number so the
@@ -86,8 +88,23 @@ def policy(document):
     return tables
 
 
-def compare(expected, actual):
-    exp, live = policy(expected), policy(actual)
+def static_policy(document):
+    """Ignore mode rules, while still checking their chain/hook declarations."""
+    result = policy(document)
+    for key in list(result):
+        if key[1] == "lf_proxymode_nat":
+            del result[key]
+            continue
+        result[key]["rules"] = {chain: rules for chain, rules in result[key]["rules"].items()
+                                if chain not in DYNAMIC_CHAINS}
+    return result
+
+
+def compare(expected, actual, static=False):
+    extract = static_policy if static else policy
+    exp, live = extract(expected), extract(actual)
+    if any(e.get("table", {}).get("name") == "lf_bootstrap" for e in actual["nftables"]):
+        raise ValueError("bootstrap policy still active beside the full policy")
     if exp.keys() != live.keys():
         raise ValueError(f"table mismatch: expected {sorted(exp)}, found {sorted(live)}")
     for table in exp:
@@ -120,16 +137,16 @@ def unwrap(document):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("compare", "address", "unwrap"))
+    parser.add_argument("command", choices=("compare", "compare-static", "address", "unwrap"))
     parser.add_argument("arguments", nargs="+")
     args = parser.parse_args()
     try:
-        if args.command == "compare":
+        if args.command in {"compare", "compare-static"}:
             with open(args.arguments[0]) as stream:
                 expected = json.load(stream)
             with open(args.arguments[1]) as stream:
                 actual = json.load(stream)
-            compare(expected, actual)
+            compare(expected, actual, static=args.command == "compare-static")
         elif args.command == "unwrap":
             with open(args.arguments[0]) as stream:
                 document = json.load(stream)

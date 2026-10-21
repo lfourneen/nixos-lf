@@ -3,7 +3,7 @@
 {
   # Moonlight
   services.sunshine = {
-    enable = true;
+    enable = false;
     autoStart = false;
     # iptables-based option, useless here (networking.firewall is off) — nftables rules handle ports
     openFirewall = false;
