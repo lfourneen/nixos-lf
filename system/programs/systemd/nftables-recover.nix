@@ -11,9 +11,18 @@
       Type = "oneshot";
     };
     script = ''
-      if ${pkgs.systemd}/bin/systemctl is-failed --quiet nftables.service; then
+      if ${pkgs.systemd}/bin/systemctl is-failed --quiet nftables.service \
+         || ${pkgs.systemd}/bin/systemctl is-failed --quiet network-firewall-bootstrap.service; then
+        ${pkgs.systemd}/bin/systemctl reset-failed network-firewall-bootstrap.service
         ${pkgs.systemd}/bin/systemctl reset-failed nftables.service
         ${pkgs.systemd}/bin/systemctl start nftables.service
+        # A dependency-failed first activation does not get Restart=always.
+        ${pkgs.systemd}/bin/systemctl start proxy-mode.service
+        for unit in NetworkManager.service dhcpcd.service; do
+          if ${pkgs.systemd}/bin/systemctl is-failed --quiet "$unit"; then
+            ${pkgs.systemd}/bin/systemctl start "$unit"
+          fi
+        done
       fi
     '';
   };

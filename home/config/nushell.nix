@@ -208,8 +208,9 @@ in
       let state = (try { open /run/proxy-mode/state.json } catch { {mode: unknown, reason: unknown, version: -1} })
       let p = $state.mode
       let why = $state.reason
-      let verified = (do $read "/run/netsec/result")
-      let verified_version = (do $read "/run/netsec/verified-version")
+      let verification = (try { open /run/netsec/state.json } catch { {result: unknown, version: -2} })
+      let verified = $verification.result
+      let verified_version = ($verification.version | into string)
       let alarm = ("/run/netsec/failed" | path exists)
       # ${gostHttp} = gost's HTTP listener (the port every proxy-aware consumer uses).
       let listener = (try {

@@ -269,7 +269,7 @@ in
           # Only an explicit `direct` status is a passthrough. Every other value
           # -- including `unenforced` and an unreadable/absent file -- means
           # enforcement is missing, so offer nothing rather than a bare relay.
-          status="$(${pkgs.coreutils}/bin/cat /run/proxy-mode/status 2>/dev/null || true)"
+          status="$(${pkgs.jq}/bin/jq -r '.mode // "unknown"' /run/proxy-mode/state.json 2>/dev/null || true)"
           want="closed"
           [ "$status" = "direct" ] && want="direct"
 

@@ -1,4 +1,4 @@
-{ pkgs, config, ... }:
+{ pkgs, config, lib, ... }:
 
 {
   # Service Mode: core runs as root, which `proxyKillSwitch` in network.nix
@@ -35,5 +35,9 @@
   # upstream module sets ProtectSystem=strict with only a RuntimeDirectory, so
   # the state dir is read-only; StateDirectory creates and whitelists it.
   systemd.services.clash-verge.serviceConfig.StateDirectory = [ "clash-verge-service" ];
+  # Keep the managed dual-stack TUN present even when the core starts on an
+  # IPv4-only uplink. The helper's spawned core inherits this environment.
+  systemd.services.clash-verge.environment = lib.optionalAttrs
+    (config.networking.enableIPv6 && config.my.proxy.tunMode) { SKIP_SYSTEM_IPV6_CHECK = "1"; };
 }
 

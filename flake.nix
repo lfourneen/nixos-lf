@@ -47,6 +47,25 @@
 
   in 
   {
+    checks.${system} = let
+      pkgs = nixpkgs.legacyPackages.${system};
+    in {
+      proxy-regressions = pkgs.runCommand "proxy-regressions" {
+        nativeBuildInputs = [ pkgs.python3 pkgs.bash pkgs.jq ];
+      } ''
+        export NETSEC_MODULES=${./system/programs/systemd}
+        export PYTHONDONTWRITEBYTECODE=1
+        python3 ${./tests/netsec/test_netsec.py}
+        touch "$out"
+      '';
+      proxy-rules = self.nixosConfigurations.lfour.config.my.proxy.expectedRules;
+      proxy-profile = import ./tests/netsec/profile.nix {
+        inherit pkgs;
+        config = self.nixosConfigurations.lfour.config;
+      };
+      proxy-network-vm = import ./tests/netsec/vm.nix { inherit pkgs; };
+    };
+
     nixosConfigurations.lfour = nixpkgs.lib.nixosSystem {
       inherit system;
 

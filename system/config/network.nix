@@ -68,6 +68,15 @@ let
   blockQuic = !tunMode;
 
   clonedMac = config.my.hardening.wifi.clonedMacAddress;
+  guestIfaces = config.my.proxy.guestInterfaces;
+  nftIfaces = xs: "{ " + join (map (i: ''"${i}"'') xs) + " }";
+  guestGuard = mode: let
+    v4 = if mode == "proxy" then lib.subtractLists vmTransparentProxyIfaces guestIfaces else guestIfaces;
+  in ''
+    flush chain inet lf_filter lf_guest_guard
+    ${lib.optionalString (v4 != [ ]) ''add rule inet lf_filter lf_guest_guard iifname ${nftIfaces v4} ip daddr != { 127.0.0.0/8, ${local4}, ${join multicast4} } counter drop''}
+    add rule inet lf_filter lf_guest_guard iifname ${nftIfaces guestIfaces} ip6 daddr != { ::1, ${local6}, ${join m.multicastV6} } counter drop
+  '';
 
   # Kill switch: everything leaving an uplink for a public destination must go
   # through the proxy core or be dropped (fail closed). The core is exempted by
@@ -118,6 +127,11 @@ let
 
     # Leaving Mode C: the guard must be empty or its drop would refuse everything.
     flush chain inet lf_filter lf_blocked_guard
+    ${guestGuard "proxy"}
+    ${lib.optionalString vmTproxy ''
+    flush chain ip lf_mangle proxymode_tproxy
+    ${tproxyPrerouting}
+    ''}
 
     flush chain inet lf_filter proxymode_drops
     # The proxy core marks its own outbound sockets (routing-mark): allow it, it
@@ -150,8 +164,10 @@ let
     # the killswitch cannot see it: public destinations are refused instead (v4
     # and v6).
     flush chain inet lf_filter proxymode_forward
-    add rule inet lf_filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}", "${m.waydroidBridge}" } oifname { "${wired}", "${wireless}" } ip daddr != { ${local4} } counter drop
-    add rule inet lf_filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}", "${m.waydroidBridge}" } oifname { "${wired}", "${wireless}" } ip6 daddr != { ${local6} } counter drop
+    add rule inet lf_filter proxymode_forward iifname ${nftIfaces guestIfaces} ip daddr != { ${local4} } counter drop
+    add rule inet lf_filter proxymode_forward iifname ${nftIfaces guestIfaces} ip6 daddr != { ${local6} } counter drop
+    add rule inet lf_filter proxymode_forward oifname ${nftIfaces guestIfaces} ip saddr != { ${local4} } counter drop
+    add rule inet lf_filter proxymode_forward oifname ${nftIfaces guestIfaces} ip6 saddr != { ${local6} } counter drop
 
     # `redirect` is an nft statement keyword, so the chain cannot be named that.
     table ip lf_proxymode_nat {
@@ -188,6 +204,8 @@ let
     flush chain inet lf_filter proxymode_drops
     flush chain inet lf_filter proxymode_tail
     flush chain inet lf_filter proxymode_forward
+    ${guestGuard "blocked"}
+    ${lib.optionalString vmTproxy "flush chain ip lf_mangle proxymode_tproxy"}
 
     flush chain inet lf_filter lf_blocked_guard
     # Every Clash-facing port on loopback is refused for non-root, TCP and UDP,
@@ -209,7 +227,7 @@ let
     # Root may reach the fake-ip network: it is only routed via the TUN, and
     # proxy-mode's own TUN self-test dials it, so the self-test still runs while
     # blocked.
-    add rule inet lf_filter lf_blocked_guard meta skuid 0 ip daddr ${fakeIpNet} accept
+    add rule inet lf_filter lf_blocked_guard meta skuid 0 oifname "${tunDev}" ip daddr ${fakeIpNet} accept
     # Retain pinned DHCP clients, including unicast renewals. Server replies
     # are only needed for the explicitly enabled AP and its own subnet.
     add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept
@@ -224,23 +242,32 @@ let
     # Guests/VMs are forwarded traffic: the output guard never sees them, so they
     # are refused public destinations here (LAN/portal stays reachable; the
     # forward chain's early `jump proxymode_forward` runs before its accepts).
-    add rule inet lf_filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}", "${m.waydroidBridge}" } oifname { "${wired}", "${wireless}" } ip daddr != { ${local4} } counter drop
-    add rule inet lf_filter proxymode_forward iifname { "${wireless}", "${m.vmBridge}", "${m.waydroidBridge}" } oifname { "${wired}", "${wireless}" } ip6 daddr != { ${local6} } counter drop
+    add rule inet lf_filter proxymode_forward iifname ${nftIfaces guestIfaces} ip daddr != { ${local4} } counter drop
+    add rule inet lf_filter proxymode_forward iifname ${nftIfaces guestIfaces} ip6 daddr != { ${local6} } counter drop
+    add rule inet lf_filter proxymode_forward oifname ${nftIfaces guestIfaces} ip saddr != { ${local4} } counter drop
+    add rule inet lf_filter proxymode_forward oifname ${nftIfaces guestIfaces} ip6 saddr != { ${local6} } counter drop
   '';
 
   # TPROXY bridges whose egress goes through mihomo (tproxy-port, see
   # cvr-merge.nix). Empty = off; TUN only captures host output. Untested.
-  vmTransparentProxyIfaces = [
-    # "virbr0"
-    # "waydroid0"
-  ];
+  vmTransparentProxyIfaces = config.my.proxy.transparentGuestInterfaces;
   vmTproxy = vmTransparentProxyIfaces != [ ];
   tproxyMark = "0x233";
   tproxyPrerouting = lib.concatMapStrings (i: ''
-    iifname "${i}" ip daddr != { ${local4}, 127.0.0.0/8, ${join m.multicastV4} } meta l4proto { tcp, udp } tproxy to :${toString port.mihomoTproxy} meta mark set ${tproxyMark} accept
+    add rule ip lf_mangle proxymode_tproxy iifname "${i}" ip daddr != { ${local4}, 127.0.0.0/8, ${join multicast4} } meta l4proto { tcp, udp } tproxy to :${toString port.mihomoTproxy} meta mark set ${tproxyMark} accept
   '') vmTransparentProxyIfaces;
   tproxyInputAccept = lib.concatMapStrings (i: ''iifname "${i}" meta mark ${tproxyMark} accept
   '') vmTransparentProxyIfaces;
+  nmDnsSettings = pkgs.writeText "nm-dns-policy.json" (builtins.toJSON {
+    nmcli = "${pkgs.networkmanager}/bin/nmcli";
+    resolvectl = "${pkgs.systemd}/bin/resolvectl";
+    interface = wireless;
+    exceptions = config.my.proxy.splitDnsProfileUuids;
+    resolver = "127.0.0.1:${toString port.dnsmasq}";
+  });
+  nmDnsPolicy = pkgs.writeShellScript "nm-dns-policy" ''
+    exec ${pkgs.python3}/bin/python3 ${../programs/systemd/netsec/nm_dns.py} ${nmDnsSettings} "$1" "$2"
+  '';
 
 in
 {
@@ -252,6 +279,13 @@ in
   # A null or shared uid makes an exemption match nothing or the wrong daemon;
   # uniqueness is what the evaluator can check.
   assertions = [
+    {
+      assertion = lib.all (i: builtins.elem i guestIfaces) vmTransparentProxyIfaces
+        && lib.length (lib.unique guestIfaces) == lib.length guestIfaces
+        && lib.all (i: builtins.match "[a-zA-Z0-9_.-]{1,15}" i != null
+          && !(builtins.elem i [ "lo" wired tunDev "tailscale0" ])) guestIfaces;
+      message = "Guest ingress interfaces must be valid, distinct from host uplinks/TUN/loopback, and include every TPROXY interface.";
+    }
     {
       assertion = lib.count (u: u.uid == m.uids.dhcpcd) (lib.attrValues config.users.users) == 1;
       message = "The pinned dhcpcd UID must belong to exactly one account.";
@@ -331,19 +365,14 @@ in
           "wifi.cloned-mac-address" = clonedMac;
         };
 
-        ipv4 = {
-          "ignore-auto-dns" = true;
-        };
-
-        ipv6 = {
-          "ignore-auto-dns" = true;
-        };
       };
 
       # Wake the proxy supervisors on link changes, so a new network (portal,
       # DHCP change, connectivity transition) re-evaluates at once instead of
       # waiting for a backstop interval. Same coordinator as the core event.
       dispatcherScripts = [
+        { type = "pre-up"; source = nmDnsPolicy; }
+        { type = "basic"; source = nmDnsPolicy; }
         {
           type = "basic";
           source = pkgs.writeShellScript "nm-proxy-net-wake" ''
@@ -542,6 +571,7 @@ in
       # stays idempotent. The loader appends the selected safety fragment to
       # this static text and commits both in a single nft transaction.
       destroy table inet lf_filter
+      destroy table inet lf_bootstrap
       destroy table ip lf_nat
       destroy table ip6 lf_nat
       destroy table ip lf_mangle
@@ -667,6 +697,11 @@ in
         chain lf_blocked_guard {
           type filter hook output priority -200; policy accept;
         }
+        # Guest refusal must see original destinations before any transparent
+        # redirect can turn a forwarded flow into local input to the core.
+        chain lf_guest_guard {
+          type filter hook prerouting priority -201; policy accept;
+        }
 
         # Only NAT may deliver traffic to gost's transparent listener. Reject
         # explicit loopback connects before NAT, preventing recursive self-dials.
@@ -743,9 +778,10 @@ in
       ${lib.optionalString vmTproxy ''
       # Divert listed bridges' public TCP/UDP into mihomo's tproxy port.
       table ip lf_mangle {
+        chain proxymode_tproxy { }
         chain prerouting {
           type filter hook prerouting priority mangle; policy accept;
-          ${tproxyPrerouting}
+          jump proxymode_tproxy
         }
       }
       ''}
@@ -772,12 +808,8 @@ in
     after = [ "network.target" "nftables.service" ];
     wants = [ "nftables.service" ];
     wantedBy = [ "multi-user.target" ];
-    # The GUI owns tproxy-port, so enabling this without the GUI's TProxy switch
-    # would send every VM flow to a closed port; refuse instead.
-    preStart = ''
-      ${pkgs.iproute2}/bin/ss -tln | ${pkgs.gnugrep}/bin/grep -q ':${toString port.mihomoTproxy} ' \
-        || { echo "vmTransparentProxyIfaces is set but nothing listens on :${toString port.mihomoTproxy} (enable TProxy in the Clash Verge GUI)" >&2; exit 1; }
-    '';
+    # Routes can exist before the GUI starts the core: only the healthy Mode-B
+    # fragment installs TPROXY rules, and the verifier checks listener identity.
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;

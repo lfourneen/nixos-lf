@@ -4,7 +4,8 @@
 # `nixos-rebuild --flake .#lfour`). Run as your normal user (uses sudo).
 #
 # Copied:  home/ (incl. wallpapers), overlays/ (incl. local-apps/*.AppImage),
-#          system/ (incl. secrets/secrets.yaml), flake.nix, flake.lock, .sops.yaml
+#          system/ (incl. secrets/secrets.yaml), tests/ (flake check sources),
+#          flake.nix, flake.lock, .sops.yaml
 # Skipped: .git/, .gitignore, scripts/, *.md (GitHub-only READMEs, except
 #          system/programs/hermes-skills/** which the Hermes build needs),
 #          LICENSE, and junk (result*, *.swp, *~, *.bak, .DS_Store, .direnv/).
@@ -99,6 +100,9 @@ excludes=(
 # system/ : must keep secrets/secrets.yaml.
 "${SUDO_CMD[@]}" rsync -a --delete --no-owner --no-group "${excludes[@]}" \
   "$REPO_DIR/system/" "$DEST_DIR/system/"
+# tests/ : flake checks import the test modules, scripts and fixtures directly.
+"${SUDO_CMD[@]}" rsync -a --delete --no-owner --no-group "${excludes[@]}" \
+  "$REPO_DIR/tests/" "$DEST_DIR/tests/"
 
 for f in flake.nix flake.lock .sops.yaml; do
   "${SUDO_CMD[@]}" install -m 600 "${OWN[@]}" "$REPO_DIR/$f" "$DEST_DIR/$f"
