@@ -12,6 +12,7 @@
     duf
     fd
     file
+    jq
     iotop
     lsd
     lshw
