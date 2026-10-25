@@ -31,6 +31,7 @@ def module(name):
 health, link, rules, nm_dns = (module(name) for name in ("health", "link", "rules", "nm_dns"))
 dns_policy, resolved_policy, state, alerts = (module(name) for name in ("dns_policy", "resolved_policy", "state", "alerts"))
 events, dns_sleep = (module(name) for name in ("events", "dns_sleep"))
+listeners = module('listeners')
 SOURCE = (MODULES / "proxy-mode.nix").read_text()
 
 
@@ -42,6 +43,14 @@ def shell_function(name):
 
 
 class HealthTests(unittest.TestCase):
+    def test_listener_failure_precedes_controller_or_dns_requests(self):
+        probe = health.Probe({'budget_seconds': 12, 'listener_check': 'check-listeners'})
+        probe.api = lambda *args: self.fail('queried controller after listener failure')
+        with patch.object(health.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'check-listeners')):
+            with self.assertRaises(health.ProbeFailure) as failure:
+                probe.run(fast=True)
+        self.assertEqual(failure.exception.layer, 'config')
+
     def test_managed_policy_and_route_scope_drift(self):
         settings = {"expected": {"managed-policy": "verified", "tun": {"include-uid": [], "route-address": []}}}
         config = {"mode": "rule", "managed-policy": "verified", "tun": {}}
@@ -134,7 +143,7 @@ class HealthTests(unittest.TestCase):
             def wait(self, timeout=None): return 0
 
         with tempfile.TemporaryDirectory() as directory:
-            settings = {"budget_seconds": 12, "runtime": directory, "curl": "unused",
+            settings = {"budget_seconds": 12, "runtime": directory, "curl": "unused", "listener_check": "true",
                         "socket": "unused", "urls": ["http://first", "http://second"], "expected": {}}
             probe = health.Probe(settings)
             probe.api = lambda path: {"mode": "rule"}
@@ -147,7 +156,8 @@ class HealthTests(unittest.TestCase):
                     raise health.ProbeFailure("obs", "target outage")
 
             probe.target = target
-            with patch.object(health.subprocess, "Popen", return_value=Reader()), patch.object(health.time, "sleep"):
+            with patch.object(health.subprocess, "Popen", return_value=Reader()), patch.object(health.time, "sleep"), \
+                    patch.object(health.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
                 probe.run()
             self.assertEqual(seen, settings["urls"])
             seen.clear()
@@ -157,10 +167,37 @@ class HealthTests(unittest.TestCase):
                 raise health.ProbeFailure("route", "DIRECT")
 
             probe.target = direct
-            with patch.object(health.subprocess, "Popen", return_value=Reader()), patch.object(health.time, "sleep"):
+            with patch.object(health.subprocess, "Popen", return_value=Reader()), patch.object(health.time, "sleep"), \
+                    patch.object(health.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
                 with self.assertRaises(health.ProbeFailure):
                     probe.run()
             self.assertEqual(seen, ["http://first"])
+
+
+class ListenerTests(unittest.TestCase):
+    def expected(self):
+        return [{'protocol': protocol, 'address': '127.0.0.1', 'port': 1053,
+                 'uids': [0], 'cgroup': '/system.slice/clash-verge.service'} for protocol in ('tcp', 'udp')]
+
+    def snapshot(self, udp_group='/system.slice/clash-verge.service', udp_uid=0):
+        def run(argv, **kwargs):
+            udp = argv[-1].endswith('u')
+            group, uid = (udp_group, udp_uid) if udp else ('/system.slice/clash-verge.service', 0)
+            line = f'UNCONN 0 0 127.0.0.1:1053 0.0.0.0:* uid:{uid} ino:123 sk:abcd cgroup:{group} <->\n'
+            return subprocess.CompletedProcess(argv, 0, line, '')
+        return listeners.snapshot('ss', {'tcp', 'udp'}, run)
+
+    def test_udp_owner_and_cgroup_are_independently_required(self):
+        listeners.verify(self.expected(), self.snapshot())
+        for sockets in (self.snapshot(udp_uid=1000), self.snapshot(udp_group='/user.slice/impostor'),
+                        self.snapshot()[:1], self.snapshot()[1:], self.snapshot() + self.snapshot()):
+            with self.assertRaises(ValueError): listeners.verify(self.expected(), sockets)
+
+    def test_wildcards_and_missing_extended_metadata_are_rejected(self):
+        for field, value in [('address', '*'), ('extended', False), ('cgroup', None)]:
+            sockets = self.snapshot()
+            sockets[1][field] = value
+            with self.assertRaises(ValueError): listeners.verify(self.expected(), sockets)
 
 
 class LinkTests(unittest.TestCase):
@@ -216,6 +253,20 @@ class LinkTests(unittest.TestCase):
 
 
 class NetworkManagerTests(unittest.TestCase):
+    def test_revoke_precedes_activation_and_handles_missing_down_uuid(self):
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, 'yes\nyes\n\n\n\n\n', '')
+        settings = {'interface': 'wlo1', 'exceptions': ['approved'], 'nmcli': 'nmcli',
+                    'resolvectl': 'resolvectl', 'resolver': '127.0.0.1:1054', 'systemctl': 'systemctl'}
+        nm_dns.apply(settings, 'wlo1', 'pre-up', 'approved', run)
+        self.assertEqual(calls[0], ['systemctl', 'start', 'dns-split-revoke.service'])
+        for action in ('pre-down', 'down'):
+            calls.clear()
+            nm_dns.apply(settings, 'wlo1', action, '', run)
+            self.assertEqual(calls, [['systemctl', 'start', 'dns-split-revoke.service']])
+
     def test_profile_and_active_link_are_both_constrained(self):
         calls = []
 
@@ -239,8 +290,12 @@ class NetworkManagerTests(unittest.TestCase):
 
 
 class DNSPolicyTests(unittest.TestCase):
+    context = {'interface': 'wlo1', 'uuid': 'approved', 'connection': '/org/freedesktop/NetworkManager/ActiveConnection/1',
+               'ifindex': 7, 'carrier_down_count': 0, 'boot': 'boot', 'epoch': '0'}
+
     def test_split_dns_preserves_empty_fields_in_both_families(self):
-        settings = {"nmcli": "nmcli", "wireless": "wlo1", "split_profiles": ["approved"]}
+        settings = {"nmcli": "nmcli", "wireless": "wlo1", "split_profiles": ["approved"],
+                    'split_cidrs': ['10.0.0.0/8', 'fc00::/7']}
         for output, server in [("10.1.2.53\n\ncorp.example\n\n", "10.1.2.53"),
                                ("\nfd00::53\ncorp.example\n\n", "fd00::53"),
                                ("\nfd00::53\n\ncorp.example\n", "fd00::53"),
@@ -250,7 +305,9 @@ class DNSPolicyTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, "approved\n" if "GENERAL.CON-UUID" in argv else output, "")
             with self.subTest(output=output):
                 expected = [{"domain": "corp.example", "server": server}] if server else []
-                self.assertEqual(dns_policy.split_dns(settings, run=run), expected)
+                actual = dns_policy.split_dns(settings, run=run, context=lambda: self.context, clock=lambda: 100)
+                self.assertEqual(actual['entries'], expected)
+                self.assertEqual(actual['observed_at'], 100)
 
     def test_expiry_generation_and_mode_gate(self):
         request = {"policy_version": 10, "monotonic_seconds": 100,
@@ -269,16 +326,53 @@ class DNSPolicyTests(unittest.TestCase):
             calls.append(argv)
             output = "approved" if "GENERAL.CON-UUID" in argv else "10.1.2.53\n\n~corp.example,~.\n"
             return subprocess.CompletedProcess(argv, 0, output, "")
-        settings = {"nmcli": "nmcli", "wireless": "wlo1", "split_profiles": ["approved"]}
-        entries = dns_policy.split_dns(settings, run=run)
-        self.assertEqual(entries, [{"domain": "corp.example", "server": "10.1.2.53"}])
+        settings = {"nmcli": "nmcli", "wireless": "wlo1", "split_profiles": ["approved"],
+                    'split_cidrs': ['10.0.0.0/8']}
+        entries = dns_policy.split_dns(settings, run=run, context=lambda: self.context, clock=lambda: 100)
+        self.assertEqual(entries['entries'], [{"domain": "corp.example", "server": "10.1.2.53"}])
         request = {"policy_version": 10, "monotonic_seconds": 100, "split": entries}
-        self.assertIn("dns_split4 { 10.1.2.53 timeout 120s }",
-                      dns_policy.transaction(request, {"mode": "proxy", "version": 10}, 101))
+        self.assertIn('dns_split4 { "wlo1" . 10.1.2.53 timeout 119s }',
+                      dns_policy.transaction(request, {"mode": "proxy", "version": 10}, 101, self.context))
         with self.assertRaises(ValueError): dns_policy.addresses(["10.1.2.53; flush ruleset"])
         self.assertEqual(dns_policy.domains(["~.", "bad/domain", "~corp.example"]), ["corp.example"])
         settings["split_profiles"] = []
-        self.assertEqual(dns_policy.split_dns(settings, run=run), [])
+        self.assertEqual(dns_policy.split_dns(settings, run=run)['entries'], [])
+
+    def test_split_expiry_and_all_connection_identity_fields(self):
+        split = {'entries': [{'domain': 'corp.example', 'server': '10.1.2.53'}],
+                 'context': self.context, 'observed_at': 100}
+        request = {'policy_version': 10, 'monotonic_seconds': 219, 'split': split}
+        policy = {'mode': 'proxy', 'version': 10}
+        self.assertIn('timeout 1s', dns_policy.transaction(request, policy, 219, self.context))
+        for now in (99.9, 220, 221):
+            self.assertNotIn('add element', dns_policy.transaction(request, policy, now, self.context))
+        for key in self.context:
+            other = dict(self.context, **{key: str(self.context[key]) + '-new'})
+            with self.subTest(key=key):
+                self.assertNotIn('add element', dns_policy.transaction(request, policy, 219, other))
+        self.assertNotIn('add element', dns_policy.transaction(request, policy, 219))
+
+    def test_split_profile_read_race_and_public_upstream_refused(self):
+        settings = {'nmcli': 'nmcli', 'wireless': 'wlo1', 'split_profiles': ['approved'], 'split_cidrs': ['10.0.0.0/8']}
+        def run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, '10.1.2.53\n\ncorp.example\n\n', '')
+        sequence = iter([self.context, dict(self.context, epoch='new')])
+        with self.assertRaises(ValueError):
+            dns_policy.split_dns(settings, run=run, context=lambda: next(sequence))
+        def public(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, '1.1.1.1\n\ncorp.example\n\n', '')
+        with self.assertRaises(ValueError):
+            dns_policy.split_dns(settings, run=public, context=lambda: self.context)
+
+    def test_network_context_observes_active_instance_and_kernel_identity(self):
+        def run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, 'approved\n/org/freedesktop/NetworkManager/ActiveConnection/1\n', '')
+        values = {'split-epoch': '0', 'carrier': '1', 'ifindex': '7', 'carrier_down_count': '0', 'boot_id': 'boot'}
+        read = lambda path: values[Path(path).name]
+        settings = {'nmcli': 'nmcli', 'wireless': 'wlo1', 'split_profiles': ['approved']}
+        self.assertEqual(dns_policy.network_context(settings, run, read), self.context)
+        values['carrier'] = '0'
+        with self.assertRaises(ValueError): dns_policy.network_context(settings, run, read)
 
     def test_resolved_reconcile_only_managed_tun(self):
         calls = []
@@ -391,6 +485,15 @@ def policy_document():
 
 
 class RulesTests(unittest.TestCase):
+    def test_split_lease_tuple_keeps_interface_and_timeout_validation(self):
+        definition = {'name': 'dns_split4', 'type': ['ifname', 'ipv4_addr'], 'flags': ['timeout'], 'timeout': 120000}
+        element = {'elem': {'val': {'concat': ['wlo1', '10.1.2.53']}, 'timeout': 1000, 'expires': 500}}
+        self.assertEqual(rules.lease_set(dict(definition, elem=[element])), definition)
+        for value in ('10.1.2.53', {'concat': ['', '10.1.2.53']}, {'concat': ['wlo1', 'fd00::53']}):
+            invalid = copy.deepcopy(element)
+            invalid['elem']['val'] = value
+            with self.assertRaises(ValueError): rules.lease_set(dict(definition, elem=[invalid]))
+
     def test_only_bounded_dns_lease_elements_are_ignored(self):
         expected, actual = policy_document(), policy_document()
         definition = {"family": "inet", "table": "lf_filter", "name": "dns_plaintext4",

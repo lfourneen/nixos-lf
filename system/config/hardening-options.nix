@@ -1,6 +1,13 @@
 { lib, ... }:
 
 {
+  imports = [
+    (lib.mkRemovedOptionModule [ "my" "hardening" "externalDns" ] ''
+      The wildcard DNS stub did not provide a complete external-client path.
+      Remove this setting. VM/Waydroid/hotspot gateway DNS remains separate;
+      LAN/tailnet DNS requires an explicit listener, client ACL and answer route.
+    '')
+  ];
   # Mode-A network posture (Clash closed). These options decide how much of the
   # machine is reachable, not how private it is: a direct connection exposes the
   # real address either way, and nothing here needs the proxy to be running.
@@ -26,18 +33,15 @@
       description = "Explicit desktop UDP services available to libvirt guests.";
     };
 
-    externalDns = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Expose a firewall-gated UDP DNS stub for explicitly configured LAN clients.";
-    };
-
     hotspot.enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = ''
         Share the wired uplink over my.machine.hotspot.interface (ap0): AP DHCP/DNS/
         host-service accepts and the guest forward + masquerade path.
+        A shares the uplink directly; B refuses guest public egress unless the
+        AP is explicitly in my.proxy.transparentGuestInterfaces (IPv4 TPROXY).
+        C refuses public egress. This switch does not enable hostapd or DHCP.
 
         The AP interface must be distinct from both physical uplinks, so a Wi-Fi
         client is never treated as guest ingress. Create/configure that AP

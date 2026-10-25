@@ -3,6 +3,7 @@
 import argparse
 import ipaddress
 import json
+import re
 import sys
 
 
@@ -17,7 +18,13 @@ def lease_set(obj):
     value = dict(obj)
     for element in value.pop("elem", []):
         data = element.get("elem", {}) if isinstance(element, dict) else {}
-        address = ipaddress.ip_address(data.get("val", ""))
+        address_value = data.get('val', '')
+        if obj['name'].startswith('dns_split'):
+            parts = address_value.get('concat', []) if isinstance(address_value, dict) else []
+            if len(parts) != 2 or not isinstance(parts[0], str) or not re.fullmatch(r'[a-zA-Z0-9_.:-]{1,15}', parts[0]):
+                raise ValueError('invalid DNS lease interface')
+            address_value = parts[1]
+        address = ipaddress.ip_address(address_value)
         if address.version != LEASE_SETS[obj["name"]] or address.is_multicast or address.is_unspecified:
             raise ValueError("invalid DNS lease address")
         timeout, expires = data.get("timeout", 0), data.get("expires", 0)
