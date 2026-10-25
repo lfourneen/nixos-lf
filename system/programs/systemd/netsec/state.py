@@ -19,11 +19,13 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None):
     policy = read(root / "proxy-mode/state.json")
     heartbeat = read(root / "proxy-mode/heartbeat.json")
     dns = read(root / "dns-upstream/state.json")
+    permissions = read(root / "dns-policy/state.json")
     relay = read(root / "gost-relay/state.json")
     verification = read(root / "netsec/state.json")
     version = policy.get("policy_version", policy.get("version", -1))
     reasons = []
-    for name, value in [("heartbeat", heartbeat), ("DNS", dns), ("relay", relay)]:
+    for name, value in [("heartbeat", heartbeat), ("DNS", dns), ("relay", relay),
+                        ("DNS leases", permissions)]:
         stamp = value.get("monotonic_seconds", -1)
         if not isinstance(stamp, (int, float)) or not 0 <= now - stamp <= maximum:
             reasons.append(name + " observation stale")
@@ -35,6 +37,8 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None):
         reasons.append("heartbeat belongs to a different mode")
     if relay.get("mode") != target:
         reasons.append("relay is not " + target)
+    if permissions.get("status") != "applied":
+        reasons.append("DNS lease authorization is suspended or pending")
     if target == "proxy" and dns.get("mode") != "proxy":
         reasons.append("DNS is not proxy")
     if target == "direct" and dns.get("mode") not in {

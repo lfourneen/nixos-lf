@@ -23,12 +23,18 @@ pkgs.testers.runNixOSTest {
     services.timesyncd.enable = lib.mkForce true;
     boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
     my.proxy.transparentGuestInterfaces = [ "virbr0" ];
-    networking.networkmanager.unmanaged = [ "interface-name:eth*" ];
+    networking.networkmanager.unmanaged = [
+      "interface-name:eth*" "interface-name:guest*"
+      "interface-name:virbr0" "interface-name:wlo1"
+    ];
     # Keep the real unit dependency graph without needing a DHCP server. All
     # packet tests use namespaces and explicitly assigned addresses inside VM.
     systemd.services.dhcpcd.serviceConfig = {
       Type = lib.mkForce "simple";
       ExecStart = lib.mkForce "${pkgs.writeShellScript "test-dhcpcd" ''exec ${pkgs.coreutils}/bin/sleep infinity''} --config ${pkgs.writeText "test-dhcpcd.conf" ""}";
+      # sleep.target's network hook reloads this mocked service. A real reload
+      # command would start a host dhcpcd behind the sleeping placeholder.
+      ExecReload = lib.mkForce "${pkgs.coreutils}/bin/true";
       PIDFile = lib.mkForce "";
     };
     systemd.services.nftables.serviceConfig.ExecStart = lib.mkForce [
@@ -42,6 +48,25 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-mode-script".source = config.my.proxy.modeScript;
     environment.etc."netsec-tproxy.py".source = ./tproxy_fixture.py;
     environment.etc."netsec-dns.py".source = ./dns_fixture.py;
+    environment.etc."netsec-events.py".source = ../../system/programs/systemd/netsec/events.py;
+    environment.etc."netsec-events-test.py".source = ./events_fixture.py;
+    environment.etc."test-dns-sleep.json".text = builtins.toJSON {
+      nft = pkgs.writeShellScript "fault-inject-sleep-nft" ''
+        test ! -e /run/fail-sleep-nft || exit 1
+        exec ${pkgs.nftables}/bin/nft "$@"
+      '';
+      systemctl = "${pkgs.systemd}/bin/systemctl";
+    };
+    systemd.services.dns-policy-sleep.serviceConfig.ExecStart = lib.mkForce
+      "${pkgs.python3}/bin/python3 ${../../system/programs/systemd/netsec/dns_sleep.py} /etc/test-dns-sleep.json before";
+    systemd.services.dns-policy-resume.serviceConfig.ExecStart = lib.mkForce
+      "${pkgs.python3}/bin/python3 ${../../system/programs/systemd/netsec/dns_sleep.py} /etc/test-dns-sleep.json resume";
+    # Hold sleep.target without invoking suspend or freezing the test driver.
+    systemd.services.netsec-test-sleep-hold = {
+      requires = [ "sleep.target" ];
+      after = [ "sleep.target" ];
+      serviceConfig = { Type = "oneshot"; RemainAfterExit = true; ExecStart = "${pkgs.coreutils}/bin/true"; };
+    };
     environment.etc."guest-dhcpcd.conf".text = ''
       nohook resolv.conf
       nohook ntp.conf
@@ -77,6 +102,23 @@ pkgs.testers.runNixOSTest {
 
     # Freeze the supervisor only inside the VM to test packet policy fragments.
     machine.succeed("systemctl stop nftables-verify-pending.path nftables-verify.timer nftables-verify.service proxy-mode.service dns-upstream.service; systemctl mask --runtime proxy-mode.service")
+    machine.succeed("python3 /etc/netsec-events-test.py /etc/netsec-events.py")
+
+    # A failed required pre-sleep hook cancels the transaction. ExecStopPost
+    # still queues recovery; a failed revoke keeps retrying without regranting.
+    machine.succeed("touch /run/fail-sleep-nft")
+    machine.fail("systemctl start netsec-test-sleep-hold.service")
+    machine.succeed("test -e /run/dns-policy/sleeping")
+    machine.fail("systemctl is-active --quiet sleep.target")
+    machine.wait_until_succeeds("systemctl show -p NRestarts --value dns-policy-resume.service | grep -Eq '^[1-9][0-9]*$'")
+    machine.succeed("test -e /run/dns-policy/sleeping")
+    machine.succeed("rm /run/fail-sleep-nft")
+    machine.wait_until_succeeds("test ! -e /run/dns-policy/sleeping")
+    machine.wait_until_succeeds("test ! -e /run/netsec/alerts/dns-policy-sleep.service.json; test ! -e /run/netsec/alerts/dns-policy-resume.service.json")
+    machine.succeed("systemctl start netsec-test-sleep-hold.service")
+    machine.succeed("test -e /run/dns-policy/sleeping; systemctl start dns-policy.service; test $(jq -r .status /run/dns-policy/state.json) = suspended")
+    machine.succeed("systemctl stop netsec-test-sleep-hold.service")
+    machine.wait_until_succeeds("test ! -e /run/dns-policy/sleeping")
     machine.succeed("ip netns exec outside sh -c 'python3 -m http.server 8080 --bind 0.0.0.0 >/tmp/outside-http.log 2>&1 &'")
     machine.wait_until_succeeds("curl --noproxy '*' -fsS --connect-timeout 1 http://203.0.113.10:8080 >/dev/null")
     machine.succeed("ip link add virbr0 type bridge; ip addr add 192.168.122.1/24 dev virbr0; ip link set virbr0 up")

@@ -99,6 +99,10 @@ func lfValidate(document map[string]any, partial bool) (string, error) {
 				if !v {
 					continue
 				}
+			case map[string]any:
+				if len(v) == 0 {
+					continue
+				}
 			}
 		}
 		if !reflect.DeepEqual(lfCanonical(actual), lfCanonical(expected)) {

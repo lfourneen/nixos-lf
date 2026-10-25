@@ -30,6 +30,7 @@ def module(name):
 
 health, link, rules, nm_dns = (module(name) for name in ("health", "link", "rules", "nm_dns"))
 dns_policy, resolved_policy, state, alerts = (module(name) for name in ("dns_policy", "resolved_policy", "state", "alerts"))
+events, dns_sleep = (module(name) for name in ("events", "dns_sleep"))
 SOURCE = (MODULES / "proxy-mode.nix").read_text()
 
 
@@ -238,6 +239,19 @@ class NetworkManagerTests(unittest.TestCase):
 
 
 class DNSPolicyTests(unittest.TestCase):
+    def test_split_dns_preserves_empty_fields_in_both_families(self):
+        settings = {"nmcli": "nmcli", "wireless": "wlo1", "split_profiles": ["approved"]}
+        for output, server in [("10.1.2.53\n\ncorp.example\n\n", "10.1.2.53"),
+                               ("\nfd00::53\ncorp.example\n\n", "fd00::53"),
+                               ("\nfd00::53\n\ncorp.example\n", "fd00::53"),
+                               ("10.1.2.53\n\n\ncorp.example\n", "10.1.2.53"),
+                               ("\n\n\n\n", None)]:
+            def run(argv, **kwargs):
+                return subprocess.CompletedProcess(argv, 0, "approved\n" if "GENERAL.CON-UUID" in argv else output, "")
+            with self.subTest(output=output):
+                expected = [{"domain": "corp.example", "server": server}] if server else []
+                self.assertEqual(dns_policy.split_dns(settings, run=run), expected)
+
     def test_expiry_generation_and_mode_gate(self):
         request = {"policy_version": 10, "monotonic_seconds": 100,
                    "plaintext_until": 110, "plaintext": ["192.0.2.53"], "split": []}
@@ -292,8 +306,12 @@ class StateTests(unittest.TestCase):
                 write("proxy-mode/heartbeat.json", fresh)
                 write("gost-relay/state.json", fresh)
                 write("dns-upstream/state.json", dict(fresh, mode=dns_mode))
+                write("dns-policy/state.json", dict(fresh, status="applied"))
                 write("netsec/state.json", {"result": "ok", "version": 10})
                 self.assertTrue(state.readiness(root, mode, now=101)["ready"])
+                write("dns-policy/state.json", dict(fresh, status="suspended"))
+                self.assertFalse(state.readiness(root, mode, now=101)["ready"])
+                write("dns-policy/state.json", dict(fresh, status="applied"))
                 self.assertFalse(state.readiness(root, mode, now=221)["ready"])
                 write("netsec/state.json", {"result": "ok", "version": 9})
                 self.assertFalse(state.readiness(root, mode, now=101)["ready"])
@@ -308,6 +326,58 @@ class StateTests(unittest.TestCase):
             self.assertEqual((root / "failed").read_text().strip(), "dns-policy.service")
             alerts.update(root, "dns-policy.service")
             self.assertFalse((root / "failed").exists())
+
+
+class EventTests(unittest.TestCase):
+    def test_only_lease_elements_skip_wake(self):
+        for name in ("dns_plaintext4", "dns_split4", "dns_split6"):
+            for operation in ("add", "delete"):
+                self.assertFalse(events.needs_wake(f"{operation} element inet lf_filter {name} {{ 192.0.2.53 timeout 2m }}"))
+            self.assertTrue(events.needs_wake(f"delete set inet lf_filter {name}"))
+            self.assertTrue(events.needs_wake(f"add set inet lf_filter {name} {{ type ipv4_addr; }}"))
+        for line in ("delete rule inet lf_filter lf_blocked_guard handle 12",
+                     "add rule inet lf_filter lf_dns_guard counter drop",
+                     "add element inet lf_filter unrelated { 192.0.2.53 }",
+                     "add rule inet mihomo output counter accept"):
+            self.assertTrue(events.needs_wake(line))
+        self.assertFalse(events.needs_wake("add rule inet libvirt_network input accept"))
+
+
+class SleepTests(unittest.TestCase):
+    def test_failed_revoke_retries_without_early_regrant(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "dns-policy").mkdir()
+            (root / "proxy-mode").mkdir()
+            settings = {"nft": "nft", "systemctl": "systemctl"}
+            failed, sleep_state, calls = [True], ["inactive"], []
+            def run(argv, **kwargs):
+                calls.append(argv)
+                if argv[0] == "systemctl":
+                    return subprocess.CompletedProcess(argv, 0, sleep_state[0] + "\n", "")
+                if failed[0]:
+                    raise subprocess.CalledProcessError(1, argv)
+                self.assertNotIn("add element", kwargs["input"])
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            marker = root / "dns-policy/sleeping"
+            with self.assertRaises(subprocess.CalledProcessError):
+                dns_sleep.transition(settings, "before", root, run)
+            self.assertTrue(marker.exists())
+            failed[0] = False
+            for sleep_state[0] in ("activating", "active", "deactivating"):
+                before = len(calls)
+                with self.assertRaises(RuntimeError): dns_sleep.transition(settings, "resume", root, run)
+                self.assertEqual(len(calls), before + 1)
+                self.assertTrue(marker.exists())
+            sleep_state[0] = "inactive"
+            failed[0] = True
+            with self.assertRaises(subprocess.CalledProcessError):
+                dns_sleep.transition(settings, "resume", root, run)
+            self.assertTrue(marker.exists())
+            failed[0] = False
+            dns_sleep.transition(settings, "resume", root, run)
+            self.assertFalse(marker.exists())
+            self.assertEqual(json.loads((root / "dns-policy/state.json").read_text())["status"], "revoked")
 
 
 def policy_document():

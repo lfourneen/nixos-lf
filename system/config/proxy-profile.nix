@@ -35,6 +35,8 @@ in
       ipv6 = false;
       enhanced-mode = if p.tunMode then "fake-ip" else "redir-host";
       fake-ip-range = p.fakeIpRange;
+      fake-ip-range6 = "";
+      fake-ip-filter-mode = "blacklist";
       fake-ip-filter = [
         "*.lan" "*.local" "*.localhost" "*.test" "*.home.arpa" "*.internal"
         "localhost.ptlogin2.qq.com" "+.stun.*.*" "+.stun.*.*.*" "+.stun.*.*.*.*"
@@ -46,6 +48,9 @@ in
       respect-rules = true;
       default-nameserver = [ "tls://${lib.head m.dotUpstreams}" "tls://119.29.29.29" ];
       proxy-server-nameserver = [ "https://${lib.head m.dotUpstreams}/dns-query" ];
+      proxy-server-nameserver-policy = { };
+      direct-nameserver = [ ];
+      direct-nameserver-follow-policy = false;
       nameserver = [ "https://1.1.1.1/dns-query" "https://8.8.8.8/dns-query" ];
       nameserver-policy = {
         "geosite:cn" = map (ip: "https://${ip}/dns-query") m.dotUpstreams;

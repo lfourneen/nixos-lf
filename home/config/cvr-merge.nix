@@ -216,18 +216,11 @@ in
   };
 
   # Global extension script (after Merge, before per-profile extensions):
-  # (1) keep only the dns keys the Merge template declares (DNS_KEYS must match
-  # that block); (2) prepend forcedProxyDomains via the catch-all group.
+  # (1) replace DNS with the managed object; (2) prepend forcedProxyDomains via
+  # the catch-all group. The core validates later per-profile extensions too.
   home.file.".local/share/io.github.clash-verge-rev.clash-verge-rev/profiles/Script.js" = {
     text = ''
       // Managed by home/config/cvr-merge.nix -- do not edit in the GUI.
-      const DNS_KEYS = new Set([
-        "enable", "listen", "ipv6", "enhanced-mode", "fake-ip-range",
-        "fake-ip-filter", "use-hosts", "respect-rules",
-        "default-nameserver", "proxy-server-nameserver", "nameserver",
-        "nameserver-policy",
-      ]);
-      const GEOSITE_KEYS = new Set(["geosite:cn", "geosite:geolocation-!cn"]);
       const FORCED_PROXY_DOMAINS = ${forcedProxyDomainsJs};
 
       // Catch-all group name differs per subscription, so take it from the
