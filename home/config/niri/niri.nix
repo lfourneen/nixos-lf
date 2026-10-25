@@ -623,12 +623,12 @@ in
   '';
 
   # waywallen (AppImage) runs as a daemon and spawns its own display client.
-  # The backend must match the running compositor: `layer-shell` on niri
-  # (wlroots protocol, paints into the `waywallen-wallpaper` namespace matched
-  # by the layer-rule above), `gnome-shell` on GNOME (the GNOME extension embeds
-  # the renderer via Meta.WaylandClient; layer-shell fails there because Mutter
-  # does not expose zwlr_layer_shell_v1). `--no-ui` keeps it silent in the tray;
-  # the window opens on demand from the tray icon.
+  # Since v0.5.0 the daemon picks the backend itself from XDG_CURRENT_DESKTOP:
+  # `layer-shell` on niri (wlroots protocol, paints into the `waywallen-wallpaper`
+  # namespace matched by the layer-rule above), `gnome-shell` on GNOME (Mutter
+  # does not expose zwlr_layer_shell_v1) and `kde-plasma` on Plasma, so no
+  # --display-backend is passed. `--no-ui` keeps it silent in the tray; the
+  # window opens on demand from the tray icon.
   systemd.user.services.waywallen = {
     Unit = {
       Description = "waywallen wallpaper daemon (tray, no GUI)";
@@ -636,13 +636,7 @@ in
       After = [ "graphical-session.target" ];
     };
     Service = {
-      ExecStart = pkgs.writeShellScript "waywallen-start" ''
-        case "$XDG_CURRENT_DESKTOP" in
-          *GNOME*) backend=gnome-shell ;;
-          *)       backend=layer-shell ;;
-        esac
-        exec ${pkgs.waywallen}/bin/waywallen --no-ui --display-backend "$backend"
-      '';
+      ExecStart = "${pkgs.waywallen}/bin/waywallen --no-ui";
       Restart = "always";
       RestartSec = 5;
     };
