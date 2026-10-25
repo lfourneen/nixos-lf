@@ -70,6 +70,30 @@ func TestLFManagedNixConfig(t *testing.T) {
 	if _, err = lfValidateRaw(raw); err != nil {
 		t.Fatal(err)
 	}
+	for key, value := range map[string]any{
+		"direct-nameserver":               []any{"udp://192.0.2.53:5353"},
+		"direct-nameserver-follow-policy": true,
+		"proxy-server-nameserver-policy":  map[string]any{"+.example.com": []any{"udp://192.0.2.53:5353"}},
+		"fake-ip-filter-mode":             "whitelist",
+		"fake-ip-range6":                  "fd00::/64",
+	} {
+		var changed map[string]any
+		if err = json.Unmarshal(data, &changed); err != nil {
+			t.Fatal(err)
+		}
+		changed["dns"].(map[string]any)[key] = value
+		encoded, err := json.Marshal(changed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidate, err := UnmarshalRawConfig(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = lfValidateRaw(candidate); err == nil {
+			t.Fatalf("final RawConfig accepted DNS drift: %s", key)
+		}
+	}
 	raw.Listeners = []map[string]any{{"type": "http", "port": 18080}}
 	if _, err = lfValidateRaw(raw); err == nil {
 		t.Fatal("final RawConfig accepted extra listener")

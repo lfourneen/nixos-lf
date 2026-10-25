@@ -41,7 +41,7 @@ DNS is a parallel chain (section 3.2): `systemd-resolved` → `dnsmasq :1054` �
 | `proxy-mode` | — | root | decides the mode, commits the ruleset, publishes the mode version |
 | `dns-upstream` | — | root | reconciles `dnsmasq`'s upstream, publishes DNS state and calls the `dns-policy` broker |
 | `dns-policy` | — | root (`CAP_NET_ADMIN` only) | applies short-lived DNS destination leases in the kernel under the policy lock |
-| `dns-resolved-policy` | — | unprivileged | keeps the managed TUN out of resolved's default resolver selection |
+| `dns-resolved-policy` | — | root (no capabilities) | keeps the managed TUN out of resolved's default resolver selection |
 | `nftables-verify` | — | root | compares live kernel state with the expected rules and reports a result |
 
 Ports, uids, the packet mark (`6666` → `0x00001a0a`), the TUN device name and the TUN route table are single-sourced in `system/config/machine.nix` and `system/config/proxy-options.nix`; the ruleset, the services and the Clash template all read them from there.
@@ -61,10 +61,13 @@ Ports, uids, the packet mark (`6666` → `0x00001a0a`), the TUN device name and 
 * `systemd-resolved` is NetworkManager's pinned resolver and forwards to `dnsmasq :1054`.
 * `dns-upstream` rewrites `/run/dns-upstream/servers.conf` (dnsmasq `servers-file`) and reconciles every pass; a change is applied with a SIGHUP `reload` rather than a restart, and a failed apply stays pending and is retried.
 * Mode B upstream: `mihomo :1053` (fake-ip). Mode A / blocked upstream: `unbound :1055` (DoT to AliDNS).
+* Mihomo DNS settings come from `my.proxy.managedDns`: additional `direct-nameserver` and `proxy-server-nameserver-policy` resolvers are disabled, and the fake-IP filter mode and IPv6 fake-IP range are fixed.
 * The static `lf_nat` chains redirect every `:53` leaving an uplink (v4 and v6) into `dnsmasq`, so a hardcoded resolver in a portal/LAN/CGNAT range cannot leave in the clear.
 * Plaintext fallback is a kernel lease, not a coordinator state: `dns-policy` adds the DHCP resolvers to `inet lf_filter dns_plaintext4` with a timeout bounded by the remaining window, and a static `output` base chain (`lf_dns_guard`, priority `-199` → `dns_egress`) drops every other `dnsmasq` upstream query. Stopping, killing or stalling `dns-upstream` therefore cannot keep plaintext DNS permitted past the lease. Split-DNS destinations use separate `dns_split4`/`dns_split6` leases refreshed from an operator-approved NetworkManager profile.
 
 Wired `ens1` remains managed by dhcpcd; NetworkManager excludes it by name and MAC and manages Wi-Fi `wlo1`. `netsec/nm_dns.py` reconciles the active managed Wi-Fi profile at pre-up/up/DHCP events: both IP families ignore automatically supplied DNS, unwanted explicit servers/search domains are cleared, and resolved uses the managed resolver with the `~.` routing domain. `my.proxy.splitDnsProfileUuids` preserves selected profiles for enterprise split DNS; this exemption does not change nftables egress policy. Plaintext fallback reads the original dhcpcd lease or NetworkManager `DHCP4.OPTION`, rather than the effective `IP4.DNS` list.
+
+If an approved split-DNS profile cannot be read, DNS enters `split-error`: dnsmasq forwarding is disabled and an alarm is raised until the profile can be read again. The profile whitelist is empty by default.
 
 Mode A may temporarily use DHCP resolvers for portal/bootstrap recovery. Each opening lasts at most 120 s and must end before the connection session's 300 s deadline, measured from its first need for plaintext. The session key includes the boot ID, interface index, carrier-down counter and, for Wi-Fi, the NetworkManager ActiveConnection object path. A DHCP address/gateway/DNS update changes a parameter fingerprint, not the session budget; a service restart also retains the budget. `plaintextBootBudgetSeconds` can add a boot-wide deadline. `/run/dns-upstream/force-plaintext` is a persistent override while the file exists, until deletion or reboot. Session identity, expiry, remaining budget and override state are published in `/run/dns-upstream/state.json`.
 
@@ -78,13 +81,13 @@ Mode A may temporarily use DHCP resolvers for portal/bootstrap recovery. Each op
 | `intent` | `/run/proxy-mode/intent` (`proxy` \| `direct`), written by root | the last explicit mode request; absent = this boot decides |
 | `tun_ready` | `Mihomo` device up + FIB `my.proxy.routeTable` + a route via it, for IPv4 and (when enabled) IPv6 | the TUN is actually capturing |
 | `mode_direct` | `GET /configs` over the control socket | mihomo is in `direct` mode |
-| `health_ok` | `netsec/health.py` checks managed API invariants (mode, the `managed-policy` digest, mark, ports, LAN exposure and TUN parameters), then tries complete HTTP 200/204 + exact-source-port/hostname log + selected-leaf delay proofs for `nodeProbeUrls`, followed by a fake-IP HTTP request through the TUN with its own exact-source-port route log and a final configuration fingerprint check | the managed core configuration, the **effective selected node**, and the TUN data path pass within one shared deadline |
+| `health_ok` | `netsec/health.py` checks managed API invariants (mode, the `managed-policy` digest, mark, ports, LAN exposure and TUN parameters), then tries complete HTTP 200/204 + exact-source-port/hostname log + selected-leaf delay proofs for `nodeProbeUrls`, followed by a fake-IP HTTP request through TUN/auto-redirect with its own exact-source-port route log and a final configuration fingerprint check | the managed core configuration, the **effective selected node**, and the transparent TCP data path pass within one shared deadline |
 
 | | **Mode A** | **Mode B** | **Mode C** |
 |---|---|---|---|
 | entry | `clash-off` (explicit direct intent), or a boot where the core was never seen and no proxy intent is set | core on, TUN ready, node healthy | core on and any of: the TUN is not ready (device/FIB/route); `direct` mode; the whole helper/core cgroup vanished while proxy intent is set; one definite `config`/`route`/`node`/`tun` health failure, or two consecutive `obs` failures (a single transient `obs` no longer cuts) |
 | nftables state | fragments empty | `proxyModeRules` loaded | `blockedModeRules` loaded |
-| egress | direct, no kill switch | host public traffic proxied or dropped, with explicit exceptions; guest public traffic refused unless IPv4 TPROXY is enabled | only loopback, the core's mark, root's access to the Clash-facing ports (`7897` mixed, `1053` DNS, `33332`/`33333` gost) and to the fake-ip network **through the TUN device** (the TUN self-test), DHCP on the uplinks, and DHCP/DNS replies to a guest bridge (bridge + gateway source + 67/53, deliberately **not** uid-scoped) survive; non-root traffic to those ports (TCP and UDP) and every other non-loopback/non-core flow are dropped. The guard is a base chain evaluated before mihomo's redirect, so a non-root TCP flow is cut while it still carries its real destination |
+| egress | direct, no kill switch | host public traffic proxied or dropped, with explicit exceptions; guest public traffic refused unless IPv4 TPROXY is enabled | only loopback, the core's mark, root's access to the Clash-facing ports (`7897` mixed, `1053` DNS, `33332`/`33333` gost) and to the fake-ip network on 53/80/443 for the transparent self-test (plus its loopback-source replies), DHCP on the uplinks, and DHCP/DNS replies to a guest bridge (bridge + gateway source + 67/53, deliberately **not** uid-scoped) survive; non-root traffic to those ports (TCP and UDP) and every other non-loopback/non-core flow are dropped. The guard is a base chain evaluated before mihomo's redirect, so a non-root TCP flow is cut while it still carries its real destination |
 | DNS | `unbound` DoT | `mihomo` fake-ip | `unbound` (its own DoT egress is cut, so DNS stops) |
 
 The mode is driven by boot-scoped operator intent: `clash-on` records proxy intent and `clash-off` records direct intent in `/run/proxy-mode/intent`, and `proxy-mode` writes `/run/proxy-mode/core-seen` when it first sees the core. A missing core stays Mode C whenever intent is `proxy`, or when it was never explicitly cleared and the core was seen this boot — so a crashed core, or the whole helper/core cgroup disappearing, is treated as a failure, never as a silent drop to Mode A. Only an explicit `clash-off` (direct intent) and a fresh boot with no intent return to Mode A. The `core-gone` path keeps a one-pass grace so the teardown in `clash-off` is not caught mid-flight.
@@ -94,7 +97,7 @@ The mode is driven by boot-scoped operator intent: `clash-on` records proxy inte
 Both are emitted by `system/config/network.nix`. The scope loader (`proxy-mode --reload`) concatenates the static ruleset with the mode's fragment and commits them in a **single `nft -f` transaction**, so a start or reload never leaves the fragment chains empty; `rules_off` flushes both.
 
 * `proxyModeRules` — `proxymode_drops` (core-mark accept, DHCP clients pinned to uid 0/`dhcpcd`, all root UDP to preserve Tailscale hole punching, then drop), `proxymode_tail` (reverse default-deny for interfaces not pinned), `proxymode_forward` (guest refusal), and the `:33333` REDIRECT tables. The core keeps its mark and its nodes stay reachable.
-* `blockedModeRules` — fills `lf_blocked_guard`, a **base chain on the `output` hook at priority `-200`**, i.e. evaluated before mihomo's own auto-redirect (`nat/output` `-150`) and before every static accept. It accepts loopback, the core's mark, root's access to the fake-ip network only via the TUN device (so the self-test cannot fall through to a physical uplink), DHCP clients pinned to uid 0/`dhcpcd` (server replies only for the explicitly enabled AP/subnet; L2-local), and a hop-limit-255 ICMPv6 NDP carve-out for link maintenance, then a terminal `drop`. Running *before* the redirect is what makes the cut real: once the redirect has run, a locally generated non-root TCP flow already carries `127.0.0.1:<inbound>` as its destination and the guard's port list would not match it. The guard is unconditional, so the normal fragment's LAN/DHCP/DNS/NTP accepts do not survive it; the normal fragment and the redirect tables are torn down, and `proxymode_forward` is refilled with the public-destination refusal for guests.
+* `blockedModeRules` — fills `lf_blocked_guard`, a **base chain on the `output` hook at priority `-200`**, i.e. evaluated before mihomo's own auto-redirect (`nat/output` `-150`) and before every static accept. It accepts loopback, the core's mark, root's access to the fake-ip network on 53/80/443 before auto-redirect, plus loopback-source replies to fake-IP (the route log checks that the core carried the self-test), DHCP clients pinned to uid 0/`dhcpcd` (server replies only for the explicitly enabled AP/subnet; L2-local), and a hop-limit-255 ICMPv6 NDP carve-out for link maintenance, then a terminal `drop`. Running *before* the redirect is what makes the cut real: once the redirect has run, a locally generated non-root TCP flow already carries `127.0.0.1:<inbound>` as its destination and the guard's port list would not match it. The guard is unconditional, so the normal fragment's LAN/DHCP/DNS/NTP accepts do not survive it; the normal fragment and the redirect tables are torn down, and `proxymode_forward` is refilled with the public-destination refusal for guests.
 
 A separate static chain, `redirect_guard` (an `output` base chain at priority `-201`, before NAT), rejects an explicit loopback connection to gost's redirect port with a TCP RST; a flow that is transparently redirected still carries its real destination at that point and is unaffected.
 
@@ -118,9 +121,9 @@ Supervisors are event-driven, with an adaptive backstop (2 s while transitioning
 * `nftables.service` runs the same scope loader for both `ExecStart` and `ExecReload`: under a shared lock it commits the static ruleset plus the current safety fragment in one `nft -f` transaction, so a reload installs Mode C atomically and the loop then works back to B. Stopping the unit does **not** remove the rules, and a failed load leaves the previous rules in place.
 * `proxy-tun-watch.service` runs `ip -o monitor link` and wakes the coordinator on any link event naming the TUN device: turning the TUN off/on in the GUI is a second-level event, not poll-bound. (sysfs emits no inotify, so a `systemd.path` cannot see it; rtnetlink is the reliable source.)
 * On a policy commit, `proxy-mode` signals `gost-relay` and `dns-upstream` directly (`request_wake`) and queues an immutable verification request (`request_verify`). Each request has its own file under `/run/netsec/requests/`; a `.path` unit drains remaining requests after a busy verifier finishes, rather than relying on repeated oneshot starts being queued.
-* `proxy-rules-watch.service` consumes `nft monitor ruleset`, coalesces owned/mihomo table changes and wakes supervision at most once per second; periodic comparison remains the fallback.
+* `proxy-rules-watch.service` consumes `nft monitor ruleset`, coalesces owned/mihomo table changes and wakes supervision at most once per second. Element updates of the three DNS lease sets are excluded to prevent renewal feedback; their definitions and referencing rules still wake supervision, and periodic comparison checks lease bounds.
 * `proxy-mode` is a systemd notify service with a 90 s watchdog. READY and watchdog notifications follow successful policy postconditions; `/run/proxy-mode/heartbeat.json` records that verified round.
-* `dns-upstream` is also a notify service with a 90 s watchdog; each pass renews the DNS lease through `dns-policy`, and `dns-policy-sleep` revokes every lease before suspend and wakes the supervisors after resume, so suspend time cannot extend a plaintext permission.
+* `dns-upstream` is also a notify service with a 90 s watchdog; each pass renews the DNS lease through `dns-policy`, and `dns-policy-sleep` is a required precondition of sleep.target. It revokes every lease before sleep; ExecStopPost queues an independent, retrying dns-policy-resume service after wake or a failed hook. That service waits for an inactive sleep.target, revokes again, removes the sleeping marker and wakes supervision. The broker reports suspended while authorization is disabled.
 * Every writer (`proxy-mode`'s loop, `--reload`, and an on/off request) shares `/run/proxy-mode/lock`; the long network probes run outside the lock, and the commit re-checks the intent, the committed version and the core cgroup snapshot. A result superseded by reload/on/off is discarded and re-decided. Each lock window starts with a fresh nft snapshot, including after a probe reacquires the lock. A separate operator lock serializes the entire on/off operation, including helper start/stop.
 
 State files (all under `/run`):
@@ -133,7 +136,7 @@ State files (all under `/run`):
 | `/run/proxy-mode/health.json`, `heartbeat.json` | latest probe result and layer durations; latest successful policy round |
 | `/run/netsec/state.json` | atomic `{result, version, checked_at, detail}` for the verified generation |
 | `/run/dns-upstream/state.json` | DNS mode/reason, applied `policy_version`, session identity, plaintext expiry/budget and override |
-| `/run/dns-policy/state.json` | kernel DNS lease generation and application time |
+| `/run/dns-policy/state.json` | lease status (`applied`/`suspended`/`revoked`), policy generation when applied, and observation time |
 | `/run/netsec/alerts/*.json` | per-owner alert records; `/run/netsec/failed` aggregates their owner names |
 | `/run/proxy-mode/version` | commit counter; a liveness result is ignored if this changed underneath it |
 | `/run/proxy-mode/intent` | root-written `proxy` \| `direct`; absent = this boot decides |
@@ -141,7 +144,7 @@ State files (all under `/run`):
 | `/run/netsec/result`, `/run/netsec/verified-version` | last verification verdict, and the mode version it verified |
 | `/run/gost-relay/status`, `/run/dns-upstream/status`, `/run/dns-upstream/reason` | relay mode, resolver mode, why |
 
-`gost-relay` maps the proxy-mode state directly: `proxy` → forward to `:7897`, `blocked` → no listener (refuse), `direct` → passthrough; every other value, including `unenforced` and an unreadable or absent file, → no listener. In `proxy` it trusts the node/TUN gate `proxy-mode` already passed and only re-checks the mixed listener's cgroup identity, so recovery is not blocked by a second warm-up site. It reaps the previous child before each start, runs without `SO_REUSEPORT`, requires exactly one listener per port, and is bounded by `LimitNOFILE`/`MemoryMax`/`TasksMax`. `nushell`'s `proxy-status` reports the mode, DNS, relay, verification result and alarm state, plus a live probe. Consumers read atomic policy/verification JSON; individual status/version files remain compatibility mirrors. `proxy-control status`/`wait` use one readiness contract (`netsec/state.py`): policy version, fresh heartbeat/DNS/relay observations (bounded by `my.proxy.stateMaxAgeSeconds`), a verifier result for the same generation, no active alarm, and a usable DoT/plaintext DNS mode. `wait direct` does not accept `degraded-dot-only`.
+`gost-relay` maps the proxy-mode state directly: `proxy` → forward to `:7897`, `blocked` → no listener (refuse), `direct` → passthrough; every other value, including `unenforced` and an unreadable or absent file, → no listener. In `proxy` it trusts the node/TUN gate `proxy-mode` already passed and only re-checks the mixed listener's cgroup identity, so recovery is not blocked by a second warm-up site. It reaps the previous child before each start, runs without `SO_REUSEPORT`, requires exactly one listener per port, and is bounded by `LimitNOFILE`/`MemoryMax`/`TasksMax`. `nushell`'s `proxy-status` reports the mode, DNS, relay, verification result and alarm state, plus a live probe. Consumers read atomic policy/verification JSON; individual status/version files remain compatibility mirrors. `proxy-control status`/`wait` share readiness checks (`netsec/state.py`): heartbeat, DNS, relay and DNS broker observations must be fresh (within `my.proxy.stateMaxAgeSeconds`) and belong to the current policy version. The broker must report `applied`, verification must cover the same version, and no alarm may be active. Mode B requires mihomo DNS; Mode A requires DoT or a valid plaintext window. `suspended`/`revoked` broker states and `degraded-dot-only` DNS do not count as ready.
 
 ## 6. Verification, alerting, repair
 
@@ -161,6 +164,7 @@ nix build .#checks.x86_64-linux.proxy-regressions
 nix build .#checks.x86_64-linux.proxy-rules
 nix build .#checks.x86_64-linux.proxy-profile
 nix build .#checks.x86_64-linux.proxy-network-vm
+nix build .#checks.x86_64-linux.proxy-core
 nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
@@ -202,7 +206,7 @@ Isolated regressions exercise the actual comparison, policy-graph, lease/session
 | `system/programs/systemd/netsec/link.py` | physical uplink, raw DHCP resolvers and session identity |
 | `system/programs/systemd/netsec/dns_policy.py` | kernel DNS lease broker and split-DNS discovery from an approved profile |
 | `system/programs/systemd/netsec/resolved_policy.py` | removes the managed TUN from resolved's default resolver selection |
-| `system/programs/systemd/netsec/state.py` | single readiness/freshness contract for `proxy-control` and `proxy-status` |
+| `system/programs/systemd/netsec/state.py` | shared readiness/freshness checks for `proxy-control` and `proxy-status` |
 | `system/programs/systemd/netsec/alerts.py` | per-owner alert records plus the aggregate flag |
 | `system/programs/systemd/netsec/managed_profile*.go`, `managed_route.go`, `patch_mihomo.py` | final-parser and controller-PATCH enforcement of the managed core profile (listeners, tunnels, DNS, TUN routing fields); patched into the pinned mihomo build |
 | `system/programs/systemd/netsec/health.py` | bounded selected-node/TUN proof and API invariants |
@@ -227,16 +231,17 @@ Isolated regressions exercise the actual comparison, policy-graph, lease/session
 * Mode B's dedicated DNS/NTP exceptions allow `unbound` (DoT, tcp/853) and `systemd-timesyncd` (udp/123); the core mark and root-UDP exception also apply. Ordinary application plaintext resolver queries are redirected into `dnsmasq`. Mode A adds DHCP-provided resolvers only within the bounded plaintext window (section 3.2).
 * The kill switch exempts the core by mark rather than a blanket uid-0 allow. DHCP exceptions are pinned to uid 0/`dhcpcd`. Mode B permits **all root UDP** on uplinks to preserve Tailscale arbitrary-port peer/STUN hole punching; this also allows other root UDP. Limiting the port to `41641` degraded Tailscale to DERP (`netcheck` reported `UDP: false`). This is an accepted Mode B compatibility exception, not a root boundary: root can already set the core mark. Mode C cuts unmarked tailnet data.
 * Mode C keeps the core alive, so mihomo's own `DIRECT` traffic still leaves; loopback stays open for local IPC, but the app-facing proxy ports (`7897`/`33332`/`33333`) are refused for non-root in both TCP and UDP, and a hop-limit-255 ICMPv6 NDP carve-out keeps link maintenance alive without opening a data path. Guest DHCP/DNS replies are allowed by bridge, gateway source and port (`67`/`53`), not by uid: a privileged-port daemon may send them after dropping privileges, and the accepted TCP sockets carry the dropped uid. The guard is a base chain evaluated before mihomo's redirect, so this holds for locally generated TCP too.
-* Health is decided by `health_ok` through `netsec/health.py`: each target supplies its own HTTP/log/selected-leaf proof, and policy names are resolved exactly and URL-encoded. DIRECT/REJECT is a routing failure, not a reason to try an unrelated healthy node. Targets share a 12 s deadline by default; the probe runs in a cancellable process group while supervision re-checks core/TUN/configuration. `config`/`route`/`node`/`tun` cut immediately; `obs` needs two consecutive failures, and an event-cancelled probe does not consume an observation. The 5 s value caps sleep, not end-to-end protection/recovery delay. Layer durations are in `health.json`; actual delay depends on the fault and event source. The TUN data probe sends a real HTTP request to a fake-IP and requires its exact-source route log. Because sing-tun only puts the TUN's `/30` into table 2022, a fake IP outside that subnet still has the uplink as its route when the Mode C filter runs; the guard therefore allows root to the fake-IP network only on 53/80/443 without requiring `oifname`, and the later auto-redirect (priority -150) delivers it to the core. The core's reply leaves its loopback redirect listener before reverse NAT, so the guard also allows `saddr 127.0.0.1` → fake-IP for root. B mode returns every fake-IP destination before the gost redirect for the same reason. If that redirect or reply path is missing, the probe times out and the host stays in C.
+* Health is decided by `health_ok` through `netsec/health.py`: each target supplies its own HTTP/log/selected-leaf proof, and policy names are resolved exactly and URL-encoded. DIRECT/REJECT is a routing failure, not a reason to try an unrelated healthy node. Targets share a 12 s deadline by default; the probe runs in a cancellable process group while supervision re-checks core/TUN/configuration. `config`/`route`/`node`/`tun` cut immediately; `obs` needs two consecutive failures, and an event-cancelled probe does not consume an observation. The 5 s value caps sleep, not end-to-end protection/recovery delay. Layer durations are in `health.json`; actual delay depends on the fault and event source. The transparent TCP probe sends a real HTTP request to a fake-IP and requires its exact-source route log; it does not independently prove every UDP/IPv6 TUN device path. Because sing-tun only puts the TUN's `/30` into table 2022, a fake IP outside that subnet still has the uplink as its route when the Mode C filter runs; the guard therefore allows root to the fake-IP network only on 53/80/443 without requiring `oifname`, and the later auto-redirect (priority -150) delivers it to the core. The core's reply leaves its loopback redirect listener before reverse NAT, so the guard also allows `saddr 127.0.0.1` → fake-IP for root. B mode returns every fake-IP destination before the gost redirect for the same reason. If that redirect or reply path is missing, the probe times out and the host stays in C.
 * The DNS listener (`:1053`) must belong to `clash-verge.service` by cgroup (`nftables-verify`), and `gost-relay` makes the same cgroup check for the mixed port (`:7897`), so a local process cannot attract traffic by binding either; the "Clash is on" decision requires the core, not just the GUI.
 * The mihomo controller socket is mode 0777 without a secret, but its `/run/user/<uid>` ancestor is mode 0700: desktop same-uid processes can reconfigure the root core, rather than every local uid. Managed mode/mark/port/TUN invariants are checked and fingerprinted; rules, geodata and every DIRECT decision are outside that fingerprint. A profile reload can preserve all sampled gates while sending other traffic from the real address. The root core reads user-owned configuration and databases. The helper socket is restricted to `clash-verge-control`; same-uid GUI trust remains part of this desktop architecture. Supervisor/loader capabilities are narrowed, but the design does not contain a compromised root core.
-* The managed-profile allow-list is a small patch against the pinned mihomo source (`managed_profile.go`, `managed_route.go`, `patch_mihomo.py`). Anchor drift fails the package build instead of silently dropping the check; revalidate it on every mihomo bump. Likewise, `unbound` is a source override of nixpkgs' `unbound-with-systemd`: it must retain `--enable-systemd`, because the NixOS module uses `Type=notify` and a plain unbound build would hang its start job until the timeout.
+* The managed-profile allow-list is checked at final profile parsing and the controller PATCH entry point. PATCH rejects duplicate keys and noncanonical schema field names; validation and application use the same decoded upstream schema. This is a small patch against the pinned mihomo source (`managed_profile.go`, `managed_route.go`, `patch_mihomo.py`). Anchor drift fails the package build instead of silently dropping the check; revalidate it on every mihomo bump. Likewise, `unbound` is a source override of nixpkgs' `unbound-with-systemd`: it must retain `--enable-systemd`, because the NixOS module uses `Type=notify` and a plain unbound build would hang its start job until the timeout.
 * `systemctl stop nftables.service` does not remove the firewall: the unit has no teardown, so the rules stay loaded. To reinstall or reconcile them, use `sudo systemctl restart nftables.service` (or `reload`), which re-runs the scope loader — never `nft flush ruleset`, which also destroys mihomo's own tables and the TUN's routing, and only a TUN restart recreates them.
 * Mode A needs the core stopped, not the window closed: in service mode the always-on `clash-verge.service` helper owns the core, so use `clash-off`/`clash-on`. Only these express intent — starting or stopping the core from the GUI does not, so after a `clash-off` (direct intent) a GUI-started core stays in Mode C until you `clash-on`, and after a `clash-on` a GUI-stopped core (or a crash) stays in Mode C until you `clash-off`. That is the fail-closed behaviour, not a bug.
 * Forwarded guest/VM traffic carries no host uid and follows the pre-NAT/forward contract in section 4.2. It is not proxied by default; IPv4 TPROXY is an explicit subset option. Existing connections must pass the early guards after switching to C. Socket-based rootless transports need separate host-path validation.
 * Documented trade-offs: the Mode A plaintext budget in section 3.2 is a maximum session deadline, not accumulated usage. DHCP parameter changes cannot refresh it; real reconnection starts a new session unless an optional boot-wide deadline has expired. `force-plaintext` is a continuous override while present. In Mode B private/CGNAT access (including `100.64.0.0/10`) is intentional with `allowPrivateEgress=true`; a private address is not a trust guarantee. Cold boot begins in A when no proxy intent/core has been seen; supervision cannot retroactively protect traffic sent before a proxy request.
 * `my.hardening.allowPrivateEgress`, `guestHostServices` and `externalDns` are the opt-in tightenings of the same carve-outs: disabling the first subjects host private-address flows to the proxy policy, disabling the second stops trusting libvirt guests with the desktop-service port list, and enabling the third deliberately exposes a public UDP DNS stub (otherwise `systemd-resolved` binds no wildcard listener).
 * `gost` runs from its store path only (`gost-relay` uses absolute paths); it is not on the system PATH and is not copied into the initrd.
+
 
 ---
 
@@ -279,7 +284,7 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 | `proxy-mode` | — | root | 决定模式、提交 ruleset、发布模式版本 |
 | `dns-upstream` | — | root | 协调 `dnsmasq` 上游、发布 DNS 状态并调用 `dns-policy` |
 | `dns-policy` | — | root（仅 `CAP_NET_ADMIN`） | 在策略锁下向内核写入短时 DNS 目的租约 |
-| `dns-resolved-policy` | — | 非特权 | 让受管 TUN 不参与 resolved 的默认解析器选择 |
+| `dns-resolved-policy` | — | root（capability 为空） | 让受管 TUN 不参与 resolved 的默认解析器选择 |
 | `nftables-verify` | — | root | 把实时内核状态与预期规则比对并给出结果 |
 
 端口、uid、packet mark（`6666` → `0x00001a0a`）、TUN 设备名与 TUN 路由表都在 `system/config/machine.nix` 与 `system/config/proxy-options.nix` 单点定义；ruleset、各服务与 Clash 模板都从这里读取。
@@ -299,10 +304,13 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 * `systemd-resolved` 是 NetworkManager 锁定的解析器，转发给 `dnsmasq :1054`。
 * `dns-upstream` 重写 `/run/dns-upstream/servers.conf`（即 dnsmasq 的 `servers-file`）并逐轮协调；变更用 SIGHUP `reload` 热更新而非重启，应用失败则保持 pending 并持续重试。
 * 模式 B 上游：`mihomo :1053`（fake-ip）。模式 A / blocked 上游：`unbound :1055`（DoT 到 AliDNS）。
+* Mihomo DNS 设置由 `my.proxy.managedDns` 提供：禁用额外的 `direct-nameserver` 与 `proxy-server-nameserver-policy` 解析器，固定 fake-IP filter mode 和 IPv6 fake-IP range。
 * 静态 `lf_nat` 链把所有经上行口发出的 `:53`（v4 与 v6）重定向进 `dnsmasq`，因此门户/局域网/CGNAT 范围内硬编码的解析器不会明文出网。
 * 明文后备是**内核租约**而非协调器状态：`dns-policy` 把 DHCP 解析器写入 `inet lf_filter dns_plaintext4`，超时不超过剩余窗口；静态 `output` base chain（`lf_dns_guard`，优先级 `-199` → `dns_egress`）丢弃 `dnsmasq` 的其它上游查询。因此停止、杀死或卡住 `dns-upstream` 都不能让明文许可活过租约。split DNS 使用独立的 `dns_split4`/`dns_split6` 租约，只从操作员批准的 NetworkManager profile 刷新。
 
 有线 `ens1` 继续由 dhcpcd 管理；NetworkManager 按名称与 MAC 排除它，并管理 Wi-Fi `wlo1`。`netsec/nm_dns.py` 在受管 Wi-Fi 的 pre-up/up/DHCP 事件协调当前连接 profile：IPv4/IPv6 都忽略自动下发的 DNS，清除不需要的显式服务器与搜索域，并给 resolved 指定受管解析器及 `~.` 路由域。`my.proxy.splitDnsProfileUuids` 可为企业 split DNS 保留指定 profile；该例外不改变 nftables 出站策略。明文后备读取 dhcpcd 原始租约或 NetworkManager `DHCP4.OPTION`，不读取已经生效的 `IP4.DNS` 列表。
+
+批准的 split DNS profile 无法读取时，DNS 进入 `split-error`：暂停 dnsmasq 转发并告警，读取成功后恢复。profile 白名单默认为空。
 
 模式 A 可为门户或 bootstrap 恢复临时使用 DHCP 解析器。每次窗口最多 120 秒，且不能超过连接会话首次需要明文时起算的 300 秒截止。会话键由 boot ID、接口 ifindex、carrier-down 计数及 Wi-Fi 的 NetworkManager ActiveConnection 对象路径组成；DHCP 地址、网关、DNS 更新只改变参数指纹，不重发预算，服务重启也保留预算。`plaintextBootBudgetSeconds` 可再增加本次开机的总截止。`/run/dns-upstream/force-plaintext` 是文件存在期间持续生效的 override，删除或重启机器才取消。会话身份、截止、剩余预算与 override 状态发布在 `/run/dns-upstream/state.json`。
 
@@ -316,13 +324,13 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 | `intent` | `/run/proxy-mode/intent`（`proxy` \| `direct`），由 root 写入 | 最近一次显式模式请求；缺失表示本次开机自动判定 |
 | `tun_ready` | `Mihomo` 设备 UP + FIB `my.proxy.routeTable` + 一条经它的路由（IPv4，及启用时的 IPv6） | TUN 确实在抓流量 |
 | `mode_direct` | 经控制口 `GET /configs` | mihomo 处于 `direct` 模式 |
-| `health_ok` | `netsec/health.py` 核对受管 API 不变量（模式、`managed-policy` 摘要、mark、端口、LAN 暴露、TUN 参数），再按 `nodeProbeUrls` 逐个执行完整的 HTTP 200/204、精确源端口/主机日志与所选叶子节点 delay 证明，之后经 TUN 向 fake-IP 发真实 HTTP 请求并校验精确源端口的路由日志，最后复核配置指纹 | 受管核心配置、**实际所选节点**与 TUN 数据路径在共享总截止内全部通过 |
+| `health_ok` | `netsec/health.py` 核对受管 API 不变量（模式、`managed-policy` 摘要、mark、端口、LAN 暴露、TUN 参数），再按 `nodeProbeUrls` 逐个执行完整的 HTTP 200/204、精确源端口/主机日志与所选叶子节点 delay 证明，之后经 TUN/auto-redirect 向 fake-IP 发真实 HTTP 请求并校验精确源端口的路由日志，最后复核配置指纹 | 受管核心配置、**实际所选节点**与透明 TCP 数据路径在共享总截止内全部通过 |
 
 | | **模式 A** | **模式 B** | **模式 C** |
 |---|---|---|---|
 | 进入条件 | `clash-off`（显式直连意图），或本次开机从未见过内核且没有代理意图 | 内核在、TUN 就绪、节点健康 | 内核在，且满足任一：TUN 未就绪；`direct` 模式；代理意图下整个 helper/core cgroup 消失；一次明确的 `config`/`route`/`node`/`tun` 健康失败，或连续两次 `obs` 失败（单次瞬时 `obs` 不再切断） |
 | nftables | 片段为空 | 装载 `proxyModeRules` | 装载 `blockedModeRules` |
-| 出站 | 直连，无断网保护 | 主机公网流量代理或丢弃，保留明确例外；访客公网默认拒绝，可显式启用 IPv4 TPROXY | 仅 loopback、核心 mark、root 对面向 Clash 的端口（`7897` mixed、`1053` DNS、`33332`/`33333` gost）与**经 TUN 设备**到 fake-ip 网段（TUN 自测）的访问、上行口 DHCP，以及发往访客网桥的 DHCP/DNS 应答（网桥 + 网关源地址 + 67/53，刻意**不**按 uid 匹配）存活；非 root 对这些端口的流量（TCP 与 UDP）以及所有其它非 loopback/非核心流量都被丢弃。guard 是一条在 mihomo 重定向之前求值的 base chain，因此非 root 的 TCP 流在仍携带真实目的地址时就被切断 |
+| 出站 | 直连，无断网保护 | 主机公网流量代理或丢弃，保留明确例外；访客公网默认拒绝，可显式启用 IPv4 TPROXY | 仅 loopback、核心 mark、root 对面向 Clash 的端口（`7897` mixed、`1053` DNS、`33332`/`33333` gost）与到 fake-ip 网段 53/80/443 的透明自测访问（及其 loopback 源应答）、上行口 DHCP，以及发往访客网桥的 DHCP/DNS 应答（网桥 + 网关源地址 + 67/53，刻意**不**按 uid 匹配）存活；非 root 对这些端口的流量（TCP 与 UDP）以及所有其它非 loopback/非核心流量都被丢弃。guard 是一条在 mihomo 重定向之前求值的 base chain，因此非 root 的 TCP 流在仍携带真实目的地址时就被切断 |
 | DNS | `unbound` DoT | `mihomo` fake-ip | `unbound`（其 DoT 出站已被切断，DNS 随之停止） |
 
 模式由单次开机内的操作员意图驱动：`clash-on` 在 `/run/proxy-mode/intent` 记下代理意图，`clash-off` 记下直连意图；`proxy-mode` 首次见到内核时写 `/run/proxy-mode/core-seen`。只要意图为 `proxy`，或意图从未被显式清除且本次开机见过内核，内核缺失就保持模式 C——因此崩溃的内核、乃至**整个 helper/core cgroup 消失**都按故障处理，绝不会静默退回模式 A。只有显式 `clash-off`（直连意图）与无意图的全新开机才回到模式 A。`core-gone` 路径保留一轮宽限，避免在 `clash-off` 拆除过程中被误触。
@@ -332,7 +340,7 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 两者都由 `system/config/network.nix` 生成。scope loader（`proxy-mode --reload`）把静态 ruleset 与该模式的片段拼接、在**同一个 `nft -f` 事务**里提交，因此启动或 reload 都不会让片段链短暂为空；`rules_off` 则全清。
 
 * `proxyModeRules` — `proxymode_drops`（核心 mark accept、固定到 uid 0/`dhcpcd` 的 DHCP 客户端、为 Tailscale 打洞保留的全部 root UDP，然后 drop）、`proxymode_tail`（对未固定接口的反向 default-deny）、`proxymode_forward`（访客拒绝），以及 `:33333` 的 REDIRECT 表。核心保留 mark，节点可达。
-* `blockedModeRules` — 填充 `lf_blocked_guard`，它是 **`output` 钩子上、优先级 `-200` 的 base chain**，即在 mihomo 自身的自动重定向（`nat/output` `-150`）与所有静态 accept 之前求值。它放行 loopback、核心 mark、root 仅经 TUN 设备到 fake-ip 网段的访问（避免自测在 TUN 消失时改走物理上行）、固定到 uid 0/`dhcpcd` 的 DHCP 客户端（服务器应答仅限显式开启的 AP/子网；L2 本地），以及一项 hoplimit 255 的 ICMPv6 邻居发现例外（用于链路维护），最后一条终态 `drop`。**先于重定向**求值正是切断能生效的原因：一旦重定向跑过，本机非 root 的 TCP 流目的地址已被改写成 `127.0.0.1:<inbound>`，guard 的端口列表就匹配不到它了。guard 是无条件的，因此普通片段里的 LAN/DHCP/DNS/NTP accept 都活不过它；普通片段与重定向表被拆除，`proxymode_forward` 重新填入"拒绝公网目的地址"的规则给访客。
+* `blockedModeRules` — 填充 `lf_blocked_guard`，它是 **`output` 钩子上、优先级 `-200` 的 base chain**，即在 mihomo 自身的自动重定向（`nat/output` `-150`）与所有静态 accept 之前求值。它放行 loopback、核心 mark、root 到 fake-ip 网段 53/80/443 的访问及 loopback 源应答（之后由 auto-redirect 捕获，并由路由日志验证）、固定到 uid 0/`dhcpcd` 的 DHCP 客户端（服务器应答仅限显式开启的 AP/子网；L2 本地），以及一项 hoplimit 255 的 ICMPv6 邻居发现例外（用于链路维护），最后一条终态 `drop`。**先于重定向**求值正是切断能生效的原因：一旦重定向跑过，本机非 root 的 TCP 流目的地址已被改写成 `127.0.0.1:<inbound>`，guard 的端口列表就匹配不到它了。guard 是无条件的，因此普通片段里的 LAN/DHCP/DNS/NTP accept 都活不过它；普通片段与重定向表被拆除，`proxymode_forward` 重新填入"拒绝公网目的地址"的规则给访客。
 
 另有一条静态链 `redirect_guard`（`output` 钩子、优先级 `-201`，在 NAT 之前）：对显式连接 loopback 上 gost redirect 端口的流量回以 TCP RST；而真正被透明重定向的流在此刻仍携带真实目的地址，不受影响。
 
@@ -355,9 +363,9 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 * NetworkManager dispatcher 脚本与 dhcpcd exit hook（`system/config/network.nix`）在链路变化或租约变化时启动协调器。
 * `nftables.service` 的 `ExecStart` 与 `ExecReload` 走同一个 scope loader：在共享锁下把静态 ruleset 与当前安全片段拼成一个 `nft -f` 事务提交，因此 reload 会原子地装入模式 C，之后由常驻循环恢复 B。停止单元**不会**删除规则；装载失败时旧规则保持不变。
 * 策略提交时，`proxy-mode` 直接唤醒 `gost-relay` 与 `dns-upstream`（`request_wake`），并生成不可变的校验请求（`request_verify`）。每个请求对应 `/run/netsec/requests/` 下的独立文件；`.path` 在繁忙的 verifier 完成后继续处理剩余待办，不依赖多次 start oneshot 恰好排成队。
-* `proxy-rules-watch.service` 消费 `nft monitor ruleset`，合并自有/mihomo 表的变更，每秒最多唤醒一次监督器，周期比较仍然兜底。
+* `proxy-rules-watch.service` 消费 `nft monitor ruleset`，合并自有/mihomo 表的变更，每秒最多唤醒一次监督器。三个 DNS 租约集合的元素增删不触发唤醒，避免续租反馈；集合定义和引用规则仍触发监督，周期比较继续检查租约上限。
 * `proxy-mode` 是带 90 秒 watchdog 的 systemd notify 服务，策略后置检查成功才发 READY 与 watchdog 通知；`/run/proxy-mode/heartbeat.json` 记录该次成功轮次。
-* `dns-upstream` 同样是带 90 秒 watchdog 的 notify 服务；每轮通过 `dns-policy` 续租，`dns-policy-sleep` 在休眠前撤销全部租约、恢复后唤醒监督器，因此休眠时间不会延长明文许可。
+* `dns-upstream` 同样是带 90 秒 watchdog 的 notify 服务；每轮通过 `dns-policy` 续租，`dns-policy-sleep` 是 sleep.target 的强依赖，撤销全部租约成功才允许休眠；ExecStopPost 在恢复或钩子失败后启动独立的 dns-policy-resume 重试服务。后者确认 sleep.target 已退出，再撤销、清除 sleeping 标记并唤醒监督器。禁止授权期间 broker 发布 suspended 状态。
 * 所有写入者（`proxy-mode` 主循环、`--reload`、on/off 请求）共用 `/run/proxy-mode/lock`；耗时的网络探测在锁外执行，提交前重新核对意图、已提交版本与核心 cgroup 快照。被 reload/on/off 取代的探测结果会被丢弃并重判。每个锁定窗口都重新取得 nft 快照，探针后重新加锁也一样；另有 operator lock 串行化包括 helper 起停在内的完整 on/off 操作。
 
 状态文件（均在 `/run` 下）：
@@ -370,7 +378,7 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 | `/run/proxy-mode/health.json`、`heartbeat.json` | 最近探针的结果与分层耗时；最近策略成功轮次 |
 | `/run/netsec/state.json` | 原子 `{result, version, checked_at, detail}`，绑定被验证的策略代次 |
 | `/run/dns-upstream/state.json` | DNS 模式/原因、已应用的 `policy_version`、会话身份、明文截止/预算与 override |
-| `/run/dns-policy/state.json` | 内核 DNS 租约的代次与应用时间 |
+| `/run/dns-policy/state.json` | 租约状态（`applied`/`suspended`/`revoked`）、应用时的策略代次及观测时间 |
 | `/run/netsec/alerts/*.json` | 按 owner 分文件的告警；`/run/netsec/failed` 聚合其 owner 名称 |
 | `/run/proxy-mode/version` | 提交计数器；若期间它变了，运行检查结果会被忽略 |
 | `/run/proxy-mode/intent` | 由 root 写入的 `proxy` \| `direct`；缺失表示本次开机自动判定 |
@@ -378,7 +386,7 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 | `/run/netsec/result`、`/run/netsec/verified-version` | 最近一次验证结论，以及它所验证的模式版本 |
 | `/run/gost-relay/status`、`/run/dns-upstream/status`、`/run/dns-upstream/reason` | 中继模式、解析器模式、原因 |
 
-`gost-relay` 直接映射 proxy-mode 状态：`proxy` → 转发到 `:7897`，`blocked` → 无监听（拒绝），`direct` → 直通；其余一切取值（含 `unenforced`、以及不可读或缺失的状态文件）→ 无监听。在 `proxy` 下它信任 `proxy-mode` 已通过的节点/TUN 健康门，只复核 mixed 监听者的 cgroup 身份，因此恢复不会被"第二站点预热"拖住。它在每次启动前先回收上一个子进程，不再使用 `SO_REUSEPORT`，要求每个端口恰好一个监听者，并由 `LimitNOFILE`/`MemoryMax`/`TasksMax` 加以约束。`nushell` 的 `proxy-status` 会打印模式、DNS、中继、验证结论与告警状态，外加一次实时探测。消费端读取原子的策略/校验 JSON，独立 status/version 文件作为兼容镜像保留。`proxy-control status`/`wait` 共用同一套就绪契约（`netsec/state.py`）：策略代次、受 `my.proxy.stateMaxAgeSeconds` 约束的心跳/DNS/中继观测新鲜度、同一代次的校验结论、无活动告警，以及可用的 DoT/明文 DNS 模式；`wait direct` 不把 `degraded-dot-only` 视为就绪。
+`gost-relay` 直接映射 proxy-mode 状态：`proxy` → 转发到 `:7897`，`blocked` → 无监听（拒绝），`direct` → 直通；其余一切取值（含 `unenforced`、以及不可读或缺失的状态文件）→ 无监听。在 `proxy` 下它信任 `proxy-mode` 已通过的节点/TUN 健康门，只复核 mixed 监听者的 cgroup 身份，因此恢复不会被"第二站点预热"拖住。它在每次启动前先回收上一个子进程，不再使用 `SO_REUSEPORT`，要求每个端口恰好一个监听者，并由 `LimitNOFILE`/`MemoryMax`/`TasksMax` 加以约束。`nushell` 的 `proxy-status` 会打印模式、DNS、中继、验证结论与告警状态，外加一次实时探测。消费端读取原子的策略/校验 JSON，独立 status/version 文件作为兼容镜像保留。`proxy-control status`/`wait` 共用同一套就绪检查（`netsec/state.py`）：心跳、DNS、中继及 DNS broker 的观测必须在 `my.proxy.stateMaxAgeSeconds` 内，且属于当前策略代次；broker 状态须为 `applied`，校验须覆盖同一代次，并且没有活动告警。模式 B 要求使用 mihomo DNS，模式 A 要求 DoT 或有效的明文窗口。broker 的 `suspended`/`revoked` 状态及 DNS 的 `degraded-dot-only` 均不视为就绪。
 
 ## 6. 校验、告警、修复
 
@@ -398,10 +406,11 @@ nix build .#checks.x86_64-linux.proxy-regressions
 nix build .#checks.x86_64-linux.proxy-rules
 nix build .#checks.x86_64-linux.proxy-profile
 nix build .#checks.x86_64-linux.proxy-network-vm
+nix build .#checks.x86_64-linux.proxy-core
 nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
-隔离回归调用实际的比较、策略图、租约/会话与状态发布函数。`proxy-profile` 解析双栈、IPv4、mips、纯 HTTP 和 guest TPROXY 五种分支生成的 Merge YAML，并执行路由 script。真实内核 VM 覆盖首次加载失败、静态漂移、A/B/C 下的访客 DHCP 与 UDP/TCP DNS、TPROXY、已有连接阻断、Wi-Fi 私网/公网 IPv4 与全球 IPv6 回复、协调器停止期间内核 DNS 租约到期，以及重叠校验请求。固定版本的 mihomo 构建在 check 阶段运行受管配置单元测试（含 Nix 生成的策略）。检查不激活宿主配置；物理 Wi-Fi、IPv4-only 启动、休眠恢复与真实节点协议性能需要单独部署验收。完整构建仍遵循 Git flake 的源文件收录规则，并需要仓库的本地应用资源。
+隔离回归调用实际的比较、策略图、租约/会话与状态发布函数。`proxy-profile` 解析双栈、IPv4、mips、纯 HTTP 和 guest TPROXY 五种分支生成的 Merge YAML，并执行路由 script。真实内核 VM 覆盖首次加载失败、静态漂移、访客 DHCP 获取与 A/B/C 下的 UDP/TCP DNS、TPROXY、已有连接阻断、Wi-Fi 私网/公网 IPv4 与全球 IPv6 回复、协调器停止期间内核 DNS 租约到期，以及重叠校验请求。固定版本的 mihomo 构建在 check 阶段运行受管配置单元测试（含 Nix 生成的策略）。检查不激活宿主配置；物理 Wi-Fi、IPv4-only 启动、休眠恢复与真实节点协议性能需要单独部署验收。完整构建仍遵循 Git flake 的源文件收录规则，并需要仓库的本地应用资源。
 
 ## 7. 配置面
 
@@ -435,7 +444,7 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 | `system/programs/systemd/dns-upstream.nix` | `servers-file` 协调与热更新、有界明文窗口、DNS 状态与 watchdog |
 | `system/programs/systemd/netsec/dns_policy.py` | 内核 DNS 租约 broker，及从批准 profile 生成 split DNS |
 | `system/programs/systemd/netsec/resolved_policy.py` | 让受管 TUN 退出 resolved 默认解析器选择 |
-| `system/programs/systemd/netsec/state.py` | `proxy-control` 与 `proxy-status` 共用的就绪/新鲜度契约 |
+| `system/programs/systemd/netsec/state.py` | `proxy-control` 与 `proxy-status` 共用的就绪/新鲜度检查 |
 | `system/programs/systemd/netsec/alerts.py` | 按 owner 的告警文件与聚合标记 |
 | `system/programs/systemd/netsec/managed_profile*.go`、`managed_route.go`、`patch_mihomo.py` | 在最终解析器与控制口 PATCH 处强制受管核心配置（监听、隧道、DNS、TUN 路由字段），随固定版本 mihomo 构建打入 |
 | `system/programs/systemd/gost-relay.nix` | gost 监听生命周期（proxy / closed / 直通） |
@@ -464,10 +473,10 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 * 模式 B 的专门 DNS/NTP 例外放行 `unbound`（DoT，tcp/853）与 `systemd-timesyncd`（udp/123），核心 mark 和 root UDP 例外也适用；普通应用的明文解析器查询被重定向进 `dnsmasq`。模式 A 仅在有预算的明文窗口内加入 DHCP 解析器（见 3.2）。
 * 断网保护按 mark 豁免核心，不对 uid 0 整体放行；DHCP 例外固定到 uid 0/`dhcpcd`。模式 B 在上行口放行**全部 root UDP**，保留 Tailscale 任意对端/STUN 端口的打洞，其它 root UDP 也会放行。仅允许 `41641` 曾让 Tailscale 退化到 DERP（`netcheck` 报 `UDP: false`）。这是模式 B 的兼容取舍，不构成 root 边界，root 本就可以设置核心 mark。模式 C 切断未打标的 tailnet 数据。
 * 模式 C 保留核心存活，因此 mihomo 自身判为 `DIRECT` 的流量仍会离开；loopback 保留供本机 IPC 使用，但面向应用的代理端口（`7897`/`33332`/`33333`）对非 root 的 TCP 与 UDP 都被拒绝，另有一项 hoplimit 255 的 ICMPv6 邻居发现例外维持链路维护而不开放数据通道。访客 DHCP/DNS 应答按网桥、网关源地址与端口（`67`/`53`）放行，不按 uid：特权端口守护进程会降权，accept 出来的 TCP socket 携带降权后的 uid。guard 是在 mihomo 重定向之前求值的 base chain，因此对本机产生的 TCP 同样成立。
-* 健康检查由 `health_ok` 调用 `netsec/health.py`：每个目标提供独立的 HTTP/日志/所选叶子证明，策略名精确解析并经 URL 编码。DIRECT/REJECT 属于路由失败，不能换无关健康节点充数。全部目标默认共享 12 秒截止；探针运行在可取消的进程组中，监督器期间复查核心/TUN/配置。`config`/`route`/`node`/`tun` 失败立即切断，`obs` 需连续两次，事件取消不消耗观测次数。5 秒是睡眠上限，不是端到端保护/恢复时延；分层耗时在 `health.json`，实际时延取决于故障及事件来源。TUN 数据探针会向 fake-IP 发真实 HTTP 请求并校验精确源端口的路由日志。由于 sing-tun 只把 TUN 的 `/30` 放进 table 2022，/30 之外的 fake-IP 在 Mode C filter 求值时路由仍指向上行口；因此 guard 对 root 到 fake-IP 只放行 53/80/443，且不要求 `oifname`，由之后 `-150` 的 auto-redirect 交给核心。核心的应答从 loopback redirect 监听发出、在反向 NAT 之前经过此 chain，所以 guard 还放行 root 的 `saddr 127.0.0.1` → fake-IP。B 模式同样在 gost 重定向前放行所有 fake-IP 目的地址。若重定向或回包路径缺失，探针超时并保持 Mode C。
+* 健康检查由 `health_ok` 调用 `netsec/health.py`：每个目标提供独立的 HTTP/日志/所选叶子证明，策略名精确解析并经 URL 编码。DIRECT/REJECT 属于路由失败，不能换无关健康节点充数。全部目标默认共享 12 秒截止；探针运行在可取消的进程组中，监督器期间复查核心/TUN/配置。`config`/`route`/`node`/`tun` 失败立即切断，`obs` 需连续两次，事件取消不消耗观测次数。5 秒是睡眠上限，不是端到端保护/恢复时延；分层耗时在 `health.json`，实际时延取决于故障及事件来源。透明 TCP 探针会向 fake-IP 发真实 HTTP 请求并校验精确源端口的路由日志；它不单独证明 TUN 设备的全部 UDP/IPv6 数据路径。由于 sing-tun 只把 TUN 的 `/30` 放进 table 2022，/30 之外的 fake-IP 在 Mode C filter 求值时路由仍指向上行口；因此 guard 对 root 到 fake-IP 只放行 53/80/443，且不要求 `oifname`，由之后 `-150` 的 auto-redirect 交给核心。核心的应答从 loopback redirect 监听发出、在反向 NAT 之前经过此 chain，所以 guard 还放行 root 的 `saddr 127.0.0.1` → fake-IP。B 模式同样在 gost 重定向前放行所有 fake-IP 目的地址。若重定向或回包路径缺失，探针超时并保持 Mode C。
 * DNS 监听（`:1053`）须按 cgroup 属于 `clash-verge.service`（`nftables-verify` 校验），`gost-relay` 对 mixed 端口（`:7897`）做同样的 cgroup 校验，因此本机进程无法靠绑定两者中的任一引走流量；“Clash 在运行”要求核心，而非仅 GUI。
 * mihomo 控制 socket 为 mode 0777、无 secret，但祖先 `/run/user/<uid>` 是 0700：桌面同 UID 进程可重配 root 核心，并非所有本机 UID 都能访问。模式/mark/端口/TUN 不变量被检查并记录指纹，规则、geodata 与全部 DIRECT 决策不在指纹范围内；profile 重载仍可能保留全部抽样健康门，同时使其它流量以真实地址离开。root 核心读取用户所有的配置与数据库，helper socket 限定到 `clash-verge-control` 组；GUI 同 UID 信任仍属桌面架构取舍。监督器/loader 已收窄 capability，设计不隔离已失陷的 root 核心。
-* 受管配置白名单是对固定版本 mihomo 源码的小补丁（`managed_profile.go`、`managed_route.go`、`patch_mihomo.py`）。上游锚点变化会让包构建失败，而不是悄悄丢掉检查；每次升级 mihomo 都要复核。`unbound` 则是对 nixpkgs `unbound-with-systemd` 的源码覆盖，必须保留 `--enable-systemd`，因为 NixOS 模块使用 `Type=notify`，换成普通 unbound 构建会让启动 job 挂到超时。
+* 受管配置白名单在最终 profile 解析和控制口 PATCH 入口检查。PATCH 拒绝重复键和 schema 字段的非规范名称，校验与应用使用同一次解码的上游 schema。这是对固定版本 mihomo 源码的小补丁（`managed_profile.go`、`managed_route.go`、`patch_mihomo.py`）。上游锚点变化会让包构建失败，而不是悄悄丢掉检查；每次升级 mihomo 都要复核。`unbound` 则是对 nixpkgs `unbound-with-systemd` 的源码覆盖，必须保留 `--enable-systemd`，因为 NixOS 模块使用 `Type=notify`，换成普通 unbound 构建会让启动 job 挂到超时。
 * `systemctl stop nftables.service` 不会移除防火墙：该 unit 没有拆除动作，规则保持装载。要重新装载或校正，用 `sudo systemctl restart nftables.service`（或 `reload`），它会重跑 scope loader —— 绝不要 `nft flush ruleset`，它还会毁掉 mihomo 自己的表与 TUN 路由，只有重启 TUN 才能重建。
 * 模式 A 需要停掉核心，而非只关窗口：service mode 下常驻的 `clash-verge.service` helper 托管核心，因此用 `clash-off`/`clash-on`。只有这两条会表达意图——从 GUI 起停核心不会：所以 `clash-off`（直连意图）之后用 GUI 起核心仍停在模式 C，直到再 `clash-on`；`clash-on` 之后用 GUI 停核心（或崩溃）也停在模式 C，直到 `clash-off`。这是 fail-closed 行为，不是 bug。
 * 转发访客/虚拟机流量不带宿主 uid，遵循 4.2 的 pre-NAT/forward 合同。默认不代理，IPv4 TPROXY 须显式指定子集；切入 C 后已有连接也须通过提前拦截。转成宿主 socket 的 rootless 传输须另按宿主路径验证。

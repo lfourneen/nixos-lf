@@ -35,15 +35,17 @@ def split_dns(settings, run=subprocess.run):
     def command(args):
         value = run([settings["nmcli"], "--escape", "no", "-g", *args],
                     capture_output=True, text=True, timeout=6, check=True)
-        return value.stdout.strip()
+        return value.stdout
 
     if not settings["split_profiles"]:
         return []
-    uuid = command(["GENERAL.CON-UUID", "device", "show", settings["wireless"]])
+    uuid = command(["GENERAL.CON-UUID", "device", "show", settings["wireless"]]).strip()
     if uuid not in settings["split_profiles"]:
         return []
     values = command(["ipv4.dns,ipv6.dns,ipv4.dns-search,ipv6.dns-search",
-                      "connection", "show", "uuid", uuid]).split("\n")
+                      "connection", "show", "uuid", uuid]).splitlines()
+    if len(values) > 4:
+        raise ValueError("unexpected split DNS field count")
     values += [""] * (4 - len(values))
     servers = addresses(word for value in values[:2] for word in value.split(",") if word)
     suffixes = domains(word for value in values[2:] for word in value.split(",") if word)
@@ -94,14 +96,15 @@ def main(settings):
         except (OSError, ValueError):
             request = {}
         now = time.clock_gettime(time.CLOCK_BOOTTIME)
-        if Path("/run/dns-policy/sleeping").exists():
+        sleeping = Path("/run/dns-policy/sleeping").exists()
+        if sleeping:
             request = {}
         value = transaction(request, policy, now)
         subprocess.run([settings["nft"], "-f", "-"], input=value, text=True,
                        capture_output=True, timeout=5, check=True)
         atomic_json(Path("/run/dns-policy/state.json"), {
             "policy_version": policy.get("policy_version", policy["version"]),
-            "monotonic_seconds": now, "status": "applied",
+            "monotonic_seconds": now, "status": "suspended" if sleeping else "applied",
         })
 
 

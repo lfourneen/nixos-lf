@@ -9,6 +9,15 @@ import time
 
 
 OWNED = re.compile(r"\b(?:inet|ip|ip6)\s+(?:lf_[A-Za-z0-9_]+|mihomo)\b")
+LEASE_ELEMENT = re.compile(
+    r"^\s*(?:add|delete) element inet lf_filter "
+    r"(?:dns_plaintext4|dns_split4|dns_split6)\s+\{")
+
+
+def needs_wake(line):
+    # Broker renewals are data, not policy drift. Definitions and every other
+    # rule/object change still wake supervision; rules.py validates lease bounds.
+    return bool(OWNED.search(line) and not LEASE_ELEMENT.match(line))
 
 
 def main():
@@ -24,7 +33,7 @@ def main():
             lines = buffered.split(b"\n")
             buffered = lines.pop()
             for line in lines:
-                if OWNED.search(line.decode(errors="replace")):
+                if needs_wake(line.decode(errors="replace")):
                     pending = True
         now = time.monotonic()
         if pending and now - last >= 1.0:

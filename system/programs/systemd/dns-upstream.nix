@@ -17,6 +17,7 @@ let
   });
   policySettings = pkgs.writeText "dns-policy.json" (builtins.toJSON {
     nft = "${pkgs.nftables}/bin/nft";
+    systemctl = "${pkgs.systemd}/bin/systemctl";
     nmcli = "${pkgs.networkmanager}/bin/nmcli";
     wireless = m.wireless.name;
     split_profiles = config.my.proxy.splitDnsProfileUuids;
@@ -27,15 +28,6 @@ let
     resolvectl = "${pkgs.systemd}/bin/resolvectl";
     tun = config.my.proxy.tunDev;
   });
-  revokeDns = ''
-    exec 9>/run/proxy-mode/lock
-    ${pkgs.util-linux}/bin/flock -x -w 5 9
-    ${pkgs.nftables}/bin/nft -f - <<'NFT_DNS_REVOKE'
-    flush set inet lf_filter dns_plaintext4
-    flush set inet lf_filter dns_split4
-    flush set inet lf_filter dns_split6
-    NFT_DNS_REVOKE
-  '';
 
 in
 {
@@ -44,29 +36,49 @@ in
   # prevent the broker regranting, then reconcile using CLOCK_BOOTTIME on wake.
   systemd.services.dns-policy-sleep = {
     description = "Revoke temporary DNS permissions across suspend";
-    wantedBy = [ "sleep.target" ];
+    requiredBy = [ "sleep.target" ];
     before = [ "sleep.target" ];
     unitConfig.StopWhenUnneeded = true;
+    unitConfig.OnFailure = [ "netsec-alert@%n.service" ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      TimeoutStartSec = 10;
+      TimeoutStartSec = 15;
       TimeoutStopSec = 10;
       RuntimeDirectory = "dns-policy";
       RuntimeDirectoryPreserve = true;
-      ExecStart = pkgs.writeShellScript "dns-policy-before-sleep" ''
-        set -eu
-        touch /run/dns-policy/sleeping
-        ${revokeDns}
-      '';
-      ExecStop = pkgs.writeShellScript "dns-policy-after-sleep" ''
-        set -eu
-        ${revokeDns}
-        rm -f /run/dns-policy/sleeping
-        ${pkgs.systemd}/bin/systemctl start --no-block proxy-net-wake.service
-      '';
+      ExecStart = "${pkgs.python3}/bin/python3 ${./netsec/dns_sleep.py} ${policySettings} before";
+      # Runs even after a failed start. Do not wait here: resume is ordered after
+      # sleep.target and must also handle a canceled sleep transaction.
+      ExecStopPost = "${pkgs.systemd}/bin/systemctl start --no-block dns-policy-resume.service";
       NoNewPrivileges = true;
       CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+    };
+  };
+  systemd.services.dns-policy-resume = {
+    description = "Recover DNS leases after resume or a failed sleep hook";
+    after = [ "sleep.target" "dns-policy-sleep.service" "netsec-alert@dns-policy-sleep.service.service" ];
+    unitConfig.StartLimitIntervalSec = 0;
+    unitConfig.OnFailure = [ "netsec-alert@%n.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.python3}/bin/python3 ${./netsec/dns_sleep.py} ${policySettings} resume";
+      ExecStartPost = [
+        "${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear dns-policy-sleep.service"
+        "${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear dns-policy-resume.service"
+        "${pkgs.systemd}/bin/systemctl start --no-block proxy-net-wake.service"
+      ];
+      Restart = "on-failure";
+      RestartSec = "2s";
+      TimeoutStartSec = 20;
+      RuntimeDirectory = "dns-policy";
+      RuntimeDirectoryPreserve = true;
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
+      ReadWritePaths = [ "/run/proxy-mode" "/run/netsec" ];
     };
   };
   systemd.services.dns-policy = {
@@ -240,6 +252,10 @@ in
           new_conf='server=127.0.0.1#${toString port.unbound}'
           if [ "$target" = proxy ]; then
             new_conf='server=127.0.0.1#${toString port.mihomoDns}'
+          elif [ "$target" = split-error ]; then
+            # no-resolv + an empty servers-file disables forwarding. Do not
+            # send unknown enterprise suffixes to a default public resolver.
+            new_conf=""
           elif [[ "$target" == *plaintext ]]; then
             new_conf=""
             for server in $servers; do new_conf="$new_conf"$'\n'"server=$server"; done
@@ -278,6 +294,7 @@ in
               plaintext:[$servers|splits("[[:space:]]+")|select(length>0)],split:$split}' > "$runtime/policy.json.$$"
           mv -f "$runtime/policy.json.$$" "$runtime/policy.json"
           timeout 10 systemctl start dns-policy.service || return 1
+          [ "$(jq -r '.status' /run/dns-policy/state.json)" = applied ] || return 1
           [ "$(jq -r '.policy_version // .version' /run/proxy-mode/state.json)" = "$policy_version" ] || return 1
           if [ "$current" != "$target" ]; then
             echo "dns-upstream: $current -> $target ($state_reason)"
@@ -298,7 +315,17 @@ in
         while true; do
           woken=0
           timeout 15 systemctl start dns-resolved-policy.service || true
-          split=$(${pkgs.python3}/bin/python3 ${./netsec/dns_policy.py} ${policySettings} --split 2>/dev/null || echo '[]')
+          split_ok=1
+          if split=$(${pkgs.python3}/bin/python3 ${./netsec/dns_policy.py} ${policySettings} --split); then
+            if [ -e /run/netsec/alerts/dns-split-policy.json ]; then
+              ${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear dns-split-policy
+            fi
+          else
+            split='[]'; split_ok=0
+            if [ ! -e /run/netsec/alerts/dns-split-policy.json ]; then
+              ${pkgs.python3}/bin/python3 ${./netsec/alerts.py} set dns-split-policy 'cannot read approved split DNS; forwarding disabled'
+            fi
+          fi
           policy_version=$(jq -r '.policy_version // .version // -1' /run/proxy-mode/state.json 2>/dev/null || echo -1)
           mode=$(jq -r '.mode // "unknown"' /run/proxy-mode/state.json 2>/dev/null || echo unknown)
           new_status=blocked
@@ -355,6 +382,10 @@ in
             hits=0; misses=0
           fi
 
+          if [ "$split_ok" = 0 ]; then
+            new_status=split-error; servers=""
+            state_reason='split DNS policy unreadable: forwarding disabled'
+          fi
           previous="$current"
           if ! apply_state "$new_status"; then
             # Keep last_conf unchanged so the next pass must retry. Do not claim
