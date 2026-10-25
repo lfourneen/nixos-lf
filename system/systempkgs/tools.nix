@@ -13,7 +13,7 @@
     fd
     file
     jq
-    iotop
+    iotop 
     lsd
     lshw
     lsof
@@ -98,11 +98,12 @@
 
     # Media
     ffmpeg-full
-
+    
     # Rust
     dioxus-cli
-
+    
     # Flatpak
     flatpak-builder
   ];
 }
+

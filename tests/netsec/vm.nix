@@ -21,6 +21,10 @@ pkgs.testers.runNixOSTest {
     services.tailscale.enable = lib.mkForce false;
     services.avahi.enable = lib.mkForce false;
     services.timesyncd.enable = lib.mkForce true;
+    services.unbound.settings.server = {
+      local-zone = [ ''"fixture.test." static'' ];
+      local-data = [ ''"fixture.test. 0 IN A 192.0.2.42"'' ];
+    };
     boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
     my.proxy.transparentGuestInterfaces = [ "virbr0" ];
     networking.networkmanager.unmanaged = [
@@ -50,6 +54,36 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-dns.py".source = ./dns_fixture.py;
     environment.etc."netsec-events.py".source = ../../system/programs/systemd/netsec/events.py;
     environment.etc."netsec-events-test.py".source = ./events_fixture.py;
+    environment.etc."netsec-listeners-test.py".source = ./listeners_fixture.py;
+    environment.etc."netsec-listener-check".source = config.my.proxy.listenerCheck;
+    systemd.services.clash-verge.serviceConfig.ExecStart = pkgs.writeShellScript "test-core-listeners" ''
+      exec ${pkgs.python3}/bin/python3 /etc/netsec-listeners-test.py serve "$(cat /run/listener-good-protocol)" --mixed
+    '';
+    systemd.services.netsec-listener-impostor.serviceConfig = {
+      User = "lfour";
+      ExecStart = pkgs.writeShellScript "test-impostor-listeners" ''
+        exec ${pkgs.python3}/bin/python3 /etc/netsec-listeners-test.py serve "$(cat /run/listener-bad-protocol)"
+      '';
+    };
+    environment.etc."netsec-split-test.py".source = ./split_fixture.py;
+    environment.etc."netsec-policy.py".source = ../../system/programs/systemd/netsec/dns_policy.py;
+    environment.etc."netsec-rules-check".source = config.my.proxy.rulesCheck;
+    environment.etc."netsec-expected".source = config.my.proxy.expectedRules;
+    environment.etc."netsec-split.json".text = builtins.toJSON {
+      nft = "${pkgs.nftables}/bin/nft";
+      nmcli = pkgs.writeShellScript "test-split-nmcli" ''
+        case "$*" in
+          *GENERAL.CON-UUID*)
+            printf 'approved\n/org/freedesktop/NetworkManager/ActiveConnection/%s\n' "$(cat /run/split-active)"
+            ;;
+          *) printf '10.1.2.53\n\ncorp.test\n\n' ;;
+        esac
+      '';
+      wireless = "wlo1";
+      split_profiles = [ "approved" ];
+      split_cidrs = [ "10.0.0.0/8" ];
+      runtime = "/run/dns-upstream";
+    };
     environment.etc."test-dns-sleep.json".text = builtins.toJSON {
       nft = pkgs.writeShellScript "fault-inject-sleep-nft" ''
         test ! -e /run/fail-sleep-nft || exit 1
@@ -74,7 +108,7 @@ pkgs.testers.runNixOSTest {
       noipv4ll
     '';
     environment.systemPackages = [ pkgs.curl pkgs.python3 pkgs.jq pkgs.iproute2 pkgs.nftables
-      pkgs.dnsmasq pkgs.dhcpcd pkgs.dnsutils ];
+      pkgs.dnsmasq pkgs.dhcpcd pkgs.dnsutils pkgs.util-linux ];
     virtualisation.memorySize = 1536;
   };
   testScript = ''
@@ -103,6 +137,17 @@ pkgs.testers.runNixOSTest {
     # Freeze the supervisor only inside the VM to test packet policy fragments.
     machine.succeed("systemctl stop nftables-verify-pending.path nftables-verify.timer nftables-verify.service proxy-mode.service dns-upstream.service; systemctl mask --runtime proxy-mode.service")
     machine.succeed("python3 /etc/netsec-events-test.py /etc/netsec-events.py")
+    machine.succeed("python3 /etc/netsec-listeners-test.py check")
+    machine.succeed("/etc/netsec-listener-check dns")
+    # Existing dedicated gateway listeners survive; resolved has no wildcard
+    # port 53. These checks observe both transports, not just the TCP half.
+    machine.fail("ss -Hlntu 'sport = :53' | grep -Eq '0.0.0.0:53|\\[::\\]:53|\\*:53'")
+    machine.succeed("printf 'server=127.0.0.1#1055\\n' >/run/dns-upstream/servers.conf; systemctl reload dnsmasq.service")
+    for transport in ["", "+tcp"]:
+        machine.succeed(f"dig {transport} +time=1 +tries=1 +short @127.0.0.1 -p 1055 fixture.test A | grep -qx 192.0.2.42")
+        machine.succeed(f"setpriv --reuid=985 --clear-groups dig {transport} +time=1 +tries=1 +short @127.0.0.1 -p 1055 fixture.test A | grep -qx 192.0.2.42")
+        machine.fail(f"setpriv --reuid=1000 --clear-groups dig {transport} +time=1 +tries=1 @127.0.0.1 -p 1055 fixture.test A")
+        machine.succeed(f"setpriv --reuid=1000 --clear-groups dig {transport} +time=1 +tries=1 +short @203.0.113.10 fixture.test A | grep -qx 192.0.2.42")
 
     # A failed required pre-sleep hook cancels the transaction. ExecStopPost
     # still queues recovery; a failed revoke keeps retrying without regranting.
@@ -134,7 +179,7 @@ pkgs.testers.runNixOSTest {
 
     # A DNS permission expires even while its controller is stopped. Both the
     # socket UID and the private destination are real kernel facts in this VM.
-    machine.succeed("ip netns exec outside sh -c 'python3 /etc/netsec-dns.py server 53 >/tmp/dns-peer.log 2>&1 &'")
+    machine.succeed("ip netns exec outside sh -c 'python3 /etc/netsec-dns.py server 53 --dns-answer 192.0.2.99 >/tmp/dns-peer.log 2>&1 &'")
     machine.wait_until_succeeds("ip netns exec outside ss -uln | grep -q ':53 '")
     machine.fail("python3 /etc/netsec-dns.py query 100.67.0.1 --uid 985")
     machine.succeed("python3 /etc/netsec-dns.py lease 100.67.0.1 3; systemctl start dns-policy.service")
@@ -149,6 +194,8 @@ pkgs.testers.runNixOSTest {
     machine.succeed("ip link add wlo1 type veth peer name wifi-peer; ip link set wifi-peer netns outside; ip link set wlo1 up")
     machine.succeed("ip addr add 198.51.100.2/24 dev wlo1; ip -6 addr add 2001:db8:dead::2/64 dev wlo1 nodad")
     machine.succeed("ip -n outside link set wifi-peer up; ip -n outside addr add 198.51.100.1/24 dev wifi-peer; ip -n outside -6 addr add 2001:db8:dead::1/64 dev wifi-peer nodad")
+    machine.succeed("ip addr add 10.1.2.2/24 dev wlo1; ip -n outside addr add 10.1.2.53/24 dev wifi-peer")
+    machine.succeed("python3 /etc/netsec-split-test.py")
     machine.succeed("ip netns exec outside sh -c 'python3 /etc/netsec-dns.py server 15353 >/tmp/wifi-peer.log 2>&1 &'")
     machine.wait_until_succeeds("python3 /etc/netsec-dns.py query 198.51.100.1 15353 --mark 6666")
     machine.succeed("python3 /etc/netsec-dns.py query 2001:db8:dead::1 15353 --mark 6666")

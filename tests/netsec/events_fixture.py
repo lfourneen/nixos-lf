@@ -20,7 +20,7 @@ from pathlib import Path
 import subprocess
 with Path(%r).open('a') as stream:
     stream.write('wake\\n')
-subprocess.run(['nft', '-f', '-'], input='flush set inet lf_filter dns_split4\\nadd element inet lf_filter dns_split4 { 192.0.2.53 timeout 120s }\\n', text=True, check=True)
+subprocess.run(['nft', '-f', '-'], input='flush set inet lf_filter dns_split4\\nadd element inet lf_filter dns_split4 { \"wlo1\" . 192.0.2.53 timeout 120s }\\n', text=True, check=True)
 """ % str(log))
     callback.chmod(0o700)
     monitor = subprocess.Popen(["nft", "monitor", "ruleset"], stdout=subprocess.PIPE)
@@ -28,10 +28,10 @@ subprocess.run(['nft', '-f', '-'], input='flush set inet lf_filter dns_split4\\n
     monitor.stdout.close()
     try:
         time.sleep(0.3)
-        nft("add element inet lf_filter dns_split4 { 192.0.2.53 timeout 120s }\n")
+        nft("add element inet lf_filter dns_split4 { \"wlo1\" . 192.0.2.53 timeout 120s }\n")
         time.sleep(1.3)
         assert not log.exists(), "lease grant woke supervision"
-        nft("flush set inet lf_filter dns_split4\nadd element inet lf_filter dns_split4 { 192.0.2.53 timeout 120s }\n")
+        nft("flush set inet lf_filter dns_split4\nadd element inet lf_filter dns_split4 { \"wlo1\" . 192.0.2.53 timeout 120s }\n")
         time.sleep(1.3)
         assert not log.exists(), "lease renewal woke supervision"
         nft("add chain inet lf_filter event_fixture\n")

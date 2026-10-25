@@ -21,6 +21,9 @@ let
     nmcli = "${pkgs.networkmanager}/bin/nmcli";
     wireless = m.wireless.name;
     split_profiles = config.my.proxy.splitDnsProfileUuids;
+    # Private exclusions are also what keep conditional upstreams outside
+    # Mihomo's DNS hijack. Public split upstreams are deliberately unsupported.
+    split_cidrs = lib.optionals config.my.hardening.allowPrivateEgress (m.privateV4 ++ m.ulaV6);
     runtime = "/run/dns-upstream";
   });
   resolvedSettings = pkgs.writeText "resolved-policy.json" (builtins.toJSON {
@@ -32,6 +35,28 @@ let
 in
 {
   my.proxy.resolvedPolicySettings = resolvedSettings;
+  systemd.services.dns-split-revoke = {
+    description = "Revoke split DNS before a managed connection changes";
+    unitConfig.StartLimitIntervalSec = 0;
+    unitConfig.OnFailure = [ "netsec-alert@%n.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.python3}/bin/python3 ${./netsec/dns_policy.py} ${policySettings} --revoke-split";
+      ExecStartPost = [
+        "${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear dns-split-revoke.service"
+        "${pkgs.systemd}/bin/systemctl start --no-block proxy-net-wake.service"
+      ];
+      TimeoutStartSec = 10;
+      RuntimeDirectory = "dns-policy";
+      RuntimeDirectoryPreserve = true;
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      ReadWritePaths = [ "/run/proxy-mode" "/run/netsec" ];
+      RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
+    };
+  };
   # Kernel timeout accounting can pause across suspend. Revoke before sleep,
   # prevent the broker regranting, then reconcile using CLOCK_BOOTTIME on wake.
   systemd.services.dns-policy-sleep = {
@@ -84,6 +109,7 @@ in
   systemd.services.dns-policy = {
     description = "Apply bounded DNS address leases under the policy lock";
     after = [ "nftables.service" ];
+    unitConfig.StartLimitIntervalSec = 0;
     unitConfig.OnFailure = [ "netsec-alert@%n.service" ];
     serviceConfig = {
       Type = "oneshot";
@@ -172,7 +198,7 @@ in
         PL_TTL=120; PL_TOTAL=300
         ready_sent=0
         policy_version=-1
-        split='[]'
+        split='{"entries":[],"context":null}'
         last_success=0
         mkdir -p "$runtime/budgets"
         atomic_write() { printf '%s\n' "$2" > "$1.$$" && mv -f "$1.$$" "$1"; }
@@ -223,8 +249,7 @@ in
           [[ "$st" == *"status: NOERROR"* || "$st" == *"status: NXDOMAIN"* ]]
         }
         dns_listener_up() {
-          ss -lnteH 'sport = :${toString port.mihomoDns}' 2>/dev/null \
-            | grep -q 'cgroup:/system.slice/clash-verge.service'
+          ${config.my.proxy.listenerCheck} core-dns >/dev/null 2>&1
         }
         dns_ok() {
           for name in www.baidu.com www.gstatic.com; do
@@ -252,7 +277,7 @@ in
           new_conf='server=127.0.0.1#${toString port.unbound}'
           if [ "$target" = proxy ]; then
             new_conf='server=127.0.0.1#${toString port.mihomoDns}'
-          elif [ "$target" = split-error ]; then
+          elif [ "$target" = split-error ] || [ "$target" = resolver-error ]; then
             # no-resolv + an empty servers-file disables forwarding. Do not
             # send unknown enterprise suffixes to a default public resolver.
             new_conf=""
@@ -260,7 +285,7 @@ in
             new_conf=""
             for server in $servers; do new_conf="$new_conf"$'\n'"server=$server"; done
           fi
-          split_conf=$(printf '%s' "$split" | jq -r '.[] | "server=/" + .domain + "/" + .server')
+          split_conf=$(printf '%s' "$split" | jq -r '.context.interface as $iface | .entries[] | "server=/" + .domain + "/" + .server + "@" + $iface')
           [ -z "$split_conf" ] || new_conf="$new_conf"$'\n'"$split_conf"
           # Re-check after slow probes: a concurrent on request must never
           # publish a plaintext resolver list after A has ended.
@@ -321,7 +346,7 @@ in
               ${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear dns-split-policy
             fi
           else
-            split='[]'; split_ok=0
+            split='{"entries":[],"context":null}'; split_ok=0
             if [ ! -e /run/netsec/alerts/dns-split-policy.json ]; then
               ${pkgs.python3}/bin/python3 ${./netsec/alerts.py} set dns-split-policy 'cannot read approved split DNS; forwarding disabled'
             fi
@@ -331,7 +356,12 @@ in
           new_status=blocked
           state_reason="mode-$mode: encrypted resolver only"
           servers=""
-          if [ "$mode" = proxy ] && $CLASH_ON && dns_listener_up; then
+          if ! ${config.my.proxy.listenerCheck} dns >/dev/null 2>&1; then
+            new_status=resolver-error; state_reason='local DNS listener identity mismatch'
+          elif [ "$mode" = proxy ] && { ! $CLASH_ON || ! dns_listener_up; }; then
+            new_status=resolver-error; state_reason='mihomo DNS listener identity mismatch'
+            hits=0; misses=0
+          elif [ "$mode" = proxy ]; then
             if dns_ok; then hits=$((hits + 1)); misses=0; else hits=0; misses=$((misses + 1)); fi
             if [ "$hits" -ge 2 ]; then
               new_status=proxy; state_reason='mode-b: mihomo DNS healthy'
@@ -420,6 +450,8 @@ in
   # Pre-seed servers.conf with the DoT default so dnsmasq can start even if
   # dns-upstream has not run yet; the script rewrites it at startup and on a switch.
   systemd.tmpfiles.rules = [
+    "d /run/dns-policy 0755 root root -"
+    "f /run/dns-policy/split-epoch 0644 root root - 0"
     "d /run/dns-upstream 0755 root root -"
     "f /run/dns-upstream/servers.conf 0644 root root - server=127.0.0.1#${toString port.unbound}"
   ];

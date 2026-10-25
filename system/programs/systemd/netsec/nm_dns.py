@@ -8,9 +8,9 @@ import sys
 
 
 def apply(settings, interface, action, uuid, run=subprocess.run):
-    if interface != settings["interface"] or not uuid:
+    if interface != settings["interface"]:
         return
-    if action not in {"pre-up", "up", "dhcp4-change", "dhcp6-change"}:
+    if action not in {"pre-up", "pre-down", "down", "up", "dhcp4-change", "dhcp6-change"}:
         return
 
     def command(argv, required=True):
@@ -18,6 +18,11 @@ def apply(settings, interface, action, uuid, run=subprocess.run):
         if required and result.returncode:
             raise RuntimeError("DNS policy command failed: " + argv[0].rsplit("/", 1)[-1])
         return result.stdout.strip()
+
+    if settings['exceptions'] and action in {'pre-up', 'pre-down', 'down'}:
+        command([settings['systemctl'], 'start', 'dns-split-revoke.service'])
+    if action in {'pre-down', 'down'} or not uuid:
+        return
 
     exempt = uuid in settings["exceptions"]
     routing_domains = ["~."]

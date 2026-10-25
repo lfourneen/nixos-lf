@@ -238,6 +238,13 @@ class Probe:
             raise ProbeFailure("obs", "selection changed during the node test")
 
     def run(self, fast=False):
+        def listeners():
+            try:
+                subprocess.run([self.settings['listener_check'], 'core', 'dns'],
+                               capture_output=True, timeout=self.remaining(4.5), check=True)
+            except (OSError, subprocess.SubprocessError):
+                raise ProbeFailure('config', 'managed TCP/UDP listener identity mismatch') from None
+        self.timed('listeners', listeners)
         fingerprint = self.timed("config", lambda: check_config(self.api("/configs"), self.settings))
         if fast:
             return fingerprint

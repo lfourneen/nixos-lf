@@ -91,20 +91,14 @@ in
         flock -x -w 10 9 || fail 'cannot acquire failure publication lock'
         if still_current; then fail "$1"; else completed=1; exit 0; fi
       }
-      listening() {
+      listeners() {
         for _ in 1 2 3 4 5; do
-          if ss -lntH "sport = :$1" | grep -Fq "127.0.0.1:$1"; then return 0; fi
+          if ${config.my.proxy.listenerCheck} "$@"; then return 0; fi
           sleep 1
         done
         return 1
       }
-      listening ${toString port.dnsmasq} || live_fail 'dnsmasq listener missing'
-      listening ${toString port.unbound} || live_fail 'unbound listener missing'
-      live_uid=$(systemctl show -p UID --value unbound.service)
-      case "$live_uid" in
-        ""|"[not set]"|${toString config.users.users.unbound.uid}) ;;
-        *) live_fail "unbound UID differs from firewall: $live_uid" ;;
-      esac
+      listeners dns || live_fail 'local DNS TCP/UDP listener identity mismatch'
       [ "$(cat /proc/sys/net/ipv4/ip_forward)" = 1 ] || live_fail 'IPv4 forwarding disabled'
 
       case "$mode" in
@@ -122,10 +116,7 @@ in
             ip -"$family" route show table ${toString config.my.proxy.routeTable} | grep -q 'dev ${config.my.proxy.tunDev}' || live_fail "IPv$family TUN route missing"
           done
           ''}
-          listening ${toString port.gostHttp} || live_fail 'gost HTTP listener missing'
-          listening ${toString port.gostRedirect} || live_fail 'gost redirect listener missing'
-          ss -lnteH 'sport = :${toString port.mihomoMixed}' | grep -q 'cgroup:/system.slice/clash-verge.service' || live_fail 'mixed listener identity mismatch'
-          ss -lnteH 'sport = :${toString port.mihomoDns}' | grep -q 'cgroup:/system.slice/clash-verge.service' || live_fail 'DNS listener identity mismatch'
+          listeners relay core || live_fail 'proxy listener identity mismatch'
           if [ "$(cat /run/dns-upstream/status)" != proxy ]; then
             warn 'DNS has not converged to mihomo'
           else

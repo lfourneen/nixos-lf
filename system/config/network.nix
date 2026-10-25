@@ -137,8 +137,8 @@ let
     # Per-process, per-destination: only unbound's DoT and timesyncd's NTP.
     meta skuid ${toString unboundUid} oifname { "${wired}", "${wireless}" } ip daddr ${dnsDotUpstreams} tcp dport ${toString port.dot} accept
     meta skuid ${toString timesyncUid} oifname { "${wired}", "${wireless}" } udp dport ${toString port.ntp} accept
-    meta skuid ${toString dnsmasqUid} ip daddr @dns_split4 meta l4proto { tcp, udp } th dport 53 accept
-    meta skuid ${toString dnsmasqUid} ip6 daddr @dns_split6 meta l4proto { tcp, udp } th dport 53 accept
+    meta skuid ${toString dnsmasqUid} meta oifname . ip daddr @dns_split4 meta l4proto { tcp, udp } th dport 53 accept
+    meta skuid ${toString dnsmasqUid} meta oifname . ip6 daddr @dns_split6 meta l4proto { tcp, udp } th dport 53 accept
   '';
 
   # Fragment proxy-mode.service applies while Clash runs: LAN/multicast stay
@@ -299,6 +299,7 @@ let
     interface = wireless;
     exceptions = config.my.proxy.splitDnsProfileUuids;
     resolver = "127.0.0.1:${toString port.dnsmasq}";
+    systemctl = "${pkgs.systemd}/bin/systemctl";
   });
   nmDnsPolicy = pkgs.writeShellScript "nm-dns-policy" ''
     exec ${pkgs.python3}/bin/python3 ${../programs/systemd/netsec/nm_dns.py} ${nmDnsSettings} "$1" "$2"
@@ -413,6 +414,7 @@ in
       # waiting for a backstop interval. Same coordinator as the core event.
       dispatcherScripts = [
         { type = "pre-up"; source = nmDnsPolicy; }
+        { type = "pre-down"; source = nmDnsPolicy; }
         { type = "basic"; source = nmDnsPolicy; }
         {
           type = "basic";
@@ -588,11 +590,9 @@ in
         DNSSEC = "no";
         LLMNR = "no";   # Disable LLMNR (LAN poisoning surface)
 
-        # Extra listener for hotspot/tailnet clients (firewall-gated). UDP only:
-        # the TCP twin never bound (resolved already holds 127.0.0.53/54:53 and
-        # logs EADDRINUSE), so clients get no TCP DNS. Do not re-bind this to a
-        # concrete address, which only exists while the hotspot is up.
-        DNSStubListenerExtra = lib.optionals config.my.hardening.externalDns [ "udp:0.0.0.0:53" ];
+        # External clients use their dedicated gateway DNS. A wildcard stub
+        # would expose B's fake-IP answers without supplying a client route.
+        DNSStubListenerExtra = [ ];
       };
     };
   };
@@ -642,20 +642,30 @@ in
         # Only the elements of these three named sets are runtime leases.
         # Their type, flags, timeout ceiling and every referencing rule are verified.
         set dns_plaintext4 { type ipv4_addr; flags timeout; timeout 120s; }
-        set dns_split4 { type ipv4_addr; flags timeout; timeout 120s; }
-        set dns_split6 { type ipv6_addr; flags timeout; timeout 120s; }
+        set dns_split4 { type ifname . ipv4_addr; flags timeout; timeout 120s; }
+        set dns_split6 { type ifname . ipv6_addr; flags timeout; timeout 120s; }
         chain dns_plaintext_mode {
           ip daddr @dns_plaintext4 accept
         }
         chain dns_egress {
-          ip daddr @dns_split4 accept
-          ip6 daddr @dns_split6 accept
+          meta oifname . ip daddr @dns_split4 accept
+          meta oifname . ip6 daddr @dns_split6 accept
           jump dns_plaintext_mode
           counter drop
         }
         chain lf_dns_guard {
           type filter hook output priority -199; policy accept;
           meta skuid ${toString dnsmasqUid} oifname != "lo" meta l4proto { tcp, udp } th dport 53 jump dns_egress
+        }
+        chain lf_local_dns_guard {
+          type filter hook output priority -198; policy accept;
+          # Only the gateway and root diagnostics may query internal upstreams.
+          # Leave 1054 open: uplink :53 is redirected there with the caller UID.
+          oifname "lo" meta l4proto { tcp, udp } th dport { ${toString port.mihomoDns}, ${toString port.unbound} } meta skuid != { 0, ${toString dnsmasqUid} } counter drop
+          # A port occupier must not answer allowed clients between checks.
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.mihomoDns} meta skuid != 0 counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.dnsmasq} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.unbound} meta skuid != { 0, ${toString unboundUid} } counter drop
         }
         chain input {
           type filter hook input priority 0; policy drop;

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import struct
 import time
 
 parser = argparse.ArgumentParser()
@@ -12,6 +13,7 @@ parser.add_argument("host")
 parser.add_argument("port", nargs="?", type=int, default=53)
 parser.add_argument("--uid", type=int)
 parser.add_argument("--mark", type=int)
+parser.add_argument('--dns-answer')
 args = parser.parse_args()
 
 if args.mode == "lease":
@@ -27,6 +29,13 @@ elif args.mode == "server":
     stream.bind(("::", int(args.host)))
     while True:
         data, peer = stream.recvfrom(1024)
+        if args.dns_answer and data != b'netsec-fixture':
+            end = 12
+            while data[end]:
+                end += data[end] + 1
+            end += 5
+            data = data[:2] + b'\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00' + data[12:end] \
+                + b'\xc0\x0c' + struct.pack('!HHIH', 1, 1, 0, 4) + socket.inet_aton(args.dns_answer)
         stream.sendto(data, peer)
 else:
     if args.uid is not None:

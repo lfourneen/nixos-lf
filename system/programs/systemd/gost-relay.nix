@@ -130,8 +130,7 @@ in
         # Identity, not reachability: an impostor can bind :${toString port.mihomoMixed} but cannot land in
         # clash-verge's cgroup, which the kernel reports through ss(8).
         core_up() {
-          ${pkgs.iproute2}/bin/ss -lnteH 'sport = :${toString port.mihomoMixed}' 2>/dev/null \
-            | ${pkgs.gnugrep}/bin/grep -q 'cgroup:/system.slice/clash-verge.service'
+          ${config.my.proxy.listenerCheck} core-mixed >/dev/null 2>&1
         }
 
         # Observe the sockets with ss(8): never connect() to the redirect port -
@@ -140,13 +139,7 @@ in
         # SO_REUSEPORT and does not serve the same way, so count, never merely
         # grep. Empty ss output means "cannot inspect": treat as failure.
         listen_ok() {
-          listening="$(${pkgs.iproute2}/bin/ss -ltn 2>/dev/null)"
-          [ -n "$listening" ] || return 1
-          for spec in "127.0.0.1:${toString port.gostHttp}" "127.0.0.1:${toString port.gostRedirect}" "[::1]:${toString port.gostRedirect}"; do
-            n=$(printf '%s\n' "$listening" | ${pkgs.gnugrep}/bin/grep -cF "$spec")
-            [ "$n" = 1 ] || return 1
-          done
-          return 0
+          ${config.my.proxy.listenerCheck} relay >/dev/null 2>&1
         }
 
         # A direct connect() to the redirect port makes gost re-enter its own

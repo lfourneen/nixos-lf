@@ -61,10 +61,38 @@ let
     toString config.users.users.${config.my.machine.desktopUser}.uid
   }/clash-verge-rev";
   mihomoSock = "${mihomoDir}/verge-mihomo.sock";
+  listener = service: uids: protocol: address: port: {
+    inherit uids protocol address port;
+    cgroup = "/system.slice/${service}.service";
+  };
+  dnsListeners = service: uids: port:
+    map (protocol: listener service uids protocol "127.0.0.1" port) [ "tcp" "udp" ];
+  listenerSettings = pkgs.writeText "proxy-listeners.json" (builtins.toJSON {
+    ss = "${pkgs.iproute2}/bin/ss";
+    groups = {
+      core-dns = dnsListeners "clash-verge" [ 0 ] port.mihomoDns;
+      core-mixed = [ (listener "clash-verge" [ 0 ] "tcp" "127.0.0.1" port.mihomoMixed) ];
+      core = [ (listener "clash-verge" [ 0 ] "tcp" "127.0.0.1" port.mihomoMixed) ]
+        ++ dnsListeners "clash-verge" [ 0 ] port.mihomoDns;
+      dns = dnsListeners "dnsmasq" [ 0 config.users.users.dnsmasq.uid ] port.dnsmasq
+        ++ dnsListeners "unbound" [ 0 config.users.users.unbound.uid ] port.unbound
+        ++ lib.optionals config.networking.enableIPv6
+          (map (protocol: listener "dnsmasq" [ 0 config.users.users.dnsmasq.uid ] protocol "::1" port.dnsmasq) [ "tcp" "udp" ]);
+      relay = [
+        (listener "gost-relay" [ m.uids.gost ] "tcp" "127.0.0.1" port.gostHttp)
+        (listener "gost-relay" [ m.uids.gost ] "tcp" "127.0.0.1" port.gostRedirect)
+        (listener "gost-relay" [ m.uids.gost ] "tcp" "::1" port.gostRedirect)
+      ];
+    };
+  });
+  listenerCheck = pkgs.writeShellScript "proxy-listeners" ''
+    exec ${pkgs.python3}/bin/python3 ${./netsec/listeners.py} ${listenerSettings} "$@"
+  '';
   healthSettings = pkgs.writeText "proxy-health.json" (builtins.toJSON {
     curl = "${pkgs.curl}/bin/curl";
     dig = "${pkgs.dnsutils}/bin/dig";
     socket = mihomoSock;
+    listener_check = listenerCheck;
     runtime = "/run/proxy-mode";
     budget_seconds = config.my.proxy.healthBudgetSeconds;
     urls = config.my.proxy.nodeProbeUrls;
@@ -796,6 +824,7 @@ in
   options.my.proxy.modeScript = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.requestVerify = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.healthSettings = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.listenerCheck = lib.mkOption { type = lib.types.path; internal = true; };
 
   options.my.proxy.isClashOn = lib.mkOption {
     type = lib.types.path;
@@ -810,6 +839,7 @@ in
     my.proxy.modeScript = modeScript;
     my.proxy.requestVerify = verifyRequest;
     my.proxy.healthSettings = healthSettings;
+    my.proxy.listenerCheck = listenerCheck;
     systemd.tmpfiles.rules = [
       "d /run/netsec 0755 root root -"
       "d /run/netsec/requests 0755 root root -"
