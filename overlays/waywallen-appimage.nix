@@ -2,7 +2,7 @@
 
 let
   pname = "waywallen";
-  version = "0.4.4";
+  version = "0.5.0";
   src = ./local-apps/waywallen-${version}-x86_64.AppImage;
 
   # Single extraction, reused for the runtime AppDir plus the desktop entry,
