@@ -15,8 +15,7 @@
       ExecStart = "${pkgs.writeShellScript "netsec-alert" ''
         set -eu
         unit="$1"
-        ${pkgs.coreutils}/bin/mkdir -p /run/netsec
-        printf '%s\n' "$unit" > /run/netsec/failed
+        ${pkgs.python3}/bin/python3 ${./netsec/alerts.py} set "$unit" 'systemd unit failed'
         ${pkgs.systemd}/bin/systemd-cat -t netsec-alert -p err ${pkgs.coreutils}/bin/echo \
           "netsec-alert: unit $unit failed -- network enforcement may be off (journalctl -u $unit)"
         ${pkgs.util-linux}/bin/wall "NETSEC ALERT: $unit failed -- the network may be unenforced (journalctl -u netsec-alert)" || true

@@ -118,6 +118,11 @@ in
         # State-file contract: one mode word plus a newline, rewritten every round
         # (so its mtime only proves the supervisor is alive); `proxy-status` reads it.
         write_state() {
+          read -r monotonic _ < /proc/uptime
+          version=$(${pkgs.jq}/bin/jq -r '.policy_version // .version // -1' /run/proxy-mode/state.json 2>/dev/null || echo -1)
+          ${pkgs.jq}/bin/jq -n --arg mode "$1" --argjson now "$monotonic" --argjson version "$version" \
+            '{mode:$mode,policy_version:$version,monotonic_seconds:$now}' > /run/gost-relay/state.json.$$
+          mv -f /run/gost-relay/state.json.$$ /run/gost-relay/state.json
           printf '%s\n' "$1" > /run/gost-relay/status.$$
           mv -f /run/gost-relay/status.$$ /run/gost-relay/status
         }

@@ -15,16 +15,105 @@ let
     dhcp_interfaces = dhcpIfaces;
     interfaces = [ m.wired.name m.wireless.name ];
   });
+  policySettings = pkgs.writeText "dns-policy.json" (builtins.toJSON {
+    nft = "${pkgs.nftables}/bin/nft";
+    nmcli = "${pkgs.networkmanager}/bin/nmcli";
+    wireless = m.wireless.name;
+    split_profiles = config.my.proxy.splitDnsProfileUuids;
+    runtime = "/run/dns-upstream";
+  });
+  resolvedSettings = pkgs.writeText "resolved-policy.json" (builtins.toJSON {
+    ip = "${pkgs.iproute2}/bin/ip";
+    resolvectl = "${pkgs.systemd}/bin/resolvectl";
+    tun = config.my.proxy.tunDev;
+  });
+  revokeDns = ''
+    exec 9>/run/proxy-mode/lock
+    ${pkgs.util-linux}/bin/flock -x -w 5 9
+    ${pkgs.nftables}/bin/nft -f - <<'NFT_DNS_REVOKE'
+    flush set inet lf_filter dns_plaintext4
+    flush set inet lf_filter dns_split4
+    flush set inet lf_filter dns_split6
+    NFT_DNS_REVOKE
+  '';
 
 in
 {
+  my.proxy.resolvedPolicySettings = resolvedSettings;
+  # Kernel timeout accounting can pause across suspend. Revoke before sleep,
+  # prevent the broker regranting, then reconcile using CLOCK_BOOTTIME on wake.
+  systemd.services.dns-policy-sleep = {
+    description = "Revoke temporary DNS permissions across suspend";
+    wantedBy = [ "sleep.target" ];
+    before = [ "sleep.target" ];
+    unitConfig.StopWhenUnneeded = true;
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      TimeoutStartSec = 10;
+      TimeoutStopSec = 10;
+      RuntimeDirectory = "dns-policy";
+      RuntimeDirectoryPreserve = true;
+      ExecStart = pkgs.writeShellScript "dns-policy-before-sleep" ''
+        set -eu
+        touch /run/dns-policy/sleeping
+        ${revokeDns}
+      '';
+      ExecStop = pkgs.writeShellScript "dns-policy-after-sleep" ''
+        set -eu
+        ${revokeDns}
+        rm -f /run/dns-policy/sleeping
+        ${pkgs.systemd}/bin/systemctl start --no-block proxy-net-wake.service
+      '';
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+    };
+  };
+  systemd.services.dns-policy = {
+    description = "Apply bounded DNS address leases under the policy lock";
+    after = [ "nftables.service" ];
+    unitConfig.OnFailure = [ "netsec-alert@%n.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.python3}/bin/python3 ${./netsec/dns_policy.py} ${policySettings}";
+      ExecStartPost = "${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear dns-policy.service";
+      TimeoutStartSec = 10;
+      RuntimeDirectory = "dns-policy";
+      RuntimeDirectoryPreserve = true;
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectControlGroups = true;
+      RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
+      ReadWritePaths = [ "/run/proxy-mode" "/run/netsec" ];
+    };
+  };
+  systemd.services.dns-resolved-policy = {
+    description = "Keep resolved on the managed DNS gateway";
+    after = [ "systemd-resolved.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.python3}/bin/python3 ${./netsec/resolved_policy.py} ${resolvedSettings}";
+      TimeoutStartSec = 15;
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = "";
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
+    };
+  };
   # DNS upstream: mihomo DNS while clash runs, unbound DoT otherwise, with the DHCP
   # resolvers only inside the bounded windows below.
   systemd.services.dns-upstream = {
     description = "DNS upstream: mihomo DNS when clash is up, DoT otherwise";
-    after = [ "network.target" ];
+    after = [ "network.target" "nftables.service" ];
     wantedBy = [ "multi-user.target" ];
     unitConfig.StartLimitIntervalSec = 0;
+    unitConfig.OnFailure = [ "netsec-alert@%n.service" ];
     serviceConfig = {
       RuntimeDirectory = "dns-upstream";
       # Keep /run/dns-upstream/servers.conf across a restart: dnsmasq reads it at start
@@ -48,7 +137,12 @@ in
       RemoveIPC = true;
       CapabilityBoundingSet = "";
       RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
-      ReadWritePaths = [ "/run/dns-upstream" "/run/netsec/requests" ];
+      ReadWritePaths = [ "/run/dns-upstream" "/run/netsec" ];
+      ExecStartPost = "${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear dns-upstream.service";
+      Type = "notify";
+      NotifyAccess = "all";
+      WatchdogSec = "90s";
+      TimeoutStartSec = "90s";
 
       ExecStart = "${pkgs.writeShellScript "dns-upstream-loop" ''
         PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.systemd pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.gnugrep pkgs.networkmanager ]}
@@ -64,6 +158,10 @@ in
         budget_until=0; window_until=0
         no_resolver_logged=0
         PL_TTL=120; PL_TOTAL=300
+        ready_sent=0
+        policy_version=-1
+        split='[]'
+        last_success=0
         mkdir -p "$runtime/budgets"
         atomic_write() { printf '%s\n' "$2" > "$1.$$" && mv -f "$1.$$" "$1"; }
         trap 'woken=1' WINCH
@@ -122,14 +220,32 @@ in
             [ -n "$answer" ] || return 1
           done
         }
+        publish_dns() {
+          now=$(now_mono)
+          override=false
+          [ ! -e "$runtime/force-plaintext" ] || override=true
+          jq -n --arg mode "$current" --arg reason "$state_reason" --arg session "$last_ident" \
+            --argjson budget "$budget_until" --argjson window "$window_until" \
+            --argjson now "$now" --argjson override "$override" --argjson version "$policy_version" \
+            --argjson success "$last_success" \
+            '{mode:$mode,reason:$reason,session:$session,budget_until:$budget,window_until:$window,
+              remaining_seconds:([$budget-$now,0]|max),plaintext_override:$override,
+              monotonic_seconds:$now,policy_version:$version,last_success_monotonic:$success}' \
+              > "$runtime/state.json.$$" && mv -f "$runtime/state.json.$$" "$runtime/state.json"
+          atomic_write "$runtime/reason" "$state_reason"
+          atomic_write "$runtime/status" "$current"
+        }
         apply_state() {
           local target="$1" new_conf pid notify=0
           new_conf='server=127.0.0.1#${toString port.unbound}'
           if [ "$target" = proxy ]; then
             new_conf='server=127.0.0.1#${toString port.mihomoDns}'
           elif [[ "$target" == *plaintext ]]; then
+            new_conf=""
             for server in $servers; do new_conf="$new_conf"$'\n'"server=$server"; done
           fi
+          split_conf=$(printf '%s' "$split" | jq -r '.[] | "server=/" + .domain + "/" + .server')
+          [ -z "$split_conf" ] || new_conf="$new_conf"$'\n'"$split_conf"
           # Re-check after slow probes: a concurrent on request must never
           # publish a plaintext resolver list after A has ended.
           if [[ "$target" == *plaintext ]] \
@@ -142,9 +258,9 @@ in
           if [ "$new_conf" != "$last_conf" ] || [ "$pid" != "$last_pid" ] || [ -z "$pid" ] || [ "$pid" = 0 ]; then
             atomic_write "$runtime/servers.conf" "$new_conf" || return 1
             if systemctl is-active --quiet dnsmasq.service; then
-              systemctl reload dnsmasq.service || return 1
+              timeout 8 systemctl reload dnsmasq.service || return 1
             else
-              systemctl start dnsmasq.service || return 1
+              timeout 8 systemctl start dnsmasq.service || return 1
             fi
             systemctl is-active --quiet dnsmasq.service || return 1
             last_pid=$(systemctl show -p MainPID --value dnsmasq.service) || return 1
@@ -152,30 +268,38 @@ in
             last_conf="$new_conf"
             resolvectl flush-caches || true
           fi
+          now=$(now_mono)
+          until=0
+          [[ "$target" != *plaintext ]] || until=$window_until
+          if [[ "$target" == *plaintext ]] && [ -e "$runtime/force-plaintext" ]; then until=$((now + 120)); fi
+          jq -n --argjson version "$policy_version" --argjson now "$now" --argjson until "$until" \
+            --arg servers "$servers" --argjson split "$split" \
+            '{policy_version:$version,monotonic_seconds:$now,plaintext_until:$until,
+              plaintext:[$servers|splits("[[:space:]]+")|select(length>0)],split:$split}' > "$runtime/policy.json.$$"
+          mv -f "$runtime/policy.json.$$" "$runtime/policy.json"
+          timeout 10 systemctl start dns-policy.service || return 1
+          [ "$(jq -r '.policy_version // .version' /run/proxy-mode/state.json)" = "$policy_version" ] || return 1
           if [ "$current" != "$target" ]; then
             echo "dns-upstream: $current -> $target ($state_reason)"
             [ "$target" != proxy ] || notify=1
           fi
           current="$target"
-          atomic_write "$runtime/reason" "$state_reason"
-          atomic_write "$runtime/status" "$current"
-          now=$(now_mono)
-          override=false
-          [ ! -e "$runtime/force-plaintext" ] || override=true
-          jq -n --arg mode "$current" --arg reason "$state_reason" --arg session "$last_ident" \
-            --argjson budget "$budget_until" --argjson window "$window_until" \
-            --argjson now "$now" --argjson override "$override" \
-            '{mode:$mode,reason:$reason,session:$session,budget_until:$budget,window_until:$window,
-              remaining_seconds:([$budget-$now,0]|max),plaintext_override:$override,monotonic_seconds:$now}' \
-              > "$runtime/state.json.$$"
-          mv -f "$runtime/state.json.$$" "$runtime/state.json"
+          last_success=$(now_mono)
+          publish_dns
           if [ "$notify" = 1 ]; then ${config.my.proxy.requestVerify}; fi
         }
 
         # A safe seed exists from tmpfiles. Reconcile every pass, including a
         # failed reload and same-status DHCP DNS changes; no state-only shortcut.
+        # Release dnsmasq's After= dependency before asking systemd to start it.
+        # This is process readiness; state.json remains pending until apply.
+        systemd-notify --ready
+        ready_sent=1
         while true; do
           woken=0
+          timeout 15 systemctl start dns-resolved-policy.service || true
+          split=$(${pkgs.python3}/bin/python3 ${./netsec/dns_policy.py} ${policySettings} --split 2>/dev/null || echo '[]')
+          policy_version=$(jq -r '.policy_version // .version // -1' /run/proxy-mode/state.json 2>/dev/null || echo -1)
           mode=$(jq -r '.mode // "unknown"' /run/proxy-mode/state.json 2>/dev/null || echo unknown)
           new_status=blocked
           state_reason="mode-$mode: encrypted resolver only"
@@ -235,8 +359,9 @@ in
           if ! apply_state "$new_status"; then
             # Keep last_conf unchanged so the next pass must retry. Do not claim
             # that a desired server list is already the active resolver state.
-            atomic_write "$runtime/status" pending
-            atomic_write "$runtime/reason" 'dnsmasq apply failed; retrying'
+            current=pending
+            state_reason='DNS apply or policy generation changed; retrying'
+            publish_dns
             echo 'dns-upstream: dnsmasq apply failed; retrying' >&2
             interval=2
           elif [ "$current" != "$previous" ] || { [ "$current" != dot ] && [ "$current" != proxy ]; }; then
@@ -244,6 +369,8 @@ in
           elif [ "$interval" -lt 60 ]; then
             interval=$((interval * 2 > 60 ? 60 : interval * 2))
           fi
+          if [ "$ready_sent" = 0 ]; then systemd-notify --ready; ready_sent=1; fi
+          systemd-notify WATCHDOG=1
           [ "$woken" = 0 ] || continue
           nap "$interval"
         done

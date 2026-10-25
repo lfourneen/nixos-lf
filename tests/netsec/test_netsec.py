@@ -9,6 +9,9 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import socket
+import threading
+import time
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -26,6 +29,7 @@ def module(name):
 
 
 health, link, rules, nm_dns = (module(name) for name in ("health", "link", "rules", "nm_dns"))
+dns_policy, resolved_policy, state, alerts = (module(name) for name in ("dns_policy", "resolved_policy", "state", "alerts"))
 SOURCE = (MODULES / "proxy-mode.nix").read_text()
 
 
@@ -37,6 +41,46 @@ def shell_function(name):
 
 
 class HealthTests(unittest.TestCase):
+    def test_managed_policy_and_route_scope_drift(self):
+        settings = {"expected": {"managed-policy": "verified", "tun": {"include-uid": [], "route-address": []}}}
+        config = {"mode": "rule", "managed-policy": "verified", "tun": {}}
+        health.check_config(config, settings)
+        for value in [dict(config, **{"managed-policy": ""}),
+                      dict(config, tun={"include-uid": [1000]}),
+                      dict(config, tun={"route-address": ["198.18.0.0/30"]})]:
+            with self.assertRaises(health.ProbeFailure): health.check_config(value, settings)
+
+    def test_tun_dns_alone_is_not_a_success(self):
+        probe = health.Probe({"budget_seconds": 12, "require_tun": True, "dig": "dig", "curl": "curl",
+                              "tun_probe_name": "probe.test", "dns_port": 1053, "fake_ip_net": "198.18.0.0/16"})
+        commands = []
+        def command(argv, _maximum):
+            commands.append(argv)
+            return "198.18.1.2\n" if argv[0] == "dig" else "000 15110"
+        probe.command = command
+        with self.assertRaises(health.ProbeFailure): probe.tun_test()
+        self.assertTrue(any("--resolve" in argv for argv in commands))
+
+    def test_controller_reads_have_a_total_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = str(Path(temporary) / "controller.sock")
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(path); server.listen()
+            def slow():
+                connection, _ = server.accept()
+                try:
+                    connection.recv(4096)
+                    connection.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 10000\r\n\r\n{')
+                    time.sleep(0.3)
+                finally:
+                    connection.close(); server.close()
+            worker = threading.Thread(target=slow); worker.start()
+            probe = health.Probe({"budget_seconds": 0.08, "socket": path})
+            started = time.monotonic()
+            with self.assertRaises(health.ProbeFailure): probe.api("/configs")
+            self.assertLess(time.monotonic() - started, 0.25)
+            worker.join()
+
     def test_exact_log_source_and_host(self):
         line = lambda port, host: json.dumps({"payload": f"[TCP] 127.0.0.1:{port} --> {host}:80 match Rule using group[node]"})
         content = "\n".join([line(15011, "www.gstatic.com"), line(15010, "www.gstatic.com.evil")])
@@ -93,7 +137,7 @@ class HealthTests(unittest.TestCase):
                         "socket": "unused", "urls": ["http://first", "http://second"], "expected": {}}
             probe = health.Probe(settings)
             probe.api = lambda path: {"mode": "rule"}
-            probe.tun_test = lambda: None
+            probe.tun_test = lambda *_args: None
             seen = []
 
             def target(url, _path):
@@ -189,7 +233,81 @@ class NetworkManagerTests(unittest.TestCase):
         calls.clear()
         settings["exceptions"] = ["test-uuid"]
         nm_dns.apply(settings, "wlo1", "up", "test-uuid", run=run)
-        self.assertEqual(calls, [])
+        self.assertFalse(any("modify" in argv for argv in calls))
+        self.assertIn(["resolvectl", "dns", "wlo1", "127.0.0.1:1054"], calls)
+
+
+class DNSPolicyTests(unittest.TestCase):
+    def test_expiry_generation_and_mode_gate(self):
+        request = {"policy_version": 10, "monotonic_seconds": 100,
+                   "plaintext_until": 110, "plaintext": ["192.0.2.53"], "split": []}
+        direct = {"mode": "direct", "version": 10}
+        value = dns_policy.transaction(request, direct, 101)
+        self.assertIn("192.0.2.53 timeout 9s", value)
+        self.assertNotIn("add element", dns_policy.transaction(request, direct, 111))
+        for policy in [{"mode": "proxy", "version": 10}, {"mode": "blocked", "version": 10},
+                       {"mode": "direct", "version": 11}]:
+            self.assertNotIn("add element", dns_policy.transaction(request, policy, 101))
+
+    def test_split_dns_is_explicit_scoped_and_sanitized(self):
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            output = "approved" if "GENERAL.CON-UUID" in argv else "10.1.2.53\n\n~corp.example,~.\n"
+            return subprocess.CompletedProcess(argv, 0, output, "")
+        settings = {"nmcli": "nmcli", "wireless": "wlo1", "split_profiles": ["approved"]}
+        entries = dns_policy.split_dns(settings, run=run)
+        self.assertEqual(entries, [{"domain": "corp.example", "server": "10.1.2.53"}])
+        request = {"policy_version": 10, "monotonic_seconds": 100, "split": entries}
+        self.assertIn("dns_split4 { 10.1.2.53 timeout 120s }",
+                      dns_policy.transaction(request, {"mode": "proxy", "version": 10}, 101))
+        with self.assertRaises(ValueError): dns_policy.addresses(["10.1.2.53; flush ruleset"])
+        self.assertEqual(dns_policy.domains(["~.", "bad/domain", "~corp.example"]), ["corp.example"])
+        settings["split_profiles"] = []
+        self.assertEqual(dns_policy.split_dns(settings, run=run), [])
+
+    def test_resolved_reconcile_only_managed_tun(self):
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            output = "Link 6 (Mihomo): 198.18.0.2" if "dns" in argv else "Link 6 (Mihomo): ~."
+            return subprocess.CompletedProcess(argv, 0, output, "")
+        settings = {"ip": "ip", "resolvectl": "resolvectl", "tun": "Mihomo"}
+        with self.assertRaises(ValueError): resolved_policy.reconcile(settings, check=True, run=run)
+        resolved_policy.reconcile(settings, run=run)
+        self.assertIn(("resolvectl", "revert", "Mihomo"), calls)
+        self.assertTrue(all("tailscale0" not in argv for argv in calls))
+
+
+class StateTests(unittest.TestCase):
+    def test_freshness_and_both_modes_require_current_verification(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def write(path, value):
+                target = root / path; target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(value))
+            for mode, dns_mode in [("proxy", "proxy"), ("direct", "dot")]:
+                write("proxy-mode/state.json", {"mode": mode, "policy_version": 10})
+                fresh = {"mode": mode, "policy_version": 10, "monotonic_seconds": 100}
+                write("proxy-mode/heartbeat.json", fresh)
+                write("gost-relay/state.json", fresh)
+                write("dns-upstream/state.json", dict(fresh, mode=dns_mode))
+                write("netsec/state.json", {"result": "ok", "version": 10})
+                self.assertTrue(state.readiness(root, mode, now=101)["ready"])
+                self.assertFalse(state.readiness(root, mode, now=221)["ready"])
+                write("netsec/state.json", {"result": "ok", "version": 9})
+                self.assertFalse(state.readiness(root, mode, now=101)["ready"])
+
+    def test_alert_recovery_does_not_clear_another_owner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            alerts.update(root, "dns-policy.service", "failed")
+            alerts.update(root, "nftables-verify", "mismatch")
+            alerts.update(root, "nftables-verify")
+            self.assertTrue((root / "failed").exists())
+            self.assertEqual((root / "failed").read_text().strip(), "dns-policy.service")
+            alerts.update(root, "dns-policy.service")
+            self.assertFalse((root / "failed").exists())
 
 
 def policy_document():
@@ -203,6 +321,21 @@ def policy_document():
 
 
 class RulesTests(unittest.TestCase):
+    def test_only_bounded_dns_lease_elements_are_ignored(self):
+        expected, actual = policy_document(), policy_document()
+        definition = {"family": "inet", "table": "lf_filter", "name": "dns_plaintext4",
+                      "type": "ipv4_addr", "flags": ["timeout"], "timeout": 120000}
+        expected["nftables"].append({"set": definition})
+        live = copy.deepcopy(definition)
+        live["elem"] = [{"elem": {"val": "192.0.2.53", "timeout": 2000, "expires": 1000}}]
+        actual["nftables"].append({"set": live})
+        rules.compare(expected, actual)
+        live["elem"][0]["elem"]["timeout"] = 121000
+        with self.assertRaises(ValueError): rules.compare(expected, actual)
+        live["elem"][0]["elem"]["timeout"] = 2000
+        live["policy"] = "accept"
+        with self.assertRaises(ValueError): rules.compare(expected, actual)
+
     def test_static_comparison_keeps_hook_policy_and_order(self):
         expected = policy_document()
         for mutate in (lambda d: d["nftables"][1]["chain"].update(policy="accept"),
