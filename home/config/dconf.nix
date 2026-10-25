@@ -2,7 +2,7 @@
 
 {
   # GUI system proxy via gsettings ("Use system proxy settings" apps: Zen/Firefox, Electron, Qt)
-  # Points at gost-relay's HTTP listener (fail-open: Clash up -> mihomo, down -> direct)
+  # gost follows boot-scoped intent: healthy proxy / explicit direct / closed.
   # NOTE: keep Clash Verge "System Proxy" OFF or it overwrites these values with
   # my.machine.ports.mihomoMixed.
   dconf.settings = {

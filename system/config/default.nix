@@ -9,6 +9,7 @@
     ./user.nix
     ./machine.nix
     ./proxy-options.nix
+    ./proxy-profile.nix
     ./hardening-options.nix
     ./network.nix
   ];

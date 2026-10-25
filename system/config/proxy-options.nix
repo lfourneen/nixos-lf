@@ -59,7 +59,8 @@ in
   };
   options.my.proxy.guestInterfaces = lib.mkOption {
     type = lib.types.nonEmptyListOf lib.types.str;
-    default = [ config.my.machine.wireless.name config.my.machine.vmBridge config.my.machine.waydroidBridge ];
+    default = [ config.my.machine.vmBridge config.my.machine.waydroidBridge ]
+      ++ lib.optionals config.my.hardening.hotspot.enable [ config.my.machine.hotspot.interface ];
     description = "All routed guest ingress interfaces; policy applies before NAT and conntrack accepts.";
   };
   options.my.proxy.transparentGuestInterfaces = lib.mkOption {
@@ -76,6 +77,21 @@ in
     type = lib.types.nullOr lib.types.ints.positive;
     default = null;
     description = "Optional boot-wide plaintext deadline, independent of DHCP and reconnects; null retains per-session budgets.";
+  };
+
+  options.my.proxy.bootMode = lib.mkOption {
+    type = lib.types.enum [ "direct" "proxy" ];
+    default = "direct";
+    description = "Optional fail-closed boot intent, installed before physical networking.";
+  };
+  options.my.proxy.stateMaxAgeSeconds = lib.mkOption {
+    type = lib.types.ints.between 90 300;
+    default = 120;
+    description = "Maximum age of a successful supervisor/consumer observation.";
+  };
+  options.my.proxy.resolvedPolicySettings = lib.mkOption {
+    type = lib.types.path;
+    internal = true;
   };
 
   options.my.proxy.nodeProbeUrls = lib.mkOption {

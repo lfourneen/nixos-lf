@@ -105,10 +105,12 @@
     };
 
     hotspot = {
+      interface = lib.mkOption { type = lib.types.str; default = "ap0"; };
       subnet = lib.mkOption { type = lib.types.str; default = "10.42.0.0/24"; };
       address = lib.mkOption { type = lib.types.str; default = "10.42.0.1"; };
     };
     vmSubnet = lib.mkOption { type = lib.types.str; default = "192.168.122.0/24"; };
+    vmAddress = lib.mkOption { type = lib.types.str; default = "192.168.122.1"; };
     waydroidSubnet = lib.mkOption { type = lib.types.str; default = "192.168.240.0/24"; };
     magicDns = lib.mkOption { type = lib.types.str; default = "100.100.100.100"; };
 

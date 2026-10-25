@@ -24,27 +24,7 @@ let
   # ranges, not names, so this is what keeps an ISP portal, LAN host or captive
   # probe working by name. It replaces the subscription's list (merge wins by
   # key), so it must stay complete on its own.
-  fakeIpFilter = [
-    "*.lan"
-    "*.local"
-    "*.localhost"
-    "*.test"
-    "*.home.arpa"
-    "*.internal"
-    "localhost.ptlogin2.qq.com"
-    "+.stun.*.*"
-    "+.stun.*.*.*"
-    "+.stun.*.*.*.*"
-    "lens.l.google.com"
-    "+.srv.nintendo.net"
-    "+.stun.playstation.net"
-    "+.xboxlive.com"
-    "+.msftncsi.com"
-    "+.msftconnecttest.com"
-    "capture.apple.com"
-    "connectivitycheck.gstatic.com"
-    "connectivitycheck.android.com"
-  ];
+  fakeIpFilter = osConfig.my.proxy.managedDns.fake-ip-filter;
 
   # IP-check / leak-test endpoints that must not egress DIRECT (a CN probe then
   # reports the real home IP as a "backup exit"). Suffixes cover subdomains.
@@ -121,6 +101,12 @@ in
       port: 0
       socks-port: 0
       redir-port: 0
+      listeners: []
+      tunnels: []
+      ss-config: ""
+      vmess-config: ""
+      tuic-server: { enable: false }
+      iptables: { enable: false }
 
       # Pin the routing mode and IPv6. The GUI owns both keys, and `direct` would
       # be turned into Mode C by the health gate; a rebuild must not change either
@@ -154,6 +140,15 @@ in
       # case where Verge injects the key after the merge instead.
       tun:
         enable: ${lib.boolToString tunMode}
+        route-address: []
+        route-address-set: []
+        route-exclude-address-set: []
+        include-interface: []
+        exclude-interface: []
+        include-uid: []
+        exclude-uid: []
+        include-uid-range: []
+        exclude-uid-range: []
       ${lib.optionalString tunMode ''
       # TUN: stack/dns-hijack/strict-route are authoritative in the Clash Verge
       # GUI (Stack=Mixed, DNS Hijack=any:53, Strict Route=ON). strict-route is
@@ -182,60 +177,10 @@ in
       # Foreign DoH (1.1.1.1/8.8.8.8) is blocked when dialed directly, but
       # `respect-rules` sends it through the proxy, so ipleak sees the proxy's
       # resolver instead of the local one. CN names stay on domestic DoH.
-      dns:
-        enable: true
-        listen: 127.0.0.1:${toString port.mihomoDns}
-        ipv6: false
-        # fake-ip only beside a TUN: the TUN is what maps an answer back to its
-        # domain. With no TUN (tunMode=false) nothing does, so a fake address
-        # would blackhole every name -- keep redir-host there. dns-upstream only
-        # points the client resolver at mihomo while the core runs, so this is
-        # "fake-ip whenever Clash is on" without any runtime switch.
-        enhanced-mode: ${if tunMode then "fake-ip" else "redir-host"}
-        fake-ip-range: ${fakeIpRange}
-        # Always-resolve names. The TUN route-exclude covers ranges, not names,
-        # so this filter is what keeps an ISP portal, LAN host or captive probe
-        # working by name. This list replaces the subscription's (merge wins by
-        # key), so it must stay complete on its own.
-        fake-ip-filter:
-      ${yamlItems "    " (map (x: "'${x}'") fakeIpFilter)}
-        use-hosts: true
-        respect-rules: true
-        # Encrypted bootstrap (both are IP literals, so no bootstrap recursion).
-        default-nameserver:
-          - tls://${lib.head m.dotUpstreams}
-          - tls://119.29.29.29
-        proxy-server-nameserver:
-          - https://${lib.head m.dotUpstreams}/dns-query
-        nameserver:
-          - https://1.1.1.1/dns-query
-          - https://8.8.8.8/dns-query
-        nameserver-policy:
-          'geosite:cn':
-      ${yamlItems "      " (map (ip: "https://${ip}/dns-query") m.dotUpstreams)}
-          'geosite:geolocation-!cn':
-            - https://1.1.1.1/dns-query
-            - https://8.8.8.8/dns-query
-          # Subscription hardcodes a blocked Cloudflare DoH for these.
-          '+.google.com': [ https://1.1.1.1/dns-query ]
-          '+.googleapis.com': [ https://1.1.1.1/dns-query ]
-          '+.googleapis.cn': [ https://1.1.1.1/dns-query ]
-          '+.googlevideo.com': [ https://1.1.1.1/dns-query ]
-          '+.gstatic.com': [ https://1.1.1.1/dns-query ]
-          '+.youtube.com': [ https://1.1.1.1/dns-query ]
-          '+.youtu.be': [ https://1.1.1.1/dns-query ]
-          '+.facebook.com': [ https://1.1.1.1/dns-query ]
-          '+.twitter.com': [ https://1.1.1.1/dns-query ]
-          '+.x.com': [ https://1.1.1.1/dns-query ]
-          '+.github.com': [ https://1.1.1.1/dns-query ]
-          '+.githubusercontent.com': [ https://1.1.1.1/dns-query ]
-          '+.openai.com': [ https://1.1.1.1/dns-query ]
-          '+.chatgpt.com': [ https://1.1.1.1/dns-query ]
-          '+.anthropic.com': [ https://1.1.1.1/dns-query ]
-        # `fallback` / `fallback-filter` are deliberately not declared: the
-        # global extension script drops every subscription's DNS key that is
-        # not listed here, so a leaky `fallback` or a `geosite:gfw` reference
-        # cannot survive into the core. See Script.js below.
+      dns: ${builtins.toJSON (osConfig.my.proxy.managedDns // {
+        enhanced-mode = if tunMode then "fake-ip" else "redir-host";
+        fake-ip-range = fakeIpRange;
+      })}
 
       # Sniffing still matters with fake-ip: it recovers the domain for flows
       # that arrive as a bare address (filtered/LAN names, pure-IP traffic), and
@@ -262,7 +207,10 @@ in
       # Keep the TCP controller off and never ship the default secret; replace the
       # placeholder with `openssl rand -hex 16`. Verge may override both keys.
       external-controller: ""
-      secret: "<fill in a random value>"
+      external-controller-tls: ""
+      external-controller-pipe: ""
+      external-doh-server: ""
+      # The GUI owns its local Unix controller; no reusable secret is shipped.
     '';
     force = true;
   };
@@ -295,20 +243,12 @@ in
       }
 
       function main(config) {
-        const dns = config && config.dns;
-        if (dns && typeof dns === "object") {
-          for (const key of Object.keys(dns)) {
-            if (!DNS_KEYS.has(key)) delete dns[key];
-          }
-          const policy = dns["nameserver-policy"];
-          if (policy && typeof policy === "object") {
-            for (const key of Object.keys(policy)) {
-              if (key.startsWith("geosite:") && !GEOSITE_KEYS.has(key)) {
-                delete policy[key];
-              }
-            }
-          }
-        }
+        // Replace the DNS object, including nested policy entries. Per-profile
+        // extensions still run later; the core's final parser rejects any drift.
+        if (config) config.dns = ${builtins.toJSON (osConfig.my.proxy.managedDns // {
+          enhanced-mode = if tunMode then "fake-ip" else "redir-host";
+          fake-ip-range = fakeIpRange;
+        })};
 
         const rules = config && config.rules;
         if (Array.isArray(rules) && rules.length) {

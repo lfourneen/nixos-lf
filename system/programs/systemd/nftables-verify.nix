@@ -28,7 +28,6 @@ in
       RULE_CHECK=${config.my.proxy.rulesCheck}
       EXPECTED=${config.my.proxy.expectedRules}
       IS_CLASH_ON=${config.my.proxy.isClashOn}
-      FLAG=/run/netsec/failed
       RESULT=/run/netsec/result
       snapshot=/run/netsec/rules.$$.json
       completed=0
@@ -51,7 +50,7 @@ in
       fail() {
         completed=1
         echo "nftables-verify: FAIL: $1" >&2
-        atomic_write "$FLAG" "nftables-verify: $1" || true
+        ${pkgs.python3}/bin/python3 ${./netsec/alerts.py} set nftables-verify "$1" || true
         publish_result failed "$1" || true
         ack_requests
         ${pkgs.systemd}/bin/systemd-cat -t netsec-alert -p err ${pkgs.coreutils}/bin/echo "netsec-alert: $1" || true
@@ -113,6 +112,8 @@ in
           $IS_CLASH_ON || live_fail 'proxy mode without a core in the service cgroup'
           ${pkgs.python3}/bin/python3 ${./netsec/health.py} ${config.my.proxy.healthSettings} --fast >/dev/null \
             || live_fail 'core configuration differs from managed proxy invariants'
+          ${pkgs.python3}/bin/python3 ${./netsec/resolved_policy.py} ${config.my.proxy.resolvedPolicySettings} --check \
+            || warn 'TUN resolver routing has not converged to the managed gateway'
           ${lib.optionalString config.my.proxy.tunMode ''
           ip -o link show dev ${lib.escapeShellArg config.my.proxy.tunDev} | grep -q ',UP' || live_fail 'TUN down'
           $NFT list table inet mihomo >/dev/null || live_fail 'mihomo auto-redirect table missing'
@@ -162,7 +163,7 @@ in
       flock -x -w 10 9 || fail 'cannot acquire result publication lock'
       if ! still_current; then completed=1; exit 0; fi
       # Do not erase an alert owned by a different failing unit.
-      if [ -e "$FLAG" ] && grep -q '^nftables-verify:' "$FLAG"; then rm -f "$FLAG"; fi
+      ${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear nftables-verify
       if [ "$degraded" = 1 ]; then result=degraded; else result=ok; fi
       publish_result "$result" "$mode"
       ack_requests

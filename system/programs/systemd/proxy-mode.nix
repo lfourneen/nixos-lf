@@ -46,8 +46,10 @@ let
   requireTun = config.my.proxy.tunMode;
 
   # A DIRECT-routed name used for the TUN self-test: its fake-ip answer is only
-  # reachable through the TUN, so a successful connect proves the TUN carries
-  # packets. It is a domestic name so the test does not depend on the node.
+  # reachable through the TUN. The probe resolves the name to the fake IP, sends a
+  # real HTTP request over the TUN and requires both a final status and the core's
+  # exact-source-port route log, so a DNS-only success is not accepted. It is a
+  # domestic name so the test does not depend on the node.
   # Single source: home/config/cvr-merge.nix asserts it is not fake-ip-filtered.
   tunProbeName = config.my.proxy.tunProbeName;
 
@@ -72,6 +74,7 @@ let
     fake_ip_net = config.my.proxy.fakeIpNet;
     tun_probe_name = tunProbeName;
     expected = {
+      managed-policy = builtins.hashString "sha256" (builtins.toJSON config.my.proxy.managedProfile);
       routing-mark = m.mihomoMark;
       mixed-port = port.mihomoMixed;
       port = 0;
@@ -96,6 +99,13 @@ let
           ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6);
         route-address-set = [ ];
         route-exclude-address-set = [ ];
+        route-address = [ ];
+        include-interface = [ ];
+        exclude-interface = [ ];
+        include-uid = [ ];
+        exclude-uid = [ ];
+        include-uid-range = [ ];
+        exclude-uid-range = [ ];
       };
     };
   });
@@ -307,6 +317,7 @@ flush chain inet lf_filter proxymode_tail
 flush chain inet lf_filter proxymode_forward
 flush chain inet lf_filter lf_blocked_guard
 flush chain inet lf_filter lf_guest_guard
+flush set inet lf_filter dns_plaintext4
 ${lib.optionalString (config.my.proxy.transparentGuestInterfaces != [ ]) "flush chain ip lf_mangle proxymode_tproxy"}
 NFT_OFF
     }
@@ -621,6 +632,7 @@ NFT_OFF
       if [ "$ok" = "1" ]; then
         fails=0
         pass_verified=1
+        verified_version=$(read_version)
       else
         # A successful fragment transaction is not proof of a complete policy.
         if [ "$mode" != unenforced ]; then
@@ -651,6 +663,7 @@ NFT_OFF
           exit 1
         fi
         publish_state
+        ${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear nftables.service
         unlock_state
         request_wake
         $SYSTEMCTL kill -s WINCH --kill-whom=main proxy-mode.service 2>/dev/null || true
@@ -678,11 +691,17 @@ NFT_OFF
       pass_rc=$?
       [ "$once" = "1" ] && exit "$pass_rc"
       if [ "$pass_verified" = 1 ]; then
+        lock_state
+        if [ "$(read_version)" != "$verified_version" ]; then
+          unlock_state
+          continue
+        fi
         read -r monotonic _ < /proc/uptime
         $JQ -n --argjson monotonic "$monotonic" --arg mode "$mode" \
           --argjson version "$(read_version)" \
           '{monotonic_seconds:$monotonic,mode:$mode,policy_version:$version}' > /run/proxy-mode/heartbeat.json.$$
         mv -f /run/proxy-mode/heartbeat.json.$$ /run/proxy-mode/heartbeat.json
+        unlock_state
         if [ -n "''${NOTIFY_SOCKET:-}" ]; then
           if [ "$ready_sent" = 0 ]; then
             ${pkgs.systemd}/bin/systemd-notify --ready --status="Policy verified: $mode"
@@ -710,7 +729,7 @@ NFT_OFF
 
   proxyControl = pkgs.writeShellApplication {
     name = "proxy-control";
-    runtimeInputs = [ pkgs.coreutils pkgs.systemd pkgs.jq pkgs.util-linux ];
+    runtimeInputs = [ pkgs.coreutils pkgs.systemd pkgs.jq pkgs.util-linux pkgs.python3 ];
     text = ''
       case "''${1:-}" in
         on|off)
@@ -733,29 +752,21 @@ NFT_OFF
           fi
           systemctl start --no-block proxy-net-wake.service
           ;;
+        status)
+          ${pkgs.python3}/bin/python3 ${./netsec/state.py} "''${2:-proxy}" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} || true
+          ;;
         wait)
           target="''${2:-proxy}"
           case "$target" in proxy|direct) ;; *) exit 2 ;; esac
           for ((attempt=0; attempt<90; attempt++)); do
-            state=$(cat /run/proxy-mode/state.json 2>/dev/null || echo '{}')
-            mode=$(printf '%s' "$state" | jq -r '.mode // "unknown"')
-            version=$(printf '%s' "$state" | jq -r '.policy_version // .version // -1')
-            verification=$(cat /run/netsec/state.json 2>/dev/null || echo '{}')
-            relay=$(cat /run/gost-relay/status 2>/dev/null || true)
-            dns=$(cat /run/dns-upstream/status 2>/dev/null || true)
-            if [ "$mode" = "$target" ] && [ "$relay" = "$target" ]; then
-              if { [ "$target" = proxy ] && [ "$dns" = proxy ] \
-                   && [ "$(printf '%s' "$verification" | jq -r '.result')" = ok ] \
-                   && [ "$(printf '%s' "$verification" | jq -r '.version')" = "$version" ] \
-                   && [ ! -e /run/netsec/failed ]; } \
-                 || { [ "$target" = direct ] && [[ "$dns" == dot || "$dns" == *plaintext ]]; }; then
-                echo "Proxy ready: $target"
-                exit 0
-              fi
+            if ${pkgs.python3}/bin/python3 ${./netsec/state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} >/dev/null; then
+              echo "Proxy ready: $target"
+              exit 0
             fi
             sleep 1
           done
-          echo "Still waiting: mode=$mode relay=$relay dns=$dns" >&2
+          echo "Still waiting for current, verified $target policy and consumers" >&2
+          ${pkgs.python3}/bin/python3 ${./netsec/state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} || true
           cat /run/proxy-mode/reason /run/dns-upstream/reason 2>/dev/null || true
           exit 1
           ;;
@@ -829,10 +840,11 @@ in
         # survive so a core that crashes after a proxy-mode restart is still read
         # as a crash (block), not as a fresh boot (direct).
         RuntimeDirectoryPreserve = true;
-        ReadWritePaths = [ "/run/netsec/requests" ];
+        ReadWritePaths = [ "/run/netsec" ];
         # The loop synchronizes before its first sleep; nftables has already
         # atomically installed the initial safe mode.
         ExecStart = modeScript;
+        ExecStartPost = "${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear proxy-mode.service";
         Restart = "always";
         RestartSec = "5";
 

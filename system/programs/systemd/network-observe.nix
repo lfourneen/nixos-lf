@@ -12,7 +12,7 @@ let
 in
 {
   environment.systemPackages = [ (pkgs.writeShellScriptBin "proxy-inspect" ''
-    exec ${pkgs.python3}/bin/python3 ${./netsec/inspect.py} ${settings}
+    exec ${pkgs.python3}/bin/python3 ${./netsec/inspect.py} ${settings} "$@"
   '') ];
   systemd.services.clash-verge.serviceConfig = { CPUAccounting = true; MemoryAccounting = true; };
   systemd.services.gost-relay.serviceConfig = { CPUAccounting = true; MemoryAccounting = true; };

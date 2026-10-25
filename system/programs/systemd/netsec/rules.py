@@ -9,6 +9,21 @@ import sys
 TABLES = {"lf_filter", "lf_nat", "lf_mangle", "lf_proxymode_nat"}
 DYNAMIC_CHAINS = {"proxymode_drops", "proxymode_tail", "proxymode_forward",
                   "lf_blocked_guard", "lf_guest_guard", "proxymode_tproxy"}
+LEASE_SETS = {"dns_plaintext4": 4, "dns_split4": 4, "dns_split6": 6}
+
+
+def lease_set(obj):
+    """Ignore only bounded address leases, never their set/rule definitions."""
+    value = dict(obj)
+    for element in value.pop("elem", []):
+        data = element.get("elem", {}) if isinstance(element, dict) else {}
+        address = ipaddress.ip_address(data.get("val", ""))
+        if address.version != LEASE_SETS[obj["name"]] or address.is_multicast or address.is_unspecified:
+            raise ValueError("invalid DNS lease address")
+        timeout, expires = data.get("timeout", 0), data.get("expires", 0)
+        if not (0 < timeout <= 120000 and 0 <= expires <= timeout):
+            raise ValueError("unbounded DNS lease")
+    return value
 
 # `nft -e` echoes the applied object with the protocol as its number, while
 # `nft -j list ruleset` prints the name. Canonicalise both to the number so the
@@ -82,6 +97,8 @@ def policy(document):
         if kind == "rule":
             bucket["rules"].setdefault(obj["chain"], []).append(normalize(obj))
         else:
+            if kind == "set" and key == ("inet", "lf_filter") and obj.get("name") in LEASE_SETS:
+                obj = lease_set(obj)
             bucket["objects"][(kind, obj.get("name", ""))] = normalize(obj)
     if ("inet", "lf_filter") not in tables:
         raise ValueError("inet lf_filter is missing")

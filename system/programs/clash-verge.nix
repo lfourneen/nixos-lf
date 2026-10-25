@@ -3,6 +3,15 @@
 {
   # Service Mode: core runs as root, which `proxyKillSwitch` in network.nix
   # relies on. After rebuild, turn on "Service Mode" in the Clash Verge GUI.
+  #
+  # Two source-level changes ride on the pinned core and both fail loudly:
+  #   * patch_mihomo.py replaces exact anchors and refuses any anchor count != 1;
+  #   * the sing-tun patch below fails if its context is missing or it is
+  #     already applied. Delete it once the vendored sing-tun contains 7954dd6.
+  # Re-check both on every mihomo/nixpkgs bump. The managed policy is ours
+  # (upstream has no equivalent): keep it unless the core or Verge grows a final
+  # config validator, or A06 enforcement is deliberately dropped -- in which
+  # case also remove the managed-policy expectation in proxy-mode.nix.
   programs.clash-verge = {
     enable = true;
     package = pkgs.unstable.clash-verge-rev.override {
@@ -12,7 +21,15 @@
       # same key twice, which the kernel rejects with EEXIST ("auto redirect:
       # file exists"), so TUN never comes up.
       mihomo = pkgs.unstable.mihomo.overrideAttrs (old: {
+        doCheck = true;
+        checkPhase = ''
+          runHook preCheck
+          export LF_MANAGED_TEST_POLICY=${pkgs.writeText "mihomo-managed-test-policy.json" (builtins.toJSON config.my.proxy.managedProfile)}
+          go test -mod=vendor ./config -run '^TestLFManaged' -count=1
+          runHook postCheck
+        '';
         postConfigure = (old.postConfigure or "") + ''
+          ${pkgs.python3}/bin/python3 ${./systemd/netsec}/patch_mihomo.py .
           chmod -R u+w vendor/github.com/metacubex/sing-tun
           patch -p1 -d vendor/github.com/metacubex/sing-tun \
             < ${pkgs.fetchurl {
@@ -38,6 +55,8 @@
   # Keep the managed dual-stack TUN present even when the core starts on an
   # IPv4-only uplink. The helper's spawned core inherits this environment.
   systemd.services.clash-verge.environment = lib.optionalAttrs
-    (config.networking.enableIPv6 && config.my.proxy.tunMode) { SKIP_SYSTEM_IPV6_CHECK = "1"; };
+    (config.networking.enableIPv6 && config.my.proxy.tunMode) { SKIP_SYSTEM_IPV6_CHECK = "1"; }
+    // { LF_MANAGED_PROXY_POLICY = pkgs.writeText "mihomo-managed-policy.json"
+      (builtins.toJSON config.my.proxy.managedProfile); };
 }
 

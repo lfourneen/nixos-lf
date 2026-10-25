@@ -1,0 +1,77 @@
+package config
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestLFManagedPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(path, []byte(`{"listeners":[],"tunnels":[],"dns.listen":"127.0.0.1:1053","tun.include-uid":[],"tun.stack":"mixed"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	valid := map[string]any{"dns": map[string]any{"listen": "127.0.0.1:1053"}, "tun": map[string]any{"stack": "Mixed"}}
+	if id, err := lfValidate(valid, false); err != nil || len(id) != 64 {
+		t.Fatalf("valid: %s %v", id, err)
+	}
+	for key, value := range map[string]any{"listeners": []any{map[string]any{"type": "http", "port": 18080}}, "tunnels": []any{"tcp/80"}} {
+		bad := map[string]any{key: value}
+		if _, err := lfValidate(bad, true); err == nil {
+			t.Fatalf("accepted extra %s", key)
+		}
+	}
+	if err := ValidateManagedPatch(map[string]any{"dns": map[string]any{"listen": "0.0.0.0:53"}}); err == nil {
+		t.Fatal("accepted DNS drift")
+	}
+	if err := ValidateManagedPatch(map[string]any{"tun": map[string]any{"include-uid": []any{float64(1234)}}}); err == nil {
+		t.Fatal("accepted route drift")
+	}
+	if err := ValidateManagedPatch(map[string]any{"mode": "global"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLFManagedNixConfig(t *testing.T) {
+	path := os.Getenv("LF_MANAGED_TEST_POLICY")
+	if path == "" {
+		t.Skip("Nix integration policy not supplied")
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	policy, _, err := lfManagedPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := map[string]any{}
+	for key, value := range policy {
+		parts := strings.Split(key, ".")
+		object := document
+		for _, part := range parts[:len(parts)-1] {
+			child, ok := object[part].(map[string]any)
+			if !ok {
+				child = map[string]any{}
+				object[part] = child
+			}
+			object = child
+		}
+		object[parts[len(parts)-1]] = value
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := UnmarshalRawConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = lfValidateRaw(raw); err != nil {
+		t.Fatal(err)
+	}
+	raw.Listeners = []map[string]any{{"type": "http", "port": 18080}}
+	if _, err = lfValidateRaw(raw); err == nil {
+		t.Fatal("final RawConfig accepted extra listener")
+	}
+}

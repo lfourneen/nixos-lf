@@ -210,7 +210,6 @@ in
       let why = $state.reason
       let verification = (try { open /run/netsec/state.json } catch { {result: unknown, version: -2} })
       let verified = $verification.result
-      let verified_version = ($verification.version | into string)
       let alarm = ("/run/netsec/failed" | path exists)
       # ${gostHttp} = gost's HTTP listener (the port every proxy-aware consumer uses).
       let listener = (try {
@@ -222,7 +221,8 @@ in
       } catch { "000" })
       # Green only when the enforcement mode itself is `proxy`: a healthy-looking
       # gost with mode `blocked`/`unenforced` must not read as OK.
-      let ok = (($p == "proxy") and ($g == "proxy") and ($d == "proxy") and $listener and ($probe == "204") and ($verified == "ok") and ($verified_version == ($state.version | into string)) and (not $alarm))
+      let coherent = (try { proxy-control status proxy | from json | get ready } catch { false })
+      let ok = ($coherent and $listener and ($probe == "204"))
       let color = if $ok { "green" } else { "red" }
       let r = (if ($why | is-empty) { "-" } else { $why })
       print $"(ansi $color)mode: ($p) ($r)(ansi reset)  egress: ($g)  DNS: ($d)  verify: ($verified)  alarm: ($alarm)  listener: (if $listener { 'up' } else { 'down' })  probe: ($probe)"

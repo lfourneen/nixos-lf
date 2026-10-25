@@ -1,14 +1,17 @@
 """Bounded, cancellable Mihomo health probe. Never changes the core configuration."""
 
 import hashlib
+import http.client
 import ipaddress
 import json
 from pathlib import Path
 import re
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from urllib.parse import quote, urlsplit
 
@@ -23,14 +26,16 @@ def config_view(config):
     """Only invariant fields; never persist subscriptions, credentials or nodes."""
     view = {key: config.get(key) for key in (
         "mode", "routing-mark", "mixed-port", "port", "socks-port", "redir-port",
-        "tproxy-port", "allow-lan", "ipv6", "log-level")}
+        "tproxy-port", "allow-lan", "ipv6", "log-level", "managed-policy")}
     tun = config.get("tun") or {}
     view["tun"] = {key: tun.get(key) for key in (
         "enable", "device", "stack", "auto-route", "auto-redirect", "strict-route",
         "mtu", "iproute2-table-index")}
     view["tun"]["stack"] = str(tun.get("stack", "")).lower()
     for key in ("route-exclude-address", "inet6-address", "dns-hijack",
-                "route-address-set", "route-exclude-address-set"):
+                "route-address-set", "route-exclude-address-set", "route-address",
+                "include-interface", "exclude-interface", "include-uid", "exclude-uid",
+                "include-uid-range", "exclude-uid-range"):
         view["tun"][key] = sorted(tun.get(key) or [])
     return view
 
@@ -104,22 +109,47 @@ class Probe:
 
     def command(self, argv, maximum=2.5):
         duration = self.remaining(maximum)
+        self.last_error = ""
         try:
             result = subprocess.run(argv, capture_output=True, text=True,
                                     timeout=duration, check=False)
-            return result.stdout if result.returncode == 0 else ""
-        except (OSError, subprocess.TimeoutExpired):
+            if result.returncode == 0:
+                return result.stdout
+            self.last_error = (result.stderr or result.stdout or "").strip()[:160]
+            return ""
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self.last_error = f"{type(error).__name__}: {error}"[:160]
             return ""
 
     def api(self, path, maximum=1.0):
         duration = self.remaining(maximum)
-        value = self.command([self.settings["curl"], "--noproxy", "*", "-sS",
-                              "--max-time", str(duration), "--unix-socket",
-                              self.settings["socket"], "http://localhost" + path], duration)
+        connection = http.client.HTTPConnection("localhost", timeout=duration)
+        timer = None
         try:
+            connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connection.sock.settimeout(duration)
+            connection.sock.connect(self.settings["socket"])
+            transport = connection.sock
+            def expire():
+                try:
+                    transport.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            timer = threading.Timer(self.remaining(duration), expire)
+            timer.daemon = True
+            timer.start()
+            connection.request("GET", path)
+            response = connection.getresponse()
+            value = response.read(8 * 1024 * 1024 + 1)
+            if len(value) > 8 * 1024 * 1024:
+                raise ValueError("controller response too large")
             return json.loads(value)
-        except ValueError:
+        except (OSError, ValueError, http.client.HTTPException):
             raise ProbeFailure("obs", "controller reply unavailable or invalid") from None
+        finally:
+            if timer is not None:
+                timer.cancel()
+            connection.close()
 
     def timed(self, name, callback):
         start = self.clock()
@@ -128,7 +158,7 @@ class Probe:
         finally:
             self.timings[name] = round((self.clock() - start) * 1000)
 
-    def tun_test(self):
+    def tun_test(self, log_path=None):
         if not self.settings["require_tun"]:
             return
         dig, name = self.settings["dig"], self.settings["tun_probe_name"]
@@ -149,6 +179,31 @@ class Probe:
         if not self.command([dig, "+time=1", "+tries=1", "+short", "@" + fake_ip,
                              "-p", "53", name, "A"], 1.5).strip():
             raise ProbeFailure("tun", "TUN DNS self-test did not answer")
+        # A root fake-IP TCP flow is excluded from gost's REDIRECT. It exercises
+        # the core's effective TUN/auto-redirect data path as well as DNS hijack.
+        output = self.command([self.settings["curl"], "--noproxy", "*", "--head", "-sS",
+                               "-o", "/dev/null", "--max-time", "2.5", "--max-filesize", "1048576",
+                               "--local-port", "15110-15190", "--resolve", name + ":80:" + fake_ip,
+                               "-w", "%{http_code} %{local_port}", "http://" + name + "/"], 2.7)
+        fields = output.split()
+        if len(fields) != 2 or fields[0] not in {"200", "204", "301", "302", "307", "308"} \
+                or not fields[1].isdigit():
+            detail = getattr(self, "last_error", "") or output.strip()[:120] or "empty reply"
+            raise ProbeFailure("obs", f"fake-IP TCP probe failed for {fake_ip}: {detail}")
+        if log_path is None:
+            raise ProbeFailure("obs", "TUN data probe has no route observation")
+        pattern = re.compile(r":" + re.escape(fields[1]) + r" --> " + re.escape(name) + r":80(?:\s|$)")
+        until = self.clock() + self.remaining(0.6)
+        while self.clock() < until:
+            for line in log_path.read_text(errors="replace").splitlines():
+                try:
+                    payload = json.loads(line).get("payload", "")
+                except (ValueError, AttributeError):
+                    continue
+                if isinstance(payload, str) and pattern.search(payload) and "using " in payload:
+                    return
+            time.sleep(0.05)
+        raise ProbeFailure("obs", f"fake-IP TCP probe for {fake_ip}:{fields[1]} has no exact-source route log")
 
     def target(self, url, log_path):
         host = urlsplit(url).hostname
@@ -206,7 +261,7 @@ class Probe:
                         failures.append(error)
                 else:
                     raise next((e for e in failures if e.layer == "node"), failures[-1])
-                self.timed("tun", self.tun_test)
+                self.timed("tun", lambda: self.tun_test(log_path))
                 final = check_config(self.api("/configs"), self.settings)
                 if final != fingerprint:
                     raise ProbeFailure("obs", "configuration changed during the probe")

@@ -1,4 +1,4 @@
-{ pkgs, config, ... }:
+{ pkgs, config, lib, ... }:
 
 let
   m = config.my.machine;
@@ -37,8 +37,19 @@ in
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      ExecStart = "${pkgs.nftables}/bin/nft -f ${bootstrap}";
-      TimeoutStartSec = "10s";
+      ExecStart = pkgs.writeShellScript "network-firewall-bootstrap" ''
+        set -eu
+        ${pkgs.nftables}/bin/nft -f ${bootstrap}
+        ${lib.optionalString (config.my.proxy.bootMode == "proxy") ''
+        mkdir -p /run/proxy-mode
+        if [ ! -e /run/proxy-mode/intent ]; then
+          printf 'proxy\n' > /run/proxy-mode/intent
+        fi
+        ${config.my.proxy.modeScript} --reload
+        ''}
+      '';
+      TimeoutStartSec = "30s";
+      ExecStartPost = "${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear network-firewall-bootstrap.service";
       # No ExecStop: stopping an owner must never tear down protection.
     };
   };

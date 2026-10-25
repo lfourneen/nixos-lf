@@ -15,6 +15,16 @@
       default = true;
       description = "Allow the existing desktop-service port list from libvirt guests; disable for untrusted guests.";
     };
+    guestTcpPorts = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "53317" "3389" "5900" "47984" "47989" "47990" "48010" "25565" ];
+      description = "Explicit desktop TCP services available to libvirt guests.";
+    };
+    guestUdpPorts = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "5353" "53317" "47998-48010" ];
+      description = "Explicit desktop UDP services available to libvirt guests.";
+    };
 
     externalDns = lib.mkOption {
       type = lib.types.bool;
@@ -26,14 +36,12 @@
       type = lib.types.bool;
       default = false;
       description = ''
-        Share the wired uplink over the wireless interface: the AP DHCP/DNS/
+        Share the wired uplink over my.machine.hotspot.interface (ap0): AP DHCP/DNS/
         host-service accepts and the guest forward + masquerade path.
 
-        Off by default because those accepts match on the source subnet, which a
-        peer on the same L2 can spoof while the interface is a client of a foreign
-        network; the host-service accepts additionally require the AP address as
-        destination. No hotspot configuration exists in this repo, so the default
-        removes no working feature.
+        The AP interface must be distinct from both physical uplinks, so a Wi-Fi
+        client is never treated as guest ingress. Create/configure that AP
+        interface explicitly; this switch installs its firewall role only.
       '';
     };
 

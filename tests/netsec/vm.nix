@@ -8,6 +8,7 @@ pkgs.testers.runNixOSTest {
       ../../system/config/machine.nix
       ../../system/config/hardening-options.nix
       ../../system/config/proxy-options.nix
+      ../../system/config/proxy-profile.nix
       ../../system/config/network.nix
       ../../system/programs/systemd/proxy-mode.nix
       ../../system/programs/systemd/dns-upstream.nix
@@ -40,7 +41,15 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-mode-c.nft".text = config.my.proxy.blockedModeRules;
     environment.etc."netsec-mode-script".source = config.my.proxy.modeScript;
     environment.etc."netsec-tproxy.py".source = ./tproxy_fixture.py;
-    environment.systemPackages = [ pkgs.curl pkgs.python3 pkgs.jq pkgs.iproute2 pkgs.nftables ];
+    environment.etc."netsec-dns.py".source = ./dns_fixture.py;
+    environment.etc."guest-dhcpcd.conf".text = ''
+      nohook resolv.conf
+      nohook ntp.conf
+      nohook hostname
+      noipv4ll
+    '';
+    environment.systemPackages = [ pkgs.curl pkgs.python3 pkgs.jq pkgs.iproute2 pkgs.nftables
+      pkgs.dnsmasq pkgs.dhcpcd pkgs.dnsutils ];
     virtualisation.memorySize = 1536;
   };
   testScript = ''
@@ -67,19 +76,57 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
 
     # Freeze the supervisor only inside the VM to test packet policy fragments.
-    machine.succeed("systemctl stop nftables-verify-pending.path nftables-verify.timer nftables-verify.service proxy-mode.service; systemctl mask --runtime proxy-mode.service")
+    machine.succeed("systemctl stop nftables-verify-pending.path nftables-verify.timer nftables-verify.service proxy-mode.service dns-upstream.service; systemctl mask --runtime proxy-mode.service")
     machine.succeed("ip netns exec outside sh -c 'python3 -m http.server 8080 --bind 0.0.0.0 >/tmp/outside-http.log 2>&1 &'")
     machine.wait_until_succeeds("curl --noproxy '*' -fsS --connect-timeout 1 http://203.0.113.10:8080 >/dev/null")
     machine.succeed("ip link add virbr0 type bridge; ip addr add 192.168.122.1/24 dev virbr0; ip link set virbr0 up")
     machine.succeed("ip netns add guest; ip link add guest-host type veth peer name guest0; ip link set guest-host master virbr0; ip link set guest-host up; ip link set guest0 netns guest")
-    machine.succeed("ip -n guest addr add 192.168.122.2/24 dev guest0; ip -n guest link set guest0 up; ip -n guest link set lo up; ip -n guest route add default via 192.168.122.1")
+    machine.succeed("ip -n guest link set guest0 up; ip -n guest link set lo up")
+    machine.succeed("systemd-run --unit=guest-dhcp-fixture /run/current-system/sw/bin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file=/run/guest-fixture.pid --bind-dynamic --interface=virbr0 --except-interface=lo --listen-address=192.168.122.1 --no-resolv --no-hosts --dhcp-range=192.168.122.10,192.168.122.20,1h --address=/fixture.test/192.0.2.10")
+    machine.wait_until_succeeds("ss -uln | grep -q 192.168.122.1:53")
+    machine.succeed("ip netns exec guest dhcpcd -B -1 -4 -t 10 --config /etc/guest-dhcpcd.conf guest0")
+    machine.succeed("ip -n guest -4 addr show dev guest0 | grep -q 192.168.122.")
+    machine.succeed("ip netns exec guest dig +time=1 +tries=1 @192.168.122.1 fixture.test A +short | grep -qx 192.0.2.10")
+    machine.succeed("ip netns exec guest dig +tcp +time=1 +tries=1 @192.168.122.1 fixture.test A +short | grep -qx 192.0.2.10")
+    machine.succeed("ip -n guest addr flush dev guest0; ip -n guest addr add 192.168.122.2/24 dev guest0; ip -n guest route replace default via 192.168.122.1")
+
+    # A DNS permission expires even while its controller is stopped. Both the
+    # socket UID and the private destination are real kernel facts in this VM.
+    machine.succeed("ip netns exec outside sh -c 'python3 /etc/netsec-dns.py server 53 >/tmp/dns-peer.log 2>&1 &'")
+    machine.wait_until_succeeds("ip netns exec outside ss -uln | grep -q ':53 '")
+    machine.fail("python3 /etc/netsec-dns.py query 100.67.0.1 --uid 985")
+    machine.succeed("python3 /etc/netsec-dns.py lease 100.67.0.1 3; systemctl start dns-policy.service")
+    machine.succeed("python3 /etc/netsec-dns.py query 100.67.0.1 --uid 985")
+    machine.sleep(4)
+    machine.fail("python3 /etc/netsec-dns.py query 100.67.0.1 --uid 985")
+    machine.succeed("python3 /etc/netsec-dns.py lease 100.67.0.1 120; systemctl start dns-policy.service")
+
+    # Wi-Fi is an uplink, including for global v4/v6 replies. A marked fixture
+    # models the core's transport without depending on an internet node. The v6
+    # prefix must not overlap the test driver's own vlan network (2001:db8:1::/64).
+    machine.succeed("ip link add wlo1 type veth peer name wifi-peer; ip link set wifi-peer netns outside; ip link set wlo1 up")
+    machine.succeed("ip addr add 198.51.100.2/24 dev wlo1; ip -6 addr add 2001:db8:dead::2/64 dev wlo1 nodad")
+    machine.succeed("ip -n outside link set wifi-peer up; ip -n outside addr add 198.51.100.1/24 dev wifi-peer; ip -n outside -6 addr add 2001:db8:dead::1/64 dev wifi-peer nodad")
+    machine.succeed("ip netns exec outside sh -c 'python3 /etc/netsec-dns.py server 15353 >/tmp/wifi-peer.log 2>&1 &'")
+    machine.wait_until_succeeds("python3 /etc/netsec-dns.py query 198.51.100.1 15353 --mark 6666")
+    machine.succeed("python3 /etc/netsec-dns.py query 2001:db8:dead::1 15353 --mark 6666")
     machine.wait_until_succeeds("ip netns exec guest curl --noproxy '*' -fsS --connect-timeout 1 http://203.0.113.10:8080 >/dev/null")
     machine.succeed("nft -f /etc/netsec-mode-b.nft")
+    machine.succeed("ip netns exec guest dig +time=1 +tries=1 @192.168.122.1 fixture.test A +short | grep -qx 192.0.2.10")
+    machine.succeed("ip netns exec guest dig +tcp +time=1 +tries=1 @192.168.122.1 fixture.test A +short | grep -qx 192.0.2.10")
+    machine.fail("python3 /etc/netsec-dns.py query 100.67.0.1 --uid 985")
+    machine.succeed("python3 /etc/netsec-dns.py query 198.51.100.1 15353 --mark 6666")
+    machine.succeed("python3 /etc/netsec-dns.py query 2001:db8:dead::1 15353 --mark 6666")
     machine.succeed("systemd-run --unit=netsec-tproxy /run/current-system/sw/bin/python3 /etc/netsec-tproxy.py server")
     machine.wait_until_succeeds("ip netns exec guest curl --noproxy '*' -fsS --connect-timeout 1 http://203.0.113.10:8080 | grep -qx OK")
     machine.succeed("systemd-run --unit=netsec-guest ip netns exec guest /run/current-system/sw/bin/python3 /etc/netsec-tproxy.py client")
     machine.wait_until_succeeds("test -e /tmp/guest-ready")
     machine.succeed("nft -f /etc/netsec-mode-c.nft")
+    machine.succeed("ip netns exec guest dig +time=1 +tries=1 @192.168.122.1 fixture.test A +short | grep -qx 192.0.2.10")
+    # TCP DNS replies come from the accepted socket, whose sk_uid is the
+    # dropped dnsmasq uid: the reply rules must not be uid-scoped.
+    machine.succeed("ip netns exec guest dig +tcp +time=1 +tries=1 @192.168.122.1 fixture.test A +short | grep -qx 192.0.2.10")
+    machine.succeed("python3 /etc/netsec-dns.py query 2001:db8:dead::1 15353 --mark 6666")
     machine.succeed("touch /tmp/guest-next")
     machine.wait_until_succeeds("grep -qx blocked /tmp/guest-result")
     machine.fail("ip netns exec guest curl --noproxy '*' -fsS --connect-timeout 1 http://203.0.113.10:8080 >/dev/null")
