@@ -260,10 +260,10 @@ in
         };
 
         # Large-PDF chunked search (bundles tesseract for scanned pages).
-        pdf = {
-          command = "${lib.getExe pkgs.unstable.pdf-mcp}";
-          args = [ ];
-        };
+        # pdf = {
+        #   command = "${lib.getExe pkgs.unstable.pdf-mcp}";
+        #   args = [ ];
+        # };
 
         # Knowledge-graph memory (complements the holographic memory plugin).
         memory = {
