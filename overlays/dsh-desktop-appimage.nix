@@ -2,7 +2,7 @@
 
 let
   pname = "dsh-desktop";
-  version = "2.0.19";
+  version = "2.0.20";
 
   # Upstream publishes a type-2 AppImage for Linux. The AppDir keeps the
   # Electron tree at its root (AppRun + dsh-desktop-next + resources) and adds
@@ -10,35 +10,6 @@ let
   # packed into resources/app.asar, with native addons (and anything the Host
   # child process must read) beside it in resources/app.asar.unpacked.
   src = ./local-apps/DSH-NEXT-${version}-next-x86_64.AppImage;
-
-  # Rename glib symbols inside sharp's prebuilt libvips and its Node binding.
-  #
-  # libvips statically links glib and exports its g_* symbols. Electron links
-  # the system glib and leaks it into the process space, so sharp.node resolves
-  # g_malloc/g_object_ref/... to Electron's glib instead of the copy libvips was
-  # built against; g_object_unref on a libvips GObject then aborts the process
-  # (electron#46323, sharp#4525). @janhapke/sharp-electron fixes this by
-  # renaming those symbols at link time, but that rebuild only exists for sharp
-  # 0.35.4 while DSH bundles 0.35.5. Renaming post-link keeps the bundled
-  # version and cannot drift out of sync with it.
-  renameGlib = pkgs.writeText "dsh-desktop-rename-glib.py" ''
-    import sys
-
-    import lief
-
-    path = sys.argv[1]
-    binary = lief.parse(path)
-    renamed = 0
-    for symbol in binary.dynamic_symbols:
-        if symbol.name.startswith("g_"):
-            symbol.name = "vips_" + symbol.name
-            renamed += 1
-    if renamed == 0:
-        raise SystemExit(f"dsh-desktop: no glib symbols to rename in {path}")
-    binary.write(path)
-  '';
-
-  renamePython = pkgs.python3.withPackages (ps: [ ps.lief ]);
 
   # Single unpack, reused as the runtime tree plus the desktop entry and icons.
   # postExtract patches vendor bugs (see inline notes); `--replace-fail` is
@@ -52,7 +23,14 @@ let
 
       # asar extract also folds app.asar.unpacked back into the tree, which is
       # what the patches below need; the repack at the end recreates the split.
+      # It copies file bytes only, so the executable bits upstream ships
+      # (landlock-run, pnpm's node-gyp shims, ripgrep, ...) are lost; record
+      # them from the original mirror and re-apply below before repacking.
+      find "$appRoot/app.asar.unpacked" -type f -perm -u+x -printf '%P\0' > "$TMPDIR/exec-files"
       ${pkgs.asar}/bin/asar extract "$appRoot/app.asar" "$app"
+      while IFS= read -r -d "" execFile; do
+        chmod +x "$app/$execFile"
+      done < "$TMPDIR/exec-files"
 
       # The Linux/macOS build installs a native application menu (the
       # "DSH NEXT / Edit / View / Window" bar) that eats a strip of the window.
@@ -83,6 +61,8 @@ let
       # The inner `pnpm install` pnpm runs for a git dependency falls back to
       # npm and auto-installs host-provided peers (404). Force pnpm and disable
       # autoInstallPeers, which the profile's own setting does not reach there.
+      # pnpm 11.28.5 (bundled since 2.0.20) still has both shapes, but its
+      # prepare-package block is indented with two spaces now.
       substituteInPlace "$app/node_modules/pnpm/dist/pnpm.mjs" \
         --replace-fail \
         '  const pm2 = (await preferredPM(gitRootDir))?.name ?? "npm";' \
@@ -90,47 +70,18 @@ let
 
       substituteInPlace "$app/node_modules/pnpm/dist/pnpm.mjs" \
         --replace-fail \
-        '    manifest.scripts[installScriptName] = `''${pm2} install`;' \
-        '    manifest.scripts[installScriptName] = `''${pm2} install''${pm2 === "pnpm" ? " --config.auto-install-peers=false" : ""}`;'
+        '  manifest.scripts[installScriptName] = `''${pm2} install`;' \
+        '  manifest.scripts[installScriptName] = `''${pm2} install''${pm2 === "pnpm" ? " --config.auto-install-peers=false" : ""}`;'
 
-      # Rename the glib symbols on both sides of sharp's native boundary.
-      # Only the linux-x64 packages are touched; the arm64 copies are unused.
-      #
-      # LIEF can segfault after it has written the new file, so its exit status
-      # is not trusted: the symbol table and a real decode below are the actual
-      # checks.
-      vipsLib=$(echo "$app"/node_modules/@img/sharp-libvips-linux-x64/lib/libvips-cpp.so.*)
-      sharpNode=$(echo "$app"/node_modules/@img/sharp-linux-x64/lib/sharp-linux-x64-*.node)
-      ${renamePython}/bin/python3 ${renameGlib} "$vipsLib" || true
-      ${renamePython}/bin/python3 ${renameGlib} "$sharpNode" || true
-
-      for native in "$vipsLib" "$sharpNode"; do
-        # `grep -c` rather than `grep -q`: the builder runs with pipefail, and
-        # `nm | grep -q` can report a spurious failure when grep exits early
-        # and nm is killed by SIGPIPE.
-        glib=$(${pkgs.binutils}/bin/nm -D "$native" | grep -cE '\bg_' || true)
-        renamed=$(${pkgs.binutils}/bin/nm -D "$native" | grep -c 'vips_g_' || true)
-        if [ "$glib" -ne 0 ]; then
-          echo "dsh-desktop: glib symbols survived in $native" >&2
-          exit 1
-        fi
-        if [ "$renamed" -eq 0 ]; then
-          echo "dsh-desktop: renaming glib symbols failed for $native" >&2
-          exit 1
-        fi
-      done
-
-      # Load the patched addon and decode a real image, so a broken rename can
-      # never reach the packaged output.
-      testPng="$TMPDIR/dsh-desktop-sharp-test.png"
-      ${pkgs.imagemagick}/bin/magick -size 8x8 xc:red "$testPng"
-      TEST_SHARP="$app/node_modules/sharp" TEST_PNG="$testPng" \
-        ${pkgs.nodejs}/bin/node -e '
-          const sharp = require(process.env.TEST_SHARP);
-          sharp(process.env.TEST_PNG).resize(4, 4).raw().toBuffer().then(
-            (buffer) => { if (buffer.length !== 48) throw new Error("unexpected byte length " + buffer.length); },
-          ).catch((error) => { console.error(error); process.exit(1); });
-        '
+      # Since 2.0.20 Linux runs sharp on the WebAssembly build
+      # (@img/sharp-wasm32) instead of native libvips, which is what removed the
+      # Electron GLib symbol clash that used to need a post-link rename here.
+      # Fail loudly if upstream ever flips back to the native package, so the
+      # workaround cannot go missing silently.
+      if [ ! -d "$app/node_modules/@img/sharp-wasm32" ]; then
+        echo "dsh-desktop: sharp is no longer the WebAssembly build; revisit the removed glib rename workaround" >&2
+        exit 1
+      fi
 
       # Repack. node_modules/assets/build/scripts stay unpacked: the Host runs
       # in a child process that cannot read app.asar, and nativeImage needs real
@@ -139,6 +90,25 @@ let
       ${pkgs.asar}/bin/asar pack "$app" "$appRoot/app.asar" \
         --unpack-dir "{node_modules,assets,build,scripts}"
       rm -rf "$app"
+
+      # 2.0.20's local sandbox spawns landlock-run as a real executable. If the
+      # repack leaves it inside app.asar the spawn fails and every sandbox probe
+      # reports the launcher unusable, so keep an explicit check on the mirror.
+      landlockRun="$appRoot/app.asar.unpacked/node_modules/@deepseek-ai/node-addon-system-linux-x64/bin/landlock-run"
+      if [ ! -x "$landlockRun" ]; then
+        echo "dsh-desktop: landlock-run missing or not executable after repack: $landlockRun" >&2
+        exit 1
+      fi
+
+      # Decode a real image through the unpacked WebAssembly sharp, so a repack
+      # that hides the .wasm payload fails here instead of at runtime.
+      ${pkgs.nodejs}/bin/node -e '
+        const sharp = require(process.argv[1]);
+        sharp({ create: { width: 8, height: 8, channels: 3, background: { r: 255, g: 0, b: 0 } } })
+          .resize(4, 4).raw().toBuffer().then((buffer) => {
+            if (buffer.length !== 48) throw new Error("unexpected byte length " + buffer.length);
+          }).catch((error) => { console.error(error); process.exit(1); });
+      ' "$appRoot/app.asar.unpacked/node_modules/sharp"
 
       # The AppImage ships a single 1024x1024 16-bit icon and no other hicolor
       # sizes; derive the standard set (forced 8-bit, as most icon caches
