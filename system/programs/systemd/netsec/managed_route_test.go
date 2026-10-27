@@ -14,7 +14,7 @@ import (
 
 func TestLFManagedPatchHandler(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "policy.json")
-	if err := os.WriteFile(path, []byte(`{"port":0,"mixed-port":7897,"allow-lan":false,"tun.enable":true,"tun.include-uid":[],"tuic-server.enable":false}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"port":0,"mixed-port":7897,"allow-lan":false,"tun.enable":true,"tun.dns-mode":"hijack","tun.include-uid":[],"tuic-server.enable":false}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
@@ -23,6 +23,10 @@ func TestLFManagedPatchHandler(t *testing.T) {
 		`{"mixed-port":7897,"Mixed-Port":18080}`,
 		`{"Tun":{"enable":false}}`, `{"tun":{"Enable":true}}`,
 		`{"tun":{"include-uid":[1000]}}`, `{"tun":{}}`,
+		`{"tun":{"enable":true,"dns-mode":"native"}}`,
+		`{"tun":{"enable":true,"dns-mode":"disabled"}}`,
+		`{"tun":{"enable":true,"dns-mode":""}}`,
+		`{"tun":{"enable":true,"DNS-MODE":"hijack"}}`,
 		`{"tun":{"enable":true,"include-uid":[1000]},"tun":{"enable":true}}`,
 		`{"tuic-server":{"enable":true,"listen":"127.0.0.1:18080"},"tuic-server":{"listen":"127.0.0.1:18080"}}`,
 		`{"port":0,"port":18080}`, `{"port":18080,"port":0}`,
@@ -41,7 +45,7 @@ func TestLFManagedPatchHandler(t *testing.T) {
 			}
 		})
 	}
-	for _, body := range []string{`{}`, `{"mode":"rule","port":null,"tun":null}`, `{"port":0,"allow-lan":false}`} {
+	for _, body := range []string{`{}`, `{"mode":"rule","port":null,"tun":null}`, `{"port":0,"allow-lan":false}`, `{"tun":{"enable":true,"dns-mode":"hijack"}}`} {
 		recorder := httptest.NewRecorder()
 		configRouter().ServeHTTP(recorder, httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(body)))
 		if recorder.Code != http.StatusNoContent {

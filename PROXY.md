@@ -61,7 +61,7 @@ Ports, uids, the packet mark (`6666` → `0x00001a0a`), the TUN device name and 
 * `systemd-resolved` is NetworkManager's pinned resolver and forwards to `dnsmasq :1054`.
 * `dns-upstream` rewrites `/run/dns-upstream/servers.conf` (dnsmasq `servers-file`) and reconciles every pass; a change is applied with a SIGHUP `reload` rather than a restart, and a failed apply stays pending and is retried.
 * Mode B upstream: `mihomo :1053` (fake-ip). Mode A / blocked upstream: `unbound :1055` (DoT to AliDNS).
-* Mihomo DNS settings come from `my.proxy.managedDns`: additional `direct-nameserver` and `proxy-server-nameserver-policy` resolvers are disabled, and the fake-IP filter mode and IPv6 fake-IP range are fixed.
+* Mihomo DNS settings come from `my.proxy.managedDns`: additional `direct-nameserver` and `proxy-server-nameserver-policy` resolvers are disabled, and the fake-IP filter mode and IPv6 fake-IP range are fixed. With TUN enabled, `tun.dns-mode` is explicitly pinned to `hijack` in the profile, parser/PATCH policy and health gate.
 * The static `lf_nat` chains redirect every `:53` leaving an uplink (v4 and v6) into `dnsmasq`, so a hardcoded resolver in a portal/LAN/CGNAT range cannot leave in the clear.
 * Plaintext fallback is a kernel lease, not a coordinator state: `dns-policy` adds the DHCP resolvers to `inet lf_filter dns_plaintext4` with a timeout bounded by the remaining window, and a static `output` base chain (`lf_dns_guard`, priority `-199` → `dns_egress`) drops every other `dnsmasq` upstream query. Stopping, killing or stalling `dns-upstream` therefore cannot keep plaintext DNS permitted past the lease. Split-DNS leases are keyed by interface/server, expire at the original observation plus 120 s and bind the approved UUID, ActiveConnection, ifindex, carrier-down counter and revocation epoch. The dispatcher revokes them at pre-up/pre-down/down; the broker rechecks the connection before granting.
 
@@ -159,7 +159,7 @@ At build time each complete mode (static ruleset plus its fragment) is parsed by
 
 The verdict is atomic in `/run/netsec/state.json`; `/run/netsec/result` (`ok`/`degraded`/`failed`) and `/run/netsec/verified-version` mirror it for compatibility. `nftables-verify-repair.service` rebuilds the owned static policy through the same atomic loader and rechecks; `nftables-recover` retries a failed `nftables.service` once a minute.
 
-### 6.1 Regression checks
+### 6.1 Configuration checks
 
 ```sh
 nix build .#checks.x86_64-linux.proxy-regressions
@@ -170,7 +170,7 @@ nix build .#checks.x86_64-linux.proxy-core
 nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
-Isolated regressions exercise the actual comparison, policy-graph, lease/session and state-publishing functions. `proxy-profile` parses rendered Merge YAML and runs the generated routing script for dual-stack, IPv4, mips, HTTP-only and guest-TPROXY variants. The real-kernel VM covers first-load failure, static drift, guest DHCP/UDP+TCP DNS in A/B/C, TPROXY, established-flow blocking, Wi-Fi private/public IPv4 and global IPv6 replies, kernel DNS-lease expiry while the coordinator is stopped, and overlapping verification requests. The pinned mihomo build runs the managed-policy unit tests (including the Nix-generated policy) as part of its check phase. These checks do not activate the host configuration. Physical Wi-Fi, IPv4-only startup, suspend/resume and node-protocol performance need separate deployment validation. Complete-system builds require normal Git-flake source inclusion and the repository's local application assets.
+These checks validate generated rules, profile variants, core policy and network behavior in isolated environments without activating the host configuration. Complete-system builds require the [local application assets](overlays/local-apps/README.md).
 
 ## 7. Configuration surface
 
@@ -211,6 +211,7 @@ Isolated regressions exercise the actual comparison, policy-graph, lease/session
 | `system/programs/systemd/netsec/state.py` | shared readiness/freshness checks for `proxy-control` and `proxy-status` |
 | `system/programs/systemd/netsec/alerts.py` | per-owner alert records plus the aggregate flag |
 | `system/programs/systemd/netsec/managed_profile*.go`, `managed_route.go`, `patch_mihomo.py` | final-parser and controller-PATCH enforcement of the managed core profile (listeners, tunnels, DNS, TUN routing fields); patched into the pinned mihomo build |
+| `system/programs/systemd/netsec/patch_sing_tun.py`, `patch_socks.py`, `socks_addr_test.go` | nftables interval endpoints, SOCKS address parsing and boundary tests |
 | `system/programs/systemd/netsec/listeners.py` | shared passive TCP/UDP address, UID, cgroup and count checks |
 | `system/programs/systemd/netsec/health.py` | bounded selected-node/TUN proof and API invariants |
 | `system/programs/systemd/netsec/nm_dns.py` | managed Wi-Fi profile DNS reconciliation |
@@ -232,7 +233,7 @@ Isolated regressions exercise the actual comparison, policy-graph, lease/session
 
 * The `:33333` redirect is the only path for TCP that the TUN does not carry (source-/device-bound sockets, and anything after a manual flush); `gost` is a single point of failure for those, and flows reaching it are re-sourced to `127.0.0.1`, so per-source profile rules do not apply. An explicit `connect()` to `:33333` is refused with a TCP RST by the static `redirect_guard` base chain (priority `-201`, before NAT), so it can no longer drive gost's self-loop; the supervisor's self-connected-socket detector remains as a backstop. A transparently redirected flow is untouched because it still carries its real destination when the guard runs.
 * Mode B's dedicated DNS/NTP exceptions allow `unbound` (DoT, tcp/853) and `systemd-timesyncd` (udp/123); the core mark and root-UDP exception also apply. Ordinary application plaintext resolver queries are redirected into `dnsmasq`. Mode A adds DHCP-provided resolvers only within the bounded plaintext window (section 3.2).
-* The kill switch exempts the core by mark rather than a blanket uid-0 allow. DHCP exceptions are pinned to uid 0/`dhcpcd`. Mode B permits **all root UDP** on uplinks to preserve Tailscale arbitrary-port peer/STUN hole punching; this also allows other root UDP. Limiting the port to `41641` degraded Tailscale to DERP (`netcheck` reported `UDP: false`). This is an accepted Mode B compatibility exception, not a root boundary: root can already set the core mark. Mode C cuts unmarked tailnet data.
+* The kill switch exempts the core by mark rather than a blanket uid-0 allow. DHCP exceptions are pinned to uid 0/`dhcpcd`. Mode B permits **all root UDP** on uplinks to preserve Tailscale arbitrary-port peer/STUN hole punching; this also allows other root UDP. This is an accepted Mode B compatibility exception, not a root boundary: root can already set the core mark. Mode C cuts unmarked tailnet data.
 * Mode C keeps the core alive, so mihomo's own `DIRECT` traffic still leaves; loopback stays open for local IPC, but the app-facing proxy ports (`7897`/`33332`/`33333`) are refused for non-root in both TCP and UDP, and a hop-limit-255 ICMPv6 NDP carve-out keeps link maintenance alive without opening a data path. Guest DHCP/DNS replies are allowed by bridge, gateway source and port (`67`/`53`), not by uid: a privileged-port daemon may send them after dropping privileges, and the accepted TCP sockets carry the dropped uid. The guard is a base chain evaluated before mihomo's redirect, so this holds for locally generated TCP too.
 * Health is decided by `health_ok` through `netsec/health.py`: each target supplies its own HTTP/log/selected-leaf proof, and policy names are resolved exactly and URL-encoded. DIRECT/REJECT is a routing failure, not a reason to try an unrelated healthy node. Targets share a 12 s deadline by default; the probe runs in a cancellable process group while supervision re-checks core/TUN/configuration. `config`/`route`/`node`/`tun` cut immediately; `obs` needs two consecutive failures, and an event-cancelled probe does not consume an observation. The 5 s value caps sleep, not end-to-end protection/recovery delay. Layer durations are in `health.json`; actual delay depends on the fault and event source. The transparent TCP probe sends a real HTTP request to a fake-IP and requires its exact-source route log; it does not independently prove every UDP/IPv6 TUN device path. Because sing-tun only puts the TUN's `/30` into table 2022, a fake IP outside that subnet still has the uplink as its route when the Mode C filter runs; the guard therefore allows root to the fake-IP network only on 53/80/443 without requiring `oifname`, and the later auto-redirect (priority -150) delivers it to the core. The core's reply leaves its loopback redirect listener before reverse NAT, so the guard also allows `saddr 127.0.0.1` → fake-IP for root. B mode returns every fake-IP destination before the gost redirect for the same reason. If that redirect or reply path is missing, the probe times out and the host stays in C.
 * TCP/UDP DNS and mixed listeners must match the expected address, UID and service cgroup; the health gate, coordinator, verifier and relay share passive identity checks. Gost requires exactly one owner per endpoint. Identity failure is a configuration-layer failure; a successful DNS answer alone is insufficient. The "Clash is on" decision requires the core, not just the GUI.
@@ -307,7 +308,7 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 * `systemd-resolved` 是 NetworkManager 锁定的解析器，转发给 `dnsmasq :1054`。
 * `dns-upstream` 重写 `/run/dns-upstream/servers.conf`（即 dnsmasq 的 `servers-file`）并逐轮协调；变更用 SIGHUP `reload` 热更新而非重启，应用失败则保持 pending 并持续重试。
 * 模式 B 上游：`mihomo :1053`（fake-ip）。模式 A / blocked 上游：`unbound :1055`（DoT 到 AliDNS）。
-* Mihomo DNS 设置由 `my.proxy.managedDns` 提供：禁用额外的 `direct-nameserver` 与 `proxy-server-nameserver-policy` 解析器，固定 fake-IP filter mode 和 IPv6 fake-IP range。
+* Mihomo DNS 设置由 `my.proxy.managedDns` 提供：禁用额外的 `direct-nameserver` 与 `proxy-server-nameserver-policy` 解析器，固定 fake-IP filter mode 和 IPv6 fake-IP range。启用 TUN 时，模板、最终解析器/PATCH 策略和健康门共同固定 `tun.dns-mode: hijack`。
 * 静态 `lf_nat` 链把所有经上行口发出的 `:53`（v4 与 v6）重定向进 `dnsmasq`，因此门户/局域网/CGNAT 范围内硬编码的解析器不会明文出网。
 * 明文后备是**内核租约**而非协调器状态：`dns-policy` 把 DHCP 解析器写入 `inet lf_filter dns_plaintext4`，超时不超过剩余窗口；静态 `output` base chain（`lf_dns_guard`，优先级 `-199` → `dns_egress`）丢弃 `dnsmasq` 的其它上游查询。因此停止、杀死或卡住 `dns-upstream` 都不能让明文许可活过租约。split DNS 租约按接口与服务器匹配，截止不超过原始观测后 120 秒，并绑定批准的 UUID、ActiveConnection、ifindex、carrier-down 计数和撤销代次；dispatcher 在 pre-up/pre-down/down 撤销旧授权，broker 授权前重验连接。
 
@@ -404,7 +405,7 @@ split DNS 仅支持已由 `allowPrivateEgress` 排除在 TUN 外的私网/ULA �
 
 结论原子发布在 `/run/netsec/state.json`，并以 `/run/netsec/result`（`ok`/`degraded`/`failed`）与 `/run/netsec/verified-version` 保留兼容镜像。`nftables-verify-repair.service` 走同一个原子 loader 重建自有静态策略并复查；`nftables-recover` 每分钟重试一次失败的 `nftables.service`。
 
-### 6.1 回归检查
+### 6.1 配置检查
 
 ```sh
 nix build .#checks.x86_64-linux.proxy-regressions
@@ -415,7 +416,7 @@ nix build .#checks.x86_64-linux.proxy-core
 nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
-隔离回归调用实际的比较、策略图、租约/会话与状态发布函数。`proxy-profile` 解析双栈、IPv4、mips、纯 HTTP 和 guest TPROXY 五种分支生成的 Merge YAML，并执行路由 script。真实内核 VM 覆盖首次加载失败、静态漂移、访客 DHCP 获取与 A/B/C 下的 UDP/TCP DNS、TPROXY、已有连接阻断、Wi-Fi 私网/公网 IPv4 与全球 IPv6 回复、协调器停止期间内核 DNS 租约到期，以及重叠校验请求。固定版本的 mihomo 构建在 check 阶段运行受管配置单元测试（含 Nix 生成的策略）。检查不激活宿主配置；物理 Wi-Fi、IPv4-only 启动、休眠恢复与真实节点协议性能需要单独部署验收。完整构建仍遵循 Git flake 的源文件收录规则，并需要仓库的本地应用资源。
+这些检查在隔离环境中验证生成的规则、配置分支、核心策略与网络行为，不激活宿主配置。完整系统构建需要准备[本地应用资源](overlays/local-apps/README.md)。
 
 ## 7. 配置面
 
@@ -452,6 +453,7 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 | `system/programs/systemd/netsec/state.py` | `proxy-control` 与 `proxy-status` 共用的就绪/新鲜度检查 |
 | `system/programs/systemd/netsec/alerts.py` | 按 owner 的告警文件与聚合标记 |
 | `system/programs/systemd/netsec/managed_profile*.go`、`managed_route.go`、`patch_mihomo.py` | 在最终解析器与控制口 PATCH 处强制受管核心配置（监听、隧道、DNS、TUN 路由字段），随固定版本 mihomo 构建打入 |
+| `system/programs/systemd/netsec/patch_sing_tun.py`、`patch_socks.py`、`socks_addr_test.go` | nftables interval 端点、SOCKS 地址解析与边界测试 |
 | `system/programs/systemd/gost-relay.nix` | gost 监听生命周期（proxy / closed / 直通） |
 | `system/programs/systemd/nftables-verify.nix` | 预期 JSON 校验、结果文件、定时器、可选修复 |
 | `system/programs/systemd/netsec/rules.py` | 结构化 nft JSON 比对（含规则次序）与 CIDR 包含判断 |
@@ -477,7 +479,7 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 
 * `:33333` 重定向是 TUN 未承载的 TCP（绑定源/设备的套接字、以及手工 flush 之后的流量）的唯一路径；`gost` 是这些流的单点故障，且到达它的流会被改源为 `127.0.0.1`，因此按来源匹配的 profile 规则不适用。显式 `connect()` 到 `:33333` 会被静态的 `redirect_guard` base chain（优先级 `-201`，在 NAT 之前）回以 TCP RST，因此不再能诱发 gost 自循环；supervisor 的自连套接字检测保留为后备。真正被透明重定向的流在 guard 求值时仍携带真实目的地址，因而不受影响。
 * 模式 B 的专门 DNS/NTP 例外放行 `unbound`（DoT，tcp/853）与 `systemd-timesyncd`（udp/123），核心 mark 和 root UDP 例外也适用；普通应用的明文解析器查询被重定向进 `dnsmasq`。模式 A 仅在有预算的明文窗口内加入 DHCP 解析器（见 3.2）。
-* 断网保护按 mark 豁免核心，不对 uid 0 整体放行；DHCP 例外固定到 uid 0/`dhcpcd`。模式 B 在上行口放行**全部 root UDP**，保留 Tailscale 任意对端/STUN 端口的打洞，其它 root UDP 也会放行。仅允许 `41641` 曾让 Tailscale 退化到 DERP（`netcheck` 报 `UDP: false`）。这是模式 B 的兼容取舍，不构成 root 边界，root 本就可以设置核心 mark。模式 C 切断未打标的 tailnet 数据。
+* 断网保护按 mark 豁免核心，不对 uid 0 整体放行；DHCP 例外固定到 uid 0/`dhcpcd`。模式 B 在上行口放行**全部 root UDP**，保留 Tailscale 任意对端/STUN 端口的打洞，其它 root UDP 也会放行。这是模式 B 的兼容取舍，不构成 root 边界，root 本就可以设置核心 mark。模式 C 切断未打标的 tailnet 数据。
 * 模式 C 保留核心存活，因此 mihomo 自身判为 `DIRECT` 的流量仍会离开；loopback 保留供本机 IPC 使用，但面向应用的代理端口（`7897`/`33332`/`33333`）对非 root 的 TCP 与 UDP 都被拒绝，另有一项 hoplimit 255 的 ICMPv6 邻居发现例外维持链路维护而不开放数据通道。访客 DHCP/DNS 应答按网桥、网关源地址与端口（`67`/`53`）放行，不按 uid：特权端口守护进程会降权，accept 出来的 TCP socket 携带降权后的 uid。guard 是在 mihomo 重定向之前求值的 base chain，因此对本机产生的 TCP 同样成立。
 * 健康检查由 `health_ok` 调用 `netsec/health.py`：每个目标提供独立的 HTTP/日志/所选叶子证明，策略名精确解析并经 URL 编码。DIRECT/REJECT 属于路由失败，不能换无关健康节点充数。全部目标默认共享 12 秒截止；探针运行在可取消的进程组中，监督器期间复查核心/TUN/配置。`config`/`route`/`node`/`tun` 失败立即切断，`obs` 需连续两次，事件取消不消耗观测次数。5 秒是睡眠上限，不是端到端保护/恢复时延；分层耗时在 `health.json`，实际时延取决于故障及事件来源。透明 TCP 探针会向 fake-IP 发真实 HTTP 请求并校验精确源端口的路由日志；它不单独证明 TUN 设备的全部 UDP/IPv6 数据路径。由于 sing-tun 只把 TUN 的 `/30` 放进 table 2022，/30 之外的 fake-IP 在 Mode C filter 求值时路由仍指向上行口；因此 guard 对 root 到 fake-IP 只放行 53/80/443，且不要求 `oifname`，由之后 `-150` 的 auto-redirect 交给核心。核心的应答从 loopback redirect 监听发出、在反向 NAT 之前经过此 chain，所以 guard 还放行 root 的 `saddr 127.0.0.1` → fake-IP。B 模式同样在 gost 重定向前放行所有 fake-IP 目的地址。若重定向或回包路径缺失，探针超时并保持 Mode C。
 * TCP/UDP DNS 与 mixed 监听须符合预期地址、UID 和服务 cgroup；健康门、协调器、校验器和中继共用被动身份检查。gost 各端口也须恰好一个合法监听者。身份失败属于 config 层失败，不能只凭 DNS 能应答放行。“Clash 在运行”要求核心，而非仅 GUI。

@@ -60,6 +60,21 @@ class HealthTests(unittest.TestCase):
                       dict(config, tun={"route-address": ["198.18.0.0/30"]})]:
             with self.assertRaises(health.ProbeFailure): health.check_config(value, settings)
 
+    def test_tun_dns_mode_drift_is_a_config_failure(self):
+        config = {"mode": "rule", "tun": {"enable": True, "dns-mode": "hijack"}}
+        settings = {"expected": {"tun": {"enable": True, "dns-mode": "hijack"}}}
+        health.check_config(config, settings)
+        for mode in (None, "", "native", "disabled"):
+            with self.subTest(mode=mode):
+                candidate = copy.deepcopy(config)
+                if mode is None:
+                    del candidate["tun"]["dns-mode"]
+                else:
+                    candidate["tun"]["dns-mode"] = mode
+                with self.assertRaises(health.ProbeFailure) as error:
+                    health.check_config(candidate, settings)
+                self.assertEqual(error.exception.layer, "config")
+
     def test_tun_dns_alone_is_not_a_success(self):
         probe = health.Probe({"budget_seconds": 12, "require_tun": True, "dig": "dig", "curl": "curl",
                               "tun_probe_name": "probe.test", "dns_port": 1053, "fake_ip_net": "198.18.0.0/16"})

@@ -90,10 +90,7 @@ in
 
       profile:
         store-selected: true
-        # Persist the fake-ip <-> domain mapping across a core restart, so a
-        # restarted core still knows the addresses it handed out instead of
-        # losing them (the affected flows are non-TCP/QUIC, which sniffer also
-        # helps; audit MEDIUM-5).
+        # Preserve fake-IP domain mappings across core restarts.
         store-fake-ip: true
 
       # Fix the mixed port to align with the probe and forwarding ports in gost-relay.nix.
@@ -163,6 +160,8 @@ in
         iproute2-table-index: ${toString osConfig.my.proxy.routeTable}
         auto-redirect: true
         strict-route: true
+        # Match the managed policy's explicit DNS interception mode.
+        dns-mode: hijack
         dns-hijack:
           - any:53
           - tcp://any:53

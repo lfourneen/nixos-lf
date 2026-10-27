@@ -4,10 +4,10 @@ home/wallpapers/*
 overlays/local-apps/*
 !overlays/local-apps/README.md
 
-# Agent/audit artifacts: keep them out of `git status` so the tracked diff stays
-# reviewable. They still exist on disk; to version them use `git add -f audit/...`.
+# Local working files and reports.
 .agent-teams/
 audit/
+.audit-mihomo/
 .dsh-audit/
 .vk1-work/
 .omo/

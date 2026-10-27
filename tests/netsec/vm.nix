@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, core, ... }:
 
 pkgs.testers.runNixOSTest {
   name = "proxy-policy-recovery";
@@ -52,6 +52,7 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-mode-script".source = config.my.proxy.modeScript;
     environment.etc."netsec-tproxy.py".source = ./tproxy_fixture.py;
     environment.etc."netsec-dns.py".source = ./dns_fixture.py;
+    environment.etc."netsec-core.py".source = ./core_fixture.py;
     environment.etc."netsec-events.py".source = ../../system/programs/systemd/netsec/events.py;
     environment.etc."netsec-events-test.py".source = ./events_fixture.py;
     environment.etc."netsec-listeners-test.py".source = ./listeners_fixture.py;
@@ -232,6 +233,11 @@ pkgs.testers.runNixOSTest {
     machine.succeed("touch /run/netsec/requests/request.second; /etc/netsec-mode-script --reload; systemctl start unbound.service")
     machine.wait_until_succeeds("test -z \"$(ls -A /run/netsec/requests)\"", timeout=90)
     machine.succeed("test $(jq -r .version /run/netsec/state.json) = $(jq -r .version /run/proxy-mode/state.json)")
+    # Exercise core TUN/DNS and SOCKS behavior in isolated namespaces.
+    for family in ("ipv4", "dual"):
+        machine.succeed(f"ip netns add core-{family}")
+        machine.succeed(f"NETSEC_CORE_PATH=${pkgs.lib.makeBinPath [ pkgs.iproute2 pkgs.nftables ]} ip netns exec core-{family} python3 /etc/netsec-core.py ${core}/bin/mihomo {family}")
+        machine.succeed(f"ip netns delete core-{family}")
   '';
 }
 

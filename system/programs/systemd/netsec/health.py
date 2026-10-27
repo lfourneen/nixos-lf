@@ -30,7 +30,7 @@ def config_view(config):
     tun = config.get("tun") or {}
     view["tun"] = {key: tun.get(key) for key in (
         "enable", "device", "stack", "auto-route", "auto-redirect", "strict-route",
-        "mtu", "iproute2-table-index")}
+        "dns-mode", "mtu", "iproute2-table-index")}
     view["tun"]["stack"] = str(tun.get("stack", "")).lower()
     for key in ("route-exclude-address", "inet6-address", "dns-hijack",
                 "route-address-set", "route-exclude-address-set", "route-address",

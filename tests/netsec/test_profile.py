@@ -30,6 +30,10 @@ for case in cases:
         assert tun["route-exclude-address"]
         assert tun["auto-route"] and tun["auto-redirect"] and tun["strict-route"]
         assert tun["dns-hijack"] == ["any:53", "tcp://any:53"]
+        # The managed policy pins tun.dns-mode, and RawTun.DNSMode has no
+        # omitempty: a Merge that drops this key parses to "" and the core
+        # refuses to start, so the coupling is asserted here first.
+        assert tun["dns-mode"] == "hijack"
     if expected["tun"] and expected["ipv6"]:
         assert tun["inet6-address"] == [expected["address"]]
     else:
