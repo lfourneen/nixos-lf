@@ -33,6 +33,9 @@
       ms-python.python
       ms-python.vscode-pylance
 
+      # Go
+      golang.go
+
       # .NET
       ms-dotnettools.csdevkit
       ms-dotnettools.csharp
