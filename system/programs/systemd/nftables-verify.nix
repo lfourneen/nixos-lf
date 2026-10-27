@@ -115,6 +115,17 @@ in
             ip -"$family" rule show | grep -q 'lookup ${toString config.my.proxy.routeTable}' || live_fail "IPv$family TUN rule missing"
             ip -"$family" route show table ${toString config.my.proxy.routeTable} | grep -q 'dev ${config.my.proxy.tunDev}' || live_fail "IPv$family TUN route missing"
           done
+          ${lib.optionalString config.networking.enableIPv6 ''
+          # The rule and route above prove the plumbing exists; this proves the
+          # kernel actually selects it. A regression that hands IPv6 back to the
+          # physical uplink still leaves the rule and the route in place, so only
+          # `route get` catches traffic that would leave around the proxy.
+          # Literal global addresses only, never resolved through DNS.
+          for probe in 2606:4700:4700::1111 2001:4860:4860::8888 2400:3200::1; do
+            ip -6 route get "$probe" 2>/dev/null | grep -q "dev ${config.my.proxy.tunDev}" \
+              || live_fail "IPv6 destination $probe is not captured by ${config.my.proxy.tunDev}"
+          done
+          ''}
           ''}
           listeners relay core || live_fail 'proxy listener identity mismatch'
           if [ "$(cat /run/dns-upstream/status)" != proxy ]; then
