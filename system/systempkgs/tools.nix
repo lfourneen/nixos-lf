@@ -78,7 +78,7 @@
     context7-mcp
     mcp-nixos
     mcp-server-fetch
-    pkgs.unstable.pdf-mcp
+    # pkgs.unstable.pdf-mcp
     pkgs.unstable.open-websearch
     pybibget
     python3Packages.arxiv2bib
