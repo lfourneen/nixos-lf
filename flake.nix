@@ -63,7 +63,10 @@
         inherit pkgs;
         config = self.nixosConfigurations.lfour.config;
       };
-      proxy-network-vm = import ./tests/netsec/vm.nix { inherit pkgs; };
+      proxy-network-vm = import ./tests/netsec/vm.nix {
+        inherit pkgs;
+        core = self.nixosConfigurations.lfour.config.programs.clash-verge.package.managedCore;
+      };
       proxy-core = self.nixosConfigurations.lfour.config.programs.clash-verge.package.managedCore;
     };
 

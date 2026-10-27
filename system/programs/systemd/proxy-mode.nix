@@ -120,6 +120,7 @@ let
         auto-route = true;
         auto-redirect = true;
         strict-route = true;
+        dns-mode = "hijack";
         dns-hijack = lib.sort builtins.lessThan [ "any:53" "tcp://any:53" ];
         inet6-address = lib.optionals config.networking.enableIPv6 [ config.my.proxy.tunIpv6Address ];
         route-exclude-address = lib.sort builtins.lessThan (
@@ -862,7 +863,6 @@ in
         NotifyAccess = "all";
         WatchdogSec = "90s";
         TimeoutStartSec = "90s";
-        CPUAccounting = true;
         MemoryAccounting = true;
         RuntimeDirectory = "proxy-mode";
         RuntimeDirectoryMode = "0755";
@@ -953,10 +953,8 @@ in
       };
     };
 
-    # Self-heal for the event layer: if the .path ever ends up not armed (a
-    # future start-limit, or a manual stop), re-arm it, so the event layer can
-    # never stay silently dead (audit P1). The loops' backstop polling keeps the
-    # host enforcing even while the .path is down.
+    # Re-arm the event watcher after a stop or start limit. Backstop polling
+    # maintains enforcement while the watcher is inactive.
     systemd.services.proxy-net-watch-recover = {
       description = "Re-arm the proxy event .path if it is not active";
       serviceConfig = { Type = "oneshot"; };

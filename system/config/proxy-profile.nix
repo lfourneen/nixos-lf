@@ -99,6 +99,8 @@ in
         "tun.route-exclude-address" = routeExclude;
         "tun.inet6-address" = lib.optionals config.networking.enableIPv6 [ p.tunIpv6Address ];
         "tun.dns-hijack" = [ "any:53" "tcp://any:53" ];
+        # Require DNS interception during profile parsing and controller PATCH.
+        "tun.dns-mode" = "hijack";
       };
   };
   config.assertions = [
