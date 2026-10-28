@@ -17,6 +17,9 @@ replace(root / "tunnel/tunnel.go",
         'log.Infoln("[%s] %s --> %s using GLOBAL", strings.ToUpper(metadata.NetWork.String()), metadata.SourceDetail(), metadata.RemoteAddress())',
         'log.Infoln("[%s] %s --> %s using %s", strings.ToUpper(metadata.NetWork.String()), metadata.SourceDetail(), metadata.RemoteAddress(), remoteConn.Chains().String())')
 replace(root / "config/config.go", "type General struct {", 'type General struct {\n\tManagedPolicy string `json:"managed-policy"`')
+replace(root / "config/config.go", "\treturn rawCfg, nil\n}",
+        "\tif err := lfManagedTunDefaults(rawCfg); err != nil { return nil, err }\n"
+        "\treturn rawCfg, nil\n}")
 replace(root / "config/config.go", "func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {",
         "func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {\n"
         "\tmanagedID, managedErr := lfValidateRaw(rawCfg)\n"

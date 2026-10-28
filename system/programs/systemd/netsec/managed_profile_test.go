@@ -84,6 +84,34 @@ func TestLFManagedTunRouting(t *testing.T) {
 		}
 		object[parts[len(parts)-1]] = value
 	}
+	// Upgrade a pre-pin generated profile without waiting for the GUI to run.
+	keys := []string{"iproute2-rule-index", "auto-redirect-input-mark",
+		"auto-redirect-output-mark", "auto-redirect-iproute2-fallback-rule-index"}
+	for _, zero := range []bool{false, true} {
+		for _, key := range keys {
+			if zero {
+				document["tun"].(map[string]any)[key] = 0
+			} else {
+				delete(document["tun"].(map[string]any), key)
+			}
+		}
+		for _, marshal := range []func(any) ([]byte, error){json.Marshal, yaml.Marshal} {
+			data, err := marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := UnmarshalRawConfig(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := lfValidateRaw(raw); err != nil {
+				t.Fatalf("legacy generated profile, zero=%v: %v", zero, err)
+			}
+		}
+	}
+	for _, key := range keys {
+		document["tun"].(map[string]any)[key] = policy["tun."+key]
+	}
 	for key, value := range map[string]any{
 		"iproute2-rule-index":                        40000,
 		"auto-redirect-input-mark":                   6666,

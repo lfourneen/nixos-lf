@@ -1,6 +1,19 @@
 { pkgs, config, lib, ... }:
 
 let
+  # Set the writable GUI preference without rebuilding the Rust application.
+  guiDefaults = pkgs.writeShellApplication {
+    name = "clash-verge-defaults";
+    runtimeInputs = [ pkgs.yq-go pkgs.coreutils pkgs.procps ];
+    text = builtins.readFile ./clash-verge-defaults.sh;
+  };
+  guiDefaultsCheck = pkgs.runCommand "proxy-gui-defaults" { } ''
+    ${pkgs.nodejs}/bin/node ${../../tests/netsec/test_gui_defaults.js} \
+      ${guiDefaults}/bin/clash-verge-defaults ${pkgs.yq-go}/bin/yq \
+      ${lib.escapeShellArg config.my.proxy.delayTestUrl}
+    touch "$out"
+  '';
+
   # HTTP-only policy used by the core checks.
   httpOnlyConfig = config // {
     my = config.my // {
@@ -57,11 +70,22 @@ in
     package = (pkgs.unstable.clash-verge-rev.override {
       mihomo = managedCore;
     }).overrideAttrs (old: {
-      passthru = (old.passthru or { }) // { inherit managedCore; };
+      nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.makeWrapper ];
+      postFixup = (old.postFixup or "") + ''
+        mv "$out/bin/clash-verge" "$out/bin/.clash-verge-launcher"
+        makeWrapper "$out/bin/.clash-verge-launcher" "$out/bin/clash-verge" \
+          --run ${lib.escapeShellArg ''${guiDefaults}/bin/clash-verge-defaults ${lib.escapeShellArg config.my.proxy.delayTestUrl} || echo "Clash Verge: could not set the default delay-test URL" >&2''}
+      '';
+      passthru = (old.passthru or { }) // { inherit managedCore guiDefaultsCheck; };
     });
     serviceMode = true;
     group = "clash-verge-control";
   };
+  assertions = [{
+    assertion = toString config.programs.clash-verge.package.unwrapped
+      == toString pkgs.unstable.clash-verge-rev.unwrapped;
+    message = "The GUI delay default must reuse the unmodified Clash Verge application.";
+  }];
   users.groups.clash-verge-control.members = [ config.my.machine.desktopUser ];
 
   # Persist the helper's requested core state under ProtectSystem=strict.

@@ -4,9 +4,26 @@ let
   m = config.my.machine;
   port = m.ports;
   gostUid = m.uids.gost;
+  sources = lib.fileset.toSource {
+    root = ./netsec;
+    fileset = lib.fileset.unions [ ./netsec/patch_gost.py ./netsec/gost_http.go ./netsec/gost_http_test.go ];
+  };
+  gost = pkgs.gost.overrideAttrs (old: {
+    doCheck = true;
+    postConfigure = (old.postConfigure or "") + ''
+      chmod -R u+w vendor/github.com/go-gost/x/handler/http
+      ${pkgs.python3}/bin/python3 ${sources}/patch_gost.py .
+    '';
+    checkPhase = ''
+      runHook preCheck
+      go test -mod=vendor github.com/go-gost/x/handler/http -run '^TestLF' -count=1
+      runHook postCheck
+    '';
+  });
 
 in
 {
+  my.proxy.gostPackage = gost;
   # Dedicated user so clash's tun.exclude-uid and network.nix nft rules can
   # target the proxy by UID without touching the desktop user's traffic.
   users.groups.gost = { };
@@ -179,13 +196,13 @@ in
           # proxy: only forward to mihomo, never dialing a target itself. direct:
           # passthrough, which is what "Clash is off" means.
           if [ "$1" = "proxy" ]; then
-            "${pkgs.gost}/bin/gost" \
+            "${gost}/bin/gost" \
                 "-L=http://127.0.0.1:${toString port.gostHttp}" \
                 "-L=redirect://127.0.0.1:${toString port.gostRedirect}" \
                 "-L=redirect://[::1]:${toString port.gostRedirect}" \
                 -F=http://127.0.0.1:${toString port.mihomoMixed} &
           else
-            "${pkgs.gost}/bin/gost" \
+            "${gost}/bin/gost" \
                 "-L=http://127.0.0.1:${toString port.gostHttp}" \
                 "-L=redirect://127.0.0.1:${toString port.gostRedirect}" \
                 "-L=redirect://[::1]:${toString port.gostRedirect}" &

@@ -70,6 +70,7 @@ let
   # Network form of the fake-ip pool; the Mode-C guard exempts root to it so
   # proxy-mode's own TUN self-test can run while blocked.
   fakeIpNet = config.my.proxy.fakeIpNet;
+  tunIpv4Address = lib.head (lib.splitString "/" config.my.proxy.fakeIpRange);
 
   # Force QUIC-heavy apps off UDP/443. Non-TUN only (under TUN it breaks
   # QUIC sites); kept for the fallback model.
@@ -217,7 +218,7 @@ let
   # Fragment proxy-mode.service applies while Clash runs but its path is not the
   # strict TUN one we require: the TUN is missing/unready, mihomo is in `direct`
   # mode, or the node is dead. It fills the `output`-hook base chain
-  # `lf_blocked_guard` (priority -200, before mihomo's own redirect) with a hard
+  # `lf_blocked_guard` (priority -197, before mihomo's own redirect) with a hard
   # cut that keeps ONLY loopback, the core's marked sockets and DHCP renewal:
   # the core stays reachable so it can recover a node or be driven from the GUI,
   # loopback keeps local IPC working, DHCP keeps the lease, and every other
@@ -254,15 +255,17 @@ let
     # The core keeps its egress so it can reach its nodes and recover.
     add rule inet lf_filter lf_blocked_guard meta mark ${coreMark} accept
     # Root may reach the fake-ip network for the TUN self-test. Do not require
-    # oifname here: with auto-redirect a fake-IP outside the TUN's /30 still has
-    # the uplink as its route when this filter chain (priority -200) runs; the
-    # redirect to the core happens later at -150. The probe's exact route log is
-    # what proves the core actually carried the flow.
+    # a particular oifname: the shared route checks and the probe's exact-source
+    # log prove the effective path. Auto-redirect runs later at -150.
     add rule inet lf_filter lf_blocked_guard meta skuid 0 ip daddr ${fakeIpNet} meta l4proto { tcp, udp } th dport { 53, 80, 443 } accept
-    # The core answers the redirected TCP probe from its loopback redirect
-    # listener. Reverse NAT to the fake IP happens after this chain (-150/-100),
-    # so the SYN-ACK still carries saddr 127.0.0.1 here and needs its own pass.
+    # Retain the loopback-source reply allowance for the PREROUTING redirect
+    # path. Reverse NAT runs after this chain, so replies still carry the
+    # redirect listener's local source here.
     add rule inet lf_filter lf_blocked_guard meta skuid 0 ip saddr 127.0.0.1 ip daddr ${fakeIpNet} accept
+    # The patched OUTPUT DNAT uses the TUN's local address, preserving sockets
+    # bound to that interface. Permit only root TCP replies to those DNAT flows
+    # so the fake-IP self-test can recover while C still refuses client egress.
+    add rule inet lf_filter lf_blocked_guard meta skuid 0 ip saddr ${tunIpv4Address} ip daddr ${fakeIpNet} meta l4proto tcp ct direction reply ct status dnat ct original ip daddr ${fakeIpNet} ct original proto-dst { 80, 443 } accept
     # Retain pinned DHCP clients, including unicast renewals. Server replies
     # are only needed for the explicitly enabled AP and its own subnet.
     add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept
@@ -782,7 +785,9 @@ in
         # it and slips through. Filled by proxy-mode.service only in the
         # `blocked` state; empty in every other mode (policy accept = no-op).
         chain lf_blocked_guard {
-          type filter hook output priority -200; policy accept;
+          # Conntrack attaches at -200. The DNAT reply exception must see its
+          # direction/status, while the client cut still precedes NAT at -150.
+          type filter hook output priority -197; policy accept;
         }
         # Guest refusal must see original destinations before any transparent
         # redirect can turn a forwarded flow into local input to the core.

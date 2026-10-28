@@ -106,6 +106,7 @@ let
     listener_check = listenerCheck;
     runtime = "/run/proxy-mode";
     budget_seconds = config.my.proxy.healthBudgetSeconds;
+    request_timeout_seconds = config.my.proxy.healthRequestTimeoutSeconds;
     urls = config.my.proxy.nodeProbeUrls;
     mixed_port = port.mihomoMixed;
     dns_port = port.mihomoDns;
@@ -399,15 +400,13 @@ NFT_OFF
     #      Clash's own log for that connection does not say `using DIRECT` --
     #      this catches direct mode, a rule profile that is effectively
     #      all-DIRECT, and a group/slot selected to DIRECT;
-    #  (2) Clash delay-tests the node the route actually selected (the group
-    #      named in the log), so a fallback/other subscription node cannot mask a
-    #      dead selection -- this is Clash-centric, not "any node is up";
+    #  (2) the successful request's recorded leaf matches the current policy
+    #      graph. No delay API call may mutate node health or automatic selection;
     #  (3) a fake-ip answer is reachable through the TUN, proving the TUN really
     #      carries packets (shape-only checks cannot see a stuck sing-tun).
     # health_gate names the failing layer for the reason file:
     #   obs   = the route could not be read (probe code / log line / group list)
     #   route = the probe was routed DIRECT or REJECT (no real node)
-    #   node  = the effective group's selected node failed the delay test
     #   tun   = the TUN does not carry packets
     stop_health() {
       [ -n "''${health_pid:-}" ] || return 0
@@ -554,8 +553,9 @@ NFT_OFF
             # Hysteresis for the `obs` layer ONLY: a transient inability to read
             # the route (a probe hiccup, an empty delay answer while the node is
             # fine) must not blackhole the whole host; require two consecutive
-            # `obs` failures. Confirmed route/node/TUN failures keep an immediate
-            # cut; node timeouts are sampled failures, not mathematical proof.
+            # `obs` failures. Route/config/TUN failures keep an immediate cut.
+            # HTTP timeouts are observations; a full successful request and its
+            # exact-source route log prove the selected node without /delay.
             if health_ok; then
               obs_fails=0
               want=proxy; want_reason=""
@@ -681,7 +681,11 @@ NFT_OFF
 
       # Back off only when the mode is stable and the post-condition holds; any
       # change or mismatch keeps the loop at the fast interval.
-      if [ "$mode" != "$prev" ] || [ "$ok" != "1" ]; then changed=1; else changed=0; fi
+      if [ "$mode" != "$prev" ] || [ "$ok" != "1" ] || [ "$reason" = "obs:1/2" ]; then
+        changed=1
+      else
+        changed=0
+      fi
       unlock_state
       [ "$ok" = 1 ]
     }

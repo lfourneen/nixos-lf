@@ -68,6 +68,8 @@
         core = self.nixosConfigurations.lfour.config.programs.clash-verge.package.managedCore;
       };
       proxy-core = self.nixosConfigurations.lfour.config.programs.clash-verge.package.managedCore;
+      proxy-gost = self.nixosConfigurations.lfour.config.my.proxy.gostPackage;
+      proxy-gui = self.nixosConfigurations.lfour.config.programs.clash-verge.package.guiDefaultsCheck;
     };
 
     nixosConfigurations.lfour = nixpkgs.lib.nixosSystem {

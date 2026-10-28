@@ -226,6 +226,27 @@ in
     text = ''
       // Managed by home/config/cvr-merge.nix -- do not edit in the GUI.
       const FORCED_PROXY_DOMAINS = ${forcedProxyDomainsJs};
+      const DELAY_TEST_URL = ${builtins.toJSON osConfig.my.proxy.delayTestUrl};
+
+      function httpsHealthChecks(config) {
+        const insecure = url => url == null || url === "" ||
+          (typeof url === "string" && /^http:\/\//i.test(url));
+        const groups = config["proxy-groups"];
+        if (Array.isArray(groups)) {
+          for (const group of groups) {
+            if (group && ["url-test", "fallback", "load-balance"].includes(group.type) && insecure(group.url)) {
+              group.url = DELAY_TEST_URL;
+            }
+          }
+        }
+        const providers = config["proxy-providers"];
+        if (providers && typeof providers === "object") {
+          for (const provider of Object.values(providers)) {
+            const health = provider && provider["health-check"];
+            if (health && health.enable === true && insecure(health.url)) health.url = DELAY_TEST_URL;
+          }
+        }
+      }
 
       // Catch-all group name differs per subscription, so take it from the
       // final MATCH rule instead of hardcoding (a stale name fails the config).
@@ -240,6 +261,7 @@ in
       }
 
       function main(config) {
+        if (config) httpsHealthChecks(config);
         // Replace the DNS object, including nested policy entries. Per-profile
         // extensions still run later; the core's final parser rejects any drift.
         if (config) config.dns = ${builtins.toJSON (osConfig.my.proxy.managedDns // {
