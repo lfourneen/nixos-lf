@@ -85,10 +85,12 @@ in
       ipv6 = config.networking.enableIPv6;
       routing-mark = m.mihomoMark;
       "tun.enable" = p.tunMode;
+      "tun.file-descriptor" = 0;
       "dns.fallback" = [ ];
     } // lib.mapAttrs' (key: value: lib.nameValuePair "dns.${key}" value) p.managedDns
       // lib.genAttrs (map (key: "tun.${key}") emptyTunFields) (_: [ ])
-      // lib.optionalAttrs p.tunMode {
+      // lib.optionalAttrs p.tunMode (lib.mapAttrs' (key: value:
+        lib.nameValuePair "tun.${key}" value) p.tunRouting // {
         "tun.device" = p.tunDev;
         "tun.stack" = p.tunStack;
         "tun.mtu" = p.tunMtu;
@@ -101,7 +103,7 @@ in
         "tun.dns-hijack" = [ "any:53" "tcp://any:53" ];
         # Require DNS interception during profile parsing and controller PATCH.
         "tun.dns-mode" = "hijack";
-      };
+      });
   };
   config.assertions = [
     {
@@ -111,8 +113,19 @@ in
     }
     {
       assertion = builtins.bitAnd m.mihomoMark 16711680 == 0
-        && !(builtins.elem m.mihomoMark [ 563 8227 8228 ]);
+        && !(builtins.elem m.mihomoMark [ 563 p.tunRouting.auto-redirect-input-mark p.tunRouting.auto-redirect-output-mark ])
+        && p.tunRouting.auto-redirect-input-mark != p.tunRouting.auto-redirect-output-mark
+        && lib.all (mark: mark > 0 && mark <= 4294967295 && mark != 563
+          && builtins.bitAnd mark 16711680 == 0)
+          [ p.tunRouting.auto-redirect-input-mark p.tunRouting.auto-redirect-output-mark ];
       message = "The core mark must not collide with TPROXY, sing-tun or Tailscale reserved marks.";
+    }
+    {
+      assertion = p.tunRouting.iproute2-rule-index > 5270
+        && p.tunRouting.iproute2-rule-index + 10 < 32766
+        && p.tunRouting.auto-redirect-iproute2-fallback-rule-index > 32767
+        && p.tunRouting.auto-redirect-iproute2-fallback-rule-index <= 4294967295;
+      message = "Managed TUN rules must follow Tailscale, precede main/default, and reserve the fallback after them.";
     }
     {
       assertion = builtins.match "[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]" p.tunProbeName != null;

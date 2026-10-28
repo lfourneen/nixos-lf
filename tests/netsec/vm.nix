@@ -8,7 +8,23 @@ pkgs.testers.runNixOSTest {
       ../../system/config/machine.nix
       ../../system/config/hardening-options.nix
       ../../system/config/proxy-options.nix
-      ../../system/config/proxy-profile.nix
+      ({ config, lib, ... }:
+        let profile = import ../../system/config/proxy-profile.nix { inherit config lib; };
+        in profile // {
+          # Replace the test module's default without making the production
+          # read-only option overridable or adding a second definition.
+          options.my.proxy = profile.options.my.proxy // {
+            managedDns = profile.options.my.proxy.managedDns // {
+              default = profile.options.my.proxy.managedDns.default // {
+                nameserver = [ "udp://100.67.0.1:15354" ];
+                default-nameserver = [ "100.67.0.1" ];
+                proxy-server-nameserver = [ "udp://100.67.0.1:15354" ];
+                nameserver-policy = { };
+                respect-rules = false;
+              };
+            };
+          };
+        })
       ../../system/config/network.nix
       ../../system/programs/systemd/proxy-mode.nix
       ../../system/programs/systemd/dns-upstream.nix
@@ -18,6 +34,8 @@ pkgs.testers.runNixOSTest {
       ../../system/programs/systemd/network-bootstrap.nix
     ];
     users.users.lfour = { isNormalUser = true; uid = 1000; };
+    my.proxy.nodeProbeUrls = [ "http://node.fixture.example:8080/" ];
+    my.proxy.tunProbeName = "tun.fixture.example";
     services.tailscale.enable = lib.mkForce false;
     services.avahi.enable = lib.mkForce false;
     services.timesyncd.enable = lib.mkForce true;
@@ -53,13 +71,29 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-tproxy.py".source = ./tproxy_fixture.py;
     environment.etc."netsec-dns.py".source = ./dns_fixture.py;
     environment.etc."netsec-core.py".source = ./core_fixture.py;
+    environment.etc."netsec-integration.py".source = ./integration_fixture.py;
+    environment.etc."netsec-integration-policy.json".text = builtins.toJSON config.my.proxy.managedProfile;
+    environment.etc."netsec-tun-check".source = config.my.proxy.tunCheck;
+    environment.etc."netsec-health.json".source = config.my.proxy.healthSettings;
+    environment.etc."netsec-health.py".source = ../../system/programs/systemd/netsec/health.py;
     environment.etc."netsec-events.py".source = ../../system/programs/systemd/netsec/events.py;
     environment.etc."netsec-events-test.py".source = ./events_fixture.py;
     environment.etc."netsec-listeners-test.py".source = ./listeners_fixture.py;
     environment.etc."netsec-listener-check".source = config.my.proxy.listenerCheck;
     systemd.services.clash-verge.serviceConfig.ExecStart = pkgs.writeShellScript "test-core-listeners" ''
+      if test -e /run/netsec-real-profile.json; then
+        exec ${pkgs.runCommand "vm-managed-core" { } ''
+          mkdir -p "$out/bin"
+          ln -s ${core}/bin/mihomo "$out/bin/verge-mihomo"
+        ''}/bin/verge-mihomo -d /run/netsec-real-core -f /run/netsec-real-profile.json \
+          -ext-ctl-unix /run/user/1000/clash-verge-rev/verge-mihomo.sock
+      fi
       exec ${pkgs.python3}/bin/python3 /etc/netsec-listeners-test.py serve "$(cat /run/listener-good-protocol)" --mixed
     '';
+    systemd.services.clash-verge.environment = {
+      LF_MANAGED_PROXY_POLICY = pkgs.writeText "vm-managed-policy.json" (builtins.toJSON config.my.proxy.managedProfile);
+      SKIP_SYSTEM_IPV6_CHECK = "1";
+    };
     systemd.services.netsec-listener-impostor.serviceConfig = {
       User = "lfour";
       ExecStart = pkgs.writeShellScript "test-impostor-listeners" ''
@@ -113,6 +147,13 @@ pkgs.testers.runNixOSTest {
     virtualisation.memorySize = 1536;
   };
   testScript = ''
+    def wait_proxy(timeout=120):
+        try:
+            machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = proxy", timeout=timeout)
+        except Exception:
+            print(machine.execute("cat /run/proxy-mode/state.json /run/proxy-mode/health.json; /etc/netsec-tun-check; python3 /etc/netsec-health.py /etc/netsec-health.json --fast; ps -eo pid,cgroup,args; journalctl -u proxy-mode -u clash-verge --no-pager -n 60; cat /tmp/netsec-node.log"))
+            raise
+
     start_all()
     machine.wait_for_unit("network-firewall-bootstrap.service")
     machine.wait_until_fails("systemctl is-active --quiet nftables.service")
@@ -225,7 +266,7 @@ pkgs.testers.runNixOSTest {
     machine.fail("su -s /bin/sh lfour -c \"curl --noproxy '*' -fsS --connect-timeout 1 http://127.0.0.1:7897\"")
     machine.succeed("echo proxy >/run/proxy-mode/intent; /etc/netsec-mode-script --reload; systemctl unmask --runtime proxy-mode.service; systemctl start proxy-mode.service nftables-verify-pending.path nftables-verify.timer")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = blocked")
-    machine.wait_until_succeeds("test $(jq -r .result /run/netsec/state.json) = ok", timeout=90)
+    machine.wait_until_succeeds("test $(jq -r .result /run/netsec/state.json) = ok && test $(jq -r .version /run/netsec/state.json) = $(jq -r .policy_version /run/proxy-mode/state.json)", timeout=90)
     # A commit and a second request during liveness checks must leave a rerun,
     # rather than being swallowed by an already-running oneshot service.
     machine.succeed("systemctl stop unbound.service; touch /run/netsec/requests/request.first")
@@ -238,6 +279,50 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"ip netns add core-{family}")
         machine.succeed(f"NETSEC_CORE_PATH=${pkgs.lib.makeBinPath [ pkgs.iproute2 pkgs.nftables ]} ip netns exec core-{family} python3 /etc/netsec-core.py ${core}/bin/mihomo {family}")
         machine.succeed(f"ip netns delete core-{family}")
+
+    # Real managed core, real supervisor and real listeners on the same stack.
+    # Its SOCKS node and all destinations live in the outside namespace.
+    machine.succeed("systemctl stop clash-verge.service netsec-tproxy.service; python3 /etc/netsec-integration.py prepare")
+    machine.succeed("ip route replace default via 100.67.0.1 dev ens1 metric 1")
+    # Model remote public hosts, reached through defaults rather than connected
+    # or explicit main-table routes (sing-tun intentionally preserves those).
+    machine.succeed("ip route del 203.0.113.10/32; ip -n outside -6 addr add 2001:db8:ffff::10/128 dev wifi-peer nodad; ip -6 route replace default via 2001:db8:dead::1 dev wlo1 metric 1")
+    machine.succeed("ip netns exec outside sh -c 'python3 /etc/netsec-dns.py server 15354 --dns-answer 203.0.113.10 >/tmp/integration-dns.log 2>&1 &'")
+    machine.succeed("ip netns exec outside sh -c 'python3 -m http.server 80 --bind 0.0.0.0 >/tmp/integration-tun-http.log 2>&1 &'")
+    machine.succeed("ip netns exec outside sh -c 'python3 /etc/netsec-integration.py http6 >/tmp/integration-http6.log 2>&1 &'")
+    machine.wait_until_succeeds("ip netns exec outside curl --noproxy '*' -fsS http://[2001:db8:dead::1]:8080/ >/dev/null")
+    machine.succeed("ip netns exec outside sh -c '${core}/bin/mihomo -d /run/netsec-node -f /run/netsec-node.json >/tmp/netsec-node.log 2>&1 &'")
+    machine.wait_until_succeeds("ip netns exec outside ss -ltn | grep -q ':18080 '")
+    machine.succeed("systemctl start clash-verge.service dns-upstream.service")
+    wait_proxy()
+    machine.succeed("/etc/netsec-tun-check")
+    for address in ("203.0.113.10", "[2001:db8:ffff::10]"):
+        machine.succeed(f"setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 5 http://{address}:8080/ >/dev/null")
+    for address in ("203.0.113.10", "2001:db8:ffff::10"):
+        machine.succeed(f"python3 /etc/netsec-dns.py query {address} 15353 --uid 1000")
+    machine.succeed("python3 /etc/netsec-integration.py check-node-log")
+    # Global mode must expose its real leaf too, including nested LoadBalance.
+    socket = "/run/user/1000/clash-verge-rev/verge-mihomo.sock"
+    machine.succeed(f"curl --noproxy '*' -fsS --unix-socket {socket} -X PUT -H 'Content-Type: application/json' -d '{{\"name\":\"Choice\"}}' http://localhost/proxies/GLOBAL")
+    machine.succeed(f"curl --noproxy '*' -fsS --unix-socket {socket} -X PATCH -H 'Content-Type: application/json' -d '{{\"mode\":\"global\"}}' http://localhost/configs")
+    # Execute a fresh complete health round while global mode is active; an old
+    # rule-mode health.json or an unrelated GLOBAL connection is insufficient.
+    machine.succeed("python3 /etc/netsec-health.py /etc/netsec-health.json >/tmp/netsec-global-health.json && jq -e .ok /tmp/netsec-global-health.json")
+    machine.succeed("journalctl -u clash-verge --no-pager | grep 'node.fixture.example:8080' | grep -q 'GLOBAL\\[Fixture\\]'")
+    machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = proxy && test $(jq -r .ok /run/proxy-mode/health.json) = true", timeout=90)
+    machine.succeed(f"curl --noproxy '*' -fsS --unix-socket {socket} -X PATCH -H 'Content-Type: application/json' -d '{{\"mode\":\"rule\"}}' http://localhost/configs")
+    # Keep the original table/rules, but make a higher-priority rule win.
+    machine.succeed("ip -6 rule add pref 100 lookup main")
+    machine.fail("/etc/netsec-tun-check")
+    machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = blocked && grep -qx no-tun /run/proxy-mode/reason", timeout=45)
+    machine.succeed("ip -6 rule show | grep -q 'lookup 2022' && ip -6 route show table 2022 | grep -q 'dev Mihomo'")
+    machine.fail("python3 /etc/netsec-dns.py query 2001:db8:ffff::10 15353")
+    machine.fail("python3 /etc/netsec-dns.py query 2001:db8:ffff::10 15353 --uid 1000")
+    machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 2 http://[2001:db8:ffff::10]:8080/")
+    machine.succeed("ip -6 rule del pref 100 lookup main")
+    wait_proxy()
+    machine.wait_until_succeeds("test $(jq -r .result /run/netsec/state.json) = ok && test $(jq -r .version /run/netsec/state.json) = $(jq -r .policy_version /run/proxy-mode/state.json)", timeout=90)
+    machine.succeed("jq -e '.boot_id and (.monotonic_seconds > 0)' /run/netsec/state.json")
   '';
 }
 

@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/metacubex/mihomo/common/yaml"
 )
 
 func TestLFManagedPolicy(t *testing.T) {
@@ -54,6 +57,91 @@ func TestLFManagedNixConfig(t *testing.T) {
 			}
 			testLFManagedNixConfig(t, path)
 		})
+	}
+}
+
+func TestLFManagedTunRouting(t *testing.T) {
+	path := os.Getenv("LF_MANAGED_TEST_POLICY")
+	if path == "" {
+		t.Skip("Nix integration policy not supplied")
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	policy, _, err := lfManagedPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := map[string]any{}
+	for key, value := range policy {
+		parts := strings.Split(key, ".")
+		object := document
+		for _, part := range parts[:len(parts)-1] {
+			child, ok := object[part].(map[string]any)
+			if !ok {
+				child = map[string]any{}
+				object[part] = child
+			}
+			object = child
+		}
+		object[parts[len(parts)-1]] = value
+	}
+	for key, value := range map[string]any{
+		"iproute2-rule-index":                        40000,
+		"auto-redirect-input-mark":                   6666,
+		"auto-redirect-output-mark":                  6666,
+		"auto-redirect-iproute2-fallback-rule-index": 52,
+		"file-descriptor":                            123,
+	} {
+		if _, pinned := policy["tun."+key]; !pinned {
+			continue
+		}
+		original := document["tun"].(map[string]any)[key]
+		document["tun"].(map[string]any)[key] = value
+		for _, marshal := range []func(any) ([]byte, error){json.Marshal, yaml.Marshal} {
+			data, err := marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := UnmarshalRawConfig(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = lfValidateRaw(raw); err == nil {
+				t.Fatalf("accepted tun.%s drift", key)
+			}
+		}
+		document["tun"].(map[string]any)[key] = original
+	}
+}
+
+// Every new upstream TUN input needs an explicit policy decision at upgrades.
+func TestLFManagedTunSchemaCoverage(t *testing.T) {
+	path := os.Getenv("LF_MANAGED_TEST_POLICY")
+	if path == "" {
+		t.Skip("Nix integration policy not supplied")
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	policy, _, err := lfManagedPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy["tun.enable"] != true {
+		t.Skip("TUN disabled")
+	}
+	allowed := map[string]bool{}
+	for _, key := range []string{
+		"auto-detect-interface", "gso", "gso-max-size", "endpoint-independent-nat",
+		"udp-timeout", "icmp-timeout", "disable-icmp-forwarding", "congestion-controller",
+		"include-android-user", "include-package", "exclude-package",
+		"recvmsgx", "sendmsgx", "processors-per-channel",
+	} {
+		allowed[key] = true
+	}
+	schema := reflect.TypeOf(RawTun{})
+	for index := 0; index < schema.NumField(); index++ {
+		key := strings.Split(schema.Field(index).Tag.Get("json"), ",")[0]
+		if _, managed := policy["tun."+key]; !managed && !allowed[key] {
+			t.Errorf("unclassified upstream TUN field: %s", key)
+		}
 	}
 }
 

@@ -25,6 +25,7 @@ let
         mixed = config.my.machine.ports.mihomoMixed;
         tproxy = if proxy.transparentGuestInterfaces == [ ] then 0 else config.my.machine.ports.mihomoTproxy;
         urls = proxy.nodeProbeUrls;
+        routing = proxy.tunRouting;
       };
     };
   manifest = pkgs.writeText "proxy-profile-tests.json" (builtins.toJSON (map render [

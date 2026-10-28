@@ -137,6 +137,7 @@ in
       # case where Verge injects the key after the merge instead.
       tun:
         enable: ${lib.boolToString tunMode}
+        file-descriptor: 0
         route-address: []
         route-address-set: []
         route-exclude-address-set: []
@@ -158,6 +159,10 @@ in
         device: ${tunDev}
         auto-route: true
         iproute2-table-index: ${toString osConfig.my.proxy.routeTable}
+        iproute2-rule-index: ${toString osConfig.my.proxy.tunRouting.iproute2-rule-index}
+        auto-redirect-input-mark: ${toString osConfig.my.proxy.tunRouting.auto-redirect-input-mark}
+        auto-redirect-output-mark: ${toString osConfig.my.proxy.tunRouting.auto-redirect-output-mark}
+        auto-redirect-iproute2-fallback-rule-index: ${toString osConfig.my.proxy.tunRouting.auto-redirect-iproute2-fallback-rule-index}
         auto-redirect: true
         strict-route: true
         # Match the managed policy's explicit DNS interception mode.
