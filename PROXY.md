@@ -81,7 +81,7 @@ Mode A may temporarily use DHCP resolvers for portal/bootstrap recovery. Each op
 |---|---|---|
 | `isClashOn` | `verge-mihomo` in `clash-verge.service`'s cgroup | the core is running |
 | `intent` | `/run/proxy-mode/intent` (`proxy` \| `direct`), written by root | the last explicit mode request; absent = this boot decides |
-| `tun_ready` | `Mihomo` device up + FIB `my.proxy.routeTable` + a route via it, for IPv4 and (when enabled) IPv6 | the TUN is actually capturing |
+| `tun_ready` | `Mihomo` device up + FIB `my.proxy.routeTable` + a route via it, for IPv4 and (when enabled) IPv6; actual unmarked IPv6 route selection for root and the desktop UID | the required kernel routing observations pass |
 | `mode_direct` | `GET /configs` over the control socket | mihomo is in `direct` mode |
 | `health_ok` | `netsec/health.py` checks TCP/UDP listener identities and managed API invariants (mode, the `managed-policy` digest, mark, ports, LAN exposure and TUN parameters), then tries complete HTTP 200/204 + exact-source-port/hostname log + selected-leaf delay proofs for `nodeProbeUrls`, followed by a fake-IP HTTP request through TUN/auto-redirect with its own exact-source-port route log and a final configuration fingerprint check | the managed core configuration, the **effective selected node**, and the transparent TCP data path pass within one shared deadline |
 
@@ -171,6 +171,12 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
 These checks validate generated rules, profile variants, core policy and network behavior in isolated environments without activating the host configuration. Complete-system builds require the [local application assets](overlays/local-apps/README.md).
+
+The supervisor and verifier share `netsec/tun.py`: a bounded JSON observation of the device, both routing tables/rules, and actual unmarked IPv6 routes for root and the desktop UID. A route that chooses an uplink despite a surviving TUN table forces Mode C through the existing supervisor decision/commit path. Managed TUN inputs also pin rule priority 9000, internal marks 8227/8228, fallback priority 32768 and file-descriptor 0; profile parsing, PATCH, templates and the health view share those values. An upstream RawTun schema coverage test requires explicit classification of new fields.
+
+Health resolves the connection's logged `group[leaf]` against known complete names and validates that recorded leaf against the current graph. A subsequent `now` cannot replace a recorded DIRECT result. LoadBalance uses its per-connection leaf without requiring `now`; the managed core also logs the actual chain in global mode. Ambiguous names or a changed selection invalidate the observation.
+
+Verification results carry CLOCK_BOOTTIME and a boot ID. Readiness requires both freshness and the current policy generation. `my.proxy.verificationMaxAgeSeconds` defaults to 420 seconds, separately from the 120-second consumer heartbeat contract; this accommodates the 300-second verifier timer, 30-second timer accuracy and bounded 60-second execution. Missing, future or cross-boot verification is never ready.
 
 ## 7. Configuration surface
 
@@ -328,7 +334,7 @@ split DNS 仅支持已由 `allowPrivateEgress` 排除在 TUN 外的私网/ULA �
 |---|---|---|
 | `isClashOn` | `clash-verge.service` cgroup 内的 `verge-mihomo` | 内核在运行 |
 | `intent` | `/run/proxy-mode/intent`（`proxy` \| `direct`），由 root 写入 | 最近一次显式模式请求；缺失表示本次开机自动判定 |
-| `tun_ready` | `Mihomo` 设备 UP + FIB `my.proxy.routeTable` + 一条经它的路由（IPv4，及启用时的 IPv6） | TUN 确实在抓流量 |
+| `tun_ready` | `Mihomo` 设备 UP + FIB `my.proxy.routeTable` + 一条经它的路由（IPv4，及启用时的 IPv6）；root 与桌面 UID 的未打标 IPv6 实际选路 | 必需的内核选路观测通过 |
 | `mode_direct` | 经控制口 `GET /configs` | mihomo 处于 `direct` 模式 |
 | `health_ok` | `netsec/health.py` 核对受管 API 不变量（模式、`managed-policy` 摘要、mark、端口、LAN 暴露、TUN 参数），再按 `nodeProbeUrls` 逐个执行完整的 HTTP 200/204、精确源端口/主机日志与所选叶子节点 delay 证明，之后经 TUN/auto-redirect 向 fake-IP 发真实 HTTP 请求并校验精确源端口的路由日志，最后复核配置指纹 | 受管核心配置、**实际所选节点**与透明 TCP 数据路径在共享总截止内全部通过 |
 
@@ -417,6 +423,12 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
 这些检查在隔离环境中验证生成的规则、配置分支、核心策略与网络行为，不激活宿主配置。完整系统构建需要准备[本地应用资源](overlays/local-apps/README.md)。
+
+监督器与审计器共用 `netsec/tun.py`：在有界期限内读取设备、双栈规则/路由表，以及 root 和桌面 UID 的未打标 IPv6 实际选路。即使 TUN 表仍存在，只要选路偏向上行口，监督器也会通过既有决策/原子提交路径进入模式 C。受管 TUN 同时固定规则优先级 9000、内部 mark 8227/8228、fallback 优先级 32768 与 file-descriptor 0；最终解析、PATCH、模板和健康视图共用这些值。RawTun schema 覆盖测试要求为上游新增字段作出显式分类。
+
+健康门按完整已知名称还原本次日志中的 `group[leaf]`，并检查该实际叶子仍与当前图一致。随后读取的 `now` 不能覆盖已记录的 DIRECT；LoadBalance 按连接叶子验证，不要求 `now`。受管核心在 global 模式也记录实际链。名称有歧义或选择发生变化时，本轮观测失效。
+
+审计结果携带 CLOCK_BOOTTIME 时间戳与 boot ID，就绪判断同时检查时效、同启动与同策略代次。`my.proxy.verificationMaxAgeSeconds` 默认 420 秒，独立于消费者心跳的 120 秒上限，为审计的 300 秒周期、30 秒调度精度和有界 60 秒执行留出空间。缺失、未来或其它启动的校验结果不视为就绪。
 
 ## 7. 配置面
 

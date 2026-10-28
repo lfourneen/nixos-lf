@@ -32,6 +32,7 @@ health, link, rules, nm_dns = (module(name) for name in ("health", "link", "rule
 dns_policy, resolved_policy, state, alerts = (module(name) for name in ("dns_policy", "resolved_policy", "state", "alerts"))
 events, dns_sleep = (module(name) for name in ("events", "dns_sleep"))
 listeners = module('listeners')
+tun = module('tun')
 SOURCE = (MODULES / "proxy-mode.nix").read_text()
 
 
@@ -43,6 +44,79 @@ def shell_function(name):
 
 
 class HealthTests(unittest.TestCase):
+    def test_tun_routing_fields_are_part_of_the_health_contract(self):
+        fields = {"iproute2-rule-index": 9000, "auto-redirect-input-mark": 8227,
+                  "auto-redirect-output-mark": 8228,
+                  "auto-redirect-iproute2-fallback-rule-index": 32768, "file-descriptor": 0}
+        config = {"mode": "rule", "tun": dict(fields)}
+        settings = {"expected": {"tun": fields}}
+        health.check_config(config, settings)
+        for key in fields:
+            for value in (None, 123):
+                candidate = copy.deepcopy(config)
+                if value is None: del candidate["tun"][key]
+                else: candidate["tun"][key] = value
+                with self.subTest(key=key, value=value), self.assertRaises(health.ProbeFailure):
+                    health.check_config(candidate, settings)
+
+    def test_recorded_direct_is_never_replaced_by_a_later_selection(self):
+        graph = {"Choice": {"type": "Selector", "now": "Good", "all": ["Good", "DIRECT"]},
+                 "Good": {"type": "Shadowsocks"}, "DIRECT": {"type": "Direct"}}
+        with self.assertRaises(health.ProbeFailure) as error:
+            health.effective_policy("Choice[DIRECT]", graph)
+        self.assertEqual(error.exception.layer, "route")
+        graph["Old"] = {"type": "Shadowsocks"}
+        with self.assertRaises(health.ProbeFailure) as error:
+            health.effective_policy("Choice[Old]", graph)
+        self.assertEqual(error.exception.layer, "obs")
+
+    def test_connection_leaf_supports_dynamic_and_nested_groups(self):
+        for kind in ("Selector", "URLTest", "Fallback", "LoadBalance"):
+            inner = {"type": kind, "all": ["node[fast]/x", "DIRECT"]}
+            if kind != "LoadBalance": inner["now"] = "node[fast]/x"
+            graph = {"GLOBAL[outer]": {"type": "Selector", "now": "inner"}, "inner": inner,
+                     "node[fast]/x": {"type": "Shadowsocks"}, "DIRECT": {"type": "Direct"}}
+            with self.subTest(kind=kind):
+                self.assertEqual(health.effective_policy("GLOBAL[outer][node[fast]/x]", graph),
+                                 ("GLOBAL[outer]", "node[fast]/x"))
+                with self.assertRaises(health.ProbeFailure) as error:
+                    health.effective_policy("GLOBAL[outer][DIRECT]", graph)
+                self.assertEqual(error.exception.layer, "route")
+
+    def test_ambiguous_names_and_unrecorded_group_leaf_are_refused(self):
+        graph = {"a": {"type": "Selector", "now": "b[c]"},
+                 "b[c]": {"type": "Shadowsocks"},
+                 "a[b[c]]": {"type": "Shadowsocks"}}
+        with self.assertRaises(health.ProbeFailure): health.effective_policy("a[b[c]]", graph)
+        with self.assertRaises(health.ProbeFailure): health.effective_policy("a", graph)
+
+    def test_target_delays_the_recorded_leaf_and_rechecks_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "logs"
+            path.write_text(json.dumps({"payload": "[TCP] 127.0.0.1:15010 --> probe.example:80 using Group[Good]"}))
+            graph = {"Group": {"type": "Selector", "now": "Good"},
+                     "Good": {"type": "Shadowsocks"}, "Other": {"type": "Shadowsocks"}}
+            probe = health.Probe({"budget_seconds": 12, "curl": "curl", "mixed_port": 7897})
+            probe.command = lambda *_args: "204 15010"
+            calls = []
+            def api(endpoint, *_args):
+                calls.append(endpoint)
+                if endpoint == "/proxies": return {"proxies": graph}
+                graph["Group"]["now"] = "Other"
+                return {"delay": 1}
+            probe.api = api
+            with self.assertRaises(health.ProbeFailure) as error:
+                probe.target("http://probe.example/", path)
+            self.assertEqual(error.exception.layer, "obs")
+            self.assertIn("/proxies/Good/delay?", calls[1])
+            path.write_text(json.dumps({"payload": "[TCP] 127.0.0.1:15010 --> probe.example:80 using Group[DIRECT]"}))
+            graph["DIRECT"] = {"type": "Direct"}
+            calls.clear()
+            with self.assertRaises(health.ProbeFailure) as error:
+                probe.target("http://probe.example/", path)
+            self.assertEqual(error.exception.layer, "route")
+            self.assertEqual(calls, ["/proxies"])
+
     def test_listener_failure_precedes_controller_or_dns_requests(self):
         probe = health.Probe({'budget_seconds': 12, 'listener_check': 'check-listeners'})
         probe.api = lambda *args: self.fail('queried controller after listener failure')
@@ -187,6 +261,43 @@ class HealthTests(unittest.TestCase):
                 with self.assertRaises(health.ProbeFailure):
                     probe.run()
             self.assertEqual(seen, ["http://first"])
+
+
+class TunTests(unittest.TestCase):
+    settings = {"ip": "ip", "device": "Mihomo", "table": 2022, "ipv6": True, "uids": [0, 1000]}
+
+    def observer(self, drift_uid=None):
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            if "link" in argv: value = [{"ifname": "Mihomo", "flags": ["UP"]}]
+            elif "rule" in argv: value = [{"table": 2022}]
+            elif "get" in argv:
+                uid = int(argv[argv.index("uid") + 1])
+                value = [{"dev": "ens1" if uid == drift_uid else "Mihomo"}]
+            else: value = [{"dev": "Mihomo"}]
+            return subprocess.CompletedProcess(argv, 0, json.dumps(value), "")
+        return run, calls
+
+    def test_actual_route_selection_for_root_and_desktop(self):
+        observe, calls = self.observer()
+        tun.check(self.settings, observe)
+        queries = [argv for argv in calls if "get" in argv]
+        self.assertEqual(len(queries), 6)
+        self.assertTrue(all(argv[-2:] == ["mark", "0"] for argv in queries))
+        for uid in (0, 1000):
+            observe, calls = self.observer(drift_uid=uid)
+            with self.subTest(uid=uid), self.assertRaises(ValueError): tun.check(self.settings, observe)
+
+    def test_ipv4_only_and_invalid_kernel_observations(self):
+        observe, calls = self.observer()
+        tun.check(dict(self.settings, ipv6=False), observe)
+        self.assertFalse(any("-6" in argv for argv in calls))
+        for value in ("[]", "{}", "null", "not-json", '[{"ifname":"Mihomo","flags":[]}]'):
+            def bad(argv, **kwargs): return subprocess.CompletedProcess(argv, 0, value, "")
+            with self.subTest(value=value), self.assertRaises(ValueError): tun.check(self.settings, bad)
+        with patch.object(tun.time, "monotonic", side_effect=[0, 3]):
+            with self.assertRaises(ValueError): tun.check(self.settings, observe)
 
 
 class ListenerTests(unittest.TestCase):
@@ -416,7 +527,8 @@ class StateTests(unittest.TestCase):
                 write("gost-relay/state.json", fresh)
                 write("dns-upstream/state.json", dict(fresh, mode=dns_mode))
                 write("dns-policy/state.json", dict(fresh, status="applied"))
-                write("netsec/state.json", {"result": "ok", "version": 10})
+                write("netsec/state.json", {"result": "ok", "version": 10, "monotonic_seconds": 100,
+                                            "boot_id": Path('/proc/sys/kernel/random/boot_id').read_text().strip()})
                 self.assertTrue(state.readiness(root, mode, now=101)["ready"])
                 write("dns-policy/state.json", dict(fresh, status="suspended"))
                 self.assertFalse(state.readiness(root, mode, now=101)["ready"])
@@ -424,6 +536,34 @@ class StateTests(unittest.TestCase):
                 self.assertFalse(state.readiness(root, mode, now=221)["ready"])
                 write("netsec/state.json", {"result": "ok", "version": 9})
                 self.assertFalse(state.readiness(root, mode, now=101)["ready"])
+
+    def test_verification_requires_same_boot_and_its_own_freshness(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            documents = {"proxy-mode/state.json": {"mode": "proxy", "policy_version": 1},
+                         "proxy-mode/heartbeat.json": {"mode": "proxy"},
+                         "gost-relay/state.json": {"mode": "proxy"},
+                         "dns-upstream/state.json": {"mode": "proxy"},
+                         "dns-policy/state.json": {"status": "applied"}}
+            for name, value in documents.items():
+                value.update(monotonic_seconds=1000, policy_version=1)
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(value))
+            path = root / "netsec/state.json"; path.parent.mkdir()
+            good = {"result": "ok", "version": 1, "monotonic_seconds": 650, "boot_id": "boot"}
+            def ready(value):
+                path.write_text(json.dumps(value))
+                return state.readiness(root, now=1000, boot_id="boot")
+            # 350 seconds is older than consumer heartbeats but within a normal
+            # verifier cycle (300s + timer accuracy + execution allowance).
+            self.assertTrue(ready(good)["ready"])
+            for change in ({"monotonic_seconds": None}, {"monotonic_seconds": True},
+                           {"monotonic_seconds": "650"}, {"monotonic_seconds": float('nan')},
+                           {"monotonic_seconds": float('inf')}, {"monotonic_seconds": 1001},
+                           {"monotonic_seconds": 10 ** 1000}, {"monotonic_seconds": -1},
+                           {"monotonic_seconds": 579}, {"boot_id": "old-boot"}, {"boot_id": None}):
+                with self.subTest(change=change): self.assertFalse(ready(dict(good, **change))["ready"])
+            self.assertFalse(ready({"result": "ok", "version": 1, "checked_at": "1970-01-01"})["ready"])
 
     def test_alert_recovery_does_not_clear_another_owner(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -576,6 +716,22 @@ rules_on_proxy() {{ applies=$((applies+1)); installed=proxy; }}
 rules_on_blocked() {{ installed=blocked; }}
 health_ok() {{ return 0; }}
 '''
+
+    def test_failed_tun_check_blocks_before_health_and_before_commit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            script = self.setup_shell(directory) + shell_function("sync_pass") + '''
+tun_ready() { return 1; }
+health_ok() { exit 99; }
+sync_pass
+[ "$mode" = blocked ] && [ "$reason" = no-tun ] && [ "$installed" = blocked ] || exit 1
+tun_good=1
+tun_ready() { [ "$tun_good" = 1 ]; }
+health_ok() { tun_good=0; return 0; }
+sync_pass
+[ "$mode" = blocked ] && [ "$installed" = blocked ] && [ "$reason" = no-tun ]
+'''
+            self.run_shell(script, directory)
 
     def test_reason_only_changes_do_not_invalidate_verification(self):
         with tempfile.TemporaryDirectory() as temporary:

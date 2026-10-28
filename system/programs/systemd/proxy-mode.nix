@@ -45,6 +45,17 @@ let
   # blackholed for lacking one. With tunMode the TUN is mandatory.
   requireTun = config.my.proxy.tunMode;
 
+  tunSettings = pkgs.writeText "proxy-tun.json" (builtins.toJSON {
+    ip = "${pkgs.iproute2}/bin/ip";
+    device = config.my.proxy.tunDev;
+    table = config.my.proxy.routeTable;
+    ipv6 = config.networking.enableIPv6;
+    uids = lib.unique [ 0 config.users.users.${m.desktopUser}.uid ];
+  });
+  tunCheck = pkgs.writeShellScript "proxy-tun-check" ''
+    exec ${pkgs.python3}/bin/python3 ${./netsec/tun.py} ${tunSettings}
+  '';
+
   # A DIRECT-routed name used for the TUN self-test: its fake-ip answer is only
   # reachable through the TUN. The probe resolves the name to the fake IP, sends a
   # real HTTP request over the TUN and requires both a final status and the core's
@@ -112,7 +123,8 @@ let
       allow-lan = false;
       ipv6 = config.networking.enableIPv6;
       log-level = "info";
-      tun = { enable = requireTun; } // lib.optionalAttrs requireTun {
+      tun = { enable = requireTun; file-descriptor = 0; }
+        // lib.optionalAttrs requireTun (config.my.proxy.tunRouting // {
         device = config.my.proxy.tunDev;
         stack = config.my.proxy.tunStack;
         mtu = config.my.proxy.tunMtu;
@@ -135,7 +147,7 @@ let
         exclude-uid = [ ];
         include-uid-range = [ ];
         exclude-uid-range = [ ];
-      };
+      });
     };
   });
 
@@ -377,19 +389,10 @@ NFT_OFF
       fi
     }
 
-    # Is the strict TUN path actually carrying traffic? Device up + sing-tun's
-    # FIB rule + a route via the device: the same kernel facts nftables-verify
-    # reads, so the two cannot disagree about "TUN mode".
+    # Shared with the verifier: include actual unmarked IPv6 route selection,
+    # not just the presence of the TUN table and a rule referring to it.
     tun_ready() {
-      $IP link show dev "$TUNDEV" >/dev/null 2>&1 || return 1
-      $IP -o link show dev "$TUNDEV" 2>/dev/null | $GREP -q ',UP' || return 1
-      $IP -4 rule show | $GREP -q "lookup $ROUTE_TABLE" || return 1
-      $IP -4 route show table "$ROUTE_TABLE" | $GREP -q "dev $TUNDEV" || return 1
-      ${lib.optionalString config.networking.enableIPv6 ''
-      $IP -6 rule show | $GREP -q "lookup $ROUTE_TABLE" || return 1
-      $IP -6 route show table "$ROUTE_TABLE" | $GREP -q "dev $TUNDEV" || return 1
-      ''}
-      return 0
+      ${tunCheck}
     }
     # Full health gate. All three must hold:
     #  (1) the core answers a proxied HTTP request through its mixed port, and
@@ -782,20 +785,20 @@ NFT_OFF
           systemctl start --no-block proxy-net-wake.service
           ;;
         status)
-          ${pkgs.python3}/bin/python3 ${./netsec/state.py} "''${2:-proxy}" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} || true
+          ${pkgs.python3}/bin/python3 ${./netsec/state.py} "''${2:-proxy}" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} || true
           ;;
         wait)
           target="''${2:-proxy}"
           case "$target" in proxy|direct) ;; *) exit 2 ;; esac
           for ((attempt=0; attempt<90; attempt++)); do
-            if ${pkgs.python3}/bin/python3 ${./netsec/state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} >/dev/null; then
+            if ${pkgs.python3}/bin/python3 ${./netsec/state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} >/dev/null; then
               echo "Proxy ready: $target"
               exit 0
             fi
             sleep 1
           done
           echo "Still waiting for current, verified $target policy and consumers" >&2
-          ${pkgs.python3}/bin/python3 ${./netsec/state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} || true
+          ${pkgs.python3}/bin/python3 ${./netsec/state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} || true
           cat /run/proxy-mode/reason /run/dns-upstream/reason 2>/dev/null || true
           exit 1
           ;;
@@ -826,6 +829,7 @@ in
   options.my.proxy.requestVerify = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.healthSettings = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.listenerCheck = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.tunCheck = lib.mkOption { type = lib.types.path; internal = true; };
 
   options.my.proxy.isClashOn = lib.mkOption {
     type = lib.types.path;
@@ -841,6 +845,7 @@ in
     my.proxy.requestVerify = verifyRequest;
     my.proxy.healthSettings = healthSettings;
     my.proxy.listenerCheck = listenerCheck;
+    my.proxy.tunCheck = tunCheck;
     systemd.tmpfiles.rules = [
       "d /run/netsec 0755 root root -"
       "d /run/netsec/requests 0755 root root -"

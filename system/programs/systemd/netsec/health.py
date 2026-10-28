@@ -30,7 +30,9 @@ def config_view(config):
     tun = config.get("tun") or {}
     view["tun"] = {key: tun.get(key) for key in (
         "enable", "device", "stack", "auto-route", "auto-redirect", "strict-route",
-        "dns-mode", "mtu", "iproute2-table-index")}
+        "dns-mode", "mtu", "iproute2-table-index", "iproute2-rule-index",
+        "auto-redirect-input-mark", "auto-redirect-output-mark",
+        "auto-redirect-iproute2-fallback-rule-index", "file-descriptor")}
     view["tun"]["stack"] = str(tun.get("stack", "")).lower()
     for key in ("route-exclude-address", "inet6-address", "dns-hijack",
                 "route-address-set", "route-exclude-address-set", "route-address",
@@ -57,27 +59,50 @@ def check_config(config, settings):
 
 
 def effective_policy(text, proxies):
-    """Resolve the exact logged policy and its selected leaf, including odd names."""
-    names = sorted(proxies, key=len, reverse=True)
-    name = next((p for p in names if text == p or text.startswith(p + "[")), None)
-    if name is None:
-        raise ProbeFailure("obs", "logged policy is absent from the API graph")
-    group, seen = name, set()
-    for _ in range(32):
-        if name in seen or name not in proxies:
-            raise ProbeFailure("obs", "cyclic or incomplete policy graph")
-        seen.add(name)
+    """Validate the connection's recorded leaf, never substitute a later `now`."""
+    def group(item):
+        return "all" in item or "now" in item
+
+    candidates = []
+    for outer, item in proxies.items():
+        if not isinstance(item, dict):
+            raise ProbeFailure("obs", "invalid policy graph")
+        if text == outer and not group(item):
+            candidates.append((outer, outer))
+        prefix = outer + "["
+        if group(item) and text.startswith(prefix) and text.endswith("]"):
+            leaf = text[len(prefix):-1]
+            if leaf in proxies and not group(proxies[leaf]):
+                candidates.append((outer, leaf))
+    # Match the full rendering against known names, including brackets inside
+    # either name. Ambiguous renderings cannot establish which leaf was used.
+    if len(candidates) != 1:
+        raise ProbeFailure("obs", "connection policy is absent or ambiguous")
+    outer, leaf = candidates[0]
+    forbidden = {"direct", "reject", "reject-drop", "pass", "compatible"}
+    if leaf.lower() in forbidden or str(proxies[leaf].get("type", "")).lower() in forbidden:
+        raise ProbeFailure("route", "probe selected a non-proxy policy")
+
+    pending = [(outer, frozenset())]
+    visits = 0
+    while pending:
+        name, seen = pending.pop()
+        visits += 1
+        if visits > 4096 or len(seen) >= 32 or name in seen or name not in proxies:
+            raise ProbeFailure("obs", "cyclic, incomplete or oversized policy graph")
+        if name == leaf:
+            return outer, leaf
         item = proxies[name]
-        if name in {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"} \
-                or str(item.get("type", "")).lower() in {"direct", "reject", "pass", "compatible"}:
-            raise ProbeFailure("route", "probe selected a non-proxy policy")
         selected = item.get("now")
-        if not selected:
-            if item.get("all"):
-                raise ProbeFailure("obs", "group does not expose a selected leaf")
-            return group, name
-        name = selected
-    raise ProbeFailure("obs", "policy nesting exceeds 32 levels")
+        if selected:
+            children = [selected]
+        elif str(item.get("type", "")).lower() == "loadbalance":
+            # LoadBalance chooses per connection and intentionally has no now.
+            children = item.get("all") or []
+        else:
+            children = []
+        pending.extend((child, seen | {name}) for child in children)
+    raise ProbeFailure("obs", "recorded leaf no longer matches the current selection")
 
 
 def route_line(contents, host, port):

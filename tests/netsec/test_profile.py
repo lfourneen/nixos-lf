@@ -14,6 +14,7 @@ for case in cases:
     expected = case["expected"]
     tun = data["tun"]
     assert tun["enable"] == expected["tun"], case["name"]
+    assert tun["file-descriptor"] == 0
     assert data["mixed-port"] == expected["mixed"]
     assert data["tproxy-port"] == expected["tproxy"]
     assert data["ipv6"] == expected["ipv6"]
@@ -34,6 +35,8 @@ for case in cases:
         # omitempty: a Merge that drops this key parses to "" and the core
         # refuses to start, so the coupling is asserted here first.
         assert tun["dns-mode"] == "hijack"
+        for key, value in expected["routing"].items():
+            assert tun[key] == value, (case["name"], key)
     if expected["tun"] and expected["ipv6"]:
         assert tun["inet6-address"] == [expected["address"]]
     else:

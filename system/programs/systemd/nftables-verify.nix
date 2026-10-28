@@ -16,6 +16,7 @@ in
     unitConfig.StartLimitIntervalSec = 0;
     serviceConfig = {
       Type = "oneshot";
+      TimeoutStartSec = "60s";
       NoNewPrivileges = true;
       RuntimeDirectory = "netsec";
       RuntimeDirectoryMode = "0755";
@@ -40,9 +41,13 @@ in
       ack_requests() { if [ "''${#requests[@]}" -gt 0 ]; then rm -f -- "''${requests[@]}"; fi; }
       publish_result() {
         local result="$1" detail="$2"
+        local monotonic unused
+        read -r monotonic unused < /proc/uptime
         jq -n --arg result "$result" --arg detail "$detail" --argjson version "$version" \
+          --argjson monotonic "$monotonic" --arg boot "$(cat /proc/sys/kernel/random/boot_id)" \
           --arg checked "$(date -Iseconds)" \
-          '{result:$result,version:$version,checked_at:$checked,detail:$detail}' > /run/netsec/state.json.$$
+          '{result:$result,version:$version,checked_at:$checked,detail:$detail,
+            monotonic_seconds:$monotonic,boot_id:$boot}' > /run/netsec/state.json.$$
         mv -f /run/netsec/state.json.$$ /run/netsec/state.json
         atomic_write "$RESULT" "$result"
         atomic_write /run/netsec/verified-version "$version"
@@ -109,23 +114,8 @@ in
           ${pkgs.python3}/bin/python3 ${./netsec/resolved_policy.py} ${config.my.proxy.resolvedPolicySettings} --check \
             || warn 'TUN resolver routing has not converged to the managed gateway'
           ${lib.optionalString config.my.proxy.tunMode ''
-          ip -o link show dev ${lib.escapeShellArg config.my.proxy.tunDev} | grep -q ',UP' || live_fail 'TUN down'
+          ${config.my.proxy.tunCheck} || live_fail 'TUN kernel path is not ready'
           $NFT list table inet mihomo >/dev/null || live_fail 'mihomo auto-redirect table missing'
-          for family in 4 ${lib.optionalString config.networking.enableIPv6 "6"}; do
-            ip -"$family" rule show | grep -q 'lookup ${toString config.my.proxy.routeTable}' || live_fail "IPv$family TUN rule missing"
-            ip -"$family" route show table ${toString config.my.proxy.routeTable} | grep -q 'dev ${config.my.proxy.tunDev}' || live_fail "IPv$family TUN route missing"
-          done
-          ${lib.optionalString config.networking.enableIPv6 ''
-          # The rule and route above prove the plumbing exists; this proves the
-          # kernel actually selects it. A regression that hands IPv6 back to the
-          # physical uplink still leaves the rule and the route in place, so only
-          # `route get` catches traffic that would leave around the proxy.
-          # Literal global addresses only, never resolved through DNS.
-          for probe in 2606:4700:4700::1111 2001:4860:4860::8888 2400:3200::1; do
-            ip -6 route get "$probe" 2>/dev/null | grep -q "dev ${config.my.proxy.tunDev}" \
-              || live_fail "IPv6 destination $probe is not captured by ${config.my.proxy.tunDev}"
-          done
-          ''}
           ''}
           listeners relay core || live_fail 'proxy listener identity mismatch'
           if [ "$(cat /run/dns-upstream/status)" != proxy ]; then

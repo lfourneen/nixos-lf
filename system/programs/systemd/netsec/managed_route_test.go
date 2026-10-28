@@ -1,6 +1,7 @@
 package route
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,45 @@ import (
 	"github.com/metacubex/http/httptest"
 	"github.com/metacubex/mihomo/listener"
 )
+
+func TestLFManagedTunPatchRouting(t *testing.T) {
+	path := os.Getenv("LF_MANAGED_TEST_POLICY")
+	if path == "" {
+		t.Skip("Nix integration policy not supplied")
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := map[string]any{}
+	if err = json.Unmarshal(data, &policy); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]any{
+		"iproute2-rule-index":                        40000,
+		"auto-redirect-input-mark":                   6666,
+		"auto-redirect-output-mark":                  6666,
+		"auto-redirect-iproute2-fallback-rule-index": 52,
+		"file-descriptor":                            123,
+	} {
+		expected, pinned := policy["tun."+key]
+		if !pinned {
+			continue
+		}
+		for _, candidate := range []any{expected, value} {
+			body, err := json.Marshal(map[string]any{"tun": map[string]any{"enable": policy["tun.enable"], key: candidate}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := httptest.NewRecorder()
+			_, ok := lfDecodeManagedPatch(recorder, httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(string(body))))
+			if ok != reflect.DeepEqual(candidate, expected) {
+				t.Fatalf("wrong PATCH decision for %s=%v", key, candidate)
+			}
+		}
+	}
+}
 
 func TestLFManagedPatchHandler(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "policy.json")

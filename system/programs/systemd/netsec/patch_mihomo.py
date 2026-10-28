@@ -11,6 +11,11 @@ def replace(path, old, new):
 
 
 root = Path(sys.argv[1])
+# Global-mode logs previously omitted the actual connection leaf. The health
+# gate must observe the same group[leaf] chain as rule-mode connections.
+replace(root / "tunnel/tunnel.go",
+        'log.Infoln("[%s] %s --> %s using GLOBAL", strings.ToUpper(metadata.NetWork.String()), metadata.SourceDetail(), metadata.RemoteAddress())',
+        'log.Infoln("[%s] %s --> %s using %s", strings.ToUpper(metadata.NetWork.String()), metadata.SourceDetail(), metadata.RemoteAddress(), remoteConn.Chains().String())')
 replace(root / "config/config.go", "type General struct {", 'type General struct {\n\tManagedPolicy string `json:"managed-policy"`')
 replace(root / "config/config.go", "func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {",
         "func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {\n"

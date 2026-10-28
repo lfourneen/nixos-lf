@@ -32,6 +32,19 @@ in
     description = "Mihomo TUN iproute2-table-index, shared by the template and checks.";
   };
 
+  options.my.proxy.tunRouting = lib.mkOption {
+    type = lib.types.attrsOf lib.types.ints.positive;
+    internal = true;
+    readOnly = true;
+    default = {
+      iproute2-rule-index = 9000;
+      auto-redirect-input-mark = 8227;
+      auto-redirect-output-mark = 8228;
+      auto-redirect-iproute2-fallback-rule-index = 32768;
+    };
+    description = "Managed sing-tun routing priorities and marks, shared by every configuration gate.";
+  };
+
   options.my.proxy.tunStack = lib.mkOption {
     type = lib.types.enum [ "system" "gvisor" "mixed" "mips" ];
     default = "mixed";
@@ -88,6 +101,11 @@ in
     type = lib.types.ints.between 90 300;
     default = 120;
     description = "Maximum age of a successful supervisor/consumer observation.";
+  };
+  options.my.proxy.verificationMaxAgeSeconds = lib.mkOption {
+    type = lib.types.ints.between 390 1800;
+    default = 420;
+    description = "Verifier freshness: allows the 300s timer, 30s accuracy and bounded 60s execution.";
   };
   options.my.proxy.resolvedPolicySettings = lib.mkOption {
     type = lib.types.path;
