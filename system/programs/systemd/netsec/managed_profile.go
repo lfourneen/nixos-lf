@@ -124,6 +124,44 @@ func lfValidateRaw(raw *RawConfig) (string, error) {
 	return lfValidate(document, false)
 }
 
+// Older generated profiles omit these optional fields, or use zero to select
+// upstream defaults. Resolve that sentinel to our policy before any TUN setup;
+// nonzero input is still checked by lfValidateRaw and PATCH stays strict.
+func lfManagedTunDefaults(raw *RawConfig) error {
+	policy, _, err := lfManagedPolicy()
+	if err != nil || policy == nil {
+		return err
+	}
+	defaults := map[string]any{}
+	for _, key := range []string{"iproute2-rule-index", "auto-redirect-input-mark",
+		"auto-redirect-output-mark", "auto-redirect-iproute2-fallback-rule-index"} {
+		if value, exists := policy["tun."+key]; exists {
+			defaults[key] = value
+		}
+	}
+	data, err := json.Marshal(defaults)
+	if err != nil {
+		return err
+	}
+	var tun RawTun
+	if err := json.Unmarshal(data, &tun); err != nil {
+		return err
+	}
+	if raw.Tun.IPRoute2RuleIndex == 0 {
+		raw.Tun.IPRoute2RuleIndex = tun.IPRoute2RuleIndex
+	}
+	if raw.Tun.AutoRedirectInputMark == 0 {
+		raw.Tun.AutoRedirectInputMark = tun.AutoRedirectInputMark
+	}
+	if raw.Tun.AutoRedirectOutputMark == 0 {
+		raw.Tun.AutoRedirectOutputMark = tun.AutoRedirectOutputMark
+	}
+	if raw.Tun.AutoRedirectIPRoute2FallbackRuleIndex == 0 {
+		raw.Tun.AutoRedirectIPRoute2FallbackRuleIndex = tun.AutoRedirectIPRoute2FallbackRuleIndex
+	}
+	return nil
+}
+
 // Validate PATCH before the controller can create or change any listeners.
 func ValidateManagedPatch(document map[string]any) error {
 	// The upstream tun PATCH schema uses a non-pointer bool for enable: an

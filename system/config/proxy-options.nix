@@ -32,6 +32,12 @@ in
     description = "Mihomo TUN iproute2-table-index, shared by the template and checks.";
   };
 
+  options.my.proxy.gostPackage = lib.mkOption {
+    type = lib.types.package;
+    internal = true;
+    readOnly = true;
+  };
+
   options.my.proxy.tunRouting = lib.mkOption {
     type = lib.types.attrsOf lib.types.ints.positive;
     internal = true;
@@ -69,6 +75,11 @@ in
     type = lib.types.ints.between 8 30;
     default = 12;
     description = "Total deadline for a selected-node health probe, across all targets.";
+  };
+  options.my.proxy.healthRequestTimeoutSeconds = lib.mkOption {
+    type = lib.types.ints.between 1 10;
+    default = 5;
+    description = "Maximum seconds for each real HTTP health request, capped by the shared probe deadline.";
   };
   options.my.proxy.guestInterfaces = lib.mkOption {
     type = lib.types.nonEmptyListOf lib.types.str;
@@ -114,8 +125,14 @@ in
 
   options.my.proxy.nodeProbeUrls = lib.mkOption {
     type = lib.types.nonEmptyListOf lib.types.str;
-    default = [ "http://www.gstatic.com/generate_204" "http://www.msftconnecttest.com/connecttest.txt" ];
-    description = "Delay-test targets for the effective selected node; a second target distinguishes target outages from node failure.";
+    default = [ "https://www.gstatic.com/generate_204" "https://cp.cloudflare.com/generate_204" ];
+    description = "HTTP targets for the effective selected route; a second target distinguishes target outages from route failure.";
+  };
+
+  options.my.proxy.delayTestUrl = lib.mkOption {
+    type = lib.types.strMatching "https://[^[:space:]]+";
+    default = "https://www.gstatic.com/generate_204";
+    description = "HTTPS default for unset GUI delay tests and missing or HTTP node/provider health-check URLs.";
   };
   # Single source of truth for TUN mode; home/config/cvr-merge.nix reads it
   # via osConfig so the clash Merge template can't drift out of sync.

@@ -44,6 +44,8 @@ pkgs.testers.runNixOSTest {
       local-data = [ ''"fixture.test. 0 IN A 192.0.2.42"'' ];
     };
     boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
+    boot.kernel.sysctl."net.ipv4.conf.all.log_martians" = 1;
+    boot.kernel.sysctl."net.ipv4.conf.default.log_martians" = 1;
     my.proxy.transparentGuestInterfaces = [ "virbr0" ];
     networking.networkmanager.unmanaged = [
       "interface-name:eth*" "interface-name:guest*"
@@ -296,11 +298,19 @@ pkgs.testers.runNixOSTest {
     machine.succeed("systemctl start clash-verge.service dns-upstream.service")
     wait_proxy()
     machine.succeed("/etc/netsec-tun-check")
+    # SO_BINDTODEVICE must survive transparent TCP DNAT. Redirecting these
+    # sockets to loopback used to send 127/8 into the TUN and cause martians.
+    martians_before = machine.succeed("journalctl -k --no-pager | grep 'martian destination' | grep -c Mihomo || true").strip()
+    for family, address in ((4, "203.0.113.10"), (6, "[2001:db8:ffff::10]")):
+        machine.succeed(f"setpriv --reuid=1000 --clear-groups curl -{family} --interface if!Mihomo --noproxy '*' -fsS --max-time 5 http://{address}:8080/ >/dev/null")
+    assert machine.succeed("journalctl -k --no-pager | grep 'martian destination' | grep -c Mihomo || true").strip() == martians_before
+    machine.succeed("test $(cat /proc/sys/net/ipv4/conf/all/route_localnet) = 0; test $(cat /proc/sys/net/ipv4/conf/Mihomo/route_localnet) = 0")
     for address in ("203.0.113.10", "[2001:db8:ffff::10]"):
         machine.succeed(f"setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 5 http://{address}:8080/ >/dev/null")
     for address in ("203.0.113.10", "2001:db8:ffff::10"):
         machine.succeed(f"python3 /etc/netsec-dns.py query {address} 15353 --uid 1000")
     machine.succeed("python3 /etc/netsec-integration.py check-node-log")
+    machine.succeed("python3 /etc/netsec-integration.py connect-test")
     # Global mode must expose its real leaf too, including nested LoadBalance.
     socket = "/run/user/1000/clash-verge-rev/verge-mihomo.sock"
     machine.succeed(f"curl --noproxy '*' -fsS --unix-socket {socket} -X PUT -H 'Content-Type: application/json' -d '{{\"name\":\"Choice\"}}' http://localhost/proxies/GLOBAL")
@@ -319,6 +329,8 @@ pkgs.testers.runNixOSTest {
     machine.fail("python3 /etc/netsec-dns.py query 2001:db8:ffff::10 15353")
     machine.fail("python3 /etc/netsec-dns.py query 2001:db8:ffff::10 15353 --uid 1000")
     machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 2 http://[2001:db8:ffff::10]:8080/")
+    for family, address in ((4, "203.0.113.10"), (6, "[2001:db8:ffff::10]")):
+        machine.fail(f"setpriv --reuid=1000 --clear-groups curl -{family} --interface if!Mihomo --noproxy '*' -fsS --max-time 2 http://{address}:8080/")
     machine.succeed("ip -6 rule del pref 100 lookup main")
     wait_proxy()
     machine.wait_until_succeeds("test $(jq -r .result /run/netsec/state.json) = ok && test $(jq -r .version /run/netsec/state.json) = $(jq -r .policy_version /run/proxy-mode/state.json)", timeout=90)

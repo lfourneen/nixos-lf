@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 
 class ProbeFailure(Exception):
@@ -235,10 +235,11 @@ class Probe:
         if not host:
             raise ProbeFailure("config", "invalid health target URL")
         # Fresh source ports disambiguate the log from other local applications.
+        timeout = self.remaining(self.settings["request_timeout_seconds"])
         output = self.command([self.settings["curl"], "-sS", "-o", "/dev/null", "-w",
-                               "%{http_code} %{local_port}", "--max-time", "2.5",
+                               "%{http_code} %{local_port}", "--max-time", str(timeout),
                                "--noproxy", "", "--local-port", "15010-15090", "-x",
-                               f"http://127.0.0.1:{self.settings['mixed_port']}", url])
+                               f"http://127.0.0.1:{self.settings['mixed_port']}", url], timeout + 0.2)
         fields = output.split()
         if len(fields) != 2 or fields[0] not in {"200", "204"} or not fields[1].isdigit():
             raise ProbeFailure("obs", "mixed HTTP request failed")
@@ -252,15 +253,10 @@ class Probe:
         if not policy:
             raise ProbeFailure("obs", "no exact-source-port route log for this target")
         proxies = self.api("/proxies").get("proxies", {})
-        group, member = effective_policy(policy, proxies)
-        # Test the exact leaf, never a group's arbitrary healthy fallback member.
-        delay = self.api("/proxies/" + quote(member, safe="") + "/delay?url="
-                         + quote(url, safe="") + "&timeout=2500", 2.7)
-        if not isinstance(delay.get("delay"), (int, float)) or delay["delay"] < 0:
-            raise ProbeFailure("node", "effective selected node delay test failed")
-        current = self.api("/proxies").get("proxies", {})
-        if effective_policy(policy, current) != (group, member):
-            raise ProbeFailure("obs", "selection changed during the node test")
+        # This successful request already exercised the recorded leaf. A second
+        # /delay call mutates Mihomo's alive/history state and can change URLTest
+        # selection, so the supervisor only reads and validates the live graph.
+        effective_policy(policy, proxies)
 
     def run(self, fast=False):
         def listeners():
@@ -292,7 +288,7 @@ class Probe:
                             raise
                         failures.append(error)
                 else:
-                    raise next((e for e in failures if e.layer == "node"), failures[-1])
+                    raise failures[-1]
                 self.timed("tun", lambda: self.tun_test(log_path))
                 final = check_config(self.api("/configs"), self.settings)
                 if final != fingerprint:

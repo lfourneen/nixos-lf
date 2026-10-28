@@ -90,25 +90,29 @@ class HealthTests(unittest.TestCase):
         with self.assertRaises(health.ProbeFailure): health.effective_policy("a[b[c]]", graph)
         with self.assertRaises(health.ProbeFailure): health.effective_policy("a", graph)
 
-    def test_target_delays_the_recorded_leaf_and_rechecks_selection(self):
+    def test_target_proves_the_recorded_leaf_without_mutating_node_health(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "logs"
             path.write_text(json.dumps({"payload": "[TCP] 127.0.0.1:15010 --> probe.example:80 using Group[Good]"}))
             graph = {"Group": {"type": "Selector", "now": "Good"},
                      "Good": {"type": "Shadowsocks"}, "Other": {"type": "Shadowsocks"}}
-            probe = health.Probe({"budget_seconds": 12, "curl": "curl", "mixed_port": 7897})
+            probe = health.Probe({"budget_seconds": 12, "curl": "curl", "mixed_port": 7897,
+                                  "request_timeout_seconds": 5})
             probe.command = lambda *_args: "204 15010"
             calls = []
             def api(endpoint, *_args):
                 calls.append(endpoint)
-                if endpoint == "/proxies": return {"proxies": graph}
-                graph["Group"]["now"] = "Other"
-                return {"delay": 1}
+                self.assertEqual(endpoint, "/proxies", "health must not call the mutating delay API")
+                return {"proxies": graph}
             probe.api = api
+            probe.target("http://probe.example/", path)
+            self.assertEqual(calls, ["/proxies"])
+            graph["Group"]["now"] = "Other"
+            calls.clear()
             with self.assertRaises(health.ProbeFailure) as error:
                 probe.target("http://probe.example/", path)
             self.assertEqual(error.exception.layer, "obs")
-            self.assertIn("/proxies/Good/delay?", calls[1])
+            self.assertEqual(calls, ["/proxies"])
             path.write_text(json.dumps({"payload": "[TCP] 127.0.0.1:15010 --> probe.example:80 using Group[DIRECT]"}))
             graph["DIRECT"] = {"type": "Direct"}
             calls.clear()
@@ -116,6 +120,38 @@ class HealthTests(unittest.TestCase):
                 probe.target("http://probe.example/", path)
             self.assertEqual(error.exception.layer, "route")
             self.assertEqual(calls, ["/proxies"])
+
+    def test_http_health_timeout_accepts_slow_success_and_respects_total_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "logs"
+            log.write_text(json.dumps({"payload": "[TCP] 127.0.0.1:15010 --> probe.example:443 using Group[Good]"}))
+            clock = [100.0]
+            probe = health.Probe({"budget_seconds": 12, "curl": "curl", "mixed_port": 7897,
+                                  "request_timeout_seconds": 5}, clock=lambda: clock[0])
+            graph = {"Group": {"type": "Selector", "now": "Good"}, "Good": {"type": "Vless"}}
+            probe.api = lambda *_args: {"proxies": graph}
+
+            def slow_success(argv, **kwargs):
+                self.assertEqual(float(argv[argv.index("--max-time") + 1]), 5)
+                self.assertAlmostEqual(kwargs["timeout"], 5.2)
+                clock[0] += 3.6
+                return subprocess.CompletedProcess(argv, 0, "204 15010", "")
+
+            with patch.object(health.subprocess, "run", side_effect=slow_success):
+                probe.target("https://probe.example/", log)
+            self.assertAlmostEqual(clock[0], 103.6)
+
+            clock[0] = 110
+            with patch.object(health.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "204 15010", "")) as run:
+                probe.target("https://probe.example/", log)
+            argv = run.call_args.args[0]
+            self.assertEqual(float(argv[argv.index("--max-time") + 1]), 2)
+            self.assertEqual(run.call_args.kwargs["timeout"], 2)
+            clock[0] = 112
+            with patch.object(health.subprocess, "run") as run:
+                with self.assertRaises(health.ProbeFailure):
+                    probe.target("https://probe.example/", log)
+                run.assert_not_called()
 
     def test_listener_failure_precedes_controller_or_dns_requests(self):
         probe = health.Probe({'budget_seconds': 12, 'listener_check': 'check-listeners'})
@@ -633,7 +669,7 @@ def policy_document():
     return {"nftables": [
         {"table": {"family": "inet", "name": "lf_filter"}},
         {"chain": {"family": "inet", "table": "lf_filter", "name": "input", "hook": "input", "prio": 0, "policy": "drop"}},
-        {"chain": {"family": "inet", "table": "lf_filter", "name": "lf_blocked_guard", "hook": "output", "prio": -200}},
+        {"chain": {"family": "inet", "table": "lf_filter", "name": "lf_blocked_guard", "hook": "output", "prio": -197}},
         {"rule": {"family": "inet", "table": "lf_filter", "chain": "input", "expr": [{"accept": None}]}},
         {"rule": {"family": "inet", "table": "lf_filter", "chain": "input", "expr": [{"drop": None}]}},
     ]}
@@ -744,6 +780,55 @@ sync_pass
 [ "$(read_version)" = 10 ] && [ "$verifies" = 0 ] && [ "$reason" = "" ] && [ "$snapshots" -ge 4 ]
 '''
             self.run_shell(script, directory)
+
+    def test_network_failure_is_rechecked_promptly_and_success_resets_the_count(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            script = self.setup_shell(directory) + shell_function("sync_pass") + '''
+health_ok() { health_gate=obs; return 1; }
+sync_pass
+[ "$mode" = proxy ] && [ "$reason" = obs:1/2 ] && [ "$changed" = 1 ] || exit 1
+[ "$(read_version)" = 10 ] || exit 2
+health_ok() { return 0; }
+sync_pass
+[ "$mode" = proxy ] && [ "$reason" = "" ] && [ "$obs_fails" = 0 ] || exit 3
+health_ok() { health_gate=obs; return 1; }
+sync_pass
+[ "$mode" = proxy ] && [ "$reason" = obs:1/2 ] || exit 4
+sync_pass
+[ "$mode" = blocked ] && [ "$installed" = blocked ] && [ "$reason" = obs:2/2 ] || exit 5
+[ "$(read_version)" = 11 ] || exit 6
+health_ok() { return 0; }
+sync_pass
+[ "$mode" = proxy ] && [ "$reason" = "" ] && [ "$(read_version)" = 12 ]
+'''
+            self.run_shell(script, directory)
+
+    def test_network_failure_cannot_promote_blocked_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            script = self.setup_shell(directory) + shell_function("sync_pass") + '''
+echo blocked > "$STATUS"; installed=blocked
+health_ok() { health_gate=obs; return 1; }
+sync_pass
+[ "$mode" = blocked ] && [ "$installed" = blocked ] && [ "$applies" = 0 ]
+'''
+            self.run_shell(script, directory)
+
+    def test_confirmed_risks_cut_immediately_despite_network_failure_grace(self):
+        for layer in ("config", "route", "tun", "direct-mode", "core-gone"):
+            with self.subTest(layer=layer), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                script = self.setup_shell(directory) + shell_function("sync_pass") + "\n"
+                script += "health_ok() { health_gate=obs; return 1; }; sync_pass\n"
+                if layer == "direct-mode":
+                    script += "mode_direct() { return 0; }\n"
+                elif layer == "core-gone":
+                    script += "IS_CLASH_ON=false\n"
+                else:
+                    script += f"health_ok() {{ health_gate={layer}; return 1; }}\n"
+                script += f'sync_pass\n[ "$mode" = blocked ] && [ "$installed" = blocked ] && [ "$reason" = {layer} ]\n'
+                self.run_shell(script, directory)
 
     def test_static_drift_is_fully_repaired(self):
         with tempfile.TemporaryDirectory() as temporary:
