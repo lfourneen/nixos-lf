@@ -41,46 +41,10 @@
     # Kernel attack-surface reductions
     "dev.tty.ldisc_autoload" = 0;
     "net.core.bpf_jit_harden" = 2;
-
-    # Network layer hardening
-    "net.ipv4.conf.all.accept_redirects" = 0;
-    "net.ipv6.conf.all.accept_redirects" = 0;
-    "net.ipv4.conf.default.accept_redirects" = 0;
-    "net.ipv6.conf.default.accept_redirects" = 0;
-    "net.ipv4.conf.all.secure_redirects" = 0;
-    "net.ipv4.conf.default.secure_redirects" = 0;
-    "net.ipv4.conf.all.send_redirects" = 0;
-
-    # Log spoofed packets with invalid/martian source addresses
-    "net.ipv4.conf.all.log_martians" = 1;
-    "net.ipv4.conf.default.log_martians" = 1;
-
-    # Anti-spoofing: loose reverse-path filter + ARP hygiene
-    "net.ipv4.conf.all.rp_filter" = 2;
-    "net.ipv4.conf.default.rp_filter" = 2;
-    "net.ipv4.conf.all.arp_ignore" = 1;
-    "net.ipv4.conf.default.arp_ignore" = 1;
-    "net.ipv4.conf.all.arp_announce" = 2;
-    "net.ipv4.conf.default.arp_announce" = 2;
-
-    # Ignore broadcast pings and bogus ICMP error responses
-    "net.ipv4.icmp_echo_ignore_broadcasts" = 1;
-    "net.ipv4.icmp_ignore_bogus_error_responses" = 1;
-
-    # SYN flood protection
-    "net.ipv4.tcp_syncookies" = 1;
-
-    # Mitigate TCP TIME-WAIT assassination attacks (RFC 1337)
-    "net.ipv4.tcp_rfc1337" = 1;
-
-    # Drop source-routed packets (prevents IPv4/IPv6 spoofing and filter bypass)
-    "net.ipv4.conf.all.accept_source_route" = 0;
-    "net.ipv4.conf.default.accept_source_route" = 0;
-    "net.ipv6.conf.all.accept_source_route" = 0;
+    # Root can still use bpftrace; Flatpak/rootless user namespaces stay enabled.
+    "kernel.unprivileged_bpf_disabled" = 2;
+    "vm.unprivileged_userfaultfd" = 0;
   };
-
-  # Forwarding (not a hardening knob): required by waydroid/libvirt/rootless-docker.
-  boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
 
   # Boot-time kernel hardening
   boot.kernelParams = [

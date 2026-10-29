@@ -13,10 +13,9 @@
     efi.canTouchEfiVariables = true;
 
     # Keep only recent generations, otherwise the ESP fills up and rebuilds fail.
-    systemd-boot.configurationLimit = 3;
+    systemd-boot.configurationLimit = 8;
 
     # Physical access must not get a root shell by editing the boot cmdline.
     #systemd-boot.editor = false;
   };
 }
-

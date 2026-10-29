@@ -27,6 +27,7 @@ let
         urls = proxy.nodeProbeUrls;
         routing = proxy.tunRouting;
         delayUrl = proxy.delayTestUrl;
+        targets = osConfig.my.proxy.managedProfile.lf-private-targets;
       };
     };
   manifest = pkgs.writeText "proxy-profile-tests.json" (builtins.toJSON (map render [

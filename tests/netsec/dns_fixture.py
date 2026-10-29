@@ -14,6 +14,7 @@ parser.add_argument("port", nargs="?", type=int, default=53)
 parser.add_argument("--uid", type=int)
 parser.add_argument("--mark", type=int)
 parser.add_argument('--dns-answer')
+parser.add_argument('--rebind', action='store_true')
 args = parser.parse_args()
 
 if args.mode == "lease":
@@ -30,12 +31,19 @@ elif args.mode == "server":
     while True:
         data, peer = stream.recvfrom(1024)
         if args.dns_answer and data != b'netsec-fixture':
-            end = 12
+            end, labels = 12, []
             while data[end]:
+                labels.append(data[end + 1:end + 1 + data[end]].decode('ascii'))
                 end += data[end] + 1
             end += 5
-            data = data[:2] + b'\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00' + data[12:end] \
-                + b'\xc0\x0c' + struct.pack('!HHIH', 1, 1, 0, 4) + socket.inet_aton(args.dns_answer)
+            name = '.'.join(labels).lower()
+            answers = [args.dns_answer]
+            if args.rebind and name in ('private.core.fixture.example', 'allowed.home.arpa'):
+                answers = ['100.67.0.1']
+            if args.rebind and name == 'mixed.core.fixture.example':
+                answers = [args.dns_answer, '100.67.0.1']
+            data = data[:2] + struct.pack('!5H', 0x8180, 1, len(answers), 0, 0) + data[12:end] + b''.join(
+                b'\xc0\x0c' + struct.pack('!HHIH', 1, 1, 0, 4) + socket.inet_aton(address) for address in answers)
         stream.sendto(data, peer)
 else:
     if args.uid is not None:

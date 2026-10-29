@@ -1,0 +1,180 @@
+{
+  "allow-lan": false,
+  "dns": {
+    "default-nameserver": [
+      "tls://223.5.5.5",
+      "tls://119.29.29.29"
+    ],
+    "direct-nameserver": [],
+    "direct-nameserver-follow-policy": false,
+    "enable": true,
+    "enhanced-mode": "fake-ip",
+    "fake-ip-filter": [
+      "*.lan",
+      "*.local",
+      "*.localhost",
+      "*.test",
+      "*.home.arpa",
+      "*.internal",
+      "localhost.ptlogin2.qq.com",
+      "+.stun.*.*",
+      "+.stun.*.*.*",
+      "+.stun.*.*.*.*",
+      "lens.l.google.com",
+      "+.srv.nintendo.net",
+      "+.stun.playstation.net",
+      "+.xboxlive.com",
+      "+.msftncsi.com",
+      "+.msftconnecttest.com",
+      "capture.apple.com",
+      "connectivitycheck.gstatic.com",
+      "connectivitycheck.android.com"
+    ],
+    "fake-ip-filter-mode": "blacklist",
+    "fake-ip-range": "198.18.0.1/16",
+    "fake-ip-range6": "",
+    "fallback": [],
+    "ipv6": false,
+    "listen": "127.0.0.1:1053",
+    "nameserver": [
+      "https://1.1.1.1/dns-query",
+      "https://8.8.8.8/dns-query"
+    ],
+    "nameserver-policy": {
+      "+.anthropic.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.chatgpt.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.facebook.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.github.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.githubusercontent.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.google.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.googleapis.cn": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.googleapis.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.googlevideo.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.gstatic.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.openai.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.twitter.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.x.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.youtu.be": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "+.youtube.com": [
+        "https://1.1.1.1/dns-query"
+      ],
+      "geosite:cn": [
+        "https://223.5.5.5/dns-query",
+        "https://223.6.6.6/dns-query"
+      ],
+      "geosite:geolocation-!cn": [
+        "https://1.1.1.1/dns-query",
+        "https://8.8.8.8/dns-query"
+      ]
+    },
+    "proxy-server-nameserver": [
+      "https://223.5.5.5/dns-query"
+    ],
+    "proxy-server-nameserver-policy": {},
+    "respect-rules": true,
+    "use-hosts": true
+  },
+  "external-controller": "",
+  "external-controller-pipe": "",
+  "external-controller-tls": "",
+  "external-doh-server": "",
+  "iptables": {
+    "enable": false
+  },
+  "ipv6": true,
+  "listeners": [],
+  "mixed-port": 7897,
+  "port": 0,
+  "redir-port": 0,
+  "routing-mark": 6666,
+  "socks-port": 0,
+  "ss-config": "",
+  "tproxy-port": 0,
+  "tuic-server": {
+    "enable": false
+  },
+  "tun": {
+    "auto-redirect": true,
+    "auto-redirect-input-mark": 8227,
+    "auto-redirect-iproute2-fallback-rule-index": 32768,
+    "auto-redirect-output-mark": 8228,
+    "auto-route": true,
+    "device": "Mihomo",
+    "dns-hijack": [
+      "any:53",
+      "tcp://any:53"
+    ],
+    "dns-mode": "hijack",
+    "enable": true,
+    "exclude-dst-port": [],
+    "exclude-dst-port-range": [],
+    "exclude-interface": [],
+    "exclude-mac-address": [],
+    "exclude-src-port": [],
+    "exclude-src-port-range": [],
+    "exclude-uid": [],
+    "exclude-uid-range": [],
+    "file-descriptor": 0,
+    "include-interface": [],
+    "include-mac-address": [],
+    "include-uid": [],
+    "include-uid-range": [],
+    "inet4-route-address": [],
+    "inet4-route-exclude-address": [],
+    "inet6-address": [
+      "fdfe:dcba:9876::1/126"
+    ],
+    "inet6-route-address": [],
+    "inet6-route-exclude-address": [],
+    "iproute2-rule-index": 9000,
+    "iproute2-table-index": 2022,
+    "loopback-address": [],
+    "mtu": 1500,
+    "route-address": [],
+    "route-address-set": [],
+    "route-exclude-address": [
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16",
+      "100.64.0.0/10",
+      "fc00::/7",
+      "fe80::/10",
+      "224.0.0.0/4",
+      "255.255.255.255/32",
+      "ff00::/8"
+    ],
+    "route-exclude-address-set": [],
+    "stack": "mixed",
+    "strict-route": true
+  },
+  "tunnels": [],
+  "vmess-config": ""
+}

@@ -122,6 +122,7 @@ in
       # exempts the core by this mark rather than by uid 0. Must match
       # my.machine.mihomoMark (nftables-verify asserts it at runtime).
       routing-mark: ${toString m.mihomoMark}
+      lf-private-targets: ${builtins.toJSON osConfig.my.proxy.managedProfile.lf-private-targets}
 
       # allow-lan:false keeps the plain proxy ports on loopback. bind-address
       # must stay "*" so the optional TPROXY listener (vmTransparentProxy) can
@@ -262,6 +263,7 @@ in
 
       function main(config) {
         if (config) httpsHealthChecks(config);
+        if (config) config["lf-private-targets"] = ${builtins.toJSON osConfig.my.proxy.managedProfile.lf-private-targets};
         // Replace the DNS object, including nested policy entries. Per-profile
         // extensions still run later; the core's final parser rejects any drift.
         if (config) config.dns = ${builtins.toJSON (osConfig.my.proxy.managedDns // {

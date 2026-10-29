@@ -21,8 +21,10 @@
 
       "/var/lib/AccountsService"
       "/var/lib/bluetooth"
+      "/var/lib/chrony"
       "/var/lib/comfyui"
       "/var/lib/cups"
+      "/var/lib/dns-upstream"
       "/var/lib/hermes"
       "/var/lib/lastlog"
       "/var/lib/NetworkManager"
@@ -32,6 +34,7 @@
       "/var/lib/systemd/coredump"
       "/var/lib/systemd/linger"
       "/var/lib/tailscale"
+      "/var/lib/unbound"
       "/var/lib/upower"
       "/var/log"
     ];

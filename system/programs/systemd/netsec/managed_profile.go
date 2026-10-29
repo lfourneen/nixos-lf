@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/metacubex/mihomo/component/lfguard"
 )
 
 func lfManagedPolicy() (map[string]any, string, error) {
@@ -113,6 +115,9 @@ func lfValidate(document map[string]any, partial bool) (string, error) {
 }
 
 func lfValidateRaw(raw *RawConfig) (string, error) {
+	if err := lfManagedProfileDefaults(raw); err != nil {
+		return "", err
+	}
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return "", err
@@ -121,15 +126,29 @@ func lfValidateRaw(raw *RawConfig) (string, error) {
 	if err = json.Unmarshal(data, &document); err != nil {
 		return "", err
 	}
-	return lfValidate(document, false)
+	id, err := lfValidate(document, false)
+	if err == nil {
+		err = lfguard.Configure(raw.LFPrivateTargets)
+	}
+	return id, err
 }
 
-// Older generated profiles omit these optional fields, or use zero to select
-// upstream defaults. Resolve that sentinel to our policy before any TUN setup;
-// nonzero input is still checked by lfValidateRaw and PATCH stays strict.
-func lfManagedTunDefaults(raw *RawConfig) error {
+// Upgrade only known older managed values before the final policy check, on
+// every full-config path. Controller PATCH remains strict; no caller-supplied
+// value may weaken the resulting policy.
+func lfManagedProfileDefaults(raw *RawConfig) error {
 	policy, _, err := lfManagedPolicy()
 	if err != nil || policy == nil {
+		return err
+	}
+	if value, ok := policy["lf-private-targets"].(map[string]any); ok {
+		// Entirely derived from the root policy: a cached profile may predate
+		// this generation or carry an older prefix list, and refusing to start
+		// over a field the policy already owns is a lockout, not a defence.
+		// PATCH (ValidateManagedPatch) stays strict.
+		raw.LFPrivateTargets = value
+	}
+	if err := lfUpgradeMagicDNS(raw, policy); err != nil {
 		return err
 	}
 	defaults := map[string]any{}
@@ -158,6 +177,66 @@ func lfManagedTunDefaults(raw *RawConfig) error {
 	}
 	if raw.Tun.AutoRedirectIPRoute2FallbackRuleIndex == 0 {
 		raw.Tun.AutoRedirectIPRoute2FallbackRuleIndex = tun.AutoRedirectIPRoute2FallbackRuleIndex
+	}
+	return nil
+}
+
+// A generated profile can outlive the Nix generation that produced it. Match
+// each complete pre-MagicDNS value exactly, then add only the currently managed
+// entry. Arbitrary DNS drift is still rejected by the final policy check.
+func lfUpgradeMagicDNS(raw *RawConfig, policy map[string]any) error {
+	data, err := json.Marshal(raw.DNS)
+	if err != nil {
+		return err
+	}
+	var actual map[string]any
+	if err := json.Unmarshal(data, &actual); err != nil {
+		return err
+	}
+	upgrade := map[string]any{}
+	if expected, ok := policy["dns.fake-ip-filter"].([]any); ok {
+		legacy := make([]any, 0, len(expected))
+		added := false
+		for _, value := range expected {
+			if value == "+.ts.net" {
+				added = true
+			} else {
+				legacy = append(legacy, value)
+			}
+		}
+		if added && reflect.DeepEqual(lfCanonical(actual["fake-ip-filter"]), lfCanonical(legacy)) {
+			upgrade["fake-ip-filter"] = expected
+		}
+	}
+	if expected, ok := policy["dns.nameserver-policy"].(map[string]any); ok {
+		if _, added := expected["+.ts.net"]; added {
+			legacy := map[string]any{}
+			for key, value := range expected {
+				if key != "+.ts.net" {
+					legacy[key] = value
+				}
+			}
+			if reflect.DeepEqual(lfCanonical(actual["nameserver-policy"]), lfCanonical(legacy)) {
+				upgrade["nameserver-policy"] = expected
+			}
+		}
+	}
+	if len(upgrade) == 0 {
+		return nil
+	}
+	data, err = json.Marshal(upgrade)
+	if err != nil {
+		return err
+	}
+	var updated RawDNS
+	if err := json.Unmarshal(data, &updated); err != nil {
+		return err
+	}
+	if _, ok := upgrade["fake-ip-filter"]; ok {
+		raw.DNS.FakeIPFilter = updated.FakeIPFilter
+	}
+	if _, ok := upgrade["nameserver-policy"]; ok {
+		raw.DNS.NameServerPolicy = updated.NameServerPolicy
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import json
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import socket
+import struct
 import sys
 
 
@@ -22,7 +23,7 @@ def prepare():
                      'port': 18080, 'udp': True}],
         'proxy-groups': [{'name': 'Choice', 'type': 'load-balance',
                           'strategy': 'consistent-hashing', 'proxies': ['Fixture']}],
-        'rules': ['DOMAIN,tun.fixture.example,DIRECT', 'MATCH,Choice'],
+        'rules': ['DOMAIN,tun.fixture.example,DIRECT', 'DOMAIN,allowed.home.arpa,DIRECT', 'MATCH,Choice'],
     })
     profile['tun']['auto-detect-interface'] = True
     # Boot an older generated profile without relying on GUI regeneration.
@@ -33,7 +34,10 @@ def prepare():
         'mixed-port': 18080, 'allow-lan': True, 'bind-address': '100.67.0.1',
         'ipv6': True, 'log-level': 'info', 'mode': 'rule', 'rules': ['MATCH,DIRECT'],
         'hosts': {'node.fixture.example': '203.0.113.10',
-                  'tun.fixture.example': '203.0.113.10'},
+                  'tun.fixture.example': '203.0.113.10',
+                  'private.core.fixture.example': '100.67.0.1',
+                  'mixed.core.fixture.example': '100.67.0.1',
+                  'allowed.home.arpa': '100.67.0.1'},
     }
     for directory in ('/run/netsec-real-core', '/run/netsec-node', '/run/user/1000/clash-verge-rev'):
         Path(directory).mkdir(parents=True, exist_ok=True)
@@ -74,6 +78,41 @@ def connect_test():
     print('Gost bracketed and legacy IPv6 CONNECT carried real HTTP responses')
 
 
+def guarded_udp():
+    def receive(stream, length):
+        result = b''
+        while len(result) < length:
+            part = stream.recv(length - len(result))
+            assert part, 'SOCKS control socket closed'
+            result += part
+        return result
+    with socket.create_connection(('127.0.0.1', 7897), timeout=3) as control:
+        control.sendall(b'\x05\x01\x00')
+        assert receive(control, 2) == b'\x05\x00'
+        control.sendall(b'\x05\x03\x00\x01' + b'\0' * 6)
+        header = receive(control, 4)
+        assert header[:2] == b'\x05\x00' and header[3] in (1, 4), header
+        family = socket.AF_INET if header[3] == 1 else socket.AF_INET6
+        address = socket.inet_ntop(family, receive(control, 4 if family == socket.AF_INET else 16))
+        port = struct.unpack('!H', receive(control, 2))[0]
+        if address in ('0.0.0.0', '::'):
+            address = '127.0.0.1' if family == socket.AF_INET else '::1'
+        with socket.socket(family, socket.SOCK_DGRAM) as stream:
+            stream.settimeout(2)
+            for name, allowed in [('allowed.home.arpa', True), ('private.core.fixture.example', False),
+                                  ('mixed.core.fixture.example', False), ('allowed.home.arpa', True)]:
+                payload = b'netsec-fixture'
+                packet = b'\0\0\0\x03' + bytes([len(name)]) + name.encode() + struct.pack('!H', 15353) + payload
+                stream.sendto(packet, (address, port))
+                try:
+                    response = stream.recv(65535)
+                except TimeoutError:
+                    assert not allowed, name
+                else:
+                    assert allowed and response.endswith(payload), (name, response)
+    print('Real SOCKS UDP private/mixed targets denied; internal exception and liveness passed')
+
+
 if __name__ == '__main__':
     {'prepare': prepare, 'check-node-log': check_node_log, 'http6': http6,
-     'connect-test': connect_test}[sys.argv[1]]()
+     'connect-test': connect_test, 'guarded-udp': guarded_udp}[sys.argv[1]]()

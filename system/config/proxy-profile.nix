@@ -3,6 +3,7 @@
 let
   m = config.my.machine;
   p = config.my.proxy;
+  privateAddresses = import ./private-addresses.nix { inherit config lib; };
   routeExclude = lib.optionals config.my.hardening.allowPrivateEgress
     (m.privateV4 ++ m.ulaV6 ++ m.linkLocalV6)
     ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6;
@@ -38,7 +39,7 @@ in
       fake-ip-range6 = "";
       fake-ip-filter-mode = "blacklist";
       fake-ip-filter = [
-        "*.lan" "*.local" "*.localhost" "*.test" "*.home.arpa" "*.internal"
+        "*.lan" "*.local" "*.localhost" "*.test" "*.home.arpa" "*.internal" "+.ts.net"
         "localhost.ptlogin2.qq.com" "+.stun.*.*" "+.stun.*.*.*" "+.stun.*.*.*.*"
         "lens.l.google.com" "+.srv.nintendo.net" "+.stun.playstation.net" "+.xboxlive.com"
         "+.msftncsi.com" "+.msftconnecttest.com" "capture.apple.com"
@@ -46,19 +47,22 @@ in
       ];
       use-hosts = true;
       respect-rules = true;
-      default-nameserver = [ "tls://${lib.head m.dotUpstreams}" "tls://119.29.29.29" ];
-      proxy-server-nameserver = [ "https://${lib.head m.dotUpstreams}/dns-query" ];
+      default-nameserver = [ "tls://${lib.head m.mihomoDomesticDnsUpstreams}" "tls://119.29.29.29" ];
+      proxy-server-nameserver = [ "https://${lib.head m.mihomoDomesticDnsUpstreams}/dns-query" ];
       proxy-server-nameserver-policy = { };
       direct-nameserver = [ ];
       direct-nameserver-follow-policy = false;
       nameserver = [ "https://1.1.1.1/dns-query" "https://8.8.8.8/dns-query" ];
       nameserver-policy = {
-        "geosite:cn" = map (ip: "https://${ip}/dns-query") m.dotUpstreams;
+        "geosite:cn" = map (ip: "https://${ip}/dns-query") m.mihomoDomesticDnsUpstreams;
         "geosite:geolocation-!cn" = [ "https://1.1.1.1/dns-query" "https://8.8.8.8/dns-query" ];
       } // lib.genAttrs [ "+.google.com" "+.googleapis.com" "+.googleapis.cn" "+.googlevideo.com"
         "+.gstatic.com" "+.youtube.com" "+.youtu.be" "+.facebook.com" "+.twitter.com"
         "+.x.com" "+.github.com" "+.githubusercontent.com" "+.openai.com" "+.chatgpt.com"
-        "+.anthropic.com" ] (_: [ "https://1.1.1.1/dns-query" ]);
+        "+.anthropic.com" ] (_: [ "https://1.1.1.1/dns-query" ])
+        // lib.optionalAttrs config.my.hardening.tailscale.magicDns {
+          "+.ts.net" = [ "udp://${m.magicDns}:53#DIRECT" ];
+        };
     };
   };
   options.my.proxy.managedProfile = lib.mkOption {
@@ -66,6 +70,11 @@ in
     internal = true;
     readOnly = true;
     default = {
+      lf-private-targets = {
+        prefixes = privateAddresses.ipv4 ++ privateAddresses.ipv6;
+        allowed-domains = p.privateTargetDomains;
+        magic-dns-suffix-file = if config.my.hardening.tailscale.magicDns then "/run/netsec-tailnet/domain" else "";
+      };
       listeners = [ ];
       tunnels = [ ];
       external-controller = "";
