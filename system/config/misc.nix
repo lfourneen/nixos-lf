@@ -20,10 +20,9 @@
       "gccarch-x86-64" 
     ];
 
-    trusted-users = [ 
-      "root" 
-      "lfour" 
-    ];
+    # Daemon trust grants root-equivalent rights. Ordinary users retain normal
+    # builds and access to the caches/public keys declared in network.nix.
+    trusted-users = [ "root" ];
   };
 
   # GitHub token from sops (rendered by sops-install-secrets, never inlined).
@@ -65,7 +64,7 @@
   nix.gc = {
     automatic = true;
     dates = "weekly";
-    options = "--delete-older-than 3d";
+    options = "--delete-older-than 7d";
   };
 
   # Optimise
@@ -84,9 +83,6 @@
     # then: w32tm /resync  (and keep the w32time service enabled)
     hardwareClockInLocalTime = false;
   };
-
-  # NTP servers
-  networking.timeServers = [ "sg.pool.ntp.org" "0.sg.pool.ntp.org" "1.sg.pool.ntp.org" "2.sg.pool.ntp.org" ];
 
   # Stop stuck user services 10s after SIGTERM instead of the 90s default
   # (was the "Stopping User Manager" hang).

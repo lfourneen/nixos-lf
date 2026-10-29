@@ -19,18 +19,41 @@
     };
     guestHostServices = lib.mkOption {
       type = lib.types.bool;
-      default = true;
-      description = "Allow the existing desktop-service port list from libvirt guests; disable for untrusted guests.";
+      default = false;
+      description = "Explicitly enable the selected host-service ports for libvirt guests; DHCP/DNS remain separate.";
     };
     guestTcpPorts = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ "53317" "3389" "5900" "47984" "47989" "47990" "48010" "25565" ];
+      default = [ ];
       description = "Explicit desktop TCP services available to libvirt guests.";
     };
     guestUdpPorts = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ "5353" "53317" "47998-48010" ];
+      default = [ ];
       description = "Explicit desktop UDP services available to libvirt guests.";
+    };
+
+    tailscale.magicDns = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Route only the authenticated tailnet's MagicDNS suffix through its resolver; public DNS stays managed.";
+    };
+    guestPrivateEgress = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Keep guest LAN/CGNAT/ULA forwarding. Disable for untrusted guests and allow only guestPrivateExceptions.";
+    };
+    guestPrivateExceptions = lib.mkOption {
+      default = [ ];
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          interface = lib.mkOption { type = lib.types.str; };
+          cidr = lib.mkOption { type = lib.types.str; };
+          tcpPorts = lib.mkOption { type = lib.types.listOf lib.types.port; default = [ ]; };
+          udpPorts = lib.mkOption { type = lib.types.listOf lib.types.port; default = [ ]; };
+        };
+      });
+      description = "Interface/CIDR/transport/port exceptions for restricted guest private forwarding; apply to established traffic too.";
     };
 
     hotspot.enable = lib.mkOption {
@@ -69,15 +92,19 @@
     };
 
     wifi.clonedMacAddress = lib.mkOption {
-      type = lib.types.str;
-      default = "preserve";
-      example = "stable";
+      type = lib.types.either
+        (lib.types.enum [ "preserve" "permanent" "random" "stable" "stable-ssid" ])
+        (lib.types.strMatching "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}");
+      default = "stable-ssid";
+      example = "permanent";
       description = ''
-        MAC the wireless interface presents. `preserve` (the default) leaves
-        NetworkManager's own behaviour alone, and the key is only emitted when this
-        differs from the default. `stable` is deterministic per network, so a
-        portal or a DHCP reservation keeps seeing the same address -- closer to
-        friendly than `random`, but it is still a change of identity.
+        Default MAC policy for NetworkManager Wi-Fi profiles without an explicit
+        cloned address. `stable-ssid` derives an address from the SSID and the
+        machine's persistent identity; reconnecting to the same SSID keeps it.
+        `stable` uses connection.stable-id instead. `random` changes on each
+        connection, `preserve` leaves the current address untouched, and
+        `permanent` restores the hardware address. A literal MAC is also allowed.
+        Individual profiles can override this default for MAC-based access rules.
       '';
     };
   };

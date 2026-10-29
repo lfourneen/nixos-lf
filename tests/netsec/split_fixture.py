@@ -26,9 +26,11 @@ def publish(age=0):
     run(policy)
 
 
-def query(ok):
+def query(ok=None):
     result = subprocess.run(['python3', '/etc/netsec-dns.py', 'query', '10.1.2.53', '--uid', '985'], capture_output=True)
-    assert (result.returncode == 0) == ok, result.stderr
+    if ok is not None:
+        assert (result.returncode == 0) == ok, result.stderr
+    return result.returncode == 0
 
 
 try:
@@ -62,9 +64,14 @@ try:
         run(['systemctl', 'start', 'dns-split-revoke.service'])
     run(policy)  # The same NM instance is insufficient after epoch revocation.
     query(False)
-    publish(118)
+    # Leave enough time for broker execution, then require expiry well before
+    # a fresh 120-second lease: the original observation must remain binding.
+    publish(105)
     query(True)
-    time.sleep(3)
+    deadline = time.monotonic() + 30
+    while query():
+        assert time.monotonic() < deadline, 'split lease exceeded its original deadline'
+        time.sleep(0.2)
     query(False)
     print('Bound split DNS, uplink migration, active-instance/epoch revocation and original deadline passed')
 finally:

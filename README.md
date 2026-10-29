@@ -34,10 +34,6 @@ Outbound traffic runs through a Clash-based chain. Its components, the three
 enforcement modes (A/B/C), DNS handling, the fail-closed rules and their
 limitations are documented in **[PROXY.md](PROXY.md)**.
 
-## Repository notes
-
-* `system/programs/ssh.nix` is not imported (`system/programs/default.nix`), so no sshd unit and no `:22` listener are deployed. Enabling it also requires the `tcp dport 22` rule in `system/config/network.nix`.
-
 ---
 ## Usage
 

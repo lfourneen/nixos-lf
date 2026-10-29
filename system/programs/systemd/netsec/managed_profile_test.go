@@ -205,6 +205,34 @@ func testLFManagedNixConfig(t *testing.T, path string) {
 	if _, err = lfValidateRaw(raw); err != nil {
 		t.Fatal(err)
 	}
+	if _, pinned := policy["lf-private-targets"]; pinned {
+		for _, value := range []any{map[string]any{}, map[string]any{"prefixes": []any{}, "allowed-domains": []any{"example.com"}}} {
+			var changed map[string]any
+			if err := json.Unmarshal(data, &changed); err != nil {
+				t.Fatal(err)
+			}
+			changed["lf-private-targets"] = value
+			encoded, err := json.Marshal(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate, err := UnmarshalRawConfig(encoded)
+			if err == nil {
+				// The policy owns this field, so the load succeeds but the
+				// weakened profile value must not survive it.
+				_, err = lfValidateRaw(candidate)
+			}
+			if err != nil {
+				t.Fatal("weakened profile must load with the policy value", err)
+			}
+			if !reflect.DeepEqual(candidate.LFPrivateTargets, policy["lf-private-targets"]) {
+				t.Fatal("weakened private target policy survived the load", candidate.LFPrivateTargets)
+			}
+			if err := ValidateManagedPatch(map[string]any{"lf-private-targets": value}); err == nil {
+				t.Fatal("accepted private target PATCH drift")
+			}
+		}
+	}
 	for key, value := range map[string]any{
 		"direct-nameserver":               []any{"udp://192.0.2.53:5353"},
 		"direct-nameserver-follow-policy": true,
@@ -254,5 +282,72 @@ func testLFManagedNixConfig(t *testing.T, path string) {
 	raw.Listeners = []map[string]any{{"type": "http", "port": 18080}}
 	if _, err = lfValidateRaw(raw); err == nil {
 		t.Fatal("final RawConfig accepted extra listener")
+	}
+}
+
+// Captured managed fields from the generation before MagicDNS/target guarding.
+// No subscriptions or credentials are needed to reproduce the upgrade failure.
+func TestLFManagedPreviousGeneration(t *testing.T) {
+	path := os.Getenv("LF_MANAGED_TEST_POLICY")
+	fixture := os.Getenv("LF_MANAGED_TEST_LEGACY_PROFILE")
+	if path == "" || fixture == "" {
+		t.Skip("Nix upgrade fixture not supplied")
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marshal := range []func(any) ([]byte, error){json.Marshal, yaml.Marshal} {
+		var document map[string]any
+		if err := json.Unmarshal(data, &document); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := UnmarshalRawConfig(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := lfValidateRaw(raw); err != nil {
+			t.Fatalf("previous generation cannot start: %v", err)
+		}
+		// Full-config callers that construct RawConfig directly must also receive
+		// defaults, rather than depending on one specific YAML entry point.
+		direct := DefaultRawConfig()
+		if err := json.Unmarshal(data, direct); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := lfValidateRaw(direct); err != nil {
+			t.Fatalf("direct RawConfig: %v", err)
+		}
+	}
+	for _, field := range []string{"fake-ip-filter", "nameserver-policy"} {
+		var document map[string]any
+		if err := json.Unmarshal(data, &document); err != nil {
+			t.Fatal(err)
+		}
+		dns := document["dns"].(map[string]any)
+		if err := ValidateManagedPatch(map[string]any{"dns": map[string]any{field: dns[field]}}); err == nil {
+			t.Fatalf("runtime PATCH accepted old %s", field)
+		}
+		if field == "fake-ip-filter" {
+			dns[field] = append(dns[field].([]any), "+.attacker.example")
+		} else {
+			dns[field].(map[string]any)["+.attacker.example"] = []any{"udp://192.0.2.53"}
+		}
+		encoded, err := json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := UnmarshalRawConfig(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := lfValidateRaw(raw); err == nil {
+			t.Fatalf("upgrade concealed arbitrary %s drift", field)
+		}
 	}
 }

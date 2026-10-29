@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import socket
+import struct
 import threading
 import time
 import tempfile
@@ -33,6 +34,7 @@ dns_policy, resolved_policy, state, alerts = (module(name) for name in ("dns_pol
 events, dns_sleep = (module(name) for name in ("events", "dns_sleep"))
 listeners = module('listeners')
 tun = module('tun')
+dnssec_probe = module('dnssec_probe')
 SOURCE = (MODULES / "proxy-mode.nix").read_text()
 
 
@@ -299,6 +301,209 @@ class HealthTests(unittest.TestCase):
             self.assertEqual(seen, ["http://first"])
 
 
+class DnssecProbeTests(unittest.TestCase):
+    def response(self, flags=0x8020, codes=(), answers=1, signed=False):
+        question = b'\0' + struct.pack('!HH', 48, 1)
+        answer = b'\0' + struct.pack('!HHIH', 48, 1, 60, 1) + b'x'
+        if signed:
+            answer += b'\0' + struct.pack('!HHIH', 46, 1, 60, 1) + b'y'
+        options = b''.join(struct.pack('!HHH', 15, 2, code) for code in codes)
+        opt = b'\0' + struct.pack('!HHIH', 41, 1232, 0, len(options)) + options
+        return struct.pack('!6H', 42, flags, 1, answers, 0, 1) + question + answer * answers + opt
+
+    def test_only_authenticated_answers_are_healthy(self):
+        self.assertEqual(dnssec_probe.classify(self.response(), 42)['status'], 'secure')
+        for flags in (0x8000, 0x8002, 0x8022):
+            self.assertEqual(dnssec_probe.classify(self.response(flags), 42)['status'], 'indeterminate')
+
+    def test_bogus_wins_over_transport_error(self):
+        for code in range(5, 13):
+            result = dnssec_probe.classify(self.response(0x8002, [22, code]), 42)
+            self.assertEqual(result['status'], 'validation-error')
+        for codes in ([22], [23], [22, 23]):
+            self.assertEqual(dnssec_probe.classify(self.response(0x8002, codes), 42)['status'], 'unavailable')
+        self.assertEqual(dnssec_probe.classify(self.response(0x8002, [0]), 42)['status'], 'indeterminate')
+
+    def test_validated_denial_of_existence_is_health(self):
+        # A fresh random name can only be answered by a live, validating chain:
+        # the root's NSEC denial is proof, and it is never cached.
+        result = dnssec_probe.classify(self.response(0x8023, answers=0), 42)
+        self.assertEqual(result['status'], 'secure')
+        self.assertEqual(result['detail'], 'authenticated-nonexistence')
+        self.assertFalse(result['signed'])
+        self.assertEqual(dnssec_probe.classify(self.response(0x8003, answers=0), 42)['status'],
+                         'indeterminate')
+
+    def test_probe_names_are_fresh_and_signed_material_is_reported(self):
+        names = {dnssec_probe.fresh_name() for _ in range(50)}
+        self.assertEqual(len(names), 50)
+        self.assertTrue(all(name.startswith('probe-') and name.endswith('.') for name in names))
+        self.assertTrue(dnssec_probe.classify(self.response(0x8020, signed=True), 42)['signed'])
+        self.assertFalse(dnssec_probe.classify(self.response(0x8020), 42)['signed'])
+
+    def test_malformed_or_unrelated_responses_do_not_authorize_fallback(self):
+        for packet in (b'', self.response()[:-1], self.response()[1:]):
+            with self.assertRaises((ValueError, struct.error)):
+                dnssec_probe.classify(packet, 42)
+        with self.assertRaises(ValueError): dnssec_probe.classify(self.response(), 43)
+
+    def test_probe_explicitly_requests_authenticated_data(self):
+        stream = unittest.mock.MagicMock()
+        stream.__enter__.return_value = stream
+        stream.recv.return_value = self.response()
+        with patch.object(dnssec_probe.socket, 'socket', return_value=stream), \
+                patch.object(dnssec_probe.secrets, 'randbelow', return_value=42):
+            result = dnssec_probe.probe(1055)
+        packet = stream.send.call_args.args[0]
+        self.assertEqual(struct.unpack('!H', packet[2:4])[0] & 0x120, 0x120)
+        self.assertEqual(result['status'], 'secure')
+
+    def test_transport_failure_is_not_reported_as_a_signature_verdict(self):
+        local = {'status': 'indeterminate', 'detail': 'servfail-no-ede', 'rcode': 2, 'ede': []}
+        # The local validator only says it has no verdict; the encrypted path is
+        # what decides whether the network or the validator failed.
+        self.assertEqual(dnssec_probe.verdict(
+            local, {'status': 'reachable', 'detail': 'authenticated'})['status'], 'indeterminate')
+        unreachable = dnssec_probe.verdict(
+            local, {'status': 'unavailable', 'detail': 'tls-timeout'})
+        self.assertEqual(unreachable['status'], 'unavailable')
+        self.assertEqual(unreachable['detail'], 'upstream-tls-timeout')
+        # A signature verdict from either layer is never demoted to transport.
+        self.assertEqual(dnssec_probe.verdict(
+            dict(local, status='validation-error', detail='dnssec-ede'),
+            {'status': 'unavailable', 'detail': 'tls-timeout'})['status'], 'validation-error')
+        self.assertEqual(dnssec_probe.verdict(
+            local, {'status': 'validation-error', 'detail': 'dnssec-ede'})['status'],
+            'validation-error')
+        self.assertEqual(dnssec_probe.verdict(local)['status'], 'indeterminate')
+
+    def test_transport_stage_aggregates_upstreams(self):
+        answer = {'status': 'secure', 'detail': 'authenticated', 'rcode': 0, 'ede': [], 'answers': 4}
+        def results(*values):
+            sequence = iter(values)
+            return lambda *args, **kwargs: next(sequence)
+        with patch.object(dnssec_probe, 'query_upstream', results(
+                {'upstream': 'a', 'status': 'unavailable', 'detail': 'tls-timeout'},
+                dict(answer, upstream='b', status='reachable'))):
+            self.assertEqual(dnssec_probe.probe_transport(['a', 'b'])['status'], 'reachable')
+        # The first live upstream ends the stage; the ones behind it are not
+        # probed, so a healthy path costs one exchange.
+        seen = []
+        def stop_early(text, *args, **kwargs):
+            seen.append(text)
+            return dict(answer, upstream=text, status='reachable')
+        with patch.object(dnssec_probe, 'query_upstream', stop_early):
+            self.assertEqual(dnssec_probe.probe_transport(['a', 'b', 'c'])['status'], 'reachable')
+        self.assertEqual(seen, ['a'])
+        with patch.object(dnssec_probe, 'query_upstream', results(
+                {'upstream': 'a', 'status': 'unavailable', 'detail': 'tls-timeout'},
+                {'upstream': 'b', 'status': 'unavailable', 'detail': 'tls-error'})):
+            aggregate = dnssec_probe.probe_transport(['a', 'b'])
+            self.assertEqual((aggregate['status'], aggregate['detail']), ('unavailable', 'tls-timeout'))
+        with patch.object(dnssec_probe, 'query_upstream', results(
+                {'upstream': 'a', 'status': 'validation-error', 'detail': 'dnssec-ede'})):
+            self.assertEqual(dnssec_probe.probe_transport(['a'])['status'], 'validation-error')
+
+    def test_upstream_syntax_matches_unbound(self):
+        self.assertEqual(dnssec_probe.parse_upstream('1.1.1.1@853#cloudflare-dns.com'),
+                         ('1.1.1.1', 853, 'cloudflare-dns.com'))
+        self.assertEqual(dnssec_probe.parse_upstream('1.0.0.1'), ('1.0.0.1', 853, ''))
+
+    def test_slow_validator_cannot_open_plaintext_lease(self):
+        with patch.object(dnssec_probe.socket, 'socket', side_effect=socket.timeout):
+            result = dnssec_probe.probe(1055)
+            self.assertEqual(result['status'], 'indeterminate')
+            self.assertEqual(result['detail'], 'local-timeout')
+        with patch.object(dnssec_probe.socket, 'socket', side_effect=ConnectionRefusedError):
+            self.assertEqual(dnssec_probe.probe(1055)['status'], 'unavailable')
+
+
+class TailnetDnsTests(unittest.TestCase):
+    def test_scoping_drift_logout_and_tailnet_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'domain'
+            tailnet = {'enabled': True, 'interface': 'tailscale0', 'cli': 'tailscale',
+                       'resolver': '100.100.100.100', 'domain_file': str(path)}
+            settings = {'ip': 'ip', 'resolvectl': 'resolvectl', 'tailnet': tailnet}
+            values = {'dns': ['9.9.9.9'], 'domain': ['~.'], 'default-route': 'yes'}
+            status = {'BackendState': 'Running', 'CurrentTailnet': {
+                'MagicDNSEnabled': True, 'MagicDNSSuffix': 'tailfixture.ts.net'}}
+            commands = []
+            def run(argv, **kwargs):
+                commands.append(argv)
+                if argv[0] == 'tailscale': output = json.dumps(status)
+                elif argv[0] == 'ip': output = ''
+                elif argv[1] == 'revert':
+                    self.assertFalse(path.exists(), 'stale exception must be revoked first')
+                    values.update(dns=[], domain=[], **{'default-route': 'yes'})
+                    output = ''
+                elif len(argv) > 3:
+                    values[argv[1]] = argv[3] if argv[1] == 'default-route' else list(argv[3:])
+                    output = ''
+                else:
+                    value = values[argv[1]]
+                    output = 'Link 7 (tailscale0): ' + (value if isinstance(value, str) else ' '.join(value))
+                return subprocess.CompletedProcess(argv, 0, output, '')
+            resolved_policy.reconcile_tailnet(settings, run=run)
+            self.assertEqual(values, {'dns': ['100.100.100.100'], 'domain': ['tailfixture.ts.net'], 'default-route': 'no'})
+            resolved_policy.reconcile_tailnet(settings, check=True, run=run)
+            values['domain'] = ['~.']
+            with self.assertRaises(ValueError): resolved_policy.reconcile_tailnet(settings, check=True, run=run)
+            resolved_policy.reconcile_tailnet(settings, run=run)
+            status['CurrentTailnet']['MagicDNSSuffix'] = 'other.ts.net'
+            resolved_policy.reconcile_tailnet(settings, run=run)
+            self.assertEqual(path.read_text().strip(), 'other.ts.net')
+            for suffix in ('ts.net', '~.', 'evil.example', 'a..ts.net', 'a.ts.net;bad'):
+                status['CurrentTailnet']['MagicDNSSuffix'] = suffix
+                resolved_policy.reconcile_tailnet(settings, run=run)
+                self.assertFalse(path.exists())
+                self.assertEqual(values['domain'], [])
+            status['CurrentTailnet']['MagicDNSSuffix'] = 'tailfixture.ts.net'
+            resolved_policy.reconcile_tailnet(settings, run=run)
+            status['BackendState'] = 'Stopped'
+            resolved_policy.reconcile_tailnet(settings, run=run)
+            self.assertFalse(path.exists())
+            self.assertEqual(values['dns'], [])
+
+    def test_unreadable_status_keeps_the_last_route(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'domain'
+            tailnet = {'enabled': True, 'interface': 'tailscale0', 'cli': 'tailscale',
+                       'resolver': '100.100.100.100', 'domain_file': str(path)}
+            settings = {'ip': 'ip', 'resolvectl': 'resolvectl', 'tailnet': tailnet}
+            path.write_text('tailfixture.ts.net\n')
+            calls = []
+            def slow(argv, **kwargs):
+                calls.append(argv)
+                if argv[0] == 'tailscale':
+                    self.assertEqual(kwargs.get('timeout'), 5)
+                    raise subprocess.TimeoutExpired('tailscale', 5)
+                return subprocess.CompletedProcess(argv, 0, '', '')
+            # A busy daemon is not a logout: neither the file nor resolved may
+            # change, otherwise the exception flaps and lfguard loses the suffix.
+            resolved_policy.reconcile_tailnet(settings, run=slow)
+            self.assertEqual(path.read_text().strip(), 'tailfixture.ts.net')
+            self.assertEqual([argv for argv in calls if argv[0] == 'resolvectl'], [])
+            with self.assertRaises(ValueError):
+                resolved_policy.reconcile_tailnet(settings, check=True, run=slow)
+            self.assertTrue(path.exists())
+
+    def test_absent_interface_revokes_the_exception(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'domain'
+            path.write_text('tailfixture.ts.net\n')
+            settings = {'ip': 'ip', 'resolvectl': 'resolvectl', 'tailnet': {
+                'enabled': True, 'interface': 'tailscale0', 'cli': 'tailscale',
+                'resolver': '100.100.100.100', 'domain_file': str(path)}}
+            calls = []
+            def gone(argv, **kwargs):
+                calls.append(argv)
+                raise subprocess.CalledProcessError(1, argv)
+            resolved_policy.reconcile_tailnet(settings, run=gone)
+            self.assertFalse(path.exists())
+            self.assertEqual([argv for argv in calls if argv[0] == 'resolvectl'], [])
+
+
 class TunTests(unittest.TestCase):
     settings = {"ip": "ip", "device": "Mihomo", "table": 2022, "ipv6": True, "uids": [0, 1000]}
 
@@ -556,12 +761,12 @@ class StateTests(unittest.TestCase):
             def write(path, value):
                 target = root / path; target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(json.dumps(value))
-            for mode, dns_mode in [("proxy", "proxy"), ("direct", "dot")]:
+            for mode, dns_mode in [("proxy", "proxy"), ("direct", "dot"), ("direct", "dot-priming")]:
                 write("proxy-mode/state.json", {"mode": mode, "policy_version": 10})
                 fresh = {"mode": mode, "policy_version": 10, "monotonic_seconds": 100}
                 write("proxy-mode/heartbeat.json", fresh)
                 write("gost-relay/state.json", fresh)
-                write("dns-upstream/state.json", dict(fresh, mode=dns_mode))
+                write("dns-upstream/state.json", dict(fresh, mode=dns_mode, dnssec_status="secure"))
                 write("dns-policy/state.json", dict(fresh, status="applied"))
                 write("netsec/state.json", {"result": "ok", "version": 10, "monotonic_seconds": 100,
                                             "boot_id": Path('/proc/sys/kernel/random/boot_id').read_text().strip()})
@@ -572,6 +777,36 @@ class StateTests(unittest.TestCase):
                 self.assertFalse(state.readiness(root, mode, now=221)["ready"])
                 write("netsec/state.json", {"result": "ok", "version": 9})
                 self.assertFalse(state.readiness(root, mode, now=101)["ready"])
+
+    def test_bounded_plaintext_window_is_readiness_not_a_blackout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def write(path, value):
+                target = root / path; target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(value))
+            fresh = {"mode": "direct", "policy_version": 10, "monotonic_seconds": 100}
+            write("proxy-mode/state.json", {"mode": "direct", "policy_version": 10})
+            write("proxy-mode/heartbeat.json", fresh)
+            write("gost-relay/state.json", fresh)
+            write("dns-policy/state.json", dict(fresh, status="applied"))
+            write("netsec/state.json", {"result": "ok", "version": 10, "monotonic_seconds": 100,
+                                        "boot_id": Path('/proc/sys/kernel/random/boot_id').read_text().strip()})
+            # A failed verdict inside its budget still answers DNS, so it is not
+            # an outage: the encrypted path keeps being retried underneath.
+            write("dns-upstream/state.json", dict(fresh, mode="bootstrap-plaintext",
+                                                  dnssec_status="validation-error",
+                                                  window_until=200))
+            result = state.readiness(root, "direct", now=101)
+            self.assertTrue(result["ready"], result["reasons"])
+            self.assertEqual(result["dns_verdict"], "validation-error")
+            # The window itself is still a bound, and expiry is an outage again.
+            write("dns-upstream/state.json", dict(fresh, mode="bootstrap-plaintext",
+                                                  dnssec_status="validation-error",
+                                                  window_until=50))
+            self.assertFalse(state.readiness(root, "direct", now=101)["ready"])
+            write("dns-upstream/state.json", dict(fresh, mode="degraded-dot-only",
+                                                  dnssec_status="unavailable"))
+            self.assertFalse(state.readiness(root, "direct", now=101)["ready"])
 
     def test_verification_requires_same_boot_and_its_own_freshness(self):
         with tempfile.TemporaryDirectory() as temporary:

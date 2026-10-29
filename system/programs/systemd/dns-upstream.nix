@@ -26,10 +26,25 @@ let
     split_cidrs = lib.optionals config.my.hardening.allowPrivateEgress (m.privateV4 ++ m.ulaV6);
     runtime = "/run/dns-upstream";
   });
+  # Plaintext resolvers used only inside the bounded Mode-A window, and only
+  # when the link supplies none. Never Unbound upstreams, and a different
+  # operator from the validated endpoints (asserted in network.nix).
+  transportFallback = lib.concatStringsSep " " m.dotTransportFallback;
+  # Upstreams the probe contacts directly (TLS) so a validator without a
+  # verdict can be attributed to the network or to the validator.
+  dotProbeUpstreams = lib.concatMapStringsSep " "
+    (ip: "${ip}@${toString port.dot}#${m.dotAuthName}") m.dotUpstreams;
   resolvedSettings = pkgs.writeText "resolved-policy.json" (builtins.toJSON {
     ip = "${pkgs.iproute2}/bin/ip";
     resolvectl = "${pkgs.systemd}/bin/resolvectl";
     tun = config.my.proxy.tunDev;
+    tailnet = {
+      enabled = config.services.tailscale.enable && config.my.hardening.tailscale.magicDns;
+      cli = "${config.services.tailscale.package}/bin/tailscale";
+      interface = config.services.tailscale.interfaceName;
+      resolver = m.magicDns;
+      domain_file = "/run/netsec-tailnet/domain";
+    };
   });
 
 in
@@ -132,11 +147,13 @@ in
   };
   systemd.services.dns-resolved-policy = {
     description = "Keep resolved on the managed DNS gateway";
-    after = [ "systemd-resolved.service" ];
+    after = [ "systemd-resolved.service" ] ++ lib.optional config.services.tailscale.enable "tailscaled-set.service";
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${pkgs.python3}/bin/python3 ${./netsec/resolved_policy.py} ${resolvedSettings}";
-      TimeoutStartSec = 15;
+      TimeoutStartSec = 20;
+      RuntimeDirectory = "netsec-tailnet";
+      RuntimeDirectoryPreserve = true;
       NoNewPrivileges = true;
       CapabilityBoundingSet = "";
       ProtectSystem = "strict";
@@ -175,7 +192,10 @@ in
       RemoveIPC = true;
       CapabilityBoundingSet = "";
       RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
-      ReadWritePaths = [ "/run/dns-upstream" "/run/netsec" ];
+      # The verdict history outlives the boot on purpose: a failed generation is
+      # rolled back from the boot menu, so the evidence must not be tmpfs-only.
+      StateDirectory = "dns-upstream";
+      ReadWritePaths = [ "/run/dns-upstream" "/run/netsec" "/var/lib/dns-upstream" ];
       ExecStartPost = "${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear dns-upstream.service";
       Type = "notify";
       NotifyAccess = "all";
@@ -192,10 +212,15 @@ in
         last_conf=""
         last_pid=""
         last_ident=""
-        hits=0; misses=0; dot_fails=0
+        hits=0; misses=0; dot_fails=0; dot_grace_rounds=0; ever_secure=0
+        prime_rounds=''${NETSEC_DOT_PRIME_ROUNDS:-1}
+        history=/var/lib/dns-upstream/history.log
+        history_lines=400
+        dot_state=not-probed
+        dot_result='{"status":"not-probed","rcode":null,"ede":[],"detail":"not-probed"}'
         budget_until=0; window_until=0
         no_resolver_logged=0
-        PL_TTL=120; PL_TOTAL=300
+        PL_TTL=120; PL_TOTAL=1800
         ready_sent=0
         policy_version=-1
         split='{"entries":[],"context":null}'
@@ -244,9 +269,25 @@ in
           save_budget
         }
         dot_ok() {
-          st=$(dig +time=3 +tries=1 @127.0.0.1 -p ${toString port.unbound} \
-            "$(date +%s%N).probe.example.com" A 2>/dev/null)
-          [[ "$st" == *"status: NOERROR"* || "$st" == *"status: NXDOMAIN"* ]]
+          local probe_exit=0
+          # The probe separates the local validator verdict from the encrypted
+          # transport, so a slow or unreachable DoT upstream can never masquerade
+          # as a signature error. The direct stage is bounded by two 5s TLS
+          # attempts on top of the 8s local query.
+          dot_result=$(NETSEC_DOT_PROBE_UPSTREAMS=${lib.escapeShellArg dotProbeUpstreams} \
+            ${pkgs.python3}/bin/python3 ${./netsec/dnssec_probe.py} ${toString port.unbound}) || probe_exit=$?
+          # A failed helper must not break state publication or look secure.
+          if ! printf '%s' "$dot_result" | jq -e 'type == "object" and (.status | type == "string")' >/dev/null 2>&1; then
+            dot_result='{"status":"indeterminate","rcode":null,"ede":[],"detail":"probe-failed"}'
+            probe_exit=4
+          fi
+          case "$probe_exit" in
+            0) dot_state=secure; return 0 ;;
+            2) dot_state=unavailable ;;
+            3) dot_state=validation-error ;;
+            *) dot_state=indeterminate ;;
+          esac
+          return 1
         }
         dns_listener_up() {
           ${config.my.proxy.listenerCheck} core-dns >/dev/null 2>&1
@@ -264,16 +305,30 @@ in
           jq -n --arg mode "$current" --arg reason "$state_reason" --arg session "$last_ident" \
             --argjson budget "$budget_until" --argjson window "$window_until" \
             --argjson now "$now" --argjson override "$override" --argjson version "$policy_version" \
-            --argjson success "$last_success" \
+            --argjson success "$last_success" --arg dnssec "$dot_state" --argjson probe "$dot_result" \
             '{mode:$mode,reason:$reason,session:$session,budget_until:$budget,window_until:$window,
               remaining_seconds:([$budget-$now,0]|max),plaintext_override:$override,
-              monotonic_seconds:$now,policy_version:$version,last_success_monotonic:$success}' \
+              monotonic_seconds:$now,policy_version:$version,last_success_monotonic:$success,dnssec_status:$dnssec,dnssec_probe:$probe}' \
               > "$runtime/state.json.$$" && mv -f "$runtime/state.json.$$" "$runtime/state.json"
           atomic_write "$runtime/reason" "$state_reason"
           atomic_write "$runtime/status" "$current"
+          record_history
+        }
+        record_history() {
+          # Persist the verdict so a rolled-back boot still has the evidence.
+          jq -nc --arg t "$(date -u +%FT%TZ)" --arg mode "$current" \
+            --arg reason "$state_reason" --arg verdict "$dot_state" \
+            --arg ident "$last_ident" --argjson probe "$dot_result" \
+            --argjson budget "$budget_until" --argjson window "$window_until" \
+            '{time:$t,mode:$mode,reason:$reason,verdict:$verdict,identity:$ident,probe:$probe,budget_until:$budget,window_until:$window}' \
+            >> "$history" 2>/dev/null || return 0
+          if [ "$(wc -l < "$history" 2>/dev/null || echo 0)" -gt "$history_lines" ]; then
+            tail -n "$history_lines" "$history" > "$history.$$" && mv -f "$history.$$" "$history"
+          fi
         }
         apply_state() {
           local target="$1" new_conf pid notify=0
+          apply_reason=""
           new_conf='server=127.0.0.1#${toString port.unbound}'
           if [ "$target" = proxy ]; then
             new_conf='server=127.0.0.1#${toString port.mihomoDns}'
@@ -297,15 +352,15 @@ in
           fi
           pid=$(systemctl show -p MainPID --value dnsmasq.service 2>/dev/null || true)
           if [ "$new_conf" != "$last_conf" ] || [ "$pid" != "$last_pid" ] || [ -z "$pid" ] || [ "$pid" = 0 ]; then
-            atomic_write "$runtime/servers.conf" "$new_conf" || return 1
+            atomic_write "$runtime/servers.conf" "$new_conf" || { apply_reason='cannot write servers.conf'; return 1; }
             if systemctl is-active --quiet dnsmasq.service; then
-              timeout 8 systemctl reload dnsmasq.service || return 1
+              timeout 8 systemctl reload dnsmasq.service || { apply_reason='dnsmasq reload failed'; return 1; }
             else
-              timeout 8 systemctl start dnsmasq.service || return 1
+              timeout 8 systemctl start dnsmasq.service || { apply_reason='dnsmasq start failed'; return 1; }
             fi
-            systemctl is-active --quiet dnsmasq.service || return 1
-            last_pid=$(systemctl show -p MainPID --value dnsmasq.service) || return 1
-            [ -n "$last_pid" ] && [ "$last_pid" != 0 ] || return 1
+            systemctl is-active --quiet dnsmasq.service || { apply_reason='dnsmasq is not active'; return 1; }
+            last_pid=$(systemctl show -p MainPID --value dnsmasq.service) || last_pid=""
+            [ -n "$last_pid" ] && [ "$last_pid" != 0 ] || { apply_reason='dnsmasq has no main pid'; return 1; }
             last_conf="$new_conf"
             resolvectl flush-caches || true
           fi
@@ -318,11 +373,17 @@ in
             '{policy_version:$version,monotonic_seconds:$now,plaintext_until:$until,
               plaintext:[$servers|splits("[[:space:]]+")|select(length>0)],split:$split}' > "$runtime/policy.json.$$"
           mv -f "$runtime/policy.json.$$" "$runtime/policy.json"
-          timeout 10 systemctl start dns-policy.service || return 1
-          [ "$(jq -r '.status' /run/dns-policy/state.json)" = applied ] || return 1
-          [ "$(jq -r '.policy_version // .version' /run/proxy-mode/state.json)" = "$policy_version" ] || return 1
+          timeout 10 systemctl start dns-policy.service || { apply_reason='DNS lease broker failed'; return 1; }
+          [ "$(jq -r '.status' /run/dns-policy/state.json)" = applied ] || { apply_reason='DNS leases not applied'; return 1; }
+          # A mode flip changes the version under a running pass; that is not a
+          # resolver failure, so say which check gave up.
+          [ "$(jq -r '.policy_version // .version' /run/proxy-mode/state.json)" = "$policy_version" ] \
+            || { apply_reason="policy generation moved to $(jq -r '.policy_version // .version' /run/proxy-mode/state.json)"; return 1; }
           if [ "$current" != "$target" ]; then
             echo "dns-upstream: $current -> $target ($state_reason)"
+            case "$target" in
+              *plaintext|dot-priming) echo "dns-upstream: verdict=$dot_state probe=$dot_result" ;;
+            esac
             [ "$target" != proxy ] || notify=1
           fi
           current="$target"
@@ -356,6 +417,8 @@ in
           new_status=blocked
           state_reason="mode-$mode: encrypted resolver only"
           servers=""
+          dot_state=not-probed
+          dot_result='{"status":"not-probed","rcode":null,"ede":[],"detail":"not-probed"}'
           if ! ${config.my.proxy.listenerCheck} dns >/dev/null 2>&1; then
             new_status=resolver-error; state_reason='local DNS listener identity mismatch'
           elif [ "$mode" = proxy ] && { ! $CLASH_ON || ! dns_listener_up; }; then
@@ -375,37 +438,64 @@ in
             link=$(${pkgs.python3}/bin/python3 ${./netsec/link.py} ${linkSettings} 2>/dev/null || echo '{}')
             ident=$(printf '%s' "$link" | jq -r '.identity // "offline"')
             servers=$(printf '%s' "$link" | jq -r '.servers[]?')
+            # A link without usable resolvers still has a bounded way out, so the
+            # encrypted path failing is never an unqualified blackout.
+            [ -n "$servers" ] || servers=${lib.escapeShellArg transportFallback}
             if [ "$ident" != "$last_ident" ]; then
-              last_ident="$ident"; dot_fails=0
+              last_ident="$ident"; dot_fails=0; dot_grace_rounds=0; ever_secure=0
               load_budget
             fi
             if dot_ok; then
-              new_status=dot; dot_fails=0; no_resolver_logged=0
-              state_reason='mode-a: encrypted upstream healthy'
+              dot_grace_rounds=0; dot_fails=0; no_resolver_logged=0; ever_secure=1
+              new_status=dot
+              state_reason='mode-a: encrypted upstream and DNSSEC validation healthy'
+              # A recovered encrypted path earns a fresh plaintext budget, so a
+              # later outage is not punished for one that already ended.
+              if [ "$budget_until" != 0 ] || [ "$window_until" != 0 ]; then
+                budget_until=0; window_until=0
+                save_budget
+              fi
+            elif [ "$ever_secure" = 0 ] && [ "$dot_state" = indeterminate ] \
+                 && [ "$dot_grace_rounds" -lt "$prime_rounds" ]; then
+              # A cold validator has to prime its trust anchor before its first
+              # verdict means anything; a 3s deadline used to turn that into a
+              # permanent "validation failed".
+              dot_grace_rounds=$((dot_grace_rounds + 1))
+              new_status=dot-priming
+              state_reason='mode-a: waiting for the first validated answer'
             else
               dot_fails=$((dot_fails + 1))
               new_status=degraded-dot-only
-              state_reason='mode-a: DoT unavailable; no permitted plaintext resolver'
+              state_reason='mode-a: encrypted resolver only; no plaintext upstream'
               if [ -n "$servers" ]; then
                 no_resolver_logged=0
                 [ "$dot_fails" != 1 ] || open_window
                 now=$(now_mono)
                 if [ -e "$runtime/force-plaintext" ]; then
-                  new_status=degraded-plaintext; state_reason='mode-a: explicit plaintext override'
+                  new_status=degraded-plaintext
+                  state_reason="mode-a: explicit plaintext override ($dot_state)"
                 elif [ "$now" -lt "$window_until" ]; then
-                  new_status=bootstrap-plaintext; state_reason='mode-a: bounded plaintext bootstrap'
+                  new_status=bootstrap-plaintext
+                  state_reason="mode-a: bounded plaintext window ($dot_state)"
                 elif [ "$now" -lt "$budget_until" ]; then
+                  # Renew the window while the budget allows it: a flaky
+                  # encrypted upstream must not end in a manual recovery, and the
+                  # budget still caps the total plaintext time per session.
                   conn=$(nmcli -t networking connectivity 2>/dev/null || true)
+                  open_window
                   if [ "$conn" = portal ] || [ "$conn" = limited ]; then
-                    open_window
-                    new_status=portal-plaintext; state_reason='mode-a: bounded portal plaintext window'
+                    new_status=portal-plaintext
+                    state_reason="mode-a: bounded portal plaintext window ($dot_state)"
+                  else
+                    new_status=bootstrap-plaintext
+                    state_reason="mode-a: bounded plaintext window ($dot_state)"
                   fi
                 else
-                  state_reason='mode-a: plaintext deadline spent; encrypted resolver only'
+                  state_reason="mode-a: plaintext budget spent; encrypted resolver only ($dot_state)"
                 fi
               elif [ "$no_resolver_logged" = 0 ]; then
                 no_resolver_logged=1
-                echo 'dns-upstream: DoT is down and no DHCP resolver could be read; no plaintext fallback' >&2
+                echo 'dns-upstream: no DHCP or configured plaintext resolver; encrypted resolver only' >&2
               fi
             fi
           else
@@ -421,9 +511,9 @@ in
             # Keep last_conf unchanged so the next pass must retry. Do not claim
             # that a desired server list is already the active resolver state.
             current=pending
-            state_reason='DNS apply or policy generation changed; retrying'
+            state_reason="DNS apply failed: $apply_reason; retrying"
             publish_dns
-            echo 'dns-upstream: dnsmasq apply failed; retrying' >&2
+            echo "dns-upstream: apply failed ($apply_reason); retrying" >&2
             interval=2
           elif [ "$current" != "$previous" ] || { [ "$current" != dot ] && [ "$current" != proxy ]; }; then
             interval=2

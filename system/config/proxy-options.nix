@@ -32,6 +32,12 @@ in
     description = "Mihomo TUN iproute2-table-index, shared by the template and checks.";
   };
 
+  options.my.proxy.privateTargetDomains = lib.mkOption {
+    type = lib.types.listOf lib.types.str;
+    default = [ "localhost" "lan" "local" "home.arpa" ];
+    description = "Explicit internal domain/suffix exceptions to the managed core's domain-to-private target guard.";
+  };
+
   options.my.proxy.gostPackage = lib.mkOption {
     type = lib.types.package;
     internal = true;

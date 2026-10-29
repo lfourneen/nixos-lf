@@ -230,10 +230,10 @@ in
 
     # True while the Clash Verge GUI runs in the user session. The root
     # clash-verge-service helper and the verge-mihomo core live in
-    # system.slice/clash-verge.service, so this pattern only catches the GUI.
-    # `complete` because a no-match pgrep exits 1 and would otherwise abort.
+    # system.slice/clash-verge.service, the user helper selects only GUI processes.
+    # The shared helper recognizes public and historical wrapped GUI names.
     def clash-gui-running [] {
-      (pgrep -u $env.USER -f '(^|/)clash-verge( |$)' | complete).exit_code == 0
+      (^${pkgs.python3}/bin/python3 ${../../system/programs/clash-verge-gui.py} --running | complete).exit_code == 0
     }
 
     # Stop the Clash core and return to Mode A (direct egress).
@@ -241,8 +241,11 @@ in
     # helper, so quitting the GUI does NOT stop it -- stopping the unit does.
     def clash-off [] {
       print $"(ansi yellow_bold)Stopping the Clash core \(service mode\)...(ansi reset)"
-      if (clash-gui-running) {
-        pkill -u $env.USER -f '(^|/)clash-verge( |$)' | complete | ignore
+      let gui = (^${pkgs.python3}/bin/python3 ${../../system/programs/clash-verge-gui.py} --stop | complete)
+      if $gui.exit_code != 0 {
+        print -e $gui.stderr
+        print $"(ansi red_bold)Failed to stop the Clash GUI ✗(ansi reset)"
+        return
       }
       sudo proxy-control off
       if $env.LAST_EXIT_CODE != 0 {
@@ -264,9 +267,9 @@ in
         print $"(ansi red_bold)Core start failed; protection remains active.(ansi reset)"
         return
       }
-      if not (clash-gui-running) {
-        job spawn { ^clash-verge }
-      }
+      # Always pass through the current launcher: it preserves a current GUI
+      # and replaces an older package's singleton before the GUI requests a core.
+      job spawn { ^clash-verge }
       print $"(ansi yellow)Waiting for A -> C -> B...(ansi reset)"
       if (proxy-control wait proxy | complete).exit_code == 0 {
         print $"(ansi green_bold)Mode B ready ✓(ansi reset)"

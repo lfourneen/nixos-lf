@@ -23,7 +23,9 @@ def query(protocol, uid=None):
     command = [sys.executable, __file__, 'query', protocol]
     if uid is not None:
         command += ['--uid', str(uid)]
-    return subprocess.run(command, capture_output=True, timeout=2).returncode == 0
+    # Include interpreter startup/scheduling time; the socket operation itself
+    # retains its strict 350 ms deadline below. A process timeout remains a test failure.
+    return subprocess.run(command, capture_output=True, timeout=8).returncode == 0
 
 
 if args.mode == 'serve':

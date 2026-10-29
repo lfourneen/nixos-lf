@@ -75,6 +75,7 @@
       mihomoTproxy = lib.mkOption { type = lib.types.port; default = 7896; };
       dot = lib.mkOption { type = lib.types.port; default = 853; };
       ntp = lib.mkOption { type = lib.types.port; default = 123; };
+      nts = lib.mkOption { type = lib.types.port; default = 4460; };
     };
 
     # Ranges the TUN deliberately leaves alone and the kill switch treats as
@@ -117,9 +118,30 @@
     # Encrypted fallback resolver (DoT) used while Clash is down.
     dotUpstreams = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ "223.5.5.5" "223.6.6.6" ];
+      default = [ "101.226.4.6" "218.30.118.6" "123.125.81.6" ];
+      description = "Mode-A validating Unbound DoT endpoints; must return complete DNSSEC material.";
     };
-    dotAuthName = lib.mkOption { type = lib.types.str; default = "dns.alidns.com"; };
+    dotAuthName = lib.mkOption { type = lib.types.str; default = "dot.360.cn"; };
+    mihomoDomesticDnsUpstreams = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "223.5.5.5" "223.6.6.6" ];
+      description = "Mihomo's domestic/bootstrap resolvers, independent of Mode-A Unbound.";
+    };
+    dotTransportFallback = lib.mkOption {
+      type = lib.types.nonEmptyListOf lib.types.str;
+      default = [ "1.1.1.1" "1.0.0.1" ];
+      description = ''
+        Plaintext resolvers used only inside Mode A's bounded bootstrap window,
+        and only when the link supplies none. They never feed Unbound, and must
+        stay a different operator from dotUpstreams so a broken validated path
+        is never silently replaced by itself in the clear.
+      '';
+    };
+    ntsUpstreams = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "time.cloudflare.com" "nts.netnod.se" ];
+      description = "Authenticated NTS time sources; no unauthenticated pool fallback.";
+    };
   };
 }
 

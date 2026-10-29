@@ -32,10 +32,6 @@
 
 出站流量走一条基于 Clash 的代理链路。其组件、三种执行模式（A/B/C）、DNS 处理、fail-closed 规则及其限制，详见 **[PROXY.md](PROXY.md)**。
 
-## 仓库说明
-
-* `system/programs/ssh.nix` 未被导入（见 `system/programs/default.nix`），因此不部署 sshd 单元与 `:22` 监听；启用时还需要放开 `system/config/network.nix` 里的 `tcp dport 22` 规则。
-
 ---
 ## 使用方法
 

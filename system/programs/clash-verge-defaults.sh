@@ -3,7 +3,7 @@ target="${XDG_DATA_HOME:-$HOME/.local/share}/io.github.clash-verge-rev.clash-ver
 [[ -e "$target" || -L "$target" ]] || exit 0
 
 # A second invocation must not edit settings held by an already running GUI.
-if pgrep --ignore-ancestors -u "$(id -u)" -f '(^|/)[.]?clash-verge(-wrapped)?( |$)' >/dev/null; then
+if pgrep --ignore-ancestors -u "$(id -u)" -f '(^|/)[.]?clash-verge(-wrapped|-launcher)?( |$)' >/dev/null; then
   exit 0
 fi
 [[ -f "$target" && ! -L "$target" && -w "$target" ]] || exit 1

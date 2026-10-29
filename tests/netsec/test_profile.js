@@ -9,6 +9,7 @@ for (const test of JSON.parse(fs.readFileSync(process.argv[2], "utf8"))) {
   const policy = "selected/[group]";
   const config = { rules: ["DOMAIN-SUFFIX,msftconnecttest.com,DIRECT", "MATCH," + policy] };
   const enhanced = context.main(config);
+  assert.equal(JSON.stringify(enhanced["lf-private-targets"]), JSON.stringify(test.expected.targets));
   for (const url of test.expected.urls) {
     const host = new URL(url).hostname;
     const index = enhanced.rules.indexOf("DOMAIN-SUFFIX," + host + "," + policy);

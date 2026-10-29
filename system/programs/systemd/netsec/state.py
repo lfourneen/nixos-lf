@@ -58,7 +58,7 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     if target == "proxy" and dns.get("mode") != "proxy":
         reasons.append("DNS is not proxy")
     if target == "direct" and dns.get("mode") not in {
-        "dot", "bootstrap-plaintext", "portal-plaintext", "degraded-plaintext"
+        "dot", "dot-priming", "bootstrap-plaintext", "portal-plaintext", "degraded-plaintext"
     }:
         reasons.append("direct DNS unavailable")
     if target == "direct" and str(dns.get("mode", "")).endswith("plaintext") \
@@ -73,7 +73,11 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     if (root / "netsec/failed").exists():
         reasons.append("enforcement alarm active")
     return {"ready": not reasons, "target": target, "policy_version": version,
-            "mode": policy.get("mode", "unknown"), "reasons": reasons}
+            "mode": policy.get("mode", "unknown"), "reasons": reasons,
+            # A failed verdict is reported, not treated as an outage: Mode A keeps
+            # a bounded plaintext window while the encrypted path is retried.
+            "dns_mode": dns.get("mode", "unknown"),
+            "dns_verdict": dns.get("dnssec_status", "unknown")}
 
 
 if __name__ == "__main__":

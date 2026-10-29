@@ -62,7 +62,8 @@ async function main() {
 
     // Match the wrapped GUI's actual process name and avoid editing live settings.
     write("default_latency_test: null\n");
-    const gui = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { argv0: "/test/.clash-verge-wrapped" });
+    for (const argv0 of ["/test/.clash-verge-wrapped", "/test/.clash-verge-launcher", "/test/clash-verge"]) {
+    const gui = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { argv0 });
     try {
       await once(gui, "spawn");
       run();
@@ -70,6 +71,7 @@ async function main() {
     } finally {
       gui.kill();
       await once(gui, "exit");
+    }
     }
     run();
     assert.equal(parse().default_latency_test, expected);

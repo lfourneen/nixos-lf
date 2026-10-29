@@ -12,6 +12,11 @@ let
   allowedPrivate4 = lib.optionals privateEgress m.privateV4;
   allowedPrivate6 = lib.optionals privateEgress (m.linkLocalV6 ++ m.ulaV6);
 
+  # Unbound serves the encrypted Mode-A path. Explicit split DNS and the
+  # leased portal fallback go through dnsmasq instead; B keeps Mihomo fake-IP.
+  rebind = import ./private-addresses.nix { inherit config lib; };
+  rebindV4 = rebind.ipv4;
+
   # Ranges the TUN leaves alone and the kill switch treats as reachable.
   multicast4 = m.multicastV4 ++ [ m.limitedBroadcastV4 ];
   local4 = join m.privateV4;
@@ -76,7 +81,6 @@ let
   # QUIC sites); kept for the fallback model.
   blockQuic = !tunMode;
 
-  clonedMac = config.my.hardening.wifi.clonedMacAddress;
   guestIfaces = config.my.proxy.guestInterfaces;
   nftIfaces = xs: "{ " + join (map (i: ''"${i}"'') xs) + " }";
   guestGuard = mode: let
@@ -106,23 +110,31 @@ let
   # into its listener. Root is no longer exempt: root's :53 lands in dnsmasq now.
   dnsRedirectExemptUidSet = "{ ${toString config.users.users.dnsmasq.uid} }";
 
-  # The 53/853/123 channel is pinned per-process instead of opened to any
+  # The DNS/DoT/NTP/NTS channels is pinned per-process instead of opened to any
   # destination: unbound needs DoT (tcp/853) to its two fixed upstreams -- the
-  # only resolver left when Clash is down -- and systemd-timesyncd needs
-  # udp/123, whose peers rotate.
+  # only resolver left when Clash is down -- and chrony uses authenticated NTP (udp/123)
+  # with NTS key exchange (tcp/4460).
   #
   # A literal uid cannot be checked by the evaluator and would silently stop
   # matching the daemon; the pins live in the module body.
   dnsDotUpstreams = "{ ${join m.dotUpstreams} }";
   unboundUid = config.users.users.unbound.uid;
   dnsmasqUid = config.users.users.dnsmasq.uid;
-  timesyncUid = config.users.users."systemd-timesync".uid;
+  timeUid = config.users.users.chrony.uid;
   guestInfrastructure = [
     { interface = m.vmBridge; address = m.vmAddress; subnet = m.vmSubnet; }
     { interface = m.waydroidBridge; address = m.waydroidAddress; subnet = m.waydroidSubnet; }
   ] ++ lib.optionals hotspotEnable [
     { interface = hotspotIface; inherit (m.hotspot) address subnet; }
   ];
+  restrictedGuestIfaces = [ m.vmBridge m.waydroidBridge ];
+  guestPrivateExceptions = lib.concatMapStrings (entry:
+    let family = if lib.hasInfix ":" entry.cidr then "ip6" else "ip";
+        rule = protocol: ports: lib.optionalString (ports != [ ]) ''
+          iifname "${entry.interface}" ${family} daddr ${entry.cidr} ${protocol} dport { ${join (map toString ports)} } return
+        '';
+    in rule "tcp" entry.tcpPorts + rule "udp" entry.udpPorts
+  ) config.my.hardening.guestPrivateExceptions;
   # Replies to guests are identified by the bridge, the gateway source and the
   # DHCP/DNS service ports -- never by uid. A daemon that drops privileges keeps
   # the listening socket's creator uid but its accepted TCP sockets carry the
@@ -135,9 +147,10 @@ let
   # Exemptions stay static so DNS/NTP keep working in direct mode; the drops and
   # the redirect are loaded only while Clash runs (see proxy-mode.nix).
   killSwitchAccepts = lib.optionalString proxyKillSwitch ''
-    # Per-process, per-destination: only unbound's DoT and timesyncd's NTP.
+    # Per-process, per-destination: only unbound's DoT and chrony's authenticated time.
     meta skuid ${toString unboundUid} oifname { "${wired}", "${wireless}" } ip daddr ${dnsDotUpstreams} tcp dport ${toString port.dot} accept
-    meta skuid ${toString timesyncUid} oifname { "${wired}", "${wireless}" } udp dport ${toString port.ntp} accept
+    meta skuid ${toString timeUid} oifname { "${wired}", "${wireless}" } udp dport ${toString port.ntp} accept
+    meta skuid ${toString timeUid} oifname { "${wired}", "${wireless}" } tcp dport ${toString port.nts} accept
     meta skuid ${toString dnsmasqUid} meta oifname . ip daddr @dns_split4 meta l4proto { tcp, udp } th dport 53 accept
     meta skuid ${toString dnsmasqUid} meta oifname . ip6 daddr @dns_split6 meta l4proto { tcp, udp } th dport 53 accept
   '';
@@ -310,6 +323,8 @@ let
 
 in
 {
+  imports = [ ./network-hardening.nix ./network-time.nix ];
+
   # The nft rules match these daemons by uid, so the accounts are pinned.
   users.users.unbound.uid = m.uids.unbound;
   users.users.dnsmasq.uid = m.uids.dnsmasq;
@@ -318,6 +333,29 @@ in
   # A null or shared uid makes an exemption match nothing or the wrong daemon;
   # uniqueness is what the evaluator can check.
   assertions = [
+    {
+      assertion = lib.all (entry: builtins.elem entry.interface restrictedGuestIfaces
+        && builtins.match "[0-9a-fA-F:.]+/[0-9]+" entry.cidr != null
+        && (entry.tcpPorts != [ ] || entry.udpPorts != [ ])) config.my.hardening.guestPrivateExceptions
+        && m.ntsUpstreams != [ ]
+        && lib.all (host: builtins.match "[a-zA-Z0-9.-]+" host != null) m.ntsUpstreams
+        && lib.count (u: u.uid == timeUid) (lib.attrValues config.users.users) == 1;
+      message = "Guest private exceptions require a guest interface, CIDR and ports; NTS requires explicit hosts and a unique chrony UID.";
+    }
+    {
+      assertion = port.unbound >= 1024
+        && (config.services.unbound.settings.server.ip-transparent or false) == false;
+      message = "The capability-free Unbound forwarder requires an unprivileged port and ip-transparent=false.";
+    }
+    {
+      # The fallback is plaintext by design, so it may only be an IPv4 literal
+      # and must never be reused as a validated upstream.
+      assertion = lib.all (ip: builtins.match
+        "(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}"
+        ip != null) m.dotTransportFallback
+        && lib.all (ip: !builtins.elem ip m.dotUpstreams) m.dotTransportFallback;
+      message = "Mode-A plaintext fallback requires IPv4 literals that are not the validated DoT upstreams.";
+    }
     {
       assertion = lib.all (i: builtins.elem i guestIfaces) vmTransparentProxyIfaces
         && lib.length (lib.unique guestIfaces) == lib.length guestIfaces
@@ -390,7 +428,13 @@ in
       # owns the wired NIC. Match by name+MAC so NM can never grab it.
       unmanaged = [ "interface-name:${wired}" "mac:${m.wired.mac}" ];
       dns = "systemd-resolved";   # Pin NM to resolved
-      wifi.powersave = false;
+      wifi = {
+        powersave = false;
+        scanRandMacAddress = true;
+        # Native connection defaults preserve explicit per-profile exceptions.
+        # /var/lib/NetworkManager and machine-id are already persistent.
+        macAddress = config.my.hardening.wifi.clonedMacAddress;
+      };
 
       settings = {
         # Keep checking ON so GNOME can pop the captive-portal login page.
@@ -404,10 +448,6 @@ in
         # Opportunistic 802.11w default (mitigates rogue-AP deauth).
         connection = {
           "wifi-sec.pmf" = 2;
-        }
-        # Emitted only when opted in; leaving the key out keeps NM's own default.
-        // lib.optionalAttrs (clonedMac != "preserve") {
-          "wifi.cloned-mac-address" = clonedMac;
         };
 
       };
@@ -501,6 +541,10 @@ in
   services.tailscale = {
     enable = true;
     package = pkgs.unstable.tailscale;
+    # resolved-policy installs only the authenticated MagicDNS suffix. Never
+    # accept a tailnet's default resolver, subnet routes or exit-node state.
+    extraSetFlags = [ "--accept-dns=false" "--accept-routes=false"
+      "--advertise-routes=" "--advertise-exit-node=false" "--exit-node=" "--ssh=false" ];
   };
 
   # Avahi / mDNS. Skip the untrusted physical LAN (${wired}); hotspot + tailnet only.
@@ -517,6 +561,21 @@ in
   # fallback otherwise; dns-upstream.service switches the upstream (see dns-upstream.nix).
   services.dnsmasq = {
     enable = true;
+    # In strict-order mode, terminal UDP SERVFAIL/REFUSED must reach the
+    # client. The upstream retry path otherwise discards the last response.
+    package = pkgs.dnsmasq.overrideAttrs (old: {
+      postPatch = (old.postPatch or "") + ''
+        substituteInPlace src/forward.c --replace-fail \
+          '  if ((RCODE(header) == REFUSED || RCODE(header) == SERVFAIL) && forward->forwardall == 0)' \
+          '  /* Return the final strict-order error, including its DNSSEC EDE.
+                Use the sent-to index because endpoints can be duplicated. */
+          if ((RCODE(header) == REFUSED || RCODE(header) == SERVFAIL) && forward->forwardall == 0 &&
+              !(option_bool(OPT_ORDER) && forward->sentto->arrayposn == last - 1))'
+      '';
+    });
+    # resolved owns /etc/resolv.conf and forwards to this high-port gateway.
+    # Disable the legacy resolvconf subscriber and its writable /etc files.
+    resolveLocalQueries = false;
     settings = {
       port = port.dnsmasq;
       bind-interfaces = true;
@@ -532,7 +591,37 @@ in
     };
   };
 
-  # Encrypted fallback resolver (DoT via AliDNS) used while clash is down, so
+  # Keep the existing root-start/self-drop and D-Bus reload lifecycle. The
+  # networking capabilities below are retained for dnsmasq's own capset; KILL
+  # lets the root ExecReload signal the self-dropped daemon. Guest DHCP servers
+  # are separate processes and are not changed by this unit.
+  systemd.services.dnsmasq.serviceConfig = {
+    NoNewPrivileges = true;
+    CapabilityBoundingSet = [ "CAP_CHOWN" "CAP_DAC_OVERRIDE" "CAP_FOWNER" "CAP_KILL"
+      "CAP_SETUID" "CAP_SETGID" "CAP_SETPCAP"
+      "CAP_NET_BIND_SERVICE" "CAP_NET_ADMIN" "CAP_NET_RAW" ];
+    ProtectSystem = lib.mkForce "strict";
+    StateDirectory = "dnsmasq";
+    ReadWritePaths = [ "/var/lib/dnsmasq" ];
+    PrivateDevices = true;
+    ProtectKernelTunables = true;
+    ProtectKernelModules = true;
+    ProtectKernelLogs = true;
+    ProtectControlGroups = true;
+    ProtectClock = true;
+    ProtectHostname = true;
+    ProtectProc = "invisible";
+    ProcSubset = "pid";
+    RestrictNamespaces = true;
+    RestrictRealtime = true;
+    RestrictSUIDSGID = true;
+    RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
+    SystemCallArchitectures = "native";
+    LockPersonality = true;
+    MemoryDenyWriteExecute = true;
+  };
+
+  # Encrypted fallback resolver (DoT via Cloudflare) used while clash is down, so
   # the "direct" DNS path is not plaintext. dns-upstream points dnsmasq here.
   #
   # The pinned source is a CVE backport (1.26.2) ahead of nixpkgs. It must stay a
@@ -549,11 +638,22 @@ in
       };
     });
     resolveLocalQueries = false;
-    enableRootTrustAnchor = false;   # upstream DoT/TLS only, like mihomo's DoH
+    enableRootTrustAnchor = true;
     settings = {
       server = {
         interface = [ "127.0.0.1@${toString port.unbound}" ];
         "tls-upstream" = true;
+        module-config = ''"validator iterator"'';
+        val-permissive-mode = false;
+        ignore-cd-flag = true;
+        harden-dnssec-stripped = true;
+        ede = true;
+        # Upstream failures are otherwise silent at verbosity 1, which is why the
+        # last outage could only be inferred from the statistics counter.
+        log-servfail = true;
+        # Only upstream answers are filtered; explicit local-data/private-domain
+        # remain available for deliberately configured internal names.
+        "private-address" = rebind.all;
       };
       "forward-zone" = [
         {
@@ -566,9 +666,23 @@ in
 
   # NixOS disables build-time checkconf when remote-control is present, so
   # validate at start: a bad config fails fast with a clear error.
-  systemd.services.unbound.preStart = lib.mkAfter ''
+  systemd.services.unbound.preStart = lib.mkForce ''
+    # Seed from the locked root-data package without a DNS/HTTPS bootstrap
+    # dependency. Unbound maintains RFC5011 state over its authenticated DoT.
+    if [ ! -s ${config.services.unbound.stateDir}/root.key ]; then
+      ${pkgs.coreutils}/bin/install -m 0644 ${pkgs.dns-root-data}/root.key ${config.services.unbound.stateDir}/root.key
+    fi
+    ${lib.optionalString config.services.unbound.settings.remote-control.control-enable ''
+      ${config.services.unbound.package}/bin/unbound-control-setup -d ${config.services.unbound.stateDir}
+    ''}
     ${config.services.unbound.package}/bin/unbound-checkconf /etc/unbound/unbound.conf
   '';
+  # This loopback high-port forwarder uses neither privileged binds nor
+  # ip-transparent. Keep the upstream unit's remaining sandbox and notify type.
+  systemd.services.unbound.serviceConfig = {
+    AmbientCapabilities = lib.mkForce "";
+    CapabilityBoundingSet = lib.mkForce "";
+  };
 
   # Resolved
   services.resolved = {
@@ -670,6 +784,32 @@ in
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.dnsmasq} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.unbound} meta skuid != { 0, ${toString unboundUid} } counter drop
         }
+        # Evaluate before conntrack's generic input accept: removing an allowed
+        # host-service port must also revoke an already established guest flow.
+        chain lf_guest_host {
+          ct direction reply ct state established,related return
+          ${tproxyInputAccept}
+          iifname "${m.vmBridge}" udp sport 68 udp dport 67 accept
+          iifname "${m.vmBridge}" ip saddr ${m.vmSubnet} ip daddr ${m.vmAddress} meta l4proto { tcp, udp } th dport 53 accept
+          iifname "${m.waydroidBridge}" udp dport 67 accept
+          iifname "${m.waydroidBridge}" ip saddr ${m.waydroidSubnet} ip daddr ${m.waydroidAddress} meta l4proto { tcp, udp } th dport 53 accept
+          ${lib.optionalString config.my.hardening.guestHostServices (guestHostServices vmSrc)}
+          counter drop
+        }
+        ${lib.optionalString (!config.my.hardening.guestPrivateEgress) ''
+        chain lf_guest_private {
+          ct direction reply ct state established,related return
+          iifname "${m.vmBridge}" ip daddr ${m.vmAddress} return
+          iifname "${m.waydroidBridge}" ip daddr ${m.waydroidAddress} return
+          ${guestPrivateExceptions}
+          ip daddr { ${join rebindV4} } counter drop
+          ip6 daddr { ::, ::1, ${local6} } counter drop
+        }
+        chain lf_guest_private_guard {
+          type filter hook prerouting priority -199; policy accept;
+          iifname ${nftIfaces restrictedGuestIfaces} jump lf_guest_private
+        }
+        ''}
         chain input {
           type filter hook input priority 0; policy drop;
 
@@ -677,6 +817,7 @@ in
           iif lo accept
           # Clash Verge TUN device (local, root-owned): accept its replies.
           iifname "${tunDev}" accept
+          iifname ${nftIfaces restrictedGuestIfaces} jump lf_guest_host
           ct state established,related accept
           # TPROXY'd bridge traffic, if enabled.
           ${tproxyInputAccept}
