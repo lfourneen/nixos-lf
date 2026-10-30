@@ -62,6 +62,15 @@ try:
     query(False)
     for _ in range(6):
         run(['systemctl', 'start', 'dns-split-revoke.service'])
+    # The revoke path flushes the lease sets with bare flush statements rather
+    # than element deletions, so assert the observable result of that route:
+    # both sets empty, the epoch rotated, and the recorded status revoked.
+    epoch = Path('/run/dns-policy/split-epoch').read_text()
+    run(['systemctl', 'start', 'dns-split-revoke.service'])
+    assert Path('/run/dns-policy/split-epoch').read_text() != epoch, 'revoke did not rotate the epoch'
+    for name in ('dns_split4', 'dns_split6'):
+        assert 'elements' not in run(['nft', 'list', 'set', 'inet', 'lf_filter', name]), name + ' kept a lease'
+    assert json.loads(Path('/run/dns-policy/state.json').read_text())['status'] == 'revoked'
     run(policy)  # The same NM instance is insufficient after epoch revocation.
     query(False)
     # Leave enough time for broker execution, then require expiry well before

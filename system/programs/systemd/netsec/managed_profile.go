@@ -151,6 +151,9 @@ func lfManagedProfileDefaults(raw *RawConfig) error {
 	if err := lfUpgradeMagicDNS(raw, policy); err != nil {
 		return err
 	}
+	if err := lfApplyTunExcludes(raw, policy); err != nil {
+		return err
+	}
 	defaults := map[string]any{}
 	for _, key := range []string{"iproute2-rule-index", "auto-redirect-input-mark",
 		"auto-redirect-output-mark", "auto-redirect-iproute2-fallback-rule-index"} {
@@ -179,6 +182,50 @@ func lfManagedProfileDefaults(raw *RawConfig) error {
 		raw.Tun.AutoRedirectIPRoute2FallbackRuleIndex = tun.AutoRedirectIPRoute2FallbackRuleIndex
 	}
 	return nil
+}
+
+// A generated profile can outlive the Nix generation that produced it. The
+// tunnel exclusion list is derived from machine.privateV4, so a newer
+// generation may add an entry an older profile cannot know about, and an older
+// profile may carry one this policy no longer lists. The policy owns the list,
+// so apply it verbatim: a stale profile still starts, a missing entry is added,
+// and an extra entry is dropped instead of honoured, since an extra exclusion
+// would move traffic out of the tunnel. The final check then sees exactly the
+// policy list rather than refusing to start.
+func lfApplyTunExcludes(raw *RawConfig, policy map[string]any) error {
+	expected, ok := policy["tun.route-exclude-address"].([]any)
+	if !ok || len(expected) == 0 {
+		return nil
+	}
+	want := make([]any, 0, len(expected))
+	for _, item := range expected {
+		if _, ok := item.(string); !ok {
+			return nil
+		}
+		want = append(want, item)
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	var document map[string]any
+	if err = json.Unmarshal(data, &document); err != nil {
+		return err
+	}
+	tun, _ := document["tun"].(map[string]any)
+	if tun == nil {
+		return nil
+	}
+	actual, ok := tun["route-exclude-address"].([]any)
+	if ok && reflect.DeepEqual(lfCanonical(actual), lfCanonical(want)) {
+		return nil
+	}
+	tun["route-exclude-address"] = want
+	merged, err := json.Marshal(document)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(merged, raw)
 }
 
 // A generated profile can outlive the Nix generation that produced it. Match

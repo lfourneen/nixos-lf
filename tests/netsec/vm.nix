@@ -254,6 +254,7 @@ pkgs.testers.runNixOSTest {
   };
   testScript = ''
     import ipaddress
+    import time
 
     def wait_proxy(timeout=120):
         try:
@@ -343,9 +344,25 @@ pkgs.testers.runNixOSTest {
     machine.succeed("rm -f /run/dns-upstream/budgets/*; mkdir -p /run/systemd/system/dns-upstream.service.d; printf '[Service]\\nEnvironment=NETSEC_DNSSEC_PROBE_NAME=bogus.signed.fixture.example.\\nEnvironment=NETSEC_DNSSEC_PROBE_TYPE=1\\nEnvironment=NETSEC_DOT_PRIME_ROUNDS=0\\n' >/run/systemd/system/dns-upstream.service.d/dnssec-test.conf; systemctl daemon-reload; systemctl start dns-upstream.service")
     machine.wait_until_succeeds("jq -e '.dnssec_status == \"validation-error\" and .mode == \"bootstrap-plaintext\" and .window_until > 0' /run/dns-upstream/state.json", timeout=60)
     machine.fail("nft get element inet lf_filter dns_plaintext4 '{ 100.67.0.1 }'")
+    # Plaintext is billed against the pool one second per second, so a window
+    # left open must visibly shrink the remaining allowance.
+    pool_start = int(machine.succeed("jq -r .budget_remaining /run/dns-upstream/state.json"))
+    assert 0 < pool_start <= 1800, pool_start
+    time.sleep(10)
+    pool_spent = int(machine.succeed("jq -r .budget_remaining /run/dns-upstream/state.json"))
+    assert pool_spent < pool_start - 4, (pool_start, pool_spent)
     machine.succeed("test $(jq -r .window_until /run/dns-upstream/state.json) -le $(( $(jq -r .monotonic_seconds /run/dns-upstream/state.json) + 120 )); rm /run/systemd/system/dns-upstream.service.d/dnssec-test.conf; systemctl daemon-reload; systemctl restart dns-upstream.service")
     machine.wait_until_succeeds("test $(jq -r .mode /run/dns-upstream/state.json) = dot && test $(jq -r .dnssec_status /run/dns-upstream/state.json) = secure", timeout=60)
-    machine.succeed("systemctl stop dns-upstream.service")
+    # A validated encrypted path earns the pool back, but a later failure must
+    # continue from what is left instead of being handed a fresh 1800 s.
+    machine.wait_until_succeeds(f"test $(jq -r .budget_remaining /run/dns-upstream/state.json) -gt {pool_spent}", timeout=90)
+    assert int(machine.succeed("jq -r .budget_remaining /run/dns-upstream/state.json")) <= 1800
+    machine.succeed("printf '[Service]\\nEnvironment=NETSEC_DNSSEC_PROBE_NAME=bogus.signed.fixture.example.\\nEnvironment=NETSEC_DNSSEC_PROBE_TYPE=1\\nEnvironment=NETSEC_DOT_PRIME_ROUNDS=0\\n' > /run/systemd/system/dns-upstream.service.d/dnssec-test.conf; systemctl daemon-reload; systemctl restart dns-upstream.service")
+    machine.wait_until_succeeds("jq -e '.mode == \"bootstrap-plaintext\"' /run/dns-upstream/state.json", timeout=60)
+    time.sleep(8)
+    flap_pool = int(machine.succeed("jq -r .budget_remaining /run/dns-upstream/state.json"))
+    assert 0 < flap_pool < 1800, flap_pool
+    machine.succeed("rm /run/systemd/system/dns-upstream.service.d/dnssec-test.conf; systemctl daemon-reload; systemctl stop dns-upstream.service")
     # A slow/unreachable local validator is unknown, not a signature verdict. It
     # must revoke old grants without locking the host out of DNS.
     machine.succeed("rm -f /run/dns-upstream/budgets/*; python3 /etc/netsec-dns.py lease 100.67.0.1 120; systemctl start dns-policy.service")

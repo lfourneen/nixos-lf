@@ -42,10 +42,17 @@ def kernel_value(path):
 
 
 def session_identity(interface, active_path=""):
-    """DHCP-controlled addresses never create a fresh plaintext budget."""
+    """Identity of the network session, not of the carrier.
+
+    Neither DHCP-controlled addresses nor the carrier state may mint a fresh
+    plaintext budget: an access point that blocks DoT can also drop the link at
+    will, so counting carrier losses would hand it a new budget on every
+    deauthentication. Only boot, interface, ifindex and the active NetworkManager
+    connection participate; a different network still starts a new session.
+    """
     base = Path("/sys/class/net") / interface
     values = [kernel_value("/proc/sys/kernel/random/boot_id"), interface,
-              kernel_value(base / "ifindex"), kernel_value(base / "carrier_down_count"), active_path]
+              kernel_value(base / "ifindex"), active_path]
     return hashlib.sha256(json.dumps(values).encode()).hexdigest()
 
 
