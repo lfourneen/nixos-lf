@@ -599,8 +599,10 @@ class LinkTests(unittest.TestCase):
             changed = read()
             self.assertEqual(first["identity"], changed["identity"])
             self.assertNotEqual(first["fingerprint"], changed["fingerprint"])
+            # A carrier flap is the attacker-controlled half of a hostile access
+            # point: it must not start a new plaintext budget.
             downs[0] = "1"
-            self.assertNotEqual(first["identity"], read()["identity"])
+            self.assertEqual(first["identity"], read()["identity"])
 
     def test_wifi_uses_original_dhcp_options(self):
         settings = {"ip": "ip", "nmcli": "nmcli", "interfaces": ["wlo1"], "dhcp_interfaces": []}
@@ -855,6 +857,9 @@ class EventTests(unittest.TestCase):
                 self.assertFalse(events.needs_wake(f"{operation} element inet lf_filter {name} {{ 192.0.2.53 timeout 2m }}"))
             self.assertTrue(events.needs_wake(f"delete set inet lf_filter {name}"))
             self.assertTrue(events.needs_wake(f"add set inet lf_filter {name} {{ type ipv4_addr; }}"))
+            # The revoke path flushes without elements; that is drift, not a
+            # renewal, so supervision must still wake for it.
+            self.assertTrue(events.needs_wake(f"flush set inet lf_filter {name}"))
         for line in ("delete rule inet lf_filter lf_blocked_guard handle 12",
                      "add rule inet lf_filter lf_dns_guard counter drop",
                      "add element inet lf_filter unrelated { 192.0.2.53 }",

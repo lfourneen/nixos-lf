@@ -653,7 +653,12 @@ in
         log-servfail = true;
         # Only upstream answers are filtered; explicit local-data/private-domain
         # remain available for deliberately configured internal names.
-        "private-address" = rebind.all;
+        # 198.18/15 is the RFC 2544 benchmarking block, which mihomo also uses
+        # for fake-IP. A rebinding answer inside it would be indistinguishable
+        # from a fake address and get routed into the TUN, so refuse it here.
+        # Deliberately not added to private-addresses.nix: the guard there
+        # exempts private targets, and fake-IP must stay a proxied destination.
+        "private-address" = lib.unique (rebind.all ++ [ "198.18.0.0/15" ]);
       };
       "forward-zone" = [
         {
@@ -815,8 +820,14 @@ in
 
           ct state invalid drop
           iif lo accept
-          # Clash Verge TUN device (local, root-owned): accept its replies.
-          iifname "${tunDev}" accept
+          # Clash Verge TUN device: replies only. The core writes arbitrary
+          # bytes into this device, and every host-service accept below is
+          # scoped to a real ingress interface, so a blanket `iifname accept`
+          # was the one way a TUN packet could skip the ingress policy and
+          # land on a 0.0.0.0-bound listener (sshd, the DSH web GUI, libvirt).
+          # Host flows leave through the TUN and their reply is tracked, so
+          # conntrack covers every legitimate packet arriving here.
+          iifname "${tunDev}" ct state established,related accept
           iifname ${nftIfaces restrictedGuestIfaces} jump lf_guest_host
           ct state established,related accept
           # TPROXY'd bridge traffic, if enabled.
@@ -853,8 +864,17 @@ in
           iifname "tailscale0" tcp dport { ${tailnetTcp} } accept
           iifname "tailscale0" udp dport { ${tailnetUdp} } accept
 
-          # ICMPv6 essentials before the public-IPv6 drop
-          meta l4proto icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert, packet-too-big, echo-request, destination-unreachable, time-exceeded } accept
+          # ICMPv6 essentials before the public-IPv6 drop. Neighbour discovery
+          # is on-link protocol traffic: RFC 4861 fixes its hop limit at 255,
+          # which a routed packet cannot keep, so that test is what rejects a
+          # spoofed off-link NA/RA. A router advert must also come from a
+          # link-local source. A neighbour advert for a global address carries
+          # that global address as its source, so the type is not restricted
+          # to link-local sources or the reply never resolves the neighbour.
+          meta l4proto icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } ip6 hoplimit != 255 drop
+          meta l4proto icmpv6 icmpv6 type { nd-router-solicit, nd-router-advert } ip6 saddr != { fe80::/10, ::/128 } drop
+          meta l4proto icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept
+          meta l4proto icmpv6 icmpv6 type { packet-too-big, echo-request, destination-unreachable, time-exceeded } accept
 
           # Refuse the remaining new public IPv6 input (exceptions above).
           ip6 saddr != { ::1, fe80::/10, fc00::/7 } drop

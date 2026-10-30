@@ -208,6 +208,7 @@ in
         runtime=/run/dns-upstream
         current=pending
         interval=2
+        degraded_rounds=0
         woken=0
         last_conf=""
         last_pid=""
@@ -218,9 +219,9 @@ in
         history_lines=400
         dot_state=not-probed
         dot_result='{"status":"not-probed","rcode":null,"ede":[],"detail":"not-probed"}'
-        budget_until=0; window_until=0
+        window_until=0; last_tick=0; boot_until=0
         no_resolver_logged=0
-        PL_TTL=120; PL_TOTAL=1800
+        PL_TTL=120; PL_TOTAL=1800; budget_left=1800
         ready_sent=0
         policy_version=-1
         split='{"entries":[],"context":null}'
@@ -242,18 +243,59 @@ in
           printf '%s\n' "''${uptime%%.*}"
         }
         save_budget() {
-          atomic_write "$runtime/budgets/$ident" "$budget_until $window_until"
+          # Before the first lease there is no identity to bill against; the
+          # pending pass must not create a nameless budget file.
+          [ -n "$ident" ] || return 0
+          atomic_write "$runtime/budgets/$ident" "$budget_left $window_until"
         }
         load_budget() {
-          budget_until=0; window_until=0
+          budget_left=$PL_TOTAL; window_until=0; last_tick=$(now_mono)
           if [ -r "$runtime/budgets/$ident" ]; then
             read -r b w < "$runtime/budgets/$ident" || true
-            if [[ "$b $w" =~ ^[0-9]+\ [0-9]+$ ]]; then budget_until=$b; window_until=$w; fi
+            if [[ "$b $w" =~ ^[0-9]+\ [0-9]+$ ]]; then
+              budget_left=$b; window_until=$w
+              [ "$budget_left" -le "$PL_TOTAL" ] || budget_left=$PL_TOTAL
+            fi
           fi
+        }
+        account_budget() {
+          # Supplementary model instead of a refund one: plaintext costs 1:1
+          # while a window is open and is only earned back 1:1 while the
+          # encrypted path is validated. "Block, then briefly allow" therefore
+          # cannot refill the pool, while a genuinely flaky link keeps a small
+          # allowance instead of ending in a manual recovery.
+          local now elapsed active=0
+          now=$(now_mono)
+          # A fresh process (or a first pass) has no previous tick to bill
+          # against; charging "since boot" would spend the whole pool at once.
+          [ "$last_tick" -ne 0 ] || last_tick=$now
+          elapsed=$((now - last_tick)); last_tick=$now
+          [ "$elapsed" -ge 0 ] || elapsed=0
+          if [ -e "$runtime/force-plaintext" ] || [ "$now" -lt "$window_until" ]; then active=1; fi
+          if [ "$active" = 1 ]; then
+            budget_left=$((budget_left - elapsed))
+            [ "$budget_left" -ge 0 ] || budget_left=0
+            [ "$budget_left" -gt 0 ] || window_until=0
+          elif [ "$dot_state" = secure ]; then
+            ${lib.optionalString (config.my.proxy.plaintextBootBudgetSeconds != null) ''
+            if [ -r "$runtime/boot-budget" ]; then read -r boot_until < "$runtime/boot-budget" || boot_until=0; fi
+            if [ "$boot_until" = 0 ] || [ "$now" -lt "$boot_until" ]; then
+            ''}
+            budget_left=$((budget_left + elapsed))
+            [ "$budget_left" -le "$PL_TOTAL" ] || budget_left=$PL_TOTAL
+            ${lib.optionalString (config.my.proxy.plaintextBootBudgetSeconds != null) ''
+            fi
+            ''}
+          fi
+          save_budget
         }
         open_window() {
           now=$(now_mono)
-          [ "$budget_until" != 0 ] || budget_until=$((now + PL_TOTAL))
+          if [ "$budget_left" -le 0 ]; then window_until=0; save_budget; return 1; fi
+          window_until=$((now + PL_TTL))
+          # The window can never outlive the pool: a short remaining allowance
+          # caps the deadline, and refilling is what extends it again.
+          [ $((window_until - now)) -le "$budget_left" ] || window_until=$((now + budget_left))
           ${lib.optionalString (config.my.proxy.plaintextBootBudgetSeconds != null) ''
           if [ -r "$runtime/boot-budget" ]; then
             read -r boot_until < "$runtime/boot-budget"
@@ -262,10 +304,8 @@ in
             atomic_write "$runtime/boot-budget" "$boot_until"
           fi
           [[ "$boot_until" =~ ^[0-9]+$ ]] || return 1
-          [ "$budget_until" -le "$boot_until" ] || budget_until=$boot_until
+          [ "$window_until" -le "$boot_until" ] || window_until=$boot_until
           ''}
-          window_until=$((now + PL_TTL))
-          [ "$window_until" -le "$budget_until" ] || window_until=$budget_until
           save_budget
         }
         dot_ok() {
@@ -303,11 +343,11 @@ in
           override=false
           [ ! -e "$runtime/force-plaintext" ] || override=true
           jq -n --arg mode "$current" --arg reason "$state_reason" --arg session "$last_ident" \
-            --argjson budget "$budget_until" --argjson window "$window_until" \
+            --argjson budget "$budget_left" --argjson total "$PL_TOTAL" --argjson window "$window_until" \
             --argjson now "$now" --argjson override "$override" --argjson version "$policy_version" \
             --argjson success "$last_success" --arg dnssec "$dot_state" --argjson probe "$dot_result" \
-            '{mode:$mode,reason:$reason,session:$session,budget_until:$budget,window_until:$window,
-              remaining_seconds:([$budget-$now,0]|max),plaintext_override:$override,
+            '{mode:$mode,reason:$reason,session:$session,budget_remaining:$budget,budget_total:$total,
+              window_until:$window,plaintext_override:$override,
               monotonic_seconds:$now,policy_version:$version,last_success_monotonic:$success,dnssec_status:$dnssec,dnssec_probe:$probe}' \
               > "$runtime/state.json.$$" && mv -f "$runtime/state.json.$$" "$runtime/state.json"
           atomic_write "$runtime/reason" "$state_reason"
@@ -316,11 +356,18 @@ in
         }
         record_history() {
           # Persist the verdict so a rolled-back boot still has the evidence.
+          # Only when it changes: a stuck state re-publishes every two seconds
+          # and would otherwise rewrite the journal thirty times a minute.
+          local last
+          last=$(tail -n 1 "$history" 2>/dev/null | jq -r '[.mode,.reason,.verdict]|@tsv' 2>/dev/null || true)
+          if [ "$last" = "$(printf '%s\t%s\t%s' "$current" "$state_reason" "$dot_state")" ]; then
+            return 0
+          fi
           jq -nc --arg t "$(date -u +%FT%TZ)" --arg mode "$current" \
             --arg reason "$state_reason" --arg verdict "$dot_state" \
             --arg ident "$last_ident" --argjson probe "$dot_result" \
-            --argjson budget "$budget_until" --argjson window "$window_until" \
-            '{time:$t,mode:$mode,reason:$reason,verdict:$verdict,identity:$ident,probe:$probe,budget_until:$budget,window_until:$window}' \
+            --argjson budget "$budget_left" --argjson window "$window_until" \
+            '{time:$t,mode:$mode,reason:$reason,verdict:$verdict,identity:$ident,probe:$probe,budget_remaining:$budget,window_until:$window}' \
             >> "$history" 2>/dev/null || return 0
           if [ "$(wc -l < "$history" 2>/dev/null || echo 0)" -gt "$history_lines" ]; then
             tail -n "$history_lines" "$history" > "$history.$$" && mv -f "$history.$$" "$history"
@@ -399,6 +446,9 @@ in
         systemd-notify --ready
         ready_sent=1
         while true; do
+          # Bill the interval that just elapsed against the pool before this
+          # round's verdict changes what the pool means.
+          account_budget
           woken=0
           timeout 15 systemctl start dns-resolved-policy.service || true
           split_ok=1
@@ -449,12 +499,10 @@ in
               dot_grace_rounds=0; dot_fails=0; no_resolver_logged=0; ever_secure=1
               new_status=dot
               state_reason='mode-a: encrypted upstream and DNSSEC validation healthy'
-              # A recovered encrypted path earns a fresh plaintext budget, so a
-              # later outage is not punished for one that already ended.
-              if [ "$budget_until" != 0 ] || [ "$window_until" != 0 ]; then
-                budget_until=0; window_until=0
-                save_budget
-              fi
+              # The deadline is dropped on recovery, the pool is not: it
+              # refills at 1:1 below, so a flapping upstream keeps its
+              # accumulated allowance instead of regaining a full one.
+              if [ "$window_until" != 0 ]; then window_until=0; save_budget; fi
             elif [ "$ever_secure" = 0 ] && [ "$dot_state" = indeterminate ] \
                  && [ "$dot_grace_rounds" -lt "$prime_rounds" ]; then
               # A cold validator has to prime its trust anchor before its first
@@ -477,7 +525,7 @@ in
                 elif [ "$now" -lt "$window_until" ]; then
                   new_status=bootstrap-plaintext
                   state_reason="mode-a: bounded plaintext window ($dot_state)"
-                elif [ "$now" -lt "$budget_until" ]; then
+                elif [ "$budget_left" -gt 0 ]; then
                   # Renew the window while the budget allows it: a flaky
                   # encrypted upstream must not end in a manual recovery, and the
                   # budget still caps the total plaintext time per session.
@@ -515,10 +563,22 @@ in
             publish_dns
             echo "dns-upstream: apply failed ($apply_reason); retrying" >&2
             interval=2
-          elif [ "$current" != "$previous" ] || { [ "$current" != dot ] && [ "$current" != proxy ]; }; then
+          elif [ "$current" != "$previous" ]; then
+            # A state flip is news: look again quickly before settling.
             interval=2
-          elif [ "$interval" -lt 60 ]; then
-            interval=$((interval * 2 > 60 ? 60 : interval * 2))
+            degraded_rounds=0
+          elif [ "$current" = dot ] || [ "$current" = proxy ]; then
+            degraded_rounds=0
+            if [ "$interval" -lt 60 ]; then interval=$((interval * 2 > 60 ? 60 : interval * 2)); fi
+          elif [ "$degraded_rounds" -lt 3 ]; then
+            degraded_rounds=$((degraded_rounds + 1))
+            interval=2
+          else
+            # A resolver that stays degraded is not going to change in two
+            # seconds; back off to 15 so a dead uplink stops a hot loop, while
+            # recovery is still noticed well inside one plaintext window.
+            degraded_rounds=$((degraded_rounds + 1))
+            if [ "$interval" -lt 15 ]; then interval=$((interval * 2 > 15 ? 15 : interval * 2)); fi
           fi
           if [ "$ready_sent" = 0 ]; then systemd-notify --ready; ready_sent=1; fi
           systemd-notify WATCHDOG=1

@@ -351,3 +351,66 @@ func TestLFManagedPreviousGeneration(t *testing.T) {
 		}
 	}
 }
+
+// The exclusion list is derived from machine.privateV4, so an older profile may
+// omit an entry a newer generation added, or carry one the policy no longer
+// lists. The policy owns the list: a stale profile still starts, and an entry
+// the policy does not list is dropped instead of honoured, since an extra
+// exclusion would move traffic out of the tunnel.
+func TestLFManagedPreviousGenerationAppliesPolicyExclusions(t *testing.T) {
+	path := os.Getenv("LF_MANAGED_TEST_POLICY")
+	fixture := os.Getenv("LF_MANAGED_TEST_LEGACY_PROFILE")
+	if path == "" || fixture == "" {
+		t.Skip("Nix upgrade fixture not supplied")
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	tun, _ := document["tun"].(map[string]any)
+	if tun == nil {
+		t.Skip("fixture has no tun section")
+	}
+	list, _ := tun["route-exclude-address"].([]any)
+	if list == nil {
+		t.Skip("fixture has no tunnel exclusion list")
+	}
+	tun["route-exclude-address"] = append(list, "203.0.113.0/24")
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := UnmarshalRawConfig(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lfValidateRaw(raw); err != nil {
+		t.Fatalf("stale profile with an extra exclusion failed to start: %v", err)
+	}
+	applied, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(applied, &result); err != nil {
+		t.Fatal(err)
+	}
+	resultTun, _ := result["tun"].(map[string]any)
+	if resultTun == nil {
+		t.Fatal("policy application dropped the tun section")
+	}
+	final, _ := resultTun["route-exclude-address"].([]any)
+	if len(final) == 0 {
+		t.Fatal("policy application dropped the exclusion list")
+	}
+	for _, item := range final {
+		if item == "203.0.113.0/24" {
+			t.Fatal("kept an exclusion the policy does not list")
+		}
+	}
+}

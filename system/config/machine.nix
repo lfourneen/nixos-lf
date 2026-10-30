@@ -82,7 +82,9 @@
     # reachable. This uplink is CGNAT, so 100.64/10 is one of them.
     privateV4 = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "100.64.0.0/10" ];
+      # 169.254/16 is link-local: APIPA adapters, mDNS and cloud metadata live
+      # there and none of it may be tunnelled or proxied.
+      default = [ "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "100.64.0.0/10" "169.254.0.0/16" ];
     };
     multicastV4 = lib.mkOption {
       type = lib.types.listOf lib.types.str;
