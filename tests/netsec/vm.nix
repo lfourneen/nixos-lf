@@ -40,6 +40,8 @@ pkgs.testers.runNixOSTest {
     ];
     users.users.lfour = { isNormalUser = true; uid = 1000; };
     my.proxy.nodeProbeUrls = [ "http://node.fixture.example:8080/" ];
+    my.proxy.blockedDomains = [ "ads.fixture.example" "blocked.fixture.test" ];
+    my.proxy.blockedDomainExceptions = [ "ok.blocked.fixture.test" ];
     my.proxy.tunProbeName = "tun.fixture.example";
     services.tailscale.enable = lib.mkForce false;
     services.avahi.enable = lib.mkForce false;
@@ -50,7 +52,11 @@ pkgs.testers.runNixOSTest {
     '';
     services.unbound.settings.server = {
       local-zone = [ ''"fixture.test." static'' ];
-      local-data = [ ''"fixture.test. 0 IN A 192.0.2.42"'' ];
+      local-data = [
+        ''"fixture.test. 0 IN A 192.0.2.42"''
+        ''"ok.blocked.fixture.test. 0 IN A 192.0.2.43"''
+        ''"a.ok.blocked.fixture.test. 0 IN A 192.0.2.44"''
+      ];
       # TLS is selected per forward zone here so this one isolated fixture can
       # use plaintext loopback. The production root forwarder still uses TLS.
       tls-upstream = lib.mkForce false;
@@ -249,12 +255,21 @@ pkgs.testers.runNixOSTest {
       noipv4ll
     '';
     environment.systemPackages = [ pkgs.curl pkgs.python3 pkgs.jq pkgs.iproute2 pkgs.nftables
-      pkgs.dnsmasq pkgs.dhcpcd pkgs.dnsutils pkgs.util-linux pkgs.openssl ];
+      pkgs.dnsmasq pkgs.dhcpcd pkgs.dnsutils pkgs.util-linux pkgs.openssl pkgs.netcat ];
     virtualisation.memorySize = 1536;
   };
   testScript = ''
     import ipaddress
     import time
+
+    def dot_guard_drops():
+        # The guard sits at priority -196, ahead of sing-tun's auto-redirect, so
+        # this counter is the proof that the guard refused the flow rather than
+        # a proxy path simply being unreachable.
+        for line in machine.succeed("nft list chain inet lf_filter lf_dns_egress_guard").splitlines():
+            if "drop" in line and "packets" in line:
+                return int(line.split("packets ")[1].split()[0])
+        return 0
 
     def wait_proxy(timeout=120):
         try:
@@ -334,9 +349,37 @@ pkgs.testers.runNixOSTest {
         response = machine.succeed(f"dig {transport} +dnssec +adflag +time=2 +tries=1 @127.0.0.1 -p 1055 valid.signed.fixture.example A")
         assert "status: NOERROR" in response and " ad" in response, response
         machine.succeed(f"dig {transport} +short +time=2 +tries=1 @127.0.0.1 -p 1054 valid.signed.fixture.example A | grep -qx 203.0.113.42")
+        # A blocked name is answered NXDOMAIN at the front door, before either
+        # upstream is consulted; dnsmasq's suffix match covers subdomains too.
+        for blocked in ("ads.fixture.example", "pixel.ads.fixture.example",
+                        "blocked.fixture.test", "sub.blocked.fixture.test"):
+            response = machine.succeed(f"dig {transport} +time=2 +tries=1 @127.0.0.1 -p 1054 {blocked} A")
+            assert "status: NXDOMAIN" in response, (blocked, response)
+        # An excepted name inside a blocked domain is forwarded to the standard
+        # servers instead of the blocklist, and its subdomains follow it.
+        response = machine.succeed(f"dig {transport} +time=2 +tries=1 @127.0.0.1 -p 1054 ok.blocked.fixture.test A")
+        assert "status: NOERROR" in response, response
+        for name, address in (("ok.blocked.fixture.test", "192.0.2.43"),
+                              ("a.ok.blocked.fixture.test", "192.0.2.44")):
+            machine.succeed(
+                f"dig {transport} +short +time=2 +tries=1 @127.0.0.1 -p 1054 {name} A | grep -qx {address}"
+            )
         for checking in ("", "+cdflag"):
             response = machine.succeed(f"dig {transport} {checking} +time=2 +tries=1 @127.0.0.1 -p 1054 bogus.signed.fixture.example A")
             assert "status: SERVFAIL" in response, response
+    # Only the validating resolver may open an encrypted DNS channel of its
+    # own: uid 0 for diagnostics and unbound's uid get through, everything else
+    # is dropped so no app can step outside the resolver policy over 853. The
+    # listener sits in the peer namespace, so this is a real public-range
+    # destination rather than one of the private ranges the output chain
+    # accepts unconditionally.
+    machine.succeed("systemd-run --unit=netsec-dot-fixture --working-directory=/tmp ip netns exec outside ${pkgs.python3}/bin/python3 -m http.server 853 --bind 203.0.113.10")
+    machine.wait_for_unit("netsec-dot-fixture.service")
+    machine.wait_until_succeeds("nc -z -w 2 203.0.113.10 853", timeout=30)
+    machine.succeed("setpriv --reuid=983 --clear-groups nc -z -w 2 203.0.113.10 853")
+    drops = dot_guard_drops()
+    machine.fail("setpriv --reuid=1000 --clear-groups nc -z -w 2 203.0.113.10 853")
+    assert dot_guard_drops() > drops, "the 853 drop counter did not move: the guard was not what refused the flow"
     # A real validation failure must revoke the old grant, and the host must not
     # lose DNS for it: the verdict is published and a bounded plaintext window
     # takes over while the encrypted path keeps being retried.

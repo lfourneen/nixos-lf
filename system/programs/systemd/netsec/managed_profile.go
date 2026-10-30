@@ -71,6 +71,23 @@ func lfCanonical(value any) any {
 	return value
 }
 
+// lfCanonicalSubset reports whether every element of actual also appears in
+// expected, comparing the same canonical form lfCanonical uses elsewhere.
+func lfCanonicalSubset(actual, expected []any) bool {
+	available := make(map[string]struct{}, len(expected))
+	for _, value := range expected {
+		data, _ := json.Marshal(lfCanonical(value))
+		available[string(data)] = struct{}{}
+	}
+	for _, value := range actual {
+		data, _ := json.Marshal(lfCanonical(value))
+		if _, ok := available[string(data)]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func lfValidate(document map[string]any, partial bool) (string, error) {
 	policy, id, err := lfManagedPolicy()
 	if err != nil || policy == nil {
@@ -241,17 +258,16 @@ func lfUpgradeMagicDNS(raw *RawConfig, policy map[string]any) error {
 		return err
 	}
 	upgrade := map[string]any{}
+	// A generated profile can outlive the generation that produced it: its
+	// filter list may only lack entries that later generations added. Adopt the
+	// managed list when the actual one is a subset of it; a list carrying
+	// anything the policy does not describe is foreign drift and is still
+	// rejected by the final check. Runtime PATCH never reaches this path, so a
+	// PATCH with an old value stays rejected.
 	if expected, ok := policy["dns.fake-ip-filter"].([]any); ok {
-		legacy := make([]any, 0, len(expected))
-		added := false
-		for _, value := range expected {
-			if value == "+.ts.net" {
-				added = true
-			} else {
-				legacy = append(legacy, value)
-			}
-		}
-		if added && reflect.DeepEqual(lfCanonical(actual["fake-ip-filter"]), lfCanonical(legacy)) {
+		actualList, _ := actual["fake-ip-filter"].([]any)
+		if !reflect.DeepEqual(lfCanonical(actualList), lfCanonical(expected)) &&
+			lfCanonicalSubset(actualList, expected) {
 			upgrade["fake-ip-filter"] = expected
 		}
 	}

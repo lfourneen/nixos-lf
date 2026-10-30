@@ -39,7 +39,11 @@ in
       fake-ip-range6 = "";
       fake-ip-filter-mode = "blacklist";
       fake-ip-filter = [
-        "*.lan" "*.local" "*.localhost" "*.test" "*.home.arpa" "*.internal" "+.ts.net"
+        # Suffixes that only make sense on a local network: never fake-ip them,
+        # so they resolve through whatever local resolver owns the name.
+        "*.lan" "*.local" "*.localhost" "*.test" "*.home.arpa" "*.internal"
+        "*.wlan" "*.intranet" "*.private" "*.domain" "*.home" "*.host" "*.corp"
+        "+.ts.net"
         "localhost.ptlogin2.qq.com" "+.stun.*.*" "+.stun.*.*.*" "+.stun.*.*.*.*"
         "lens.l.google.com" "+.srv.nintendo.net" "+.stun.playstation.net" "+.xboxlive.com"
         "+.msftncsi.com" "+.msftconnecttest.com" "capture.apple.com"

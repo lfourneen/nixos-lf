@@ -73,9 +73,13 @@ sudo nixos-rebuild switch --flake .#yourname
 ├── overlays/               # Nixpkgs overlays
 │   └── local_apps/         # Custom local applications
 │
-├── scripts/                # Utility scripts
-│   ├── sync-to-git.sh      # Copy /etc/nixos to ~/Projects/Nix/nixos with relaxed permissions
-│   └── push-to-dir.sh      # Push repo config back to /etc/nixos with secure permissions
+├── local-data/               # Generated build inputs
+│   └── dns-blocklist.txt.xz  # Merged upstream name list for the DNS blocklist
+│
+├── scripts/                      # Utility scripts
+│   ├── sync-to-git.sh            # Copy /etc/nixos to ~/Projects/Nix/nixos with relaxed permissions
+│   ├── push-to-dir.sh            # Push repo config back to /etc/nixos with secure permissions
+│   └── refresh-dns-blocklist.py  # Rebuild local-data/dns-blocklist.txt.xz from its upstreams
 │
 ├── tests/                  # Regression sources referenced by flake checks
 │   └── netsec/             # Network policy, profile and VM checks
@@ -95,7 +99,8 @@ sudo nixos-rebuild switch --flake .#yourname
 ## Scripts
 
 * **`scripts/sync-to-git.sh`** — Copies `/etc/nixos` to `~/Projects/Nix/nixos` (creating `~/Projects/Nix` if needed), changes ownership to the current user, and sets permissive permissions (dirs 755 / files 644) so the config can be committed to Git.
-* **`scripts/push-to-dir.sh`** — Reverse of the above. Copies `home/`, `overlays/`, `system/`, `tests/`, `flake.nix`, `flake.lock`, and `.sops.yaml` from the repo into `/etc/nixos` and applies secure permissions (dirs 700 / files 600). Run as your normal user; the script uses `sudo` internally. `tests/` supplies the flake check sources; copying it does not execute tests.
+* **`scripts/push-to-dir.sh`** — Reverse of the above. Copies `home/`, `overlays/`, `system/`, `tests/`, `local-data/`, `flake.nix`, `flake.lock`, and `.sops.yaml` from the repo into `/etc/nixos` and applies secure permissions (dirs 700 / files 600). Run as your normal user; the script uses `sudo` internally. `tests/` supplies the flake check sources; copying it does not execute tests. `local-data/` holds generated inputs that are git-ignored — the flake cannot be evaluated without them.
+* **`scripts/refresh-dns-blocklist.py`** — Fetches the upstream lists, merges and de-duplicates them into `local-data/dns-blocklist.txt.xz`, and rewrites the upstream/snapshot header of `system/config/dns-blocklist.nix`. `--check` reports drift without writing. Nothing is downloaded at build time or at run time.
 
 ---
 

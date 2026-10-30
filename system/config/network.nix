@@ -321,6 +321,14 @@ let
     exec ${pkgs.python3}/bin/python3 ${../programs/systemd/netsec/nm_dns.py} ${nmDnsSettings} "$1" "$2"
   '';
 
+  # Optional DNS-level blocklist. dnsmasq is the single front door in both modes
+  # (Mode A -> unbound, Mode B -> mihomo) and also serves guests, so answering
+  # NXDOMAIN here covers every query the machine makes without adding a second
+  # filtering owner next to the resolver. Empty by default.
+  blockedDomains = lib.unique (lib.filter (d: d != "") config.my.proxy.blockedDomains);
+  blockedDomainExceptions =
+    lib.unique (lib.filter (d: d != "") config.my.proxy.blockedDomainExceptions);
+
 in
 {
   imports = [ ./network-hardening.nix ./network-time.nix ];
@@ -586,6 +594,13 @@ in
       cache-size = 4096;
       "neg-ttl" = "30";       # default negative TTL when an upstream supplies no SOA TTL
       servers-file = "/run/dns-upstream/servers.conf";  # hot-reloaded with SIGHUP
+      # Blocked names answer NXDOMAIN here and never reach an upstream. Empty
+      # by default, so an unconfigured machine behaves exactly as before.
+      address = map (d: "/${d}/") blockedDomains;
+      # Exceptions inside a blocked domain. dnsmasq prefers the more specific
+      # domain, and `#` means "use the standard servers", so these follow the
+      # per-mode servers-file instead of the blocklist.
+      server = map (d: "/${d}/#") blockedDomainExceptions;
       # No static second server outside the mode's own list; transport
       # encryption does not by itself establish local DNSSEC validation.
     };
@@ -651,6 +666,16 @@ in
         # Upstream failures are otherwise silent at verbosity 1, which is why the
         # last outage could only be inferred from the statistics counter.
         log-servfail = true;
+        # While the DoT upstream is unreachable, answer from cache with data
+        # that already passed validation instead of failing the query outright.
+        # The liveness probe asks for a fresh random name, so it can never be
+        # answered from this path, and a bounded ceiling keeps stale answers
+        # from outliving the outage by much.
+        serve-expired = true;
+        serve-expired-ttl = 900;
+        serve-expired-reply-ttl = 30;
+        # Additional-section records that were not validated stay out of cache.
+        val-clean-additional = true;
         # Only upstream answers are filtered; explicit local-data/private-domain
         # remain available for deliberately configured internal names.
         # 198.18/15 is the RFC 2544 benchmarking block, which mihomo also uses
@@ -956,6 +981,20 @@ in
           type filter hook prerouting priority -201; policy accept;
         }
 
+        # Encrypted-DNS egress guard. It has to be evaluated before sing-tun's
+        # auto-redirect (-150): that redirect rewrites a locally generated,
+        # non-root TCP flow to 127.0.0.1:<redirect-inbound>, so a rule in the
+        # priority-0 chain below would only ever see the rewritten destination
+        # and the original :853 would be invisible — the core, running as root,
+        # then completes the connection and the app keeps its own resolver.
+        # Only unbound may open DoT/DoQ; DoH shares 443 and stays addressable
+        # (PROXY.md records that residual).
+        chain lf_dns_egress_guard {
+          type filter hook output priority -196; policy accept;
+          meta skuid ${toString unboundUid} oifname { "${wired}", "${wireless}" } ip daddr ${dnsDotUpstreams} tcp dport ${toString port.dot} accept
+          meta skuid != { 0, ${toString unboundUid} } meta l4proto { tcp, udp } th dport ${toString port.dot} counter drop
+        }
+
         # Only NAT may deliver traffic to gost's transparent listener. Reject
         # explicit loopback connects before NAT, preventing recursive self-dials.
         chain redirect_guard {
@@ -982,6 +1021,11 @@ in
 
           # Per-process DNS/NTP exemptions; static so direct mode keeps working.
           ${killSwitchAccepts}
+
+          # Encrypted DNS egress is enforced in the lf_dns_egress_guard base
+          # chain at priority -196 (declared above), i.e. before sing-tun's
+          # auto-redirect. A drop here would only ever match the redirected
+          # destination, never the original :853.
 
           # Enforcement is loaded only while Clash runs; empty chain = no-op.
           jump proxymode_drops

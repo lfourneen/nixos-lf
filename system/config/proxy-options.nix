@@ -24,7 +24,43 @@ in
   } {
     assertion = lib.all (url: builtins.match "https?://[^[:space:]]+" url != null) config.my.proxy.nodeProbeUrls;
     message = "Proxy health targets must be non-empty HTTP(S) URLs without whitespace.";
+  } {
+    # dnsmasq turns each entry into `address=/domain/`; a scheme, path or
+    # wildcard would only produce a rule that silently matches nothing.
+    assertion = lib.all (d: builtins.match "([A-Za-z0-9_-]+)(\\.[A-Za-z0-9_-]+)*" d != null) config.my.proxy.blockedDomains;
+    message = "my.proxy.blockedDomains entries must be bare domain names (no scheme, path or wildcard).";
+  } {
+    # Same shape as blockedDomains: these become `server=/domain/#` exceptions,
+    # so a scheme, path or wildcard would produce a rule that matches nothing.
+    assertion = lib.all (d: builtins.match "([A-Za-z0-9_-]+)(\\.[A-Za-z0-9_-]+)*" d != null) config.my.proxy.blockedDomainExceptions;
+    message = "my.proxy.blockedDomainExceptions entries must be bare domain names (no scheme, path or wildcard).";
   }];
+
+  options.my.proxy.blockedDomains = lib.mkOption {
+    type = lib.types.listOf lib.types.str;
+    default = [ ];
+    example = [ "ads.example.com" "tracker.example.net" ];
+    description = ''
+      Domains answered NXDOMAIN by dnsmasq before either mode's upstream is
+      asked. Blocking at the shared front door covers Mode A, Mode B and guest
+      lookups alike, and dnsmasq matches suffixes, so subdomains are included.
+      Default: empty, i.e. no filtering; the host list is in
+      system/config/dns-blocklist.nix.
+    '';
+  };
+
+  options.my.proxy.blockedDomainExceptions = lib.mkOption {
+    type = lib.types.listOf lib.types.str;
+    default = [ ];
+    example = [ "not-ads.example.com" ];
+    description = ''
+      Names inside a blocked domain that must keep resolving. Each entry is a
+      dnsmasq `server=/domain/#` exception: the more specific domain wins over
+      the `address=` blocklist, and `#` means the standard servers, so an
+      excepted name goes to the same per-mode upstream as any other name.
+      Default: empty, i.e. nothing is excepted from the blocklist.
+    '';
+  };
 
   options.my.proxy.routeTable = lib.mkOption {
     type = lib.types.ints.positive;
@@ -34,7 +70,10 @@ in
 
   options.my.proxy.privateTargetDomains = lib.mkOption {
     type = lib.types.listOf lib.types.str;
-    default = [ "localhost" "lan" "local" "home.arpa" ];
+    default = [
+      "localhost" "lan" "local" "home.arpa" "internal"
+      "wlan" "intranet" "private" "domain" "home" "host" "corp"
+    ];
     description = "Explicit internal domain/suffix exceptions to the managed core's domain-to-private target guard.";
   };
 
