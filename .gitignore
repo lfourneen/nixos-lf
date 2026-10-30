@@ -1,26 +1,23 @@
-# Local-only large assets: ignore contents, keep README so the dir shows on GitHub
+# Local-only large assets
 home/wallpapers/*
 !home/wallpapers/README.md
 overlays/local-apps/*
 !overlays/local-apps/README.md
 
-# Local working files and reports.
-.agent-teams/
+# Generated build input
+local-data/*
+!local-data/README.md
+
+# Local working files and reports
 audit/
-.audit-mihomo/
-.dsh-audit/
-.vk1-work/
-.omo/
+
 
 # Nix
 .nix-cache/
 
-# Python bytecode caches (system/.../netsec/*.py)
+# Python bytecode caches
 __pycache__/
 
-# IDE project files (CLion/JetBrains): keep local, never tracked. If CLion
-# re-stages them, turn off "When files are created: Add silently" in
-# Settings > Version Control > Confirmation.
+# IDE project files
 .idea/
 *.iml
-

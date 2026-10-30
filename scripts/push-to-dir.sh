@@ -5,6 +5,8 @@
 #
 # Copied:  home/ (incl. wallpapers), overlays/ (incl. local-apps/*.AppImage),
 #          system/ (incl. secrets/secrets.yaml), tests/ (flake check sources),
+#          local-data/ (generated inputs kept out of Git, e.g.
+#          dns-blocklist.txt.xz - the flake cannot evaluate without it),
 #          flake.nix, flake.lock, .sops.yaml
 # Skipped: .git/, .gitignore, scripts/, *.md (GitHub-only READMEs, except
 #          system/programs/hermes-skills/** which the Hermes build needs),
@@ -39,6 +41,16 @@ if [ "${#SUDO_CMD[@]}" -gt 0 ]; then OWN=(-o root -g root); else OWN=(); fi
 # Never work from inside the destination: a process whose cwd is inside it is
 # the usual cause of "Device or resource busy" during cleanup.
 cd /
+
+# local-data/dns-blocklist.txt.xz is git-ignored and read at evaluation time,
+# so a fresh clone does not have it. Fail before touching DEST_DIR instead of
+# leaving behind a tree that cannot be evaluated.
+if [ ! -f "$REPO_DIR/local-data/dns-blocklist.txt.xz" ]; then
+  echo "❌ $REPO_DIR/local-data/dns-blocklist.txt.xz is missing." >&2
+  echo "   The flake cannot be evaluated without it. Run" >&2
+  echo "   scripts/refresh-dns-blocklist.py, then retry (see local-data/README.md)." >&2
+  exit 1
+fi
 
 echo "🧹 Cleaning $DEST_DIR ..."
 
@@ -97,6 +109,13 @@ excludes=(
 # overlays/ : MUST keep local-apps/*.AppImage (bilibili build dep).
 "${SUDO_CMD[@]}" rsync -a --delete --no-owner --no-group "${excludes[@]}" \
   "$REPO_DIR/overlays/" "$DEST_DIR/overlays/"
+# local-data/ : generated build inputs that are git-ignored (see
+# local-data/README.md). `system/config/dns-blocklist.nix` reads
+# dns-blocklist.txt.xz from here, so /etc/nixos needs it too. Keep the README
+# (the module's error message points at it), hence no *.md cut for this tree.
+"${SUDO_CMD[@]}" rsync -a --delete --no-owner --no-group \
+  --exclude 'result' --exclude 'result-*' \
+  "$REPO_DIR/local-data/" "$DEST_DIR/local-data/"
 # system/ : must keep secrets/secrets.yaml.
 "${SUDO_CMD[@]}" rsync -a --delete --no-owner --no-group "${excludes[@]}" \
   "$REPO_DIR/system/" "$DEST_DIR/system/"
