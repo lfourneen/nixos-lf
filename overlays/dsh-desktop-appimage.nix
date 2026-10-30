@@ -2,7 +2,7 @@
 
 let
   pname = "dsh-desktop";
-  version = "2.0.20";
+  version = "2.0.21";
 
   # Upstream publishes a type-2 AppImage for Linux. The AppDir keeps the
   # Electron tree at its root (AppRun + dsh-desktop-next + resources) and adds
