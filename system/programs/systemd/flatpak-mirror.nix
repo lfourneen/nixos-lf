@@ -11,10 +11,22 @@
     after = [ "network-online.target" "dbus.service" "gost-relay.service" ]; 
     wants = [ "network-online.target" "gost-relay.service" ];
     
-    path = [ pkgs.flatpak ];
+    path = [ pkgs.flatpak pkgs.coreutils pkgs.curl ];
+    # gost-relay is started before it listens, and mihomo finishes its own
+    # start-up behind it, so one attempt at boot loses the race. Wait for the
+    # proxy port, then retry the download.
     script = ''
-      flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-      flatpak remote-modify flathub --url=https://mirrors.ustc.edu.cn/flathub
+      for _ in $(seq 1 30); do
+        curl -s -o /dev/null --max-time 2 http://127.0.0.1:${toString config.my.machine.ports.gostHttp}/ && break
+        sleep 2
+      done
+      for attempt in $(seq 1 5); do
+        flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo &&
+          flatpak remote-modify flathub --url=https://mirrors.ustc.edu.cn/flathub && exit 0
+        echo "flatpak remote setup failed (attempt $attempt)" >&2
+        sleep 10
+      done
+      exit 1
     '';
     serviceConfig = {
       Type = "oneshot";
