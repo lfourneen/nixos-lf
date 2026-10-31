@@ -13,7 +13,7 @@
     fd
     file
     jq
-    iotop 
+    iotop
     lsd
     lshw
     lsof
@@ -59,14 +59,13 @@
     # Hardware
     vdpauinfo
 
-    # Editors
+    # Editorso
     neovim
     vim
 
     # Reverse engineering
     apktool
     binwalk
-    jadx
     mitmproxy
     python3Packages.pwntools
     rizin
@@ -88,7 +87,6 @@
     poppler-utils
     pandoc
     tesseract
-    ocrmypdf
     qpdf
     mupdf
 
@@ -98,12 +96,11 @@
 
     # Media
     ffmpeg-full
-    
+
     # Rust
     dioxus-cli
-    
+
     # Flatpak
     flatpak-builder
   ];
 }
-
