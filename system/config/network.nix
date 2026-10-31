@@ -1175,8 +1175,9 @@ in
   ];
 
   boot.kernel.sysctl = {
-    # BBR + fq for better throughput on lossy links
-    "net.core.default_qdisc" = "fq";
+    # BBR + cake: the AQM keeps queue delay low on both the LAN device and the
+    # TUN, instead of only pacing it like fq.
+    "net.core.default_qdisc" = "cake";
     "net.ipv4.tcp_congestion_control" = "bbr";
 
     # Socket autotuning ceilings; these do not manage queues at the WAN bottleneck.

@@ -3,14 +3,30 @@
 let
   # Cluster socket families are outside this desktop's network contract.
   disabledProtocols = [ "rds" "tipc" ];
+  # Conntrack protocol helpers open a pinhole on the port they parse (FTP,
+  # SIP, H.323, PPTP ...). Kernel 7.2 dropped the auto-assign knob, so the
+  # modules themselves are what has to be denied.
+  disabledConntrackHelpers = [
+    "nf_conntrack_amanda"
+    "nf_conntrack_ftp"
+    "nf_conntrack_h323"
+    "nf_conntrack_irc"
+    "nf_conntrack_netbios_ns"
+    "nf_conntrack_pptp"
+    "nf_conntrack_sane"
+    "nf_conntrack_sip"
+    "nf_conntrack_snmp"
+    "nf_conntrack_tftp"
+  ];
+  disabledModules = disabledProtocols ++ disabledConntrackHelpers;
 
 in
 {
-  boot.blacklistedKernelModules = disabledProtocols;
+  boot.blacklistedKernelModules = disabledModules;
   # A blacklist only suppresses aliases. Also deny dependency/explicit modprobe
   # loads, including the kernel's socket-triggered module helper.
   boot.extraModprobeConfig = lib.concatMapStringsSep "\n"
-    (name: "install ${name} ${pkgs.coreutils}/bin/false") disabledProtocols;
+    (name: "install ${name} ${pkgs.coreutils}/bin/false") disabledModules;
 
   boot.kernel.sysctl = {
     # Keep existing interfaces and newly created TUN/guest links consistent.
