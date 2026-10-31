@@ -397,12 +397,6 @@ in
     }
   ];
 
-  # Maintenance hook: when nixpkgs ships the 1.26.2 security fix, the local
-  # source override above should be deleted rather than silently pinning an old
-  # tarball forever.
-  warnings = lib.optional (lib.versionAtLeast pkgs.unbound-with-systemd.version "1.26.2")
-    "nixpkgs unbound-with-systemd is ${pkgs.unbound-with-systemd.version}; remove the pinned 1.26.2 source override in system/config/network.nix.";
-
   # The mode-dependent rules are applied by proxy-mode.service (see proxy-mode.nix).
   my.proxy.proxyModeRules = proxyModeRules;
   my.proxy.blockedModeRules = blockedModeRules;
@@ -638,20 +632,11 @@ in
 
   # Encrypted fallback resolver (DoT via Cloudflare) used while clash is down, so
   # the "direct" DNS path is not plaintext. dns-upstream points dnsmasq here.
-  #
-  # The pinned source is a CVE backport (1.26.2) ahead of nixpkgs. It must stay a
-  # `unbound-with-systemd` override: the NixOS unit uses Type=notify, and a plain
-  # unbound build has no --enable-systemd, so the start job would hang.
-  # `warnings` below fires once nixpkgs catches up; then delete the override.
+  # Keep `unbound-with-systemd`: the unit uses Type=notify, a plain build lacks
+  # --enable-systemd.
   services.unbound = {
     enable = true;
-    package = pkgs.unbound-with-systemd.overrideAttrs (_: {
-      version = "1.26.2";
-      src = pkgs.fetchurl {
-        url = "https://nlnetlabs.nl/downloads/unbound/unbound-1.26.2.tar.gz";
-        sha256 = "d8ee7aa6bbb3ff1be7d9e57637d0d0ec2f18273a8efff1a0afe2c665858b96f7";
-      };
-    });
+    package = pkgs.unbound-with-systemd;
     resolveLocalQueries = false;
     enableRootTrustAnchor = true;
     settings = {
