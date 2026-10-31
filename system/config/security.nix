@@ -52,6 +52,14 @@
     "randomize_kstack_offset=on"
     "vsyscall=none"
     "init_on_alloc=1"
+    "debugfs=off"                  # bpf tooling uses tracefs
+    "oops=panic"                   # a corrupted kernel must not keep running
+    "random.trust_cpu=0"           # unaudited entropy is not full quality
+    "random.trust_bootloader=0"
+    "bdev_allow_write_mounted=0"   # never write behind a mounted filesystem
+    "iommu.strict=1"               # flush mappings per transaction
+    "rng_core.default_quality=500" # ANSSI R8 quality for the hardware RNG
+    "page_alloc.shuffle=1"         # shuffle freelists against heap grooming
   ];
 
   # module.sig_enforce / lockdown are unavailable here: xanmod ships without
