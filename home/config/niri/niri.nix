@@ -21,8 +21,12 @@ let
       GDK_BACKEND "wayland"
       MOZ_ENABLE_WAYLAND "1"
       NIXOS_OZONE_WL "1"
+
+      // XWayland fallback for Qt5; no KDE platform theme/services in niri.
       QT_QPA_PLATFORM "wayland"
+      QT_QPA_PLATFORMTHEME ""
       QT_WAYLAND_DISABLE_WINDOWDECORATION "1"
+      
       ELECTRON_OZONE_PLATFORM_HINT "wayland"
       _JAVA_AWT_WM_NONREPARENTING "1"
 
@@ -266,24 +270,17 @@ let
       max-height 1000
     }
 
+    // GNOME applications: keep these utility windows floating. Keep them in
+    // one app-id alternation instead of a separate window-rule per app.
     window-rule {
-      match app-id=r#"org\.gnome\.Console"#
+      match app-id=r#"^(org\.gnome\.Console|org\.gnome\.Loupe|org\.gnome\.Calendar|org\.gnome\.calendar|org\.gnome\.Calculator|org\.gnome\.Nautilus|org\.gnome\.TextEditor)$"#
       open-floating true
     }
 
+    // Common KDE applications: same floating treatment as the GNOME apps
+    // above. Keep them in one app-id alternation so the list stays compact.
     window-rule {
-      match app-id=r#"org\.gnome\.Loupe"#
-      open-floating true
-    }
-
-    window-rule {
-      match app-id=r#"org\.gnome\.Calendar"#
-      open-floating true
-    }
-
-    // Calculator
-    window-rule {
-      match app-id=r#"^org\.gnome\.Calculator$"#
+      match app-id=r#"^(org\.kde\.dolphin|org\.kde\.konsole|org\.kde\.systemsettings|systemsettings|org\.kde\.discover|org\.kde\.spectacle|org\.kde\.gwenview|org\.kde\.okular|org\.kde\.ark|org\.kde\.kate|org\.kde\.kwrite|org\.kde\.kinfocenter|org\.kde\.plasma-systemmonitor|org\.kde\.kwalletmanager|org\.kde\.khelpcenter|org\.kde\.kmenuedit|org\.kde\.kfontview|org\.kde\.kcolorschemeeditor|org\.kde\.kcalc|org\.kde\.kdeconnect\.app|org\.kde\.filelight|org\.kde\.partitionmanager|org\.kde\.ksystemlog|org\.kde\.skanpage|org\.kde\.kamoso|org\.kde\.plasma\.emojier|org\.kde\.qrca|org\.kde\.bluedevilwizard|org\.kde\.knetattach|org\.kde\.PrintQueue|org\.kde\.ConfigurePrinter|org\.kde\.drkonqi|org\.kde\.drkonqi\.coredump\.gui)$"#
       open-floating true
     }
 
@@ -338,18 +335,6 @@ let
 
     window-rule {
       match app-id=r#"pavucontrol"#
-      open-floating true
-    }
-
-    // File manager
-    window-rule {
-      match app-id=r#"^org\.gnome\.Nautilus$"#
-      open-floating true
-    }
-    
-    // Text Editor
-    window-rule {
-      match app-id=r#"^org\.gnome\.TextEditor$"#
       open-floating true
     }
 
@@ -597,29 +582,93 @@ let
       Ctrl+Alt+Delete { quit; }
       Mod+Shift+P { power-off-monitors; }
     }
+
+    // Noctalia wallpaper-adaptive theme
+    include "noctalia.kdl"
   '';
 
   # Generate a read-only config file in the Nix store
   niriConfigFile = pkgs.writeText "niri-config.kdl" niriConfigContent;
 
+  # waywallen remembers the last wallpaper as a *library item id*
+  # (~/.config/waywallen/config.toml `last_wallpaper`). When that item later
+  # disappears (its file was renamed or deleted), startup restore aborts with
+  # "wallpaper '<id>' not found" and paints nothing -> black desktop; upstream
+  # has no fallback. Repair any id that no longer maps to an existing file
+  # before the daemon reads its config, so its own restore always has a valid
+  # target. Valid ids are left untouched, so the last applied wallpaper is
+  # preserved. Wired as the service's ExecStartPre below; upstream v0.5.0 and
+  # main still return WallpaperNotFound with no fallback.
+  waywallenFallbackWallpaper = "Mari-1080p.mp4"; # basename to prefer; "" = any video
+  waywallenFixRestore = pkgs.writeText "waywallen-fix-restore.py" ''
+    import os, re, sqlite3, sys
+
+    home = os.environ.get("HOME", "")
+    cfg = os.path.join(home, ".config/waywallen/config.toml")
+    db = os.path.join(home, ".local/share/waywallen/waywallen-v2.db")
+    preferred = "${waywallenFallbackWallpaper}"
+
+    if not (os.path.isfile(cfg) and os.path.isfile(db)):
+        sys.exit(0)
+
+    con = sqlite3.connect(db)
+    rows = list(con.execute(
+        "SELECT i.id, i.path, l.path, i.type"
+        "  FROM item i JOIN library l ON i.library_id = l.id"))
+    con.close()
+
+    present = []
+    for iid, ipath, lpath, itype in rows:
+        if os.path.exists(os.path.join(lpath, ipath)):
+            present.append((str(iid), ipath, itype))
+
+    def pick():
+        if preferred:
+            for iid, ipath, itype in present:
+                if itype == "video" and (os.path.basename(ipath) == preferred or ipath == preferred):
+                    return iid
+        for iid, ipath, itype in present:
+            if itype == "video":
+                return iid
+        return present[0][0] if present else None
+
+    valid = set(iid for iid, _, _ in present)
+    text = open(cfg, "r", encoding="utf-8").read()
+    chosen = []
+
+    def repl(m):
+        val = m.group(1)
+        if val in valid:
+            return m.group(0)
+        if not chosen:
+            chosen.append(pick())
+        if chosen[0] is None:
+            return m.group(0)
+        return 'last_wallpaper = "' + chosen[0] + '"'
+
+    new = re.sub(r'last_wallpaper *= *"([^"]*)"', repl, text)
+    if new != text:
+        with open(cfg + ".tmp", "w", encoding="utf-8") as fh:
+            fh.write(new)
+        os.replace(cfg + ".tmp", cfg)
+        sys.stderr.write("waywallen: stale last_wallpaper -> " + str(chosen[0]) + "\n")
+  '';
+
+  # Generate a read-only config directory in the Nix store
+  niriConfigDir = pkgs.runCommand "niri-config-dir" { } ''
+    mkdir -p $out
+    cp ${pkgs.writeText "niri-config.kdl" niriConfigContent} $out/config.kdl
+  '';
+
 in
 {
-  # Deploy a writable default config
+  # Overwrite Nix-managed files, but leave runtime files (noctalia.kdl) alone.
   home.activation.setupNiriConfig = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     TARGET_DIR="$HOME/.config/niri"
-    TARGET_FILE="$TARGET_DIR/config.kdl"
 
     $DRY_RUN_CMD mkdir -p "$TARGET_DIR"
-
-    # Deploy the default only if the file does not exist
-    if [ ! -f "$TARGET_FILE" ]; then
-      $DRY_RUN_CMD cp "${niriConfigFile}" "$TARGET_FILE"
-      $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
-    fi
-
-    # Alternative: reset to default on every update (overwrites local edits)
-    # $DRY_RUN_CMD cp -f "${niriConfigFile}" "$TARGET_FILE"
-    # $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
+    $DRY_RUN_CMD cp -r --no-preserve=mode "${niriConfigDir}/." "$TARGET_DIR/"
+    $DRY_RUN_CMD chmod 644 "$TARGET_DIR/config.kdl"
   '';
 
   # waywallen (AppImage) runs as a daemon and spawns its own display client.
@@ -636,6 +685,9 @@ in
       After = [ "graphical-session.target" ];
     };
     Service = {
+      # Best effort: a failed repair must not keep the daemon down, so the
+      # leading '-' makes systemd log the exit code but continue.
+      ExecStartPre = [ "-${pkgs.python3}/bin/python3 ${waywallenFixRestore}" ];
       ExecStart = "${pkgs.waywallen}/bin/waywallen --no-ui";
       Restart = "always";
       RestartSec = 5;

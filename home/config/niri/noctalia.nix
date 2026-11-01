@@ -326,8 +326,11 @@ let
     };
   };
 
-  # Generate a read-only TOML file in the Nix store
-  noctaliaTomlFile = (pkgs.formats.toml {}).generate "noctalia-config.toml" noctaliaConfigObj;
+  # Generate a read-only config directory in the Nix store
+  noctaliaConfigDir = pkgs.runCommand "noctalia-config-dir" { } ''
+    mkdir -p $out
+    cp ${(pkgs.formats.toml {}).generate "noctalia-config.toml" noctaliaConfigObj} $out/config.toml
+  '';
 
 in
 {
@@ -336,17 +339,14 @@ in
     noctaliaPackage
   ];
 
-  # config.toml is Nix-managed: deploy it on every activation so the settings
-  # above actually apply. The app keeps its own user/runtime overrides in the
-  # state dir's settings.toml, which layers on top; hand-edits to config.toml
-  # will be overwritten.
+  # config.toml is Nix-managed: copy the generated directory on every
+  # activation, leaving runtime plugins/colors and the state settings intact.
   home.activation.setupNoctaliaConfig = inputs.home-manager.lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     TARGET_DIR="$HOME/.config/noctalia"
-    TARGET_FILE="$TARGET_DIR/config.toml"
 
     $DRY_RUN_CMD mkdir -p "$TARGET_DIR"
-    $DRY_RUN_CMD cp -f "${noctaliaTomlFile}" "$TARGET_FILE"
-    $DRY_RUN_CMD chmod 644 "$TARGET_FILE"
+    $DRY_RUN_CMD cp -r --no-preserve=mode "${noctaliaConfigDir}/." "$TARGET_DIR/"
+    $DRY_RUN_CMD chmod 644 "$TARGET_DIR/config.toml"
   '';
 }
 

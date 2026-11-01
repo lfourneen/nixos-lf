@@ -59,7 +59,7 @@
     # Hardware
     vdpauinfo
 
-    # Editorso
+    # Editors
     neovim
     vim
 
