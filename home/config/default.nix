@@ -2,7 +2,6 @@
   imports = [
     # floder
     ./gnome
-    ./kde
     ./niri
 
     # file

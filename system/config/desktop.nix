@@ -12,34 +12,15 @@
     desktopManager = {
       # GNOME 
       gnome.enable = true;
-
-      # KDE 
-      #plasma6.enable = true;
-
-      # Cosmic 
-      #cosmic = {
-        #enable = true;
-        #showExcludedPkgsWarning = true;
-        #xwayland.enable = true;
-      #};
     };
     
     displayManager = {
       defaultSession = "niri";
 
-      #cosmic-greeter = {
-        #enable = true;
-      #};
-      
       # GDM 
       gdm = {
         enable = true;
       };
-
-      # PLM 
-      #plasma-login-manager = {
-        #enable = true;
-      #};
     };
   };
 
@@ -58,11 +39,10 @@
       pkgs.xdg-desktop-portal
       pkgs.xdg-desktop-portal-gtk
       pkgs.xdg-desktop-portal-wlr
-      pkgs.kdePackages.xdg-desktop-portal-kde 
       pkgs.xdg-desktop-portal-gnome
     ];
   };
-  
+
   # Logind
   services.logind = {
     settings = {
@@ -123,13 +103,7 @@
     gnome-tweaks
     hydrapaper
     ptyxis
-    
-    # KDE
-    #haruna
-    #kdePackages.dolphin
-    #kdePackages.dolphin-plugins
-    #kdePackages.wallpaper-engine-plugin
-    wayland-utils # Wayland utilities
+
 
     # Niri
     kitty
@@ -139,6 +113,7 @@
     xwayland-satellite # xwayland support
     wl-clipboard
     clipman
+    wayland-utils
     wlr-randr
   ];
 }
