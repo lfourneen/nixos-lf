@@ -18,7 +18,7 @@ let
       default = {
         capsule = true;
         center = [ "group:g3" ];
-        end = [ "tray" "notifications" "clipboard" "group:g1" "bluetooth" "volume" "brightness" "battery" "session" ];
+        end = [ "tray" "privacy" "notes" "notifications" "clipboard" "group:g1" "bluetooth" "group:g4" "brightness" "battery" "session" ];
         padding = 16;
         start = [ "control-center" "mini-docker" "group:g2" "workspaces" ];
         widget_spacing = 8;
@@ -39,7 +39,7 @@ let
             enabled = true;
             fill = "surface_container";
             id = "g2";
-            members = [ "cpu" "temp" "ram" ];
+            members = [ "cpu" "temp" "ram" "network_tx" "network_rx" ];
             opacity = 1.0;
             padding = 6.0;
           }
@@ -50,6 +50,16 @@ let
             fill = "surface_container";
             id = "g3";
             members = [ "clock" "media" "audio_visualizer" ];
+            opacity = 1.0;
+            padding = 6.0;
+          }
+          {
+            accordion = false;
+            accordion_direction = "end";
+            enabled = true;
+            fill = "surface_container";
+            id = "g4";
+            members = [ "volume" "input_volume" ];
             opacity = 1.0;
             padding = 6.0;
           }
@@ -78,7 +88,7 @@ let
       widget = { };
     };
     dock = {
-      enabled = false;
+      enabled = true;
       icon_size = 32;
       launcher_position = "start";
       reserve_space = false;
@@ -332,7 +342,8 @@ let
       mini-docker = { anchor = true; capsule = true; type = "8bury/mini-docker:mini-docker"; };
       mpvpaper = { capsule = true; glyph = "photo-video"; type = "noctalia/mpvpaper:mpvpaper"; };
       network = { capsule = true; show_vpn_label = true; vpn_status = "both"; };
-      notifications = { anchor = true; capsule = true; hide_when_no_unread = true; };
+      notes = { type = "noctalia/notes:notes"; };
+      notifications = { anchor = true; capsule = true; hide_when_no_unread = false; };
       ram = { capsule = true; };
       session = { anchor = true; capsule = true; };
       tray = { drawer = true; drawer_columns = 5; };
@@ -365,4 +376,3 @@ in
     $DRY_RUN_CMD chmod 644 "$TARGET_DIR/config.toml"
   '';
 }
-
