@@ -27,7 +27,7 @@ let
             accordion = false;
             accordion_direction = "end";
             enabled = true;
-            fill = "surface_variant";
+            fill = "surface_container";
             id = "g1";
             members = [ "network" "indicator" ];
             opacity = 1.0;
@@ -37,7 +37,7 @@ let
             accordion = false;
             accordion_direction = "end";
             enabled = true;
-            fill = "surface_variant";
+            fill = "surface_container";
             id = "g2";
             members = [ "cpu" "temp" "ram" ];
             opacity = 1.0;
@@ -47,7 +47,7 @@ let
             accordion = false;
             accordion_direction = "end";
             enabled = true;
-            fill = "surface_variant";
+            fill = "surface_container";
             id = "g3";
             members = [ "clock" "media" "audio_visualizer" ];
             opacity = 1.0;
@@ -158,7 +158,7 @@ let
           rotation = 0.0;
           type = "login_box";
           settings = {
-            background_color = "surface_variant";
+            background_color = "surface_container";
             background_opacity = 0.88;
             background_radius = 12.0;
             center_password_text = false;
@@ -185,7 +185,7 @@ let
           rotation = 0.0;
           type = "login_box";
           settings = {
-            background_color = "surface_variant";
+            background_color = "surface_container";
             background_opacity = 0.88;
             background_radius = 12.0;
             center_password_text = false;
@@ -274,9 +274,14 @@ let
     theme = {
       mode = "dark";
       builtin = "Noctalia";
+      # Palette/templates/lockscreen follow whatever wallpaper Noctalia holds.
+      # waywallen-bridge feeds the live wallpaper's still frame in through
+      # `noctalia.setWallpaper()`, so this must stay "wallpaper" for the
+      # colours to track the video wallpaper instead of a static image.
+      source = "wallpaper";
       wallpaper_scheme = "m3-content";
       templates = {
-        builtin_ids = [ "helix" "niri" ];
+        builtin_ids = [ "btop" "helix" "kitty" "niri" ];
         community_ids = [
           "opencode"
           "zen-browser"
@@ -294,8 +299,19 @@ let
         ];
       };
     };
+    # Keep Noctalia's own wallpaper instance enabled: waywallen-bridge drives the
+    # palette (theme.source = "wallpaper") by pushing the live wallpaper's still
+    # frame through `noctalia.setWallpaper()`, and the Home-tab thumbnail needs
+    # the instance to exist. Its layer is made invisible by a niri layer-rule
+    # (`namespace="^noctalia-wallpaper*"`, opacity 0.0), so the video wallpaper
+    # stays visible.
+    #
+    # The paths below are only a first-boot fallback: once the bridge runs it
+    # rewrites them in ~/.local/state/noctalia/settings.toml to a generated
+    # `frame-<uuid>.jpg` under the plugin's data dir, which is why they must not
+    # be pinned to whatever path is live right now.
     wallpaper = {
-      enabled = false;
+      enabled = true;
       default = { path = "${noctaliaPackage}/share/noctalia/assets/noctalia-wallpaper.png"; };
       last = { path = "${homeDir}/.local/share/Steam/steamapps/workshop/content/431960/3408595448/preview.jpg"; };
       monitors = {
