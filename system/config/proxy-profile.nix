@@ -24,6 +24,7 @@ let
   fake = if p.fakeIpNet == "invalid" then { first = 0; last = -1; } else cidr4 p.fakeIpRange;
   reserved4 = [ "0.0.0.0/8" "127.0.0.0/8" "169.254.0.0/16" "224.0.0.0/4" "240.0.0.0/4" ]
     ++ m.privateV4 ++ [ m.vmSubnet m.waydroidSubnet ];
+
 in
 {
   options.my.proxy.managedDns = lib.mkOption {
@@ -44,6 +45,9 @@ in
         "*.lan" "*.local" "*.localhost" "*.test" "*.home.arpa" "*.internal"
         "*.wlan" "*.intranet" "*.private" "*.domain" "*.home" "*.host" "*.corp"
         "+.ts.net"
+        # QQ file downloads need real DNS answers for Hermes' SSRF check.
+        # This exact-host filter changes DNS only; routing stays rule-driven.
+        "grouptalk.c2c.qq.com"
         "localhost.ptlogin2.qq.com" "+.stun.*.*" "+.stun.*.*.*" "+.stun.*.*.*.*"
         "lens.l.google.com" "+.srv.nintendo.net" "+.stun.playstation.net" "+.xboxlive.com"
         "+.msftncsi.com" "+.msftconnecttest.com" "capture.apple.com"
