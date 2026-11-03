@@ -116,6 +116,15 @@ in
       | str join (char esep)
     )
 
+    # rm -> freedesktop trash. /home is a single btrfs subvolume, so moving a
+    # path into ~/.local/share/Trash is a rename(2): instant, no copy, no
+    # reflink. Restore with `trash-restore`, list with `trash-list`; only
+    # `trash-empty` actually deletes. -r/-f are accepted and ignored.
+    # This covers interactive nushell only. Agents run `bash -c`, which never
+    # sources this file, so their `rm` is still the real thing; their guidance
+    # lives in the safe-delete skill.
+    def --wrapped rm [...args: string] { ^trash-put ...$args }
+
     # Update config
     def update [--flake: string = "/etc/nixos#lfour"] {
       print $"(ansi yellow_bold)Rebuilding system with nh...(ansi reset)"
