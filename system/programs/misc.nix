@@ -16,14 +16,6 @@
     package = pkgs.ananicy-cpp;
   };
 
-  # Ling-long shop
-  services.linyaps = {
-    enable = true;
-    package = pkgs.unstable.linyaps;
-    boxPackage = pkgs.unstable.linyaps-box;
-    webStoreInstallerPackage = pkgs.unstable.linyaps-web-store-installer;
-  };
-
   # WireShark
   programs.wireshark = {
     enable = true;
