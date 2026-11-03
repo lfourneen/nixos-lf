@@ -26,6 +26,9 @@
 
     # Sandbox
     bubblewrap
+    e2fsprogs
+    landrun
+    trash-cli
 
     # Search & files
     ripgrep-all

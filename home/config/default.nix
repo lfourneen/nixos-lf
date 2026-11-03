@@ -5,6 +5,7 @@
     ./niri
 
     # file
+    ./agent-skills.nix
     ./cvr-merge.nix
     ./dconf.nix
     ./neovim.nix

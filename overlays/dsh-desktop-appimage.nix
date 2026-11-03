@@ -138,18 +138,81 @@ let
   # drops the Chromium sandbox; the launcher replicates that because it calls
   # the binary directly (bypassing AppRun). Flags live here (not in Exec) so a
   # bare `dsh-desktop` invocation gets Wayland/IME handling too.
+  #
+  # The final exec is additionally wrapped in a Landlock ruleset: the whole
+  # filesystem is read+execute only, and writes are allowed solely under the
+  # paths in `writePaths`. Landlock needs no privileges, is inherited across
+  # fork/exec, has no kernel interface to widen or drop it, and survives sudo
+  # (which changes uid but not the ruleset attached to the process). So an
+  # agent running as the file owner still cannot `rm -rf ~/Documents`.
+  # Processes started outside this launcher are not covered; that gap is what
+  # home-guard.nix (immutable bits, root-owned) closes.
+  #
+  # /proc is writable on purpose: Chromium's own namespace sandbox writes
+  # /proc/self/{uid_map,setgroups,gid_map} while creating the renderer's user
+  # namespace. Landlock covers procfs like any other filesystem, so without this
+  # rule those writes fail, Chromium falls back to the SUID helper (not setuid
+  # in the Nix store) and aborts with "The SUID sandbox helper binary was found,
+  # but is not configured correctly" - a SIGTRAP before the first window.
+  # /proc holds no persistent data, so allowing writes there does not widen what
+  # this sandbox protects; home/ and the rest of the filesystem stay read-only.
+  #
+  # Escape hatch, for when the allowlist is too tight while debugging:
+  #   DSH_NO_LANDLOCK=1 dsh-desktop
   launcher = pkgs.writeShellScript "dsh-desktop-launch" ''
     sandboxArgs=()
     if ! ${pkgs.util-linux}/bin/unshare -Ur true 2>/dev/null; then
       sandboxArgs=(--no-sandbox)
     fi
 
-    exec ${appDir}/dsh-desktop-next \
-      "''${sandboxArgs[@]}" \
-      --class=${pname} \
-      --ozone-platform-hint=auto \
-      --enable-wayland-ime=true \
+    appArgs=(
+      "''${sandboxArgs[@]}"
+      --class=${pname}
+      --ozone-platform-hint=auto
+      --enable-wayland-ime=true
       "$@"
+    )
+
+    if [ "''${DSH_NO_LANDLOCK:-0}" = 1 ]; then
+      echo "dsh-desktop: DSH_NO_LANDLOCK=1, running without the Landlock boundary" >&2
+      exec ${appDir}/dsh-desktop-next "''${appArgs[@]}"
+    fi
+
+    # Electron needs its profile dirs, the Wayland/PipeWire/dbus endpoints in
+    # the runtime dir, the device nodes under /dev, and /dev/shm. The agent
+    # needs a workspace and a place to land downloads. Everything else stays
+    # read-only, which is the whole point.
+    writePaths=(
+      /tmp
+      /dev
+      "/run/user/$(id -u)"
+      "$HOME/.cache"
+      "$HOME/.config"
+      "$HOME/.local"
+      "$HOME/.dsh"
+      "$HOME/Projects"
+      "$HOME/Downloads"
+    )
+    rwArgs=()
+    for path in "''${writePaths[@]}"; do
+      # landrun fails the entire ruleset on one missing path, so probe first.
+      [ -e "$path" ] && rwArgs+=(--rw "$path")
+    done
+
+    # landrun drops the environment unless each variable is passed explicitly;
+    # forward whatever the session carries so proxy/display/locale survive.
+    envArgs=()
+    while IFS='=' read -r -d "" name _; do
+      [ -n "$name" ] && envArgs+=(--env "$name")
+    done < <(${pkgs.coreutils}/bin/env -0)
+
+    exec ${pkgs.landrun}/bin/landrun \
+      --rox / \
+      --rw /proc \
+      "''${rwArgs[@]}" \
+      "''${envArgs[@]}" \
+      --unrestricted-network \
+      -- ${appDir}/dsh-desktop-next "''${appArgs[@]}"
   '';
 
 in

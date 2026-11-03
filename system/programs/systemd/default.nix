@@ -6,6 +6,7 @@
     ./dns-upstream.nix  
     ./flatpak-mirror.nix  
     ./gost-relay.nix  
+    ./home-guard.nix
     ./initrd.nix  
     ./journald.nix
     ./libvirtd.nix  
