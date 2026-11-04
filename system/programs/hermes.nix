@@ -106,6 +106,20 @@ let
 
 in
 {
+  imports = [
+    # systemd-tmpfiles keeps the first rule for a path and ignores later
+    # duplicates, so a normal entry below loses to the upstream module's 2770
+    # HERMES_HOME rule. mkBefore makes this the winning (first) rule: no group
+    # write, because gateway discovery refuses a control directory that another
+    # member of the hermes group could replace the socket in (lfour is in that
+    # group). Group read/traverse stays.
+    {
+      systemd.tmpfiles.rules = lib.mkBefore [
+        "d /var/lib/hermes/.hermes 0750 hermes hermes - -"
+      ];
+    }
+  ];
+
   services.hermes-agent = {
     enable = true;
 
@@ -466,7 +480,6 @@ in
 
   systemd.tmpfiles.rules = [
     "d /var/lib/hermes 0770 hermes hermes - -"
-    "d /var/lib/hermes/.hermes 0770 hermes hermes - -"
     "d /var/lib/hermes/.local 0770 hermes hermes - -"
     "d /nix/var/nix/profiles/per-user/hermes 0755 hermes hermes - -"
     "d /var/lib/hermes/.playwright-profiles 0770 hermes hermes - -"
@@ -476,10 +489,15 @@ in
   ];
 
   # Upstream forces home to 0750 and its activation script runs after tmpfiles,
-  # so re-enable group rw afterwards.
+  # so re-enable group rw afterwards. HERMES_HOME is different: upstream makes
+  # it 2770, but gateway discovery rejects a group-writable control directory
+  # when the group has other members (lfour is in "hermes"), because they could
+  # swap gateway.sock. Keep group read/traverse, drop group write, after the
+  # upstream script has run.
   system.activationScripts.hermes-home-group-rw =
     lib.stringAfter [ "hermes-agent-setup" ] ''
       chmod 2770 /var/lib/hermes/home
+      chmod 0750 /var/lib/hermes/.hermes
       find /var/lib/hermes/home \( -type f -o -type d \) -exec chmod g+rwX {} + 2>/dev/null || true
     '';
 
