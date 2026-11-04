@@ -587,9 +587,6 @@ let
     include "noctalia.kdl"
   '';
 
-  # Generate a read-only config file in the Nix store
-  niriConfigFile = pkgs.writeText "niri-config.kdl" niriConfigContent;
-
   # waywallen remembers the last wallpaper as a *library item id*
   # (~/.config/waywallen/config.toml `last_wallpaper`). When that item later
   # disappears (its file was renamed or deleted), startup restore aborts with
@@ -599,7 +596,7 @@ let
   # target. Valid ids are left untouched, so the last applied wallpaper is
   # preserved. Wired as the service's ExecStartPre below; upstream v0.5.0 and
   # main still return WallpaperNotFound with no fallback.
-  waywallenFallbackWallpaper = "Mari-1080p.mp4"; # basename to prefer; "" = any video
+  waywallenFallbackWallpaper = "Iochi_Mari.mp4"; # basename to prefer; "" = any video
   waywallenFixRestore = pkgs.writeText "waywallen-fix-restore.py" ''
     import os, re, sqlite3, sys
 
