@@ -18,48 +18,30 @@ let
       default = {
         capsule = true;
         center = [ "group:g3" ];
-        end = [ "tray" "privacy" "notes" "notifications" "clipboard" "group:g1" "bluetooth" "group:g4" "brightness" "battery" "session" ];
+        end = [ "notifications" "tray" "clipboard" "group:g1" "bluetooth" "volume" "brightness" "battery" "session" ];
         padding = 16;
-        start = [ "control-center" "mini-docker" "group:g2" "workspaces" ];
+        start = [ "control-center" "mini-docker" "summary" "workspaces" ];
         widget_spacing = 8;
         capsule_group = [
           {
             accordion = false;
             accordion_direction = "end";
+            border_width = 1.0;
             enabled = true;
             fill = "surface_container";
             id = "g1";
-            members = [ "network" "indicator" ];
+            members = [ "network_2" "indicator_2" ];
             opacity = 1.0;
             padding = 6.0;
           }
           {
             accordion = false;
             accordion_direction = "end";
-            enabled = true;
-            fill = "surface_container";
-            id = "g2";
-            members = [ "cpu" "temp" "ram" "network_tx" "network_rx" ];
-            opacity = 1.0;
-            padding = 6.0;
-          }
-          {
-            accordion = false;
-            accordion_direction = "end";
+            border_width = 1.0;
             enabled = true;
             fill = "surface_container";
             id = "g3";
             members = [ "clock" "media" "audio_visualizer" ];
-            opacity = 1.0;
-            padding = 6.0;
-          }
-          {
-            accordion = false;
-            accordion_direction = "end";
-            enabled = true;
-            fill = "surface_container";
-            id = "g4";
-            members = [ "volume" "input_volume" ];
             opacity = 1.0;
             padding = 6.0;
           }
@@ -222,7 +204,15 @@ let
       };
       "lfourneen/waywallen-bridge" = {
         yield_wallpaper = false;
-        sync_colors = true;
+      };
+      "mahmoudomiesh/network-monitor" = {
+        include_udp = true;
+        only_own_processes = true;
+      };
+      "muhammadessam/network-control" = {
+        panel_open_near_click = true;
+        panel_placement = "attached";
+        panel_position = "auto";
       };
       "noctalia/mpvpaper" = {
         video_directory = "${homeDir}/Pictures/Wallpapers";
@@ -243,8 +233,10 @@ let
         "noctalia/notes"
         "8bury/mini-docker"
         "nightwatch75/todo"
-        "rxtsel/portctl"
         "lfourneen/waywallen-bridge"
+        "tmelik/system-monitor"
+        "muhammadessam/network-control"
+        "mahmoudomiesh/network-monitor"
       ];
       source = [
         {
@@ -336,18 +328,25 @@ let
       clipboard = { anchor = true; capsule = true; };
       clock = { anchor = false; capsule = true; format = "{:%Y-%m-%d %H:%M %a}"; };
       control-center = { anchor = true; glyph = "topology-star-ring-3"; };
-      cpu = { capsule = true; };
-      indicator = { type = "rxtsel/portctl:indicator"; };
+      indicator_2 = { type = "mahmoudomiesh/network-monitor:indicator"; };
       media = { anchor = false; hide_when_no_media = true; max_length = 40; min_length = 0; };
       mini-docker = { anchor = true; capsule = true; type = "8bury/mini-docker:mini-docker"; };
-      mpvpaper = { capsule = true; glyph = "photo-video"; type = "noctalia/mpvpaper:mpvpaper"; };
       network = { capsule = true; show_vpn_label = true; vpn_status = "both"; };
-      notes = { type = "noctalia/notes:notes"; };
-      notifications = { anchor = true; capsule = true; hide_when_no_unread = false; };
-      ram = { capsule = true; };
+      network_2 = { type = "muhammadessam/network-control:network"; };
+      notifications = { anchor = true; capsule = true; hide_when_no_unread = true; };
       session = { anchor = true; capsule = true; };
+      summary = {
+        hide_unavailable = false;
+        show_cpu_details_in_tooltip = true;
+        show_download = false;
+        show_gpu_temperature = "on";
+        show_gpu_usage = "on";
+        show_gpu_vram = "on";
+        show_upload = false;
+        type = "tmelik/system-monitor:summary";
+      };
       tray = { drawer = true; drawer_columns = 5; };
-      volume = { anchor = true; capsule = true; };
+      volume = { anchor = false; capsule = true; };
       wallpaper = { anchor = true; capsule = true; };
       workspaces = { focused_output_only = true; hide_when_empty = true; style = "focus_hint"; };
     };
