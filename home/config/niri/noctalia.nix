@@ -18,22 +18,11 @@ let
       default = {
         capsule = true;
         center = [ "group:g3" ];
-        end = [ "notifications" "tray" "clipboard" "group:g1" "bluetooth" "volume" "brightness" "battery" "session" ];
+        end = [ "notifications" "tray" "clipboard" "netcenter" "bluetooth" "volume" "brightness" "battery" "session" ];
         padding = 16;
         start = [ "control-center" "mini-docker" "summary" "workspaces" ];
         widget_spacing = 8;
         capsule_group = [
-          {
-            accordion = false;
-            accordion_direction = "end";
-            border_width = 1.0;
-            enabled = true;
-            fill = "surface_container";
-            id = "g1";
-            members = [ "network_2" "indicator_2" ];
-            opacity = 1.0;
-            padding = 6.0;
-          }
           {
             accordion = false;
             accordion_direction = "end";
@@ -205,14 +194,12 @@ let
       "lfourneen/waywallen-bridge" = {
         yield_wallpaper = false;
       };
-      "mahmoudomiesh/network-monitor" = {
+      "lfourneen/netcenter" = {
         include_udp = true;
         only_own_processes = true;
-      };
-      "muhammadessam/network-control" = {
-        panel_open_near_click = true;
         panel_placement = "attached";
         panel_position = "auto";
+        panel_open_near_click = true;
       };
       "noctalia/mpvpaper" = {
         video_directory = "${homeDir}/Pictures/Wallpapers";
@@ -235,8 +222,7 @@ let
         "nightwatch75/todo"
         "lfourneen/waywallen-bridge"
         "tmelik/system-monitor"
-        "muhammadessam/network-control"
-        "mahmoudomiesh/network-monitor"
+        "lfourneen/netcenter"
       ];
       source = [
         {
@@ -328,11 +314,10 @@ let
       clipboard = { anchor = true; capsule = true; };
       clock = { anchor = false; capsule = true; format = "{:%Y-%m-%d %H:%M %a}"; };
       control-center = { anchor = true; glyph = "topology-star-ring-3"; };
-      indicator_2 = { type = "mahmoudomiesh/network-monitor:indicator"; };
       media = { anchor = false; hide_when_no_media = true; max_length = 40; min_length = 0; };
       mini-docker = { anchor = true; capsule = true; type = "8bury/mini-docker:mini-docker"; };
+      netcenter = { type = "lfourneen/netcenter:widget"; };
       network = { capsule = true; show_vpn_label = true; vpn_status = "both"; };
-      network_2 = { type = "muhammadessam/network-control:network"; };
       notifications = { anchor = true; capsule = true; hide_when_no_unread = true; };
       session = { anchor = true; capsule = true; };
       summary = {
