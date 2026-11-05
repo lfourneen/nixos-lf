@@ -2,11 +2,11 @@
 
 let
   pname = "dsh-desktop";
-  version = "2.0.21";
+  version = "2.0.22";
 
   # Upstream publishes a type-2 AppImage for Linux. The AppDir keeps the
   # Electron tree at its root (AppRun + dsh-desktop-next + resources) and adds
-  # a hicolor 1024 icon under usr/share. Since 2.0.18 the JavaScript payload is
+  # a hicolor icon set under usr/share. Since 2.0.18 the JavaScript payload is
   # packed into resources/app.asar, with native addons (and anything the Host
   # child process must read) beside it in resources/app.asar.unpacked.
   src = ./local-apps/DSH-NEXT-${version}-next-x86_64.AppImage;
@@ -110,15 +110,18 @@ let
           }).catch((error) => { console.error(error); process.exit(1); });
       ' "$appRoot/app.asar.unpacked/node_modules/sharp"
 
-      # The AppImage ships a single 1024x1024 16-bit icon and no other hicolor
-      # sizes; derive the standard set (forced 8-bit, as most icon caches
-      # expect) under the desktop entry's icon name.
-      for size in 1024 512 256 128 64 48 32 16; do
-        mkdir -p "$out/usr/share/icons/hicolor/''${size}x''${size}/apps"
-        ${pkgs.imagemagick}/bin/magick \
-          "$out/usr/share/icons/hicolor/1024x1024/apps/dsh-desktop-next.png" \
-          -resize "''${size}x''${size}" -strip -depth 8 \
-          "$out/usr/share/icons/hicolor/''${size}x''${size}/apps/${pname}.png"
+      # Since 2.0.22 the AppImage ships a complete 8-bit sRGBA hicolor set
+      # (16-512) instead of the single 16-bit 1024 icon older releases had, so
+      # no resampling is needed: mirror each size under the desktop entry's
+      # icon name. If upstream changes the layout again the glob stays literal,
+      # which the -e test turns into a build failure instead of an iconless
+      # desktop entry.
+      for icon in "$out/usr/share/icons/hicolor"/*/apps/dsh-desktop-next.png; do
+        if [ ! -e "$icon" ]; then
+          echo "dsh-desktop: no hicolor icons found under $out/usr/share/icons" >&2
+          exit 1
+        fi
+        install -Dm644 "$icon" "''${icon%/*}/${pname}.png"
       done
     '';
   };
