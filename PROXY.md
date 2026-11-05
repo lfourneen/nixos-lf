@@ -4,7 +4,7 @@
 
 ## 1. Data path
 
-Egress is a single chain. Three kinds of application traffic converge on the Clash core (mihomo, service mode, runs as root); nftables decides which kind may leave, and locally generated public traffic is proxied, redirected or dropped, subject to the explicit infrastructure and private-network exceptions below. The one thing the firewall cannot judge is the core's own routing: a `DIRECT` match in the profile leaves from the real address by design, and the health gate only samples it (section 9).
+Egress is a single chain. Three kinds of application traffic converge on the Clash core (mihomo, service mode, runs as root); nftables decides which kind may leave, and locally generated public traffic is proxied, redirected or dropped, subject to the explicit infrastructure and private-network exceptions below. The firewall exempts the core's marked sockets. `my.proxy.proxyOnly` defaults to false, preserving Rule routing, domestic DIRECT traffic and the known probe-domain overrides. It can optionally enforce uniform proxy routing and refuse application DIRECT/COMPATIBLE dials inside the core (section 3.4). With that option disabled, a profile DIRECT match leaves from the real address, and the health gate only samples the selected route (section 9).
 
 ```
    env-proxy aware          proxy-ignorant TCP        TUN-captured / fake-ip
@@ -26,6 +26,8 @@ Egress is a single chain. Three kinds of application traffic converge on the Cla
                                                sockets; the kill switch
                                                exempts exactly that mark)
 ```
+
+The diagram's DIRECT branch is available to applications only with `proxyOnly=false`; internal core infrastructure has a separate exemption. Managed browsers enter at the mode-aware gost HTTP relay (section 3.3).
 
 DNS is a parallel chain (section 3.2): `systemd-resolved` → `dnsmasq :1054` → `mihomo :1053` (Mode B, fake-ip) or `unbound :1055` (Mode A, DoT). Any plaintext resolver queried on an uplink is redirected into `dnsmasq`.
 
@@ -55,7 +57,7 @@ Ports, uids, the packet mark (`6666` → `0x00001a0a`), the TUN device name and 
 1. **Env-proxy consumers** connect to `127.0.0.1:33332`; `gost-relay` forwards to `127.0.0.1:7897`. The session variables `http_proxy`/`https_proxy`/`all_proxy` (and their uppercase twins), GSettings (`home/config/dconf.nix`) and Flatpak overrides (`system/programs/flatpak.nix`) point here.
 2. **Proxy-ignorant TCP** keeps its public destination; the `lf_proxymode_nat` output chains REDIRECT it to `127.0.0.1:33333`, which `gost-relay` also forwards to the core.
 3. **Everything the core routes through the TUN** (including fake-ip answers) is read off the `Mihomo` device.
-4. The core matches its profile. `DIRECT` and proxy-node sockets both leave on the uplink; the switch rule is `meta mark 0x00001a0a accept`, so the core can reach both nodes and explicitly DIRECT destinations.
+4. The core matches its profile. Its sockets are exempted by `meta mark 0x00001a0a accept`. With `proxyOnly=true`, application DIRECT/COMPATIBLE dials are refused before TCP/UDP sockets open, including a direct leaf chosen through a group. Explicit resolver/bootstrap metadata remains exempt; rule-routed DNS is subject to the DIRECT refusal too. With `proxyOnly=false`, profile DIRECT destinations leave through the uplink too.
 5. `proxymode_drops` rejects other public uplink traffic after the explicit DNS/NTP, DHCP and root-UDP exceptions. The root-UDP exception preserves Tailscale hole punching; it matches all root UDP rather than a tailscaled process identity. Ordinary root TCP still needs the core mark or another explicit exception.
 
 ### 3.2 DNS
@@ -65,7 +67,7 @@ Ports, uids, the packet mark (`6666` → `0x00001a0a`), the TUN device name and 
 * Mode B upstream: `mihomo :1053` (fake-ip). Mode A / blocked upstream: `unbound :1055` (DoT to 360).
 * Blocked names are answered NXDOMAIN by `dnsmasq` before either upstream is asked, and the reason the list sits there rather than in a resolver of one mode is that `:1054` is the single front door: a per-mode filter would block a name in one state and resolve it in the next, so the answer would depend on which path was active at the time. One list at the shared entry keeps Mode A, Mode B and guest lookups in agreement, and dnsmasq's suffix match covers subdomains without an entry for each one. The data is kept out of Git in `local-data/dns-blocklist.txt.xz` (git-ignored; `scripts/push-to-dir.sh` carries it to `/etc/nixos`, which is where the flake is evaluated) (one bare name per line, merged and de-duplicated from the upstreams recorded in the header of `system/config/dns-blocklist.nix`) and that module renders it into `address=/.../` lines; `./scripts/refresh-dns-blocklist.py` refreshes the data and the header, `--check` reports drift without writing, and `scripts/push-to-dir.sh` copies `local-data/` to `/etc/nixos` because the flake cannot be evaluated without it. Nothing is downloaded at build or run time, so a build uses exactly the list that was reviewed. Names specific to this host go through `my.proxy.blockedDomains` instead, and a name that has to keep working inside a blocked domain goes into `my.proxy.blockedDomainExceptions`: each entry renders as `server=/domain/#`, which dnsmasq prefers over the `address=` block, while `#` sends it to the standard servers, so the exception follows whatever upstream the active mode installed. This is local name resolution, not a content filter: a client that reaches a DoH or DoT endpoint of its own is outside it, and the `:853` rule below is what keeps that path narrow.
 * Unbound filters upstream answers containing LAN/CGNAT, guest, loopback, unspecified, link-local or ULA addresses, including the corresponding IPv4-mapped IPv6 ranges. Explicit Unbound `local-data` and narrowly configured `private-domain` entries remain available. This covers the Mode-A DoT path; approved split DNS and the leased plaintext portal fallback use dnsmasq directly. Mihomo's domain destinations have a separate guard described below; independent browser DoH answers are outside Unbound's scope. It also keeps serving the cached copy of an answer that passed validation when it was fetched (`serve-expired`, reply TTL capped at 30 s) for up to 900 s while a lost upstream recovers, so a short outage does not by itself push the resolver into the plaintext window; that bound is what keeps the window where a stale copy can no longer be revalidated limited, and it drops additional-section records that fail validation instead of the whole answer.
-* A static base chain on the `output` hook at priority `-196` drops `:853` (TCP and UDP) from every UID except root and Unbound, so an application cannot open its own DNS-over-TLS/QUIC channel and step around the per-mode resolver policy. It deliberately sits above the priority-0 chain: sing-tun's auto-redirect at priority `-150` rewrites a locally generated non-root TCP flow to its own loopback listener, and from there the core, which runs as root, completes the connection — a rule at priority 0 would only ever see the rewritten destination. The same chain accepts Unbound's own DoT to the configured upstreams, and while a mode is active the per-process exemption accepts it as well, so the validating resolver keeps its channel in every mode. DoH shares `:443` and stays indistinguishable at that layer, which is the part this rule does not close.
+* A static base chain on the `output` hook at priority `-196` drops `:853` (TCP and UDP) from every UID except root and Unbound, so an application cannot open its own DNS-over-TLS/QUIC channel and step around the per-mode resolver policy. It deliberately sits above the priority-0 chain: sing-tun's auto-redirect at priority `-150` rewrites a locally generated non-root TCP flow to its own loopback listener, and from there the core, which runs as root, completes the connection — a rule at priority 0 would only ever see the rewritten destination. The same chain permits Unbound's configured DoT upstreams in A/B. Mode C's earlier guard cuts that external channel; local cached answers may remain available. DoH shares `:443` and stays indistinguishable at that layer, which is the part this rule does not close.
 * Mihomo DNS settings come from `my.proxy.managedDns`: additional `direct-nameserver` and `proxy-server-nameserver-policy` resolvers are disabled, and the fake-IP filter mode and IPv6 fake-IP range are fixed. In blacklist mode, `fake-ip-filter` makes matching domains resolve to real addresses; traffic still follows the profile's routing rules. The list includes local-only suffixes (`*.lan`, `*.local`, `*.internal`, `*.corp`, `*.home`, ...) so internal names stay out of fake-IP. With TUN enabled, `tun.dns-mode` is explicitly pinned to `hijack` in the profile, parser/PATCH policy and health gate.
 * The static `lf_nat` chains redirect every `:53` leaving an uplink (v4 and v6) into `dnsmasq`, so a hardcoded resolver in a portal/LAN/CGNAT range cannot leave in the clear.
 * Plaintext fallback is a kernel lease, not a coordinator state: `dns-policy` adds the DHCP resolvers to `inet lf_filter dns_plaintext4` with a timeout bounded by the remaining window, and a static `output` base chain (`lf_dns_guard`, priority `-199` → `dns_egress`) drops every other `dnsmasq` upstream query. Stopping, killing or stalling `dns-upstream` therefore cannot keep plaintext DNS permitted past the lease. Split-DNS leases are keyed by interface/server, expire at the original observation plus 120 s and bind the approved UUID, ActiveConnection, ifindex, carrier-down counter and revocation epoch. The dispatcher revokes them at pre-up/pre-down/down; the broker rechecks the connection before granting.
@@ -89,11 +91,44 @@ Mode A uses 360's DoT endpoints (`101.226.4.6`, `218.30.118.6`, `123.125.81.6`) 
 
 Full-config parsing upgrades only exact recognized pre-MagicDNS managed DNS values to the current root policy, and always takes `lf-private-targets` and the TUN exclusion list from that policy: a cached profile from an older generation must not stop the core from starting, and a profile value can never weaken the effective guard. Taking the exclusion list from the policy also drops an entry the policy no longer lists, because an extra exclusion would move traffic out of the tunnel; a stale profile therefore starts with exactly the managed list instead of being refused. Other profile drift and runtime PATCH attempts to weaken the policy are still rejected.
 
-The managed Mihomo core checks domain targets after routing/sniffing and before TCP/UDP egress, including each datagram in a reused UDP association. It rejects private, loopback, link-local, unspecified and multicast answers, including mixed public/private answers and IPv4-mapped IPv6. Carrier-grade NAT stays in that list: Tailscale peers are reached by literal addresses or the authenticated `*.ts.net` suffix, both exempt, so no dial legitimately resolves a domain into `100.64.0.0/10`. A lookup that still fails after one retry is not a target verdict: the dial proceeds and resolves on its own path, so a resolver hiccup cannot be reported as a dead node. It pins the checked address for both DIRECT and proxy dials, preventing a second remote DNS lookup. Literal-IP requests, internal core infrastructure and the explicit suffixes in `my.proxy.privateTargetDomains` (`localhost`, `lan`, `local`, `home.arpa`) are exempt. The authenticated current MagicDNS suffix is a dynamic exception. Public domain targets therefore resolve locally before proxy dialing; this affects remote-DNS behavior and uses the core's IPv4 preference. This is domain-target protection, not a universal SSRF boundary or protection against a proxy server that disregards the requested destination.
+The managed Mihomo core checks domain targets after routing/sniffing and before TCP/UDP egress, including every new destination mapping in a reused UDP association. Later packets reuse the validated, pinned mapping. It rejects private, loopback, link-local, unspecified and multicast answers, including mixed public/private answers and IPv4-mapped IPv6. Selected special ranges (benchmarking, reserved IPv4, IPv4-compatible IPv6 and transition prefixes) are also refused; the well-known NAT64 prefix is checked against its embedded IPv4 target. This is a targeted list rather than the entire IANA special-purpose registry. Carrier-grade NAT stays in that list: Tailscale peers are reached by literal addresses or the authenticated `*.ts.net` suffix, both exempt, so no dial legitimately resolves a domain into `100.64.0.0/10`. A lookup that still fails after one retry, or returns no addresses, refuses the connection because no target has been validated. A successful lookup pins the checked address; no unchecked second resolution authorizes a dial. It pins the checked address for both DIRECT and proxy dials, preventing a second remote DNS lookup. Literal-IP requests deliberately bypass domain-target validation, including literal private/loopback targets that a proxy may interpret in its own network; proxyOnly still forbids their application DIRECT dials. Internal core infrastructure and the explicit suffixes in `my.proxy.privateTargetDomains` (`localhost`, `lan`, `local`, `home.arpa`) are exempt. The authenticated current MagicDNS suffix is a dynamic exception. Public domain targets therefore resolve locally before proxy dialing; this affects remote-DNS behavior and uses the core's IPv4 preference. This is domain-target protection, not a universal SSRF boundary or protection against a proxy server that disregards the requested destination.
 
 Tailscale declares `accept-dns=false`, `accept-routes=false`, no advertised subnet routes or exit-node service, no exit node and Tailscale SSH disabled. `my.hardening.tailscale.magicDns` defaults true: the root helper reads the running daemon's current MagicDNS suffix, gives only that search/routing domain to `tailscale0`, and sets `DefaultRoute=no`. The read uses a 5 s deadline, and an unreadable or slow daemon is not a logout: the last authenticated route is kept, so the conditional resolver does not flap and the exception file is not deleted several times a minute. Logout, a tailnet change or disabled MagicDNS revokes the old suffix. No tailnet `~.` route takes over public DNS. Mihomo excludes `ts.net` from fake-IP and conditionally resolves these names directly via the local Tailscale resolver, preserving Tailscale IP routes even under a GLOBAL profile; the private-target exemption remains limited to the authenticated current suffix.
 
 Time synchronization uses Chrony with NTS-only sources (`my.machine.ntsUpstreams`, Cloudflare and Netnod by default), `authselectmode require` and certificate time checks enabled. UDP/123 and TCP/4460 are scoped to the chrony UID in B's firewall exceptions; C retains its non-core egress refusal, including time synchronization. Failed authentication leaves the clock unsynchronized instead of selecting ordinary NTP. Persistent `/var/lib/chrony` state and `chronyd -s` supply an RTC/drift-file time floor after restart; the module's `rtcfile`/`rtcautotrim` keep that floor accurate, so a clock too far off for NTS certificates recovers from the RTC instead of deadlocking DNS. The local command port stays enabled, so `chronyc sources` and `chronyc authdata` can tell a failed NTS-KE from a failed source. If the clock is still too wrong for TLS, an administrator must correct it; no certificate-time bypass or plaintext time fallback is configured.
+
+### 3.3 Managed browsers
+
+`my.browser.strictPrivacy` defaults to true and controls browser fingerprinting, font and extension protection independently of the network mode. Zen and Chrome use a fixed HTTP proxy at the mode-aware gost listener (`127.0.0.1:33332`), with no browser-side direct fallback. A deliberately passes traffic through, B forwards to mihomo under the selected routing policy, and C closes the app-facing path. Boot defaults to A; enabling browser privacy or `proxyOnly` does not request B.
+
+Menu/MIME entries invoke `browser-private zen` or `browser-private chrome` with separate profiles. Managed desktop entries are also installed in the user application directory, which takes precedence over Flatpak exports regardless of the order of `XDG_DATA_DIRS`. In A, launch does not require public DNS or a working proxy: an offline wired or Wi-Fi portal at `http://192.168.1.1/` remains reachable through the relay. Captive-portal support and NetworkManager connectivity checks remain enabled. Zen uses HTTPS-First with local-address upgrades disabled so HTTP gateway login remains available. In B, launch requires fresh, same-generation proxy/DNS/relay/verification state and a live core identity/managed-policy check through `health.py --fast`. In both modes, the installed browser policy must match the current Nix generation. A shell preflight in the actual Flatpak sandbox checks the visible policy and, under strict privacy, Fontconfig contents, FONTCONFIG_FILE and font paths, without injecting overrides or filesystems. A second observation rejects a mode/generation transition during preflight. C and unknown states refuse launch. After launch, the fixed relay and kernel guards enforce mode transitions; the launcher is not a continuous monitor.
+
+Zen prefers DoH and permits the managed system resolver as fallback by default; `my.browser.zen.dohOnly=true` explicitly removes that fallback. Chrome uses automatic DoH. Browser DoH does not inherit dnsmasq's blocklist, Unbound's local DNSSEC validation or approved split DNS. With an HTTP proxy, target resolution can be delegated to the proxy: DoH/ECH preferences alone do not establish target HTTPS-record discovery or an ECH handshake. ECH requires origin support, a usable ECHConfig and support on the actual browser/transport path. Enabling ECH or GREASE does not hide destination IPs or the target named in a proxy request.
+
+Zen's systemconfig Flatpak extension supplies enterprise policies. Supported Preferences are typed and locked; additional Gecko preferences are generated into `user.js` for the separate profile. With strict privacy enabled, this profile enables RFP and letterboxing, restricts font visibility, and disables WebRTC, WebGL, WebGPU and location. `user.js` restores values at launch but is not a runtime lock. The default extension set contains only uBlock Origin; strict policy blocks other extensions unless explicitly configured. The host profile is `~/.var/app/app.zen_browser.zen/.zen/netsec-private`, mapped to `~/.zen/netsec-private` inside Flatpak. The explicit profile path scopes Gecko remoting: subsequent checked launches can send links to this profile's existing window. Policy/preference changes still require a full browser restart; checking current files does not refresh an existing process's loaded settings.
+
+Chrome reads managed policy through its Flatpak host-etc launcher and uses a separate `~/.var/app/com.google.Chrome/config/netsec-private` user-data directory. Its policy restricts non-proxied WebRTC UDP, Local Font Access, third-party cookies, background operation, sign-in/sync and extensions. Chrome has no equivalent contract to Zen's RFP/letterboxing; Local Font Access policy alone does not prevent CSS font inference.
+
+Under strict privacy, Fontconfig uses runtime/application fonts plus a fixed Noto CJK package, rather than personal host font directories. This bounds font discovery while keeping Chinese coverage; it does not make browser rendering identical. Strict Flatpak overrides use Wayland, disable X11/fallback-X11, CUPS and PC/SC sockets, and replace all-device access with DRI. `browser-policy-install.service` installs real extension files on changed generations and reconciles them every five minutes. Chrome's host-etc Fontconfig is a real file copy so sandbox paths do not depend on /etc/static. Browsers need a full restart to consume changed startup policy/preferences. Bookmarks, accounts and site data from other profiles are not imported.
+
+Direct Flatpak invocations can bypass the launcher's profile choice and preflight, though system enterprise policies still apply. Same-UID processes can change user profiles and user Flatpak overrides. Neither these settings nor a proxy provide anonymity against account correlation, exit-IP reputation, protocol classification or traffic timing. Setting `strictPrivacy=false` relaxes fingerprinting, font and extension restrictions; the managed relay, profile launchers and explicit network-mode controls remain in place.
+
+Use `browser-private zen --check` or `browser-private chrome --check` to run preflight without opening a browser or creating its profile. A missing/stale Zen extension can be restored with `sudo systemctl restart browser-policy-install.service`; the periodic reconciliation also restores managed content.
+
+### 3.4 Optional uniform proxy routing
+
+Choose the policy declaratively in the NixOS configuration:
+
+```nix
+my.proxy.proxyOnly = false; # Default: Rule splitting, domestic DIRECT, known probe overrides.
+# my.proxy.proxyOnly = true; # Optional: uniform routing through the proxy catch-all.
+```
+
+With `false`, the subscription's Rule routing remains active. The enhancement script prepends `DOMAIN-SUFFIX` proxy rules for `probeDomains`, health targets and selected downloads. These rules protect known IP-echo resources embedded by other sites while retaining domestic DIRECT traffic. An unlisted or self-hosted probe can still match DIRECT and observe the real exit; the list is a targeted defence, not complete coverage.
+
+With `true`, the generated profile routes all application destinations reaching the core through the subscription's final proxy MATCH policy. This overrides geographic/process splitting and profile REJECT rules, requires a usable proxy catch-all, and increases subscription traffic, including domestic traffic. A root-owned core policy refuses application DIRECT/COMPATIBLE TCP/UDP dials, including renamed adapters and direct leaves selected inside groups; changing the GUI selection cannot authorize them. Core sniffing is disabled so a cover SNI is not used to replace the dial target. Rule-routed DNS selected as DIRECT/COMPATIBLE is also refused. Explicit bootstrap/endpoint-resolution DNS and #DIRECT MagicDNS remain exempt; firewall infrastructure, multicast and host private-network paths outside the core retain their own boundaries. This is broader than selecting Global in the GUI because the core also refuses direct application dials.
+
+The switch changes the generated profile and managed core policy; deploy the Nix generation and reload the managed profile/core for the choice to take effect. It does not change `bootMode="direct"`, automatically enable B, or remove Mode-A portal/DHCP/Wi-Fi access. Use the ordinary A/B controls for network intent.
 
 ## 4. Modes
 
@@ -127,11 +162,11 @@ A separate static chain, `redirect_guard` (an `output` base chain at priority `-
 
 The packaged GUI keeps the public `clash-verge` process identity used by `clash-on`/`clash-off`. Before launching the current package, its launcher waits for older GUI instances of the same user to exit, so an old singleton cannot retain a previous core path. An already running GUI from the current package is preserved.
 
-The core is **not** blocked in Mode C: it keeps egress so it can recover a node or be reconfigured from the GUI over loopback. The cost is that traffic mihomo itself routes `DIRECT` (domestic names, or a profile DIRECT fallback) still leaves.
+The marked core keeps egress in Mode C for recovery and its internal bootstrap. Ordinary users cannot reach its app-facing ports; root recovery/self-tests can, with DIRECT additionally refused when proxyOnly is enabled. Unbound's external DoT channel is cut, although cached local DNS answers may remain available.
 
 ### 4.2 Bootstrap, static repair and guest paths
 
-`network-firewall-bootstrap.service` installs `inet lf_bootstrap` before physical networking: input and forwarding default to drop, with loopback, established input, DHCP and essential ICMPv6 allowed. NetworkManager and dhcpcd require this unit to succeed. The complete static+mode transaction removes the bootstrap table only after installing the full policy; a first-load failure therefore retains ingress protection without changing the normal cold-boot Mode A contract. `my.proxy.bootMode = "proxy"` optionally records proxy intent and installs Mode C in the same early transaction (still before physical networking); the default `direct` keeps the A contract.
+`network-firewall-bootstrap.service` installs `inet lf_bootstrap` before physical networking: input and forwarding default to drop, with loopback, established input, DHCP and essential ICMPv6 allowed. NetworkManager and dhcpcd require this unit to succeed. The complete static+mode transaction removes the bootstrap table only after installing the full policy; a first-load failure therefore retains ingress protection; boot intent separately determines A or C. `my.proxy.bootMode = "proxy"` optionally records proxy intent and installs Mode C in the same early transaction (still before physical networking); the default is `direct` (A), independently of browser privacy and `proxyOnly`. Selecting `proxy` is an explicit choice to remain in C until the core is ready.
 
 The supervisor compares the static baseline separately from the current mode fragment. Static drift invokes an internal complete loader under the existing lock, installing A for a direct session or C for a proxy/recovery session. It then re-evaluates health before entering B. Failed full repairs are limited to one attempt per 30 s and publish `unenforced`; an unsuccessful postcondition cannot remain labelled `proxy`. This status reports that enforcement could not be confirmed and does not itself replace missing kernel protection.
 
@@ -188,6 +223,7 @@ The verdict is atomic in `/run/netsec/state.json`; `/run/netsec/result` (`ok`/`d
 ### 6.1 Configuration checks
 
 ```sh
+nix build .#checks.x86_64-linux.browser-privacy
 nix build .#checks.x86_64-linux.proxy-regressions
 nix build .#checks.x86_64-linux.proxy-rules
 nix build .#checks.x86_64-linux.proxy-profile
@@ -218,12 +254,14 @@ Verification results carry CLOCK_BOOTTIME and a boot ID. Readiness requires both
 * `my.proxy.tunIpv6Address` (default `fdfe:dcba:9876::1/126`) — explicit TUN IPv6 address. With dual-stack TUN, the helper passes `SKIP_SYSTEM_IPV6_CHECK=1` to its core child, keeping the expected TUN structure independent of startup uplink IPv6 availability; IPv6 FIB/route checks remain strict.
 * `my.proxy.guestInterfaces` and `transparentGuestInterfaces` — routed guest ingress list (VM/container bridges, plus the dedicated AP interface only when the hotspot is enabled) and its opt-in IPv4 TPROXY subset (default empty).
 * `my.hardening.guestTcpPorts`/`guestUdpPorts` — the explicit desktop services libvirt guests may reach when `guestHostServices` is on; DHCP/DNS infrastructure is independent of these switches.
-* `my.proxy.bootMode` (`direct` default, or `proxy`) — optional fail-closed boot intent installed with the pre-network baseline.
+* `my.proxy.bootMode` (default `direct`) — boot intent installed with the pre-network baseline. `proxy` optionally starts in C until B is ready; browser privacy and `proxyOnly` do not change this option.
 * `my.proxy.stateMaxAgeSeconds` (default 120) — freshness bound used by `proxy-control status`/`wait` and `proxy-status`.
 * `my.proxy.splitDnsProfileUuids` (default empty) and `plaintextBootBudgetSeconds` (default null) — split-DNS profile exceptions and an additional boot-wide plaintext deadline. Approved profiles become dnsmasq `server=/domain/server@interface` entries and connection-bound interface/server leases (public upstreams unsupported); resolved itself stays on the managed resolver.
 * `proxy-inspect` — read-only JSON of link/queue/offload/qdisc statistics, softirq counters, service CPU/RSS and current state; it sends no test traffic and changes no tuning.
 * `my.hardening.allowPrivateEgress` (default true) — keep `privateV4`/ULA/link-local directly reachable in B; `false` subjects host private-address flows to the proxy policy too (affecting the tailnet and portals). `my.hardening.guestHostServices` (default false) enables explicitly configured VM→host service ports; both port lists default empty. Resolved has no wildcard DNS listener; guest gateway DNS remains separate.
-* `my.browser.zen.dohOnly` (default false) — strict browser DoH-only; `false` keeps DoH preferred with the managed resolver as fallback.
+* `my.browser.strictPrivacy` (default true) — fingerprinting, font and extension protection, independent of A/B/C and `proxyOnly` (section 3.3).
+* `my.proxy.proxyOnly` (default false) — optional uniform proxy routing and core DIRECT/COMPATIBLE refusal; false keeps Rule routing and known probe-domain overrides (section 3.4).
+* `my.browser.zen.dohOnly` (default false) — true requires DoH; false permits the managed system resolver as fallback for offline/portal operation.
 * `my.machine` — interface names, ports (`mihomoDns`/`dnsmasq`/`unbound`/`gostHttp`/`gostRedirect`/`mihomoMixed`/`mihomoTproxy`/`dot`/`ntp`), uids, `mihomoMark`, and the local address ranges (`privateV4`, `multicastV4`, `ulaV6`, `linkLocalV6`, `multicastV6`, `limitedBroadcastV4`).
 * The Clash core and its Merge template are configured in `home/config/cvr-merge.nix` (TUN stack, `dns-hijack`, `route-exclude-address`, `routing-mark`, fake-ip DNS + filter, sniffer, `respect-rules`).
 
@@ -231,6 +269,8 @@ Verification results carry CLOCK_BOOTTIME and a boot ID. Readiness requires both
 
 | File | Responsibility |
 |---|---|
+| `system/programs/browser-options.nix`、`browser-policies.nix`、`browser-guard.py` | browser policy, strict profiles and launch prerequisites |
+| `home/config/browser.nix` | desktop/MIME entries for managed browser profiles |
 | `system/config/machine.nix` | interface/uid/port/mark/TUN/tunable single sources |
 | `system/config/proxy-options.nix` | `my.proxy.tunMode`, `tunDev`, `fakeIpRange`, `fakeIpNet`, `routeTable`, `nodeProbeUrls` |
 | `system/config/network.nix` | nftables ruleset, `proxyModeRules`, `blockedModeRules`, `redirect_guard`, `:53` redirect, env-proxy vars, `dnsmasq`/`unbound`/`resolved`, NM dispatcher, dhcpcd hook |
@@ -249,6 +289,7 @@ Verification results carry CLOCK_BOOTTIME and a boot ID. Readiness requires both
 | `system/programs/systemd/netsec/state.py` | shared readiness/freshness checks for `proxy-control` and `proxy-status` |
 | `system/programs/systemd/netsec/alerts.py` | per-owner alert records plus the aggregate flag |
 | `system/programs/systemd/netsec/managed_profile*.go`, `managed_route.go`, `patch_mihomo.py` | final-parser and controller-PATCH enforcement of the managed core profile (listeners, tunnels, DNS, TUN routing fields); patched into the pinned mihomo build |
+| `system/programs/systemd/netsec/target_guard.go` | domain-target validation and strict application DIRECT refusal before core TCP/UDP egress |
 | `system/programs/systemd/netsec/patch_sing_tun.py`, `patch_socks.py`, `socks_addr_test.go` | nftables interval endpoints, TUN-local OUTPUT DNAT, SOCKS address parsing and boundary tests |
 | `system/programs/systemd/netsec/listeners.py` | shared passive TCP/UDP address, UID, cgroup and count checks |
 | `system/programs/systemd/netsec/health.py` | bounded selected-node/TUN proof and API invariants |
@@ -269,19 +310,21 @@ Verification results carry CLOCK_BOOTTIME and a boot ID. Readiness requires both
 
 ## 9. Limitations and trade-offs
 
+* B permits IPv4/IPv6 multicast outside the core; proxyOnly is a core dial policy and does not tunnel those packets. Shared NDP validation runs before conntrack accepts in the bootstrap and full ingress rules: RA requires a link-local source, whereas RS permits link-local/unspecified sources. These checks do not authenticate on-link routers; RA Guard/802.1X or an explicit IPv6 configuration is a separate network trust choice.
+
 * The `:33333` redirect is the only path for TCP that the TUN does not carry (source-/device-bound sockets, and anything after a manual flush); `gost` is a single point of failure for those, and flows reaching it are re-sourced to `127.0.0.1`, so per-source profile rules do not apply. An explicit `connect()` to `:33333` is refused with a TCP RST by the static `redirect_guard` base chain (priority `-201`, before NAT), so it can no longer drive gost's self-loop; the supervisor's self-connected-socket detector remains as a backstop. A transparently redirected flow is untouched because it still carries its real destination when the guard runs.
 * Mode B's dedicated DNS/NTP exceptions allow `unbound` (DoT, tcp/853) and `chronyd` (NTP udp/123 and NTS-KE tcp/4460); the core mark and root-UDP exception also apply. Ordinary application plaintext resolver queries are redirected into `dnsmasq`. Mode A adds the DHCP-provided resolvers, or `my.machine.dotTransportFallback` when the link supplies none, only within the bounded plaintext window (section 3.2).
 * The kill switch exempts the core by mark rather than a blanket uid-0 allow. DHCP exceptions are pinned to uid 0/`dhcpcd`. Mode B permits **all root UDP** on uplinks to preserve Tailscale arbitrary-port peer/STUN hole punching; this also allows other root UDP. This is an accepted Mode B compatibility exception, not a root boundary: root can already set the core mark. Mode C cuts unmarked tailnet data.
-* Mode C keeps the core alive, so mihomo's own `DIRECT` traffic still leaves; loopback stays open for local IPC, but the app-facing proxy ports (`7897`/`33332`/`33333`) are refused for non-root in both TCP and UDP, and a hop-limit-255 ICMPv6 NDP carve-out keeps link maintenance alive without opening a data path. Guest DHCP/DNS replies are allowed by bridge, gateway source and port (`67`/`53`), not by uid: a privileged-port daemon may send them after dropping privileges, and the accepted TCP sockets carry the dropped uid. The guard is a base chain evaluated before mihomo's redirect, so this holds for locally generated TCP too.
+* Mode C keeps the marked core alive for recovery and internal bootstrap; only privileged recovery/self-tests can use its app-facing ports, and DIRECT additionally requires `proxyOnly=false`. Unbound's external DoT channel is cut; loopback stays open for local IPC, but the app-facing proxy ports (`7897`/`33332`/`33333`) are refused for non-root in both TCP and UDP, and a hop-limit-255 ICMPv6 NDP carve-out keeps link maintenance alive without opening a data path. Guest DHCP/DNS replies are allowed by bridge, gateway source and port (`67`/`53`), not by uid: a privileged-port daemon may send them after dropping privileges, and the accepted TCP sockets carry the dropped uid. The guard is a base chain evaluated before mihomo's redirect, so this holds for locally generated TCP too.
 * Health is decided by `health_ok` through `netsec/health.py`: each target supplies its own HTTP/log/selected-leaf proof, and policy names are resolved exactly. The successful HTTP request proves the recorded leaf; supervision avoids the delay API, which updates node health/history and can affect automatic selection. DIRECT/REJECT is a routing failure, not a reason to try an unrelated healthy node. Targets share a 12 s deadline by default; the probe runs in a cancellable process group while supervision re-checks core/TUN/configuration. `config`/`route`/`tun` cut immediately; HTTP/log/selection failures use two consecutive `obs` rounds, with the next round scheduled at the 2 s minimum interval after the first failure. An event-cancelled probe does not consume an observation. Polling sleep is capped at 5 s; this is not the end-to-end protection/recovery delay. Layer durations are in `health.json`; actual delay depends on the fault and event source. The transparent TCP probe sends a real HTTP request to a fake-IP and requires its exact-source route log; it does not independently prove every UDP/IPv6 TUN device path. The guard allows root to fake-IP only on 53/80/443 without requiring a specific output interface; the shared route checks and exact-source core log prove the path. In the managed non-mark auto-redirect mode, the patched OUTPUT rule DNATs TUN-routed TCP to the TUN's own local address rather than loopback, preserving SO_BINDTODEVICE sockets with `route_localnet=0`. Root TCP replies to fake-IP are allowed only with conntrack reply/dnat and an original fake-IP destination on port 80/443; the guard runs after conntrack and before NAT. The loopback-source exception remains for the PREROUTING redirect path. B mode returns every fake-IP destination before the gost redirect for the same reason. If that redirect or reply path is missing, the probe times out and the host stays in C.
 * TCP/UDP DNS and mixed listeners must match the expected address, UID and service cgroup; the health gate, coordinator, verifier and relay share passive identity checks. Gost requires exactly one owner per endpoint. Identity failure is a configuration-layer failure; a successful DNS answer alone is insufficient. The "Clash is on" decision requires the core, not just the GUI.
-* The mihomo controller socket is mode 0777 without a secret, but its `/run/user/<uid>` ancestor is mode 0700: desktop same-uid processes can reconfigure the root core, rather than every local uid. Managed mode/mark/port/TUN invariants are checked and fingerprinted; rules, geodata and every DIRECT decision are outside that fingerprint. A profile reload can preserve all sampled gates while sending other traffic from the real address. The root core reads user-owned configuration and databases. The helper socket is restricted to `clash-verge-control`; same-uid GUI trust remains part of this desktop architecture. Supervisor/loader capabilities are narrowed, but the design does not contain a compromised root core.
+* The mihomo controller socket is mode 0777 without a secret, but its `/run/user/<uid>` ancestor is mode 0700: desktop same-uid processes can reconfigure the root core, rather than every local uid. Managed mode/mark/port/TUN invariants are checked and fingerprinted; rules and geodata are outside that fingerprint. With `proxyOnly=false`, a profile reload can preserve all sampled gates while sending other traffic from the real address. With it enabled, the root-owned policy also covers the core's application DIRECT refusal. The root core reads user-owned configuration and databases. The helper socket is restricted to `clash-verge-control`; same-uid GUI trust remains part of this desktop architecture. Supervisor/loader capabilities are narrowed, but the design does not contain a compromised root core.
 * The managed-profile allow-list is checked at final profile parsing and the controller PATCH entry point. PATCH rejects duplicate keys and noncanonical schema field names; validation and application use the same decoded upstream schema. This is a small patch against the pinned mihomo source (`managed_profile.go`, `managed_route.go`, `patch_mihomo.py`). Anchor drift fails the package build instead of silently dropping the check; revalidate it on every mihomo bump. Likewise, `unbound` is a source override of nixpkgs' `unbound-with-systemd`: it must retain `--enable-systemd`, because the NixOS module uses `Type=notify` and a plain unbound build would hang its start job until the timeout.
 * `systemctl stop nftables.service` does not remove the firewall: the unit has no teardown, so the rules stay loaded. To reinstall or reconcile them, use `sudo systemctl restart nftables.service` (or `reload`), which re-runs the scope loader — never `nft flush ruleset`, which also destroys mihomo's own tables and the TUN's routing, and only a TUN restart recreates them.
 * Mode A needs the core stopped, not the window closed: in service mode the always-on `clash-verge.service` helper owns the core, so use `clash-off`/`clash-on`. Only these express intent — starting or stopping the core from the GUI does not, so after a `clash-off` (direct intent) a GUI-started core stays in Mode C until you `clash-on`, and after a `clash-on` a GUI-stopped core (or a crash) stays in Mode C until you `clash-off`. That is the fail-closed behaviour, not a bug.
 * Recovery without a working network, in this order. On the running system (Ctrl+Alt+F3): `cat /var/lib/dns-upstream/history.log` and `/run/dns-upstream/state.json` name the layer that failed (`local` verdict versus `transport`), and `touch /run/dns-upstream/force-plaintext` keeps plaintext DNS while you read them. To leave a generation, reboot and pick an older entry — systemd-boot keeps eight, because it copies each generation's kernel/initrd onto the 1 GiB ESP. A generation that already fell out of that window can still be re-activated offline, as long as `nix.gc` kept its store path (`ls -l /nix/var/nix/profiles/system-*-link` shows the mapping): `nix-env -p /nix/var/nix/profiles/system --set /nix/store/<nixos-system-…>` creates a new generation from it, then `/nix/var/nix/profiles/system/bin/switch-to-configuration boot` writes the menu entry and makes it the default. If no generation boots at all, start a NixOS ISO, unlock the LUKS root, mount it and the ESP at `/mnt` and `/mnt/boot`, and run the same two commands inside `nixos-enter --root /mnt`.
 * Forwarded guest/VM traffic carries no host uid and follows the pre-NAT/forward contract in section 4.2. It is not proxied by default; IPv4 TPROXY is an explicit subset option. Existing connections must pass the early guards after switching to C. Socket-based rootless transports need separate host-path validation.
-* The Mode A plaintext budget in section 3.2 is a pool charged against plaintext use: every second of plaintext spends one and every second of validated encrypted transport returns one, so recovery never resets it. A flaky upstream therefore keeps DNS working inside the allowance it has accumulated, without a reset handing it a fresh 30 minutes each time it recovers. DHCP parameter changes cannot refresh the pool; real reconnection starts a new session unless an optional boot-wide deadline has expired. `force-plaintext` is a continuous override while present. In Mode B private/CGNAT access (including `100.64.0.0/10`) is intentional with `allowPrivateEgress=true`; a private address is not a trust guarantee. Cold boot begins in A when no proxy intent/core has been seen; supervision cannot retroactively protect traffic sent before a proxy request.
+* The Mode A plaintext budget in section 3.2 is a pool charged against plaintext use: every second of plaintext spends one and every second of validated encrypted transport returns one, so recovery never resets it. A flaky upstream therefore keeps DNS working inside the allowance it has accumulated, without a reset handing it a fresh 30 minutes each time it recovers. DHCP parameter changes cannot refresh the pool; real reconnection starts a new session unless an optional boot-wide deadline has expired. `force-plaintext` is a continuous override while present. In Mode B private/CGNAT access (including `100.64.0.0/10`) is intentional with `allowPrivateEgress=true`; a private address is not a trust guarantee. With `bootMode=direct`, cold boot begins in A when no proxy intent/core has been seen; supervision cannot retroactively protect traffic sent before a proxy request.
 * `allowPrivateEgress` and `guestHostServices` control private egress and guest desktop-service access. The former wildcard `externalDns` option is removed: LAN/tailnet DNS requires a separately designed listener, client ACL and answer route. The module rejects the legacy option rather than silently exposing a stub.
 * TUN routing-rule priorities and internal marks are managed by the system. Profiles may omit these fields or use `0` to select the system defaults; any other explicit values must match the system configuration.
 * When accessing IPv6 destinations through the local HTTP proxy, use the standard `[IPv6]:port` target format. The Gost relay also accepts bare IPv6 CONNECT targets with a valid port for client compatibility.
@@ -292,7 +335,7 @@ Verification results carry CLOCK_BOOTTIME and a boot ID. Readiness requires both
 
 ## 1. 数据路径
 
-出站只有一条链路。三类应用流量最终汇聚到 Clash 内核（mihomo，service mode，以 root 运行）；由 nftables 决定哪一类可以离开，本机产生的公网流量要么被代理、要么被重定向、要么被丢弃，并保留下文明确列出的基础设施与私网例外。防火墙唯一无法判断的是内核自身的路由：profile 里命中 `DIRECT` 的流量会按设计以真实地址离开，健康门只能对它抽样（见第 9 节）。
+出站只有一条链路。三类应用流量最终汇聚到 Clash 内核（mihomo，service mode，以 root 运行）；由 nftables 决定哪一类可以离开，本机产生的公网流量要么被代理、要么被重定向、要么被丢弃，并保留下文明确列出的基础设施与私网例外。防火墙豁免核心打标的 socket；`my.proxy.proxyOnly` 默认 false，保留 Rule 分流、国内 DIRECT 和已知探针域名的代理覆盖；可选择开启统一代理及核心应用 DIRECT/COMPATIBLE 拒绝（见 3.4）。关闭该选项时，profile 命中 DIRECT 的流量会以真实地址离开，健康门只能对所选路径抽样（见第 9 节）。
 
 ```
    认环境变量的应用          忽略代理的 TCP           被 TUN 捕获 / fake-ip
@@ -314,6 +357,8 @@ Verification results carry CLOCK_BOOTTIME and a boot ID. Readiness requires both
                                                 打 mark；断网保护恰好豁免
                                                 这个 mark）
 ```
+
+图中的 DIRECT 分支仅在 `proxyOnly=false` 时向应用开放，核心内部基础设施另有豁免。受管浏览器进入随模式切换的 gost HTTP 中继（见 3.3）。
 
 DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :1054` → `mihomo :1053`（模式 B，fake-ip）或 `unbound :1055`（模式 A，DoT）。任何经上行口发出的明文 `:53` 查询都会被重定向进 `dnsmasq`。
 
@@ -343,7 +388,7 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 1. **认环境变量的消费者**连接 `127.0.0.1:33332`，`gost-relay` 转发到 `127.0.0.1:7897`。会话变量 `http_proxy`/`https_proxy`/`all_proxy`（及其大写版本）、GSettings（`home/config/dconf.nix`）与 Flatpak 覆盖（`system/programs/flatpak.nix`）都指向这里。
 2. **忽略代理的 TCP** 保留公网目的地址，由 `lf_proxymode_nat` 的 output 链 REDIRECT 到 `127.0.0.1:33333`，`gost-relay` 同样转发到内核。
 3. **内核经 TUN 路由的一切**（包括 fake-ip 地址）从 `Mihomo` 设备读出。
-4. 内核套用 profile。`DIRECT` 与代理节点 socket 都经上行口离开；放行判据是 `meta mark 0x00001a0a accept`，因此核心既可连接节点，也可访问规则明确选择 DIRECT 的目标。
+4. 核心套用 profile，其 socket 由 `meta mark 0x00001a0a accept` 豁免。`proxyOnly=true` 时，在创建 TCP/UDP socket 前拒绝应用 DIRECT/COMPATIBLE 拨号，包括经代理组选中的 direct 叶子；显式解析/引导 metadata 保留豁免；按普通规则路由的 DNS 同样受到 DIRECT 拒绝。`proxyOnly=false` 时，profile 的 DIRECT 目标也会经上行口直接离开。
 5. `proxymode_drops` 在明确的 DNS/NTP、DHCP 和 root UDP 例外之后拒绝其它公网出站。root UDP 例外保留 Tailscale 打洞，实际匹配全部 root UDP，并不识别 tailscaled 进程；普通 root TCP 仍须携带核心 mark 或满足其它明确例外。
 
 ### 3.2 DNS
@@ -353,7 +398,7 @@ DNS 是并行的另一条链路（见 3.2）：`systemd-resolved` → `dnsmasq :
 * 模式 B 上游：`mihomo :1053`（fake-ip）。模式 A / blocked 上游：`unbound :1055`（DoT 到 360）。
 * 被拦截的名字由 `dnsmasq` 直接答复 NXDOMAIN，两种上游都不会被问到；之所以把列表放在这里而不放进某个模式的解析器，是因为 `:1054` 是唯一的共同入口——按模式过滤会让同一个名字在一种状态下被拦截、在另一种状态下照常解析，答案取决于当时走的是哪条路径。放在共同入口之后，模式 A、模式 B 与访客查询的结论一致，且 dnsmasq 按后缀匹配，子域不必逐条列出。数据不进 Git，存放在 `local-data/dns-blocklist.txt.xz`（由 `scripts/push-to-dir.sh` 一并复制到 `/etc/nixos`，flake 就在那里求值）（每行一个裸域名，由 `system/config/dns-blocklist.nix` 头部记录的上游清单合并去重而来），由该模块渲染成 `address=/.../` 行；`./scripts/refresh-dns-blocklist.py` 刷新数据与头部，`--check` 只报告漂移不写入，`scripts/push-to-dir.sh` 会把 `local-data/` 一并复制到 `/etc/nixos`，否则 flake 无法求值。构建时与运行时都不下载任何东西，因此构建用的就是审阅过的那份列表。本机特有的条目走 `my.proxy.blockedDomains`；而“被封域名内仍需放行的名字”放进 `my.proxy.blockedDomainExceptions`：每条渲染成 `server=/domain/#`，dnsmasq 会优先匹配这个更具体的域名，而 `#` 表示沿用标准服务器，因此例外名跟着当前模式装好的上游走。这是本机名字解析，不是内容过滤：自己直连 DoH/DoT 端点的客户端不在其内，下面那条 `:853` 规则才是收窄该路径的手段。
 * Unbound 过滤上游答案中的 LAN/CGNAT、访客、loopback、未指定、link-local、ULA 地址及对应的 IPv4-mapped IPv6 范围；显式 `local-data` 和窄范围 `private-domain` 仍可配置。防护覆盖模式 A 的 DoT 路径；批准的 split DNS 和有租约的门户明文后备直接经过 dnsmasq，不在此范围内。Mihomo 域名目标另有下述保护；浏览器独立 DoH 的答案不在 Unbound 的覆盖范围内。它还会在上游短暂失联时继续用缓存里“取回时已通过验证”的答案应答（`serve-expired`，回复 TTL 上限 30 s）最多 900 s，因此一次短故障不会仅凭自身把解析器推进明文窗口；这个上限同时把“过期副本已无法重新校验”的时段限制住；附加段中验证不通过的记录只被丢弃，不会让整条答案失败。
-* 一条挂在 `output` 钩子上、优先级 `-196` 的静态 base chain 丢弃除 root 与 Unbound 以外所有 UID 的 `:853`（TCP 与 UDP），应用无法另开一条 DNS-over-TLS/QUIC 通道绕过按模式的解析器策略。它刻意放在优先级 0 的那条链之前：sing-tun 的 auto-redirect 位于优先级 `-150`，会先把本机非 root 的 TCP 流量改写到它自己的环回监听上，再由以 root 运行的内核完成连接——放在优先级 0 就只会看到被改写后的目的地址。同一条链里放行 Unbound 到所配置上游的 DoT，模式运行期间的按进程豁免也会再放行一次，因此校验解析器在任何模式下都保有自己那条通道。DoH 走 `:443`，在该层面无法区分，是这条规则没有关闭的部分。
+* 一条挂在 `output` 钩子上、优先级 `-196` 的静态 base chain 丢弃除 root 与 Unbound 以外所有 UID 的 `:853`（TCP 与 UDP），应用无法另开一条 DNS-over-TLS/QUIC 通道绕过按模式的解析器策略。它刻意放在优先级 0 的那条链之前：sing-tun 的 auto-redirect 位于优先级 `-150`，会先把本机非 root 的 TCP 流量改写到它自己的环回监听上，再由以 root 运行的内核完成连接——放在优先级 0 就只会看到被改写后的目的地址。同一条链在 A/B 中放行 Unbound 到配置上游的 DoT；C 的更早 guard 会切断该外部通道，仅可能继续使用本地缓存答案。DoH 走 `:443`，在该层面无法区分，是这条规则没有关闭的部分。
 * Mihomo DNS 设置由 `my.proxy.managedDns` 提供：禁用额外的 `direct-nameserver` 与 `proxy-server-nameserver-policy` 解析器，固定 fake-IP filter mode 和 IPv6 fake-IP range。在 blacklist 模式下，`fake-ip-filter` 让匹配的域名返回真实地址，流量仍按 profile 路由规则处理。列表包含只在本地有意义的后缀（`*.lan`、`*.local`、`*.internal`、`*.corp`、`*.home` 等），让内网名字不进入 fake-IP。启用 TUN 时，模板、最终解析器/PATCH 策略和健康门共同固定 `tun.dns-mode: hijack`。
 * 静态 `lf_nat` 链把所有经上行口发出的 `:53`（v4 与 v6）重定向进 `dnsmasq`，因此门户/局域网/CGNAT 范围内硬编码的解析器不会明文出网。
 * 明文后备是**内核租约**而非协调器状态：`dns-policy` 把 DHCP 解析器写入 `inet lf_filter dns_plaintext4`，超时不超过剩余窗口；静态 `output` base chain（`lf_dns_guard`，优先级 `-199` → `dns_egress`）丢弃 `dnsmasq` 的其它上游查询。因此停止、杀死或卡住 `dns-upstream` 都不能让明文许可活过租约。split DNS 租约按接口与服务器匹配，截止不超过原始观测后 120 秒，并绑定批准的 UUID、ActiveConnection、ifindex、carrier-down 计数和撤销代次；dispatcher 在 pre-up/pre-down/down 撤销旧授权，broker 授权前重验连接。
@@ -377,11 +422,46 @@ dnsmasq 保留 root 启动、自行降权和 D-Bus 热加载流程，能力集�
 
 完整配置解析只将精确匹配的旧受管 DNS 值转换为当前 root 策略；`lf-private-targets` 与 TUN 排除列表始终取 root 策略的值——旧代缓存下来的配置不能阻止核心启动，profile 中的值也永远无法削弱实际生效的防护。排除列表取自策略还意味着策略不再列出的条目会被丢弃（多出来的排除会把流量移出隧道），因此旧配置会以恰好等于受管列表的内容启动，而不是被拒绝。其他配置漂移，以及运行期 PATCH 对策略的削弱，仍会被拒绝。
 
-受管 Mihomo 在路由/sniffing 后、TCP/UDP 出站前检查域名目标，复用 UDP 会话中的每个报文也会检查。它拒绝私网、loopback、link-local、未指定和组播答案，包括公私混合答案与 IPv4-mapped IPv6。运营商级 NAT 仍在该表内：Tailscale 对端走字面地址或已认证的 `*.ts.net` 后缀（两者都已豁免），因此没有合法拨号需要把域名解析进 `100.64.0.0/10`。重试一次后仍失败的解析不构成目标结论：连接继续并按自身路径解析，解析器抖动因此不会被误报为节点失效。DIRECT 和代理连接均固定到已检查的地址，防止远端再次解析。显式 IP 请求、核心内部基础设施和 `my.proxy.privateTargetDomains` 中明确的后缀（默认 `localhost`、`lan`、`local`、`home.arpa`）除外；当前已认证的 MagicDNS 后缀作为动态例外。公网域名目标因此在本地解析后再向代理拨号，会影响远端 DNS 行为，并遵循核心的 IPv4 优先选择。这是域名目标防护，不能作为通用 SSRF 边界，也不能约束不遵守请求目标的代理服务器。
+受管 Mihomo 在路由/sniffing 后、TCP/UDP 出站前检查域名目标，复用 UDP 会话中的每个报文也会检查。它拒绝私网、loopback、link-local、未指定和组播答案，包括公私混合答案与 IPv4-mapped IPv6。运营商级 NAT 仍在该表内：Tailscale 对端走字面地址或已认证的 `*.ts.net` 后缀（两者都已豁免），因此没有合法拨号需要把域名解析进 `100.64.0.0/10`。报错后重试一次仍失败、或没有返回地址时，连接会被拒绝，因为目标尚未通过验证。成功解析后固定到已检查的地址，不允许通过另一次未检查的解析来授权拨号。DIRECT 和代理连接均固定到已检查的地址，防止远端再次解析。显式 IP 请求、核心内部基础设施和 `my.proxy.privateTargetDomains` 中明确的后缀（默认 `localhost`、`lan`、`local`、`home.arpa`）除外；当前已认证的 MagicDNS 后缀作为动态例外。公网域名目标因此在本地解析后再向代理拨号，会影响远端 DNS 行为，并遵循核心的 IPv4 优先选择。这是域名目标防护，不能作为通用 SSRF 边界，也不能约束不遵守请求目标的代理服务器。
 
 Tailscale 声明 `accept-dns=false`、`accept-routes=false`，不宣告子网路由或 exit node 服务，不使用 exit node，并关闭 Tailscale SSH。`my.hardening.tailscale.magicDns` 默认 true：root helper 从运行中的守护进程读取当前 MagicDNS 后缀，仅将这个搜索/路由域交给 `tailscale0`，并设置 `DefaultRoute=no`。读取使用 5 秒期限；守护进程不可读或较慢不等于退出登录，此时保留上一次已认证路由，条件解析器因此不会来回抖动，例外文件也不会每分钟被删除多次。退出登录、切换 tailnet 或关闭 MagicDNS 才会撤销旧后缀，不接受接管公网 DNS 的 tailnet `~.` 路由。Mihomo 为 `ts.net` 返回真实 IP，并通过本地 Tailscale 解析器 DIRECT 条件解析，保证 GLOBAL profile 下仍能使用 Tailscale IP 路由；私网目标例外仍只限当前已认证的后缀。
 
 时间同步使用 Chrony 与仅启用 NTS 的源（`my.machine.ntsUpstreams`，默认 Cloudflare、Netnod），设置 `authselectmode require` 并保持证书时间检查。B 的防火墙例外将 UDP/123、TCP/4460 限定到 chrony UID；C 继续拒绝非核心出站，包括时间同步。认证失败会保持未同步，不改用普通 NTP。持久化的 `/var/lib/chrony` 与 `chronyd -s` 为重启后的 RTC/drift-file 时间下限提供支持；模块的 `rtcfile`/`rtcautotrim` 让该下限保持准确，因此偏差过大以致 NTS 证书无法验证时可以靠 RTC 恢复，而不是与 DNS 互相等待。本地命令端口保持开启，`chronyc sources` 与 `chronyc authdata` 可区分 NTS-KE 失败与源不可用。若时钟仍然偏差到 TLS 无法验证，需要管理员校正时间，配置不跳过证书时间检查，也不提供明文时间后备。
+
+域名目标校验也拒绝部分特殊用途地址，包括 benchmark、IPv4 保留段、IPv4-compatible IPv6 及部分转换前缀；well-known NAT64 按嵌入的 IPv4 目标继续判定，保留公开 PCP/TURN anycast 例外。这是有范围的特殊目标表，不是完整 IANA 分类。字面 IP 仍刻意豁免域名目标校验，包括代理可能在自身网络解释的私网/loopback 目标；proxyOnly 对应用 DIRECT 拨号的拒绝仍然生效。
+
+### 3.3 受管浏览器
+
+`my.browser.strictPrivacy` 默认 true，控制浏览器抗指纹、字体与扩展防护，与网络模式独立。Zen 与 Chrome 均固定使用随模式切换的 gost HTTP 监听（`127.0.0.1:33332`），浏览器自身不配置直连后备。A 按明确意图直通，B 转发到 mihomo 并采用所选分流策略，C 关闭应用路径。开机默认 A；浏览器隐私保护和 `proxyOnly` 都不会自动请求 B。
+
+菜单/MIME 入口调用 `browser-private zen` 或 `browser-private chrome`，使用独立 profile。受管桌面入口同时安装到用户应用目录，优先于 Flatpak 导出入口，不依赖 `XDG_DATA_DIRS` 的排列顺序。A 中启动不要求公网 DNS 或代理就绪：有线、Wi-Fi 尚未通过认证时，仍可经中继访问 `http://192.168.1.1/` 门户。保留门户检测与 NetworkManager 连通性检查；Zen 使用 HTTPS-First，并关闭本地地址的强制升级，允许 HTTP 网关登录。B 中启动要求 proxy/DNS/relay/规则验证状态新鲜且属于同一策略代次，并通过 `health.py --fast` 实时检查核心身份及受管策略。两种模式都要求已安装的浏览器策略与当前 Nix 代一致，并在实际 Flatpak 沙箱中检查策略可见性；严格隐私下还检查 Fontconfig 内容、FONTCONFIG_FILE 和字体路径，不临时注入覆盖或文件系统。预检后再读状态，拒绝期间发生的模式/代次切换。C 和未知状态拒绝启动。启动后由固定中继与内核 guard 执行模式变化；启动器不持续监控每个连接。
+
+Zen 默认优先 DoH，允许受管系统解析器后备；显式设置 `my.browser.zen.dohOnly=true` 才取消后备。Chrome 使用 automatic DoH。浏览器 DoH 不继承 dnsmasq 黑名单、Unbound 本地 DNSSEC 验证或批准的 split DNS。HTTP 代理可能将目标解析交给代理，DoH/ECH 参数本身不能证明目标 HTTPS 记录发现或 ECH 握手。ECH 还需要源站支持、可用 ECHConfig 及实际浏览器/传输路径支持；启用 ECH/GREASE 不隐藏目的 IP，也不隐藏代理请求中携带的目标名称。
+
+Zen 通过 Flatpak systemconfig 扩展读取企业策略。支持的 Preferences 显式指定类型并锁定，其他 Gecko 参数在独立 profile 的生成 `user.js` 中下发。启用严格隐私时，该 profile 启用 RFP 与 letterboxing、限制字体可见性，关闭 WebRTC、WebGL、WebGPU 与定位。`user.js` 在启动时恢复参数，但不是运行时锁。默认扩展仅 uBlock Origin；严格策略拒绝其他扩展，除非显式声明。宿主 profile 为 `~/.var/app/app.zen_browser.zen/.zen/netsec-private`，在 Flatpak 内映射到 `~/.zen/netsec-private`。显式 profile 路径用于限定 Gecko 的远程转发目标，后续通过预检的启动可把链接交给该 profile 的现有窗口。策略/偏好变化仍需完整重启浏览器；当前文件通过检查不代表已有进程刷新了内存中的配置。
+
+Chrome 经其 Flatpak host-etc 启动器读取受管策略，使用独立的 `~/.var/app/com.google.Chrome/config/netsec-private` 数据目录。策略限制非代理 WebRTC UDP、Local Font Access、第三方 cookie、后台运行、登录/同步及扩展。Chrome 没有与 Zen RFP/letterboxing 等价的合同，Local Font Access 策略本身也不能阻止 CSS 字体推断。
+
+严格隐私下，Fontconfig 限定到运行时/应用字体及固定 Noto CJK 包，不使用宿主个人字体目录，在保留中文覆盖的同时约束字体发现范围；这不使不同浏览器的绘制结果完全一致。严格 Flatpak 覆盖使用 Wayland，关闭 X11/fallback-X11、CUPS、PC/SC socket，将全部设备访问替换为 DRI。`browser-policy-install.service` 随生成文件变化安装扩展实文件，并每五分钟协调一次；Chrome 的 host-etc Fontconfig 使用真实文件副本，不依赖沙箱中的 /etc/static。策略和启动参数变化需要完整重启浏览器才能被消费，不自动导入其他 profile 的书签、账号或站点数据。
+
+直接调用 Flatpak 可以绕过启动器的 profile 选择和预检，系统企业策略仍然适用；同 UID 进程仍可更改用户 profile 与用户级 Flatpak 覆盖。这些设置和代理都不提供对账号关联、出口 IP 信誉、协议分类或流量时序的匿名保证。`strictPrivacy=false` 放宽抗指纹、字体与扩展限制，受管中继、独立 profile 启动入口和显式网络模式控制继续保留。
+
+可用 `browser-private zen --check` 或 `browser-private chrome --check` 仅执行预检，不打开浏览器或创建 profile。Zen 扩展丢失/过期时，可用 `sudo systemctl restart browser-policy-install.service` 恢复；周期协调也会恢复受管内容。
+
+### 3.4 可选的统一代理
+
+在 NixOS 配置中声明所需策略：
+
+```nix
+my.proxy.proxyOnly = false; # 默认：Rule 分流、国内 DIRECT、已知探针代理覆盖。
+# my.proxy.proxyOnly = true; # 可选：统一使用订阅最终 MATCH 的代理策略。
+```
+
+设为 `false` 时保留订阅 Rule 分流；增强脚本在规则前追加 `probeDomains`、健康目标与部分下载域名的 `DOMAIN-SUFFIX` 代理规则，防止其他网站嵌入的已知 IP 回显资源走 DIRECT，同时保留国内直连。名单外或自建探针仍可能命中 DIRECT 并观察真实出口；名单提供定点防护，不能覆盖所有探针。
+
+设为 `true` 时，生成的 profile 将进入核心的应用目标统一交给订阅最终 MATCH 的代理策略，覆盖地域/进程分流及 profile REJECT 规则，要求存在可用代理 catch-all，也会增加订阅流量，包括国内流量。root 拥有的核心策略在 TCP/UDP 拨号前拒绝应用 DIRECT/COMPATIBLE，包括改名的适配器和代理组内选中的 direct 叶子；GUI 改选无法授权这些直连。核心嗅探同时关闭，避免将掩护 SNI 用作替换拨号目标。按普通规则选到 DIRECT/COMPATIBLE 的 DNS 也会被拒绝；显式引导/节点解析 DNS 和 #DIRECT MagicDNS 仍豁免。防火墙基础设施、多播及核心之外的宿主私网路径仍各有边界。这比 GUI 选 Global 多了一层核心应用直连拒绝。
+
+该开关改变生成的 profile 与受管核心策略；部署 Nix 配置并重载受管 profile/核心后生效。它不改变 `bootMode="direct"`，不自动开启 B，也不取消 A 中门户、DHCP 和 Wi-Fi 通道；网络意图仍用现有 A/B 控制选择。
 
 ## 4. 模式
 
@@ -415,11 +495,11 @@ Tailscale 声明 `accept-dns=false`、`accept-routes=false`，不宣告子网路
 
 GUI 启动器保留 `clash-on`/`clash-off` 识别的公开进程名 `clash-verge`。启动当前包前会等待同一用户的旧 GUI 实例退出，避免旧单例继续保留先前的核心路径；当前包中已经运行的 GUI 会被保留。
 
-模式 C 中核心**不被**阻断：它保留出站，以便恢复节点或从 GUI 经 loopback 重配。代价是 mihomo 自己判为 `DIRECT` 的流量（国内域名，或 profile 的 DIRECT 兜底）仍会离开。
+模式 C 中打标核心保留出站，用于恢复与自身引导。普通用户无法访问面向应用的代理端口；root 恢复/自测可以访问，且开启 proxyOnly 时仍拒绝 DIRECT。Unbound 的外部 DoT 通道被切断，仅可能继续使用本地 DNS 缓存。
 
 ### 4.2 启动基线、静态恢复与访客路径
 
-`network-firewall-bootstrap.service` 在物理网络启动前装入 `inet lf_bootstrap`：入站与转发默认拒绝，放行 loopback、已建立的入站连接、DHCP 与必要 ICMPv6。NetworkManager 和 dhcpcd 都要求该单元成功。完整静态规则与模式片段提交成功时，才在同一事务中删除 bootstrap 表；因此首次加载失败仍保留入站保护，同时不改变正常冷启动进入模式 A 的合同。`my.proxy.bootMode = "proxy"` 可在同一早期事务里（仍早于物理网络）写入代理意图并直接装入模式 C；默认 `direct` 保持 A 的合同。
+`network-firewall-bootstrap.service` 在物理网络启动前装入 `inet lf_bootstrap`：入站与转发默认拒绝，放行 loopback、已建立的入站连接、DHCP 与必要 ICMPv6。NetworkManager 和 dhcpcd 都要求该单元成功。完整静态规则与模式片段提交成功时，才在同一事务中删除 bootstrap 表；因此首次加载失败仍保留入站保护，开机意图另行决定 A 或 C。`my.proxy.bootMode = "proxy"` 可在同一早期事务里（仍早于物理网络）写入代理意图并直接装入模式 C；默认 `direct`（A），不受浏览器隐私与 `proxyOnly` 影响；显式选择 `proxy` 才会在核心就绪前保持 C。
 
 监督器分别比较静态基线与当前模式片段。静态漂移会在已有共享锁内调用完整 loader：直连会话装入 A，代理或恢复会话装入 C，再重新通过健康门进入 B。完整修复失败按 30 秒限频并发布 `unenforced`；后置校验失败不能继续标记为 `proxy`。这一状态表示无法确认保护已安装，状态发布本身不能代替缺失的内核规则。
 
@@ -476,6 +556,7 @@ libvirt/Waydroid 访客 input 在通用 conntrack accept 前经过 `lf_guest_hos
 ### 6.1 配置检查
 
 ```sh
+nix build .#checks.x86_64-linux.browser-privacy
 nix build .#checks.x86_64-linux.proxy-regressions
 nix build .#checks.x86_64-linux.proxy-rules
 nix build .#checks.x86_64-linux.proxy-profile
@@ -486,11 +567,11 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 
 这些检查在隔离环境中验证生成的规则、配置分支、核心策略与网络行为，不激活宿主配置。完整系统构建需要准备[本地应用资源](overlays/local-apps/README.md)。
 
-监督器与审计器共用 `netsec/tun.py`：在有界期限内读取设备、双栈规则/路由表，以及 root 和桌面 UID 的未打标 IPv6 实际选路。即使 TUN 表仍存在，只要选路偏向上行口，监督器也会通过既有决策/原子提交路径进入模式 C。受管 TUN 同时固定规则优先级 9000、内部 mark 8227/8228、fallback 优先级 32768 与 file-descriptor 0；最终解析、PATCH、模板和健康视图共用这些值。RawTun schema 覆盖测试要求为上游新增字段作出显式分类。
+监督器与校验器共用 `netsec/tun.py`：在有界期限内读取设备、双栈规则/路由表，以及 root 和桌面 UID 的未打标 IPv6 实际选路。即使 TUN 表仍存在，只要选路偏向上行口，监督器也会通过既有决策/原子提交路径进入模式 C。受管 TUN 同时固定规则优先级 9000、内部 mark 8227/8228、fallback 优先级 32768 与 file-descriptor 0；最终解析、PATCH、模板和健康视图共用这些值。RawTun schema 覆盖测试要求为上游新增字段作出显式分类。
 
 健康门按完整已知名称还原本次日志中的 `group[leaf]`，并检查该实际叶子仍与当前图一致。随后读取的 `now` 不能覆盖已记录的 DIRECT；LoadBalance 按连接叶子验证，不要求 `now`。受管核心在 global 模式也记录实际链。名称有歧义或选择发生变化时，本轮观测失效。
 
-审计结果携带 CLOCK_BOOTTIME 时间戳与 boot ID，就绪判断同时检查时效、同启动与同策略代次。`my.proxy.verificationMaxAgeSeconds` 默认 420 秒，独立于消费者心跳的 120 秒上限，为审计的 300 秒周期、30 秒调度精度和有界 60 秒执行留出空间。缺失、未来或其它启动的校验结果不视为就绪。
+校验结果携带 CLOCK_BOOTTIME 时间戳与 boot ID，就绪判断同时检查时效、同启动与同策略代次。`my.proxy.verificationMaxAgeSeconds` 默认 420 秒，独立于消费者心跳的 120 秒上限，为校验的 300 秒周期、30 秒调度精度和有界 60 秒执行留出空间。缺失、未来或其它启动的校验结果不视为就绪。
 
 ## 7. 配置面
 
@@ -506,12 +587,14 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 * `my.proxy.tunIpv6Address`（默认 `fdfe:dcba:9876::1/126`）——显式 TUN IPv6 地址。双栈 TUN 下 helper 向核心子进程传递 `SKIP_SYSTEM_IPV6_CHECK=1`，让预期结构不依赖启动瞬间的上行 IPv6 状态，IPv6 FIB/路由校验仍然严格。
 * `my.proxy.guestInterfaces` 与 `transparentGuestInterfaces`——转发访客入口（VM/容器网桥，仅在开启热点时加入独立 AP 接口）及其显式启用的 IPv4 TPROXY 子集，后者默认空。
 * `my.hardening.guestTcpPorts`/`guestUdpPorts`——`guestHostServices` 开启时 libvirt 访客可访问的显式桌面服务；DHCP/DNS 基础设施不受该开关影响。
-* `my.proxy.bootMode`（默认 `direct`，可选 `proxy`）——可选的 fail-closed 开机意图，随物理网络前的基线一起安装。
+* `my.proxy.bootMode`（默认 `direct`）——随物理网络前基线安装的开机意图；可显式选择 `proxy`，在 B 就绪前保持 C。浏览器隐私与 `proxyOnly` 不改变此选项。
 * `my.proxy.stateMaxAgeSeconds`（默认 120）——`proxy-control status`/`wait` 与 `proxy-status` 使用的观测新鲜度上限。
 * `my.proxy.splitDnsProfileUuids`（默认空）与 `plaintextBootBudgetSeconds`（默认 null）——split DNS profile 例外与额外的本次开机明文总截止。被批准的 profile 会生成 dnsmasq `server=/domain/server@interface` 与绑定连接的接口/服务器租约（不支持公网上游）；resolved 自身仍走受管解析器。
 * `proxy-inspect`——只读输出接口/队列/offload/qdisc、softirq、服务 CPU/RSS 与当前状态 JSON，不发测试流量，不修改调优参数。
 * `my.hardening.allowPrivateEgress`（默认 true）——在 B 中保留 `privateV4`/ULA/link-local 直达；`false` 会把宿主私网流量也置于代理策略约束下（影响 tailnet 与门户）。`my.hardening.guestHostServices`（默认 false）开启显式配置的 VM→宿主服务端口，两组端口列表默认为空。resolved 不提供通配 DNS 监听，访客网关 DNS 独立保留。
-* `my.browser.zen.dohOnly`（默认 false）——浏览器严格 DoH-only；`false` 保持 DoH 优先、以受管解析器为后备。
+* `my.browser.strictPrivacy`（默认 true）——抗指纹、字体与扩展防护，与 A/B/C 和 `proxyOnly` 独立（见 3.3）。
+* `my.proxy.proxyOnly`（默认 false）——可选的统一代理与核心 DIRECT/COMPATIBLE 拒绝；false 保留 Rule 分流及已知探针代理覆盖（见 3.4）。
+* `my.browser.zen.dohOnly`（默认 false）——true 时仅用 DoH；false 允许受管系统解析器后备，保留离线/门户场景的解析通道。
 * `my.machine`——接口名、端口（`mihomoDns`/`dnsmasq`/`unbound`/`gostHttp`/`gostRedirect`/`mihomoMixed`/`mihomoTproxy`/`dot`/`ntp`）、uid、`mihomoMark`，以及本地地址段（`privateV4`、`multicastV4`、`ulaV6`、`linkLocalV6`、`multicastV6`、`limitedBroadcastV4`）。
 * Clash 内核与其 Merge 模板配置在 `home/config/cvr-merge.nix`（TUN 栈、`dns-hijack`、`route-exclude-address`、`routing-mark`、fake-ip DNS 与过滤器、sniffer、`respect-rules`）。
 
@@ -519,6 +602,8 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 
 | 文件 | 职责 |
 |---|---|
+| `system/programs/browser-options.nix`、`browser-policies.nix`、`browser-guard.py` | 浏览器策略、严格 profile 与启动前提 |
+| `home/config/browser.nix` | 受管浏览器的桌面/MIME 入口 |
 | `system/config/machine.nix` | 接口/uid/端口/mark/TUN/可调项的单点定义 |
 | `system/config/proxy-options.nix` | `my.proxy.tunMode`、`tunDev`、`fakeIpRange`、`fakeIpNet`、`routeTable`、`nodeProbeUrls` |
 | `system/config/network.nix` | nftables ruleset、`proxyModeRules`、`blockedModeRules`、`redirect_guard`、`:53` 重定向、env 代理变量、`dnsmasq`/`unbound`/`resolved`、NM dispatcher、dhcpcd hook |
@@ -533,6 +618,7 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 | `system/programs/systemd/netsec/state.py` | `proxy-control` 与 `proxy-status` 共用的就绪/新鲜度检查 |
 | `system/programs/systemd/netsec/alerts.py` | 按 owner 的告警文件与聚合标记 |
 | `system/programs/systemd/netsec/managed_profile*.go`、`managed_route.go`、`patch_mihomo.py` | 在最终解析器与控制口 PATCH 处强制受管核心配置（监听、隧道、DNS、TUN 路由字段），随固定版本 mihomo 构建打入 |
+| `system/programs/systemd/netsec/target_guard.go` | 域名目标验证及核心 TCP/UDP 出站前的严格应用 DIRECT 拒绝 |
 | `system/programs/systemd/netsec/patch_sing_tun.py`、`patch_socks.py`、`socks_addr_test.go` | nftables interval 端点、TUN 本机 OUTPUT DNAT、SOCKS 地址解析与边界测试 |
 | `system/programs/systemd/gost-relay.nix`、`netsec/patch_gost.py`、`netsec/gost_http*.go` | CONNECT 解析补丁与 gost 监听生命周期（proxy / closed / 直通） |
 | `system/programs/systemd/nftables-verify.nix` | 预期 JSON 校验、结果文件、定时器、可选修复 |
@@ -557,19 +643,21 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 
 ## 9. 限制与取舍
 
+* B 允许核心之外的 IPv4/IPv6 多播；proxyOnly 约束核心拨号，不会将这些包装进代理。bootstrap 与完整入站规则在 conntrack 放行前执行共享 NDP 校验：RA 要求 link-local 源，RS 允许 link-local/未指定源。这些检查不能认证同链路路由器；RA Guard/802.1X 或显式 IPv6 配置属于独立的网络信任选择。
+
 * `:33333` 重定向是 TUN 未承载的 TCP（绑定源/设备的套接字、以及手工 flush 之后的流量）的唯一路径；`gost` 是这些流的单点故障，且到达它的流会被改源为 `127.0.0.1`，因此按来源匹配的 profile 规则不适用。显式 `connect()` 到 `:33333` 会被静态的 `redirect_guard` base chain（优先级 `-201`，在 NAT 之前）回以 TCP RST，因此不再能诱发 gost 自循环；supervisor 的自连套接字检测保留为后备。真正被透明重定向的流在 guard 求值时仍携带真实目的地址，因而不受影响。
 * 模式 B 的专门 DNS/NTP 例外放行 `unbound`（DoT，tcp/853）与 `chronyd`（NTP udp/123 与 NTS-KE tcp/4460），核心 mark 和 root UDP 例外也适用；普通应用的明文解析器查询被重定向进 `dnsmasq`。模式 A 仅在有预算的明文窗口内加入 DHCP 解析器；链路未提供时使用 `my.machine.dotTransportFallback`（见 3.2）。
 * 断网时的自救顺序：先在运行中的系统上按 Ctrl+Alt+F3，`cat /var/lib/dns-upstream/history.log` 与 `/run/dns-upstream/state.json` 会指出失败层（`local` 判定还是 `transport`），`touch /run/dns-upstream/force-plaintext` 可在读日志期间维持明文 DNS。要离开某一代就重启并在菜单里选旧条目——systemd-boot 保留 8 代，因为它把每代的 kernel/initrd 复制到 1 GiB 的 ESP 上。若想要的代已经滑出该窗口，只要 `nix.gc` 还留着它的 store 路径（`ls -l /nix/var/nix/profiles/system-*-link` 可查映射），就能离线救回：`nix-env -p /nix/var/nix/profiles/system --set /nix/store/<nixos-system-…>` 会基于它创建新的一代，随后 `/nix/var/nix/profiles/system/bin/switch-to-configuration boot` 写入菜单条目并设为默认。若一代都起不来，用 NixOS ISO 启动、解锁 LUKS 根分区、把它与 ESP 分别挂到 `/mnt` 和 `/mnt/boot`，在 `nixos-enter --root /mnt` 里执行同样两条命令。
 * 断网保护按 mark 豁免核心，不对 uid 0 整体放行；DHCP 例外固定到 uid 0/`dhcpcd`。模式 B 在上行口放行**全部 root UDP**，保留 Tailscale 任意对端/STUN 端口的打洞，其它 root UDP 也会放行。这是模式 B 的兼容取舍，不构成 root 边界，root 本就可以设置核心 mark。模式 C 切断未打标的 tailnet 数据。
-* 模式 C 保留核心存活，因此 mihomo 自身判为 `DIRECT` 的流量仍会离开；loopback 保留供本机 IPC 使用，但面向应用的代理端口（`7897`/`33332`/`33333`）对非 root 的 TCP 与 UDP 都被拒绝，另有一项 hoplimit 255 的 ICMPv6 邻居发现例外维持链路维护而不开放数据通道。访客 DHCP/DNS 应答按网桥、网关源地址与端口（`67`/`53`）放行，不按 uid：特权端口守护进程会降权，accept 出来的 TCP socket 携带降权后的 uid。guard 是在 mihomo 重定向之前求值的 base chain，因此对本机产生的 TCP 同样成立。
+* 模式 C 保留打标核心用于恢复与内部引导；仅特权恢复/自测可使用面向应用的代理端口，DIRECT 出站另须 `proxyOnly=false`。Unbound 的外部 DoT 通道被切断；loopback 保留供本机 IPC 使用，但面向应用的代理端口（`7897`/`33332`/`33333`）对非 root 的 TCP 与 UDP 都被拒绝，另有一项 hoplimit 255 的 ICMPv6 邻居发现例外维持链路维护而不开放数据通道。访客 DHCP/DNS 应答按网桥、网关源地址与端口（`67`/`53`）放行，不按 uid：特权端口守护进程会降权，accept 出来的 TCP socket 携带降权后的 uid。guard 是在 mihomo 重定向之前求值的 base chain，因此对本机产生的 TCP 同样成立。
 * 健康检查由 `health_ok` 调用 `netsec/health.py`：每个目标提供独立的 HTTP/日志/所选叶子证明，策略名精确解析，成功的 HTTP 请求直接证明日志记录的叶子节点；监督器不调用会更新节点存活状态/历史、可能影响自动选择的 delay API。DIRECT/REJECT 属于路由失败，不能换无关健康节点充数。全部目标默认共享 12 秒截止；探针运行在可取消的进程组中，监督器期间复查核心/TUN/配置。`config`/`route`/`tun` 失败立即切断；HTTP/日志/选择证明失败归为 `obs`，需连续两轮失败，首次失败后按 2 秒最短间隔安排下一轮，事件取消不消耗观测次数。轮询睡眠最多 5 秒，不代表端到端保护/恢复时延；分层耗时在 `health.json`，实际时延取决于故障及事件来源。透明 TCP 探针会向 fake-IP 发真实 HTTP 请求并校验精确源端口的路由日志；它不单独证明 TUN 设备的全部 UDP/IPv6 数据路径。guard 对 root 到 fake-IP 只放行 53/80/443，不要求特定出口接口，由共享选路检查和精确源端口的核心日志证明实际路径。在当前受管的非 mark auto-redirect 模式下，补丁将 TUN 路由 TCP 的 OUTPUT 目的 DNAT 到 TUN 本机地址，保留 SO_BINDTODEVICE 约束，`route_localnet` 仍为 0。TUN 地址发往 fake-IP 的 root TCP 应答须有 conntrack reply/dnat，且原目的为 fake-IP 的 80/443；guard 因此位于 conntrack 之后、NAT 之前。loopback 源例外保留供 PREROUTING redirect 路径使用。B 模式同样在 gost 重定向前放行所有 fake-IP 目的地址。若重定向或回包路径缺失，探针超时并保持 Mode C。
 * TCP/UDP DNS 与 mixed 监听须符合预期地址、UID 和服务 cgroup；健康门、协调器、校验器和中继共用被动身份检查。gost 各端口也须恰好一个合法监听者。身份失败属于 config 层失败，不能只凭 DNS 能应答放行。“Clash 在运行”要求核心，而非仅 GUI。
-* mihomo 控制 socket 为 mode 0777、无 secret，但祖先 `/run/user/<uid>` 是 0700：桌面同 UID 进程可重配 root 核心，并非所有本机 UID 都能访问。模式/mark/端口/TUN 不变量被检查并记录指纹，规则、geodata 与全部 DIRECT 决策不在指纹范围内；profile 重载仍可能保留全部抽样健康门，同时使其它流量以真实地址离开。root 核心读取用户所有的配置与数据库，helper socket 限定到 `clash-verge-control` 组；GUI 同 UID 信任仍属桌面架构取舍。监督器/loader 已收窄 capability，设计不隔离已失陷的 root 核心。
+* mihomo 控制 socket 为 mode 0777、无 secret，但祖先 `/run/user/<uid>` 是 0700：桌面同 UID 进程可重配 root 核心，并非所有本机 UID 都能访问。模式/mark/端口/TUN 不变量被检查并记录指纹，规则与 geodata 不在指纹范围内；`proxyOnly=false` 时，profile 重载仍可能保留全部抽样健康门，同时使其它流量以真实地址离开。启用时，root 拥有的策略还覆盖核心的应用 DIRECT 拒绝。root 核心读取用户所有的配置与数据库，helper socket 限定到 `clash-verge-control` 组；GUI 同 UID 信任仍属桌面架构取舍。监督器/loader 已收窄 capability，设计不隔离已失陷的 root 核心。
 * 受管配置白名单在最终 profile 解析和控制口 PATCH 入口检查。PATCH 拒绝重复键和 schema 字段的非规范名称，校验与应用使用同一次解码的上游 schema。这是对固定版本 mihomo 源码的小补丁（`managed_profile.go`、`managed_route.go`、`patch_mihomo.py`）。上游锚点变化会让包构建失败，而不是悄悄丢掉检查；每次升级 mihomo 都要复核。`unbound` 则是对 nixpkgs `unbound-with-systemd` 的源码覆盖，必须保留 `--enable-systemd`，因为 NixOS 模块使用 `Type=notify`，换成普通 unbound 构建会让启动 job 挂到超时。
 * `systemctl stop nftables.service` 不会移除防火墙：该 unit 没有拆除动作，规则保持装载。要重新装载或校正，用 `sudo systemctl restart nftables.service`（或 `reload`），它会重跑 scope loader —— 绝不要 `nft flush ruleset`，它还会毁掉 mihomo 自己的表与 TUN 路由，只有重启 TUN 才能重建。
 * 模式 A 需要停掉核心，而非只关窗口：service mode 下常驻的 `clash-verge.service` helper 托管核心，因此用 `clash-off`/`clash-on`。只有这两条会表达意图——从 GUI 起停核心不会：所以 `clash-off`（直连意图）之后用 GUI 起核心仍停在模式 C，直到再 `clash-on`；`clash-on` 之后用 GUI 停核心（或崩溃）也停在模式 C，直到 `clash-off`。这是 fail-closed 行为，不是 bug。
 * 转发访客/虚拟机流量不带宿主 uid，遵循 4.2 的 pre-NAT/forward 合同。默认不代理，IPv4 TPROXY 须显式指定子集；切入 C 后已有连接也须通过提前拦截。转成宿主 socket 的 rootless 传输须另按宿主路径验证。
-* 3.2 中模式 A 的明文预算是按占用计费的池子：明文每秒扣一秒、健康加密链路每秒回充一秒，恢复不再重置。加密上游抖动时 DNS 能在已积累的额度内继续工作，而不是第一次失败就断网，也不会因为反复恢复而获得无限额度。DHCP 参数变化不刷新额度，实际重连建立新会话，但可选的开机总截止仍然有效。`force-plaintext` 存在期间持续显式覆盖预算。模式 B 在 `allowPrivateEgress=true` 时按设计直达私网/CGNAT（含 `100.64.0.0/10`），私网地址不代表可信。无代理意图且从未见核心的冷启动以 A 开始，监督器不能追溯保护提出代理请求之前已发出的流量。
+* 3.2 中模式 A 的明文预算是按占用计费的池子：明文每秒扣一秒、健康加密链路每秒回充一秒，恢复不再重置。加密上游抖动时 DNS 能在已积累的额度内继续工作，而不是第一次失败就断网，也不会因为反复恢复而获得无限额度。DHCP 参数变化不刷新额度，实际重连建立新会话，但可选的开机总截止仍然有效。`force-plaintext` 存在期间持续显式覆盖预算。模式 B 在 `allowPrivateEgress=true` 时按设计直达私网/CGNAT（含 `100.64.0.0/10`），私网地址不代表可信。`bootMode=direct` 时，无代理意图且从未见核心的冷启动以 A 开始，监督器不能追溯保护提出代理请求之前已发出的流量。
 * `allowPrivateEgress` 与 `guestHostServices` 分别控制私网出站和访客桌面服务权限。旧的通配 `externalDns` 选项已移除；LAN/tailnet DNS 需要独立设计监听、客户端 ACL 与答案路由，模块对旧选项明确报错，不再静默暴露 stub。
 * TUN 路由规则优先级与内部 mark 由系统统一管理。profile 中可省略相应字段，或填写 `0` 使用系统默认值；显式指定其它值时须与系统配置一致。
 * 通过本地 HTTP 代理访问 IPv6 目标时，使用标准的 `[IPv6]:port` 地址格式。Gost 中继也兼容部分客户端发送的带合法端口的裸 IPv6 CONNECT 地址。

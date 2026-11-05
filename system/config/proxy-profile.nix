@@ -79,6 +79,7 @@ in
     readOnly = true;
     default = {
       lf-private-targets = {
+        proxy-only = p.proxyOnly;
         prefixes = privateAddresses.ipv4 ++ privateAddresses.ipv6;
         allowed-domains = p.privateTargetDomains;
         magic-dns-suffix-file = if config.my.hardening.tailscale.magicDns then "/run/netsec-tailnet/domain" else "";
@@ -104,6 +105,9 @@ in
       "tun.enable" = p.tunMode;
       "tun.file-descriptor" = 0;
       "dns.fallback" = [ ];
+    } // lib.optionalAttrs p.proxyOnly {
+      # ECH's outer SNI is a cover name, not a replacement dial target.
+      "sniffer.enable" = false;
     } // lib.mapAttrs' (key: value: lib.nameValuePair "dns.${key}" value) p.managedDns
       // lib.genAttrs (map (key: "tun.${key}") emptyTunFields) (_: [ ])
       // lib.optionalAttrs p.tunMode (lib.mapAttrs' (key: value:

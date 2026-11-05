@@ -165,6 +165,10 @@ func lfManagedProfileDefaults(raw *RawConfig) error {
 		// PATCH (ValidateManagedPatch) stays strict.
 		raw.LFPrivateTargets = value
 	}
+	if enabled, ok := policy["sniffer.enable"].(bool); ok {
+		// The strict system policy owns sniffing, including cached profiles.
+		raw.Sniffer.Enable = enabled
+	}
 	if err := lfUpgradeMagicDNS(raw, policy); err != nil {
 		return err
 	}

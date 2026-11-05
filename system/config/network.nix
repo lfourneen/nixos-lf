@@ -829,6 +829,7 @@ in
           type filter hook input priority 0; policy drop;
 
           ct state invalid drop
+          ${import ./ndp-validation.nix}
           iif lo accept
           # Clash Verge TUN device: replies only. The core writes arbitrary
           # bytes into this device, and every host-service accept below is
@@ -874,15 +875,9 @@ in
           iifname "tailscale0" tcp dport { ${tailnetTcp} } accept
           iifname "tailscale0" udp dport { ${tailnetUdp} } accept
 
-          # ICMPv6 essentials before the public-IPv6 drop. Neighbour discovery
-          # is on-link protocol traffic: RFC 4861 fixes its hop limit at 255,
-          # which a routed packet cannot keep, so that test is what rejects a
-          # spoofed off-link NA/RA. A router advert must also come from a
-          # link-local source. A neighbour advert for a global address carries
-          # that global address as its source, so the type is not restricted
-          # to link-local sources or the reply never resolves the neighbour.
-          meta l4proto icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } ip6 hoplimit != 255 drop
-          meta l4proto icmpv6 icmpv6 type { nd-router-solicit, nd-router-advert } ip6 saddr != { fe80::/10, ::/128 } drop
+          # Validation runs before conntrack accepts, using the same rules as
+          # the bootstrap. Link-local RA sources differ from NS/NA sources,
+          # which may be global addresses during neighbour discovery.
           meta l4proto icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept
           meta l4proto icmpv6 icmpv6 type { packet-too-big, echo-request, destination-unreachable, time-exceeded } accept
 
@@ -949,7 +944,7 @@ in
         chain proxymode_forward { }
         chain proxymode_drops { }
         chain proxymode_tail { }
-        # Mode-C guard: a base chain on the `output` hook at priority -200, i.e.
+        # Mode-C guard: a base chain on the `output` hook at priority -197, i.e.
         # evaluated BEFORE mihomo's own nat/output auto-redirect (priority -150).
         # It must run before the redirect, or a locally generated non-root TCP
         # flow is rewritten to 127.0.0.1:<redirect-inbound> before the guard sees
@@ -992,7 +987,7 @@ in
           type filter hook output priority 0; policy accept;
 
           # The Mode-C guard is a separate base chain on this same hook at
-          # priority -200 (declared above), so it is evaluated before every
+          # priority -197 (declared above), so it is evaluated before every
           # accept here AND before mihomo's nat/output redirect. It is empty
           # outside `blocked`, so it is a no-op the rest of the time.
 

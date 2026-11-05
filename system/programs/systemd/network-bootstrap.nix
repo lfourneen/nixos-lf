@@ -9,6 +9,7 @@ let
         type filter hook input priority -10; policy drop;
         iifname "lo" accept
         ct state invalid drop
+        ${import ../../config/ndp-validation.nix}
         ct state established,related accept
         iifname { "${m.wired.name}", "${m.wireless.name}" } udp sport 67 udp dport 68 accept
         iifname { "${m.wired.name}", "${m.wireless.name}" } udp sport 547 udp dport 546 accept

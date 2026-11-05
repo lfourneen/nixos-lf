@@ -26,8 +26,9 @@ let
   # key), so it must stay complete on its own.
   fakeIpFilter = osConfig.my.proxy.managedDns.fake-ip-filter;
 
-  # IP-check / leak-test endpoints that must not egress DIRECT (a CN probe then
-  # reports the real home IP as a "backup exit"). Suffixes cover subdomains.
+  # Known IP-echo resources can be embedded by ordinary websites. In split
+  # routing these destinations must use the proxy even when GEOIP would select
+  # DIRECT. Uniform proxyOnly routing also covers destinations outside the list.
   probeDomains = [
     "ip.cn" "ip138.com" "cip.cc" "ipip.net" "ip.sb" "ipw.cn" "ip125.com"
     "ip111.cn" "ip.3322.net" "ip.skk.moe" "ping0.cc" "ippure.com"
@@ -193,7 +194,7 @@ in
       # the sniffed name in sync with the fake-ip mapping so DOMAIN/GEOSITE rules
       # match TUN traffic.
       sniffer:
-        enable: true
+        enable: ${lib.boolToString (!osConfig.my.proxy.proxyOnly)}
         force-dns-mapping: true
         parse-pure-ip: true
         override-destination: true
@@ -228,6 +229,7 @@ in
       // Managed by home/config/cvr-merge.nix -- do not edit in the GUI.
       const FORCED_PROXY_DOMAINS = ${forcedProxyDomainsJs};
       const DELAY_TEST_URL = ${builtins.toJSON osConfig.my.proxy.delayTestUrl};
+      const PROXY_ONLY = ${lib.boolToString osConfig.my.proxy.proxyOnly};
 
       function httpsHealthChecks(config) {
         const insecure = url => url == null || url === "" ||
@@ -274,6 +276,16 @@ in
         const rules = config && config.rules;
         if (Array.isArray(rules) && rules.length) {
           const policy = catchAllPolicy(rules);
+          if (PROXY_ONLY) {
+            if (!policy || ["DIRECT", "COMPATIBLE", "REJECT", "REJECT-DROP", "PASS"].includes(policy)) {
+              throw new Error("Strict routing needs a proxy catch-all policy");
+            }
+            // All destinations receive the same policy. The final core DIRECT
+            // guard remains authoritative if a later extension changes rules
+            // or a nested group/provider selects a direct adapter.
+            config.rules = ["MATCH," + policy];
+            return config;
+          }
           if (policy && policy !== "DIRECT" && policy !== "REJECT") {
             const inject = [];
             for (const d of FORCED_PROXY_DOMAINS) {

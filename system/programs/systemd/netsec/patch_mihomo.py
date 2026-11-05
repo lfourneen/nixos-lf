@@ -11,6 +11,22 @@ def replace(path, old, new):
 
 
 root = Path(sys.argv[1])
+replace(root / "constant/metadata.go", "type Metadata struct {",
+        'type Metadata struct {\n\t// Set only by the internal rule-routed DNS dialer, never decoded from wire JSON.\n'
+        '\tLFRuleDNS bool `json:"-"`')
+dns_dialer = root / "tunnel/dns_dialer.go"
+value = dns_dialer.read_text()
+anchor = '\t\tType:    C.INNER,\n'
+if value.count(anchor) != 2:
+    raise RuntimeError("upstream DNS metadata anchors changed")
+dns_dialer.write_text(value.replace(anchor, anchor + '\t\tLFRuleDNS: proxyName == DnsRespectRules,\n'))
+replace(root / "adapter/outbound/direct.go", '"github.com/metacubex/mihomo/component/dialer"',
+        '"github.com/metacubex/mihomo/component/dialer"\n\t"github.com/metacubex/mihomo/component/lfguard"')
+for signature in [
+        'func (d *Direct) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {',
+        'func (d *Direct) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {']:
+    replace(root / "adapter/outbound/direct.go", signature,
+            signature + '\n\tif err := lfguard.CheckDirect(metadata); err != nil { return nil, err }')
 replace(root / "config/config.go", "type RawConfig struct {",
         'type RawConfig struct {\n\tLFPrivateTargets map[string]any `yaml:"lf-private-targets" json:"lf-private-targets"`')
 replace(root / "tunnel/tunnel.go", '"github.com/metacubex/mihomo/component/resolver"',
@@ -27,19 +43,17 @@ replace(root / "tunnel/connection.go", 'C "github.com/metacubex/mihomo/constant"
         'C "github.com/metacubex/mihomo/constant"\n'
         '\t"github.com/metacubex/mihomo/component/lfguard"\n'
         '\t"github.com/metacubex/mihomo/component/resolver"')
-replace(root / "tunnel/connection.go", '\tmetadata := packet.Metadata()\n',
-        '\tmetadata := packet.Metadata()\n'
-        '\tguarded := metadata.Clone()\n'
-        '\tif err := preHandleMetadata(guarded); err != nil { return }\n'
-        '\tguardCtx, guardCancel := context.WithTimeout(s.ctx, resolver.DefaultDNSTimeout)\n'
-        '\tprotected, guardErr := lfguard.Protect(guardCtx, guarded, guarded, resolver.LookupIP)\n'
-        '\tguardCancel()\n'
-        '\tif guardErr != nil { log.Warnln("[Managed UDP target] %s", guardErr); return }\n'
-        '\tif protected != guarded {\n'
-        '\t\ts.AddMapping(metadata, protected)\n'
-        '\t\t_ = handleUDPToRemote(packet, pc, protected.UDPAddr())\n'
-        '\t\treturn\n'
-        '\t}\n')
+# The initial dial already validates and seeds a pinned mapping. Validate only
+# an unmapped destination in a reused UDP association, then let AddMapping pin
+# it. Re-resolving every packet can disagree with the original dial/mapping.
+replace(root / "tunnel/connection.go", '\t\tmetadata = metadata.Pure()\n',
+        '\t\tguardOrigin := metadata\n'
+        '\t\tmetadata = metadata.Pure()\n'
+        '\t\tguardCtx, guardCancel := context.WithTimeout(s.ctx, resolver.DefaultDNSTimeout)\n'
+        '\t\tprotected, guardErr := lfguard.Protect(guardCtx, guardOrigin, metadata, resolver.LookupIP)\n'
+        '\t\tguardCancel()\n'
+        '\t\tif guardErr != nil { log.Warnln("[Managed UDP target] %s", guardErr); return }\n'
+        '\t\tmetadata = protected\n')
 # Global-mode logs previously omitted the actual connection leaf. The health
 # gate must observe the same group[leaf] chain as rule-mode connections.
 replace(root / "tunnel/tunnel.go",
@@ -66,6 +80,9 @@ source = Path(__file__).parent
 (root / "component/lfguard").mkdir()
 (root / "component/lfguard/guard.go").write_text((source / "target_guard.go").read_text())
 (root / "component/lfguard/guard_test.go").write_text((source / "target_guard_test.go").read_text())
+(root / "adapter/outbound/lf_managed_direct_test.go").write_text((source / "managed_direct_test.go").read_text())
+(root / "tunnel/lf_managed_udp_test.go").write_text((source / "managed_udp_test.go").read_text())
+(root / "tunnel/lf_managed_dns_test.go").write_text((source / "managed_dns_test.go").read_text())
 (root / "config/lf_managed.go").write_text((source / "managed_profile.go").read_text())
 (root / "config/lf_managed_test.go").write_text((source / "managed_profile_test.go").read_text())
 (root / "hub/route/lf_managed.go").write_text((source / "managed_route.go").read_text())

@@ -153,6 +153,11 @@ in
     default = "direct";
     description = "Optional fail-closed boot intent, installed before physical networking.";
   };
+  options.my.proxy.proxyOnly = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Opt-in uniform proxy routing in B and core refusal of application DIRECT/COMPATIBLE dials. False preserves subscription Rule splitting plus the known probe-domain overrides. Does not change the default Mode-A boot or its portal access.";
+  };
   options.my.proxy.stateMaxAgeSeconds = lib.mkOption {
     type = lib.types.ints.between 90 300;
     default = 120;
