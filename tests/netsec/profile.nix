@@ -1,13 +1,13 @@
-{ pkgs, config }:
+{ pkgs, config, uniformProxyConfig }:
 
 let
   inherit (pkgs) lib;
-  render = { name, overrides ? { }, ipv6 ? config.networking.enableIPv6 }:
+  render = { name, overrides ? { }, baseConfig ? config, ipv6 ? config.networking.enableIPv6 }:
     let
-      proxy = config.my.proxy // overrides;
-      osConfig = config // {
-        my = config.my // { inherit proxy; };
-        networking = config.networking // { enableIPv6 = ipv6; };
+      proxy = baseConfig.my.proxy // overrides;
+      osConfig = baseConfig // {
+        my = baseConfig.my // { inherit proxy; };
+        networking = baseConfig.networking // { enableIPv6 = ipv6; };
       };
       profile = import ../../home/config/cvr-merge.nix { inherit lib osConfig; };
       directory = ".local/share/io.github.clash-verge-rev.clash-verge-rev/profiles";
@@ -28,10 +28,12 @@ let
         routing = proxy.tunRouting;
         delayUrl = proxy.delayTestUrl;
         targets = osConfig.my.proxy.managedProfile.lf-private-targets;
+        proxyOnly = proxy.proxyOnly;
       };
     };
   manifest = pkgs.writeText "proxy-profile-tests.json" (builtins.toJSON (map render [
     { name = "default"; }
+    { name = "uniform-proxy"; baseConfig = uniformProxyConfig; }
     { name = "mips"; overrides = { tunStack = "mips"; tunCongestionControl = "bbr"; }; }
     { name = "ipv4"; ipv6 = false; }
     { name = "http-only"; overrides.tunMode = false; }

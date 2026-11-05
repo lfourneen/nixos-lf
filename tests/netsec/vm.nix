@@ -39,6 +39,9 @@ pkgs.testers.runNixOSTest {
       ../../system/programs/systemd/network-bootstrap.nix
     ];
     users.users.lfour = { isNormalUser = true; uid = 1000; };
+    # The test driver's default VLAN owns 192.168.1.1 on the host. Move that
+    # auxiliary network so the portal fixture really traverses an uplink.
+    virtualisation.vlans = [ 9 ];
     my.proxy.nodeProbeUrls = [ "http://node.fixture.example:8080/" ];
     my.proxy.blockedDomains = [ "ads.fixture.example" "blocked.fixture.test" ];
     my.proxy.blockedDomainExceptions = [ "ok.blocked.fixture.test" ];
@@ -170,6 +173,8 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-tproxy.py".source = ./tproxy_fixture.py;
     environment.etc."netsec-dns.py".source = ./dns_fixture.py;
     environment.etc."netsec-core.py".source = ./core_fixture.py;
+    environment.etc."netsec-strict-core.py".source = ./strict_core_fixture.py;
+    environment.etc."netsec-ndp.py".source = ./ndp_fixture.py;
     environment.etc."netsec-integration.py".source = ./integration_fixture.py;
     environment.etc."netsec-integration-policy.json".text = builtins.toJSON config.my.proxy.managedProfile;
     environment.etc."netsec-tun-check".source = config.my.proxy.tunCheck;
@@ -300,6 +305,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("sysctl -w net.ipv4.conf.hardening0.send_redirects=1; ${pkgs.systemd}/lib/systemd/systemd-sysctl --prefix=/net/ipv4/conf/hardening0")
     machine.succeed("test $(sysctl -n net.ipv4.conf.hardening0.send_redirects) = 0; test $(sysctl -n net.ipv4.ip_forward) = 1; test $(sysctl -n net.ipv4.conf.all.rp_filter) = 2; ip link del hardening0")
     machine.succeed("ip -n outside addr add 100.67.0.1/24 dev peer0; ip -n outside addr add 203.0.113.10/32 dev peer0; ip -n outside link set peer0 up; ip -n outside link set lo up")
+    machine.succeed("ip -6 addr replace fe80::2/64 dev ens1 nodad; python3 /etc/netsec-ndp.py")
     machine.succeed("ip route add 203.0.113.10/32 via 100.67.0.1 dev ens1")
     machine.succeed("python3 -m http.server 8080 --bind 0.0.0.0 >/tmp/host-http.log 2>&1 &")
     machine.fail("ip netns exec outside curl --noproxy '*' -fsS --connect-timeout 1 http://100.67.0.2:8080")
@@ -307,6 +313,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("touch /run/allow-full-policy; systemctl reset-failed nftables.service; systemctl start nftables.service; systemctl start proxy-mode.service")
     machine.wait_for_unit("proxy-mode.service")
     machine.fail("nft list table inet lf_bootstrap")
+    machine.succeed("python3 /etc/netsec-ndp.py")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
     # A real NTS server in the peer namespace, trusted only by this VM client.
     machine.succeed("mkdir -p /run/netsec-nts; openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=nts.fixture.test -addext subjectAltName=DNS:nts.fixture.test -keyout /run/netsec-nts/server.key -out /run/netsec-nts/server.crt >/tmp/netsec-nts-cert.log 2>&1")
@@ -465,6 +472,13 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("test ! -e /run/dns-policy/sleeping")
     machine.succeed("ip netns exec outside sh -c 'python3 -m http.server 8080 --bind 0.0.0.0 >/tmp/outside-http.log 2>&1 &'")
     machine.wait_until_succeeds("curl --noproxy '*' -fsS --connect-timeout 1 http://203.0.113.10:8080 >/dev/null")
+    # A must reach a literal-IP HTTP portal without a proxy node or DNS verdict.
+    machine.succeed("ip -n outside addr add 192.168.1.1/32 dev peer0; ip route add 192.168.1.1/32 via 100.67.0.1 dev ens1")
+    machine.succeed("systemd-run --unit=netsec-portal-http ip netns exec outside /run/current-system/sw/bin/python3 -m http.server 80 --bind 0.0.0.0")
+    machine.wait_until_succeeds("ip netns exec outside ss -Hltn 'sport = :80' | grep -q .", timeout=10)
+    machine.succeed("curl --noproxy '*' -fsS --max-time 3 http://192.168.1.1/ >/dev/null")
+    machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct && test $(jq -r .mode /run/gost-relay/state.json) = direct")
+    machine.succeed("setpriv --reuid=1000 --clear-groups curl --noproxy= -x http://127.0.0.1:33332 -fsS --max-time 3 http://192.168.1.1/ >/dev/null")
     machine.succeed("ip link add virbr0 type bridge; ip addr add 192.168.122.1/24 dev virbr0; ip link set virbr0 up")
     machine.succeed("ip netns add guest; ip link add guest-host type veth peer name guest0; ip link set guest-host master virbr0; ip link set guest-host up; ip link set guest0 netns guest")
     machine.succeed("ip -n guest link set guest0 up; ip -n guest link set lo up")
@@ -506,6 +520,9 @@ pkgs.testers.runNixOSTest {
     machine.succeed("ip link add wlo1 type veth peer name wifi-peer; ip link set wifi-peer netns outside; ip link set wlo1 up")
     machine.succeed("ip addr add 198.51.100.2/24 dev wlo1; ip -6 addr add 2001:db8:dead::2/64 dev wlo1 nodad")
     machine.succeed("ip -n outside link set wifi-peer up; ip -n outside addr add 198.51.100.1/24 dev wifi-peer; ip -n outside -6 addr add 2001:db8:dead::1/64 dev wifi-peer nodad")
+    machine.succeed("ip route replace 192.168.1.1/32 via 198.51.100.1 dev wlo1")
+    machine.succeed("setpriv --reuid=1000 --clear-groups curl --noproxy= -x http://127.0.0.1:33332 -fsS --max-time 3 http://192.168.1.1/ >/dev/null")
+    machine.succeed("ip route replace 192.168.1.1/32 via 100.67.0.1 dev ens1")
     machine.succeed("ip addr add 10.1.2.2/24 dev wlo1; ip -n outside addr add 10.1.2.53/24 dev wifi-peer")
     machine.succeed("python3 /etc/netsec-split-test.py")
     machine.succeed("ip netns exec outside sh -c 'python3 /etc/netsec-dns.py server 15353 >/tmp/wifi-peer.log 2>&1 &'")
@@ -537,6 +554,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("ip netns exec guest curl --noproxy '*' -fsS --connect-timeout 1 http://100.67.0.1:8080 >/dev/null")
     machine.fail("su -s /bin/sh lfour -c \"curl --noproxy '*' -fsS --connect-timeout 1 http://203.0.113.10:8080\"")
     machine.fail("su -s /bin/sh lfour -c \"curl --noproxy '*' -fsS --connect-timeout 1 http://127.0.0.1:7897\"")
+    machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy= -x http://127.0.0.1:33332 -fsS --max-time 2 http://192.168.1.1/")
     machine.succeed("echo proxy >/run/proxy-mode/intent; /etc/netsec-mode-script --reload; systemctl unmask --runtime proxy-mode.service; systemctl start proxy-mode.service nftables-verify-pending.path nftables-verify.timer")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = blocked")
     machine.wait_until_succeeds("test $(jq -r .result /run/netsec/state.json) = ok && test $(jq -r .version /run/netsec/state.json) = $(jq -r .policy_version /run/proxy-mode/state.json)", timeout=90)
@@ -561,7 +579,7 @@ pkgs.testers.runNixOSTest {
     # or explicit main-table routes (sing-tun intentionally preserves those).
     machine.succeed("ip route del 203.0.113.10/32; ip -n outside -6 addr add 2001:db8:ffff::10/128 dev wifi-peer nodad; ip -6 route replace default via 2001:db8:dead::1 dev wlo1 metric 1")
     machine.succeed("ip netns exec outside sh -c 'python3 /etc/netsec-dns.py server 15354 --dns-answer 203.0.113.10 --rebind >/tmp/integration-dns.log 2>&1 &'")
-    machine.succeed("ip netns exec outside sh -c 'python3 -m http.server 80 --bind 0.0.0.0 >/tmp/integration-tun-http.log 2>&1 &'")
+    machine.succeed("ip netns exec outside ss -ltn | grep -q ':80 '")
     machine.succeed("ip netns exec outside sh -c 'python3 /etc/netsec-integration.py http6 >/tmp/integration-http6.log 2>&1 &'")
     machine.wait_until_succeeds("ip netns exec outside curl --noproxy '*' -fsS http://[2001:db8:dead::1]:8080/ >/dev/null")
     machine.succeed("ip netns exec outside sh -c '${core}/bin/mihomo -d /run/netsec-node -f /run/netsec-node.json >/tmp/netsec-node.log 2>&1 &'")
@@ -618,5 +636,6 @@ pkgs.testers.runNixOSTest {
     wait_proxy()
     machine.wait_until_succeeds("test $(jq -r .result /run/netsec/state.json) = ok && test $(jq -r .version /run/netsec/state.json) = $(jq -r .policy_version /run/proxy-mode/state.json)", timeout=90)
     machine.succeed("jq -e '.boot_id and (.monotonic_seconds > 0)' /run/netsec/state.json")
+    machine.succeed("python3 /etc/netsec-strict-core.py ${core}/bin/mihomo")
   '';
 }

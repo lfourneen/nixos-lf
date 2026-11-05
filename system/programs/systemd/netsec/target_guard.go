@@ -14,6 +14,7 @@ import (
 )
 
 type policy struct {
+	ProxyOnly          bool     `json:"proxy-only"`
 	Prefixes           []string `json:"prefixes"`
 	AllowedDomains     []string `json:"allowed-domains"`
 	MagicDNSSuffixFile string   `json:"magic-dns-suffix-file"`
@@ -21,6 +22,21 @@ type policy struct {
 }
 
 var current atomic.Pointer[policy]
+
+// Called by the DIRECT adapter before opening TCP or UDP sockets, including
+// named direct adapters and COMPATIBLE. A group selecting DIRECT cannot bypass
+// this check. Internal resolver/bootstrap metadata has a separate trust scope.
+func CheckDirect(metadata *C.Metadata) error {
+	p := current.Load()
+	if p != nil && p.ProxyOnly && (metadata.Type != C.INNER || metadata.LFRuleDNS) {
+		scope := "application"
+		if metadata.LFRuleDNS {
+			scope = "rule-routed DNS"
+		}
+		return fmt.Errorf("managed proxy policy refuses %s DIRECT egress", scope)
+	}
+	return nil
+}
 
 func validDomain(domain string) bool {
 	if len(domain) == 0 || len(domain) > 253 {
@@ -96,10 +112,34 @@ func (p *policy) allows(host string) bool {
 	return false
 }
 
+// IsGlobalUnicast includes several non-public and transition ranges. This is
+// a targeted denylist, not a claim that every IANA special prefix is rejected.
+var specialTargets = []netip.Prefix{
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/32"),
+	netip.MustParsePrefix("2002::/16"),
+}
+
+var wellKnownNAT64 = netip.MustParsePrefix("64:ff9b::/96")
+
 func (p *policy) blocked(ip netip.Addr) bool {
 	ip = ip.Unmap()
 	if !ip.IsValid() || !ip.IsGlobalUnicast() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
 		return true
+	}
+	if wellKnownNAT64.Contains(ip) {
+		value := ip.As16()
+		return p.blocked(netip.AddrFrom4([4]byte{value[12], value[13], value[14], value[15]}))
+	}
+	for _, prefix := range specialTargets {
+		// IANA's globally reachable PCP/TURN anycast exceptions.
+		if prefix.Contains(ip) && ip.String() != "192.0.0.9" && ip.String() != "192.0.0.10" {
+			return true
+		}
 	}
 	for _, prefix := range p.parsed {
 		if prefix.Contains(ip) {
@@ -138,9 +178,8 @@ func Protect(ctx context.Context, original, dial *C.Metadata,
 		ips, err = lookup(ctx, host)
 	}
 	if err != nil || len(ips) == 0 {
-		// The connection proceeds and resolves on its own path; refusing it here
-		// turned every DNS hiccup into a host-wide connection failure.
-		return dial, nil
+		// An unverified second lookup must not bypass private-target validation.
+		return nil, fmt.Errorf("managed target guard: DNS target could not be validated")
 	}
 	for _, ip := range ips {
 		if p.blocked(ip) {

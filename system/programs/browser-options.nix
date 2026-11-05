@@ -1,8 +1,9 @@
 { lib, config, ... }:
 
 {
-  # Declarative browser policy. Everything here lands in each browser's
-  # enterprise-policy channel, so it survives profile loss/migration without
+  # Declarative browser policy and dedicated strict-profile preferences.
+  # Supported settings use the enterprise-policy channel; other Gecko prefs
+  # use a generated user.js in the separate strict profile, without
   # replaying UI toggles:
   #   * Chrome (Flatpak): a managed policy JSON under /etc/opt/chrome/policies/
   #     managed, which the flatpak's launcher symlinks into its sandbox.
@@ -13,10 +14,20 @@
   # protection, WebRTC) plus the AMO extensions listed under `extensions`. It is
   # NOT a profile migrator and never touches bookmarks/tabs/history/site data.
   #
-  # Note: Firefox-family `Preferences` policies are *locked* (the Zen settings
-  # UI shows them as managed). That is the point of declaring them; to change
-  # one, edit it here and rebuild.
+  # Only supported enterprise Preferences are locked. user.js settings (RFP
+  # among them) are restored at launch, but are not runtime locks.
   options.my.browser = {
+    generated = lib.mkOption {
+      type = lib.types.attrsOf lib.types.path;
+      internal = true;
+      readOnly = true;
+      description = "Rendered browser policy/profile artifacts for isolated verification.";
+    };
+    strictPrivacy = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Browser fingerprinting, font and extension protection. Independent of the A/B/C network choice; does not require proxy mode or change boot intent.";
+    };
     zen = {
       dohOnly = lib.mkOption {
         type = lib.types.bool;
@@ -30,13 +41,13 @@
       };
 
       preferences = lib.mkOption {
-        type = lib.types.attrsOf (lib.types.oneOf [ lib.types.bool lib.types.int lib.types.float lib.types.str ]);
+        type = lib.types.attrsOf (lib.types.oneOf [ lib.types.bool lib.types.int lib.types.str ]);
         default = {
           # --- DNS security -------------------------------------------------
-          # Prefer DoH, with the managed encrypted system resolver as fallback
-          # in A. Strict browser-only DoH remains an explicit option.
+          # Prefer DoH while preserving the managed resolver for captive
+          # portals and Mode A. The explicit relay follows the system mode.
           "network.trr.mode" = if config.my.browser.zen.dohOnly then 3 else 2;
-          "network.trr.uri" = "https://mozilla.cloudflare-dns.com/dns-query";
+          "network.trr.uri" = "https://1.1.1.1/dns-query";
 
           # ECH discovery uses HTTPS/SVCB records; these also exist in ordinary DNS.
           "network.dns.echconfig.enabled" = true;
@@ -46,6 +57,11 @@
           "security.tls.ech.grease_probability" = 100;
 
           "network.dns.disablePrefetch" = true;
+          "network.prefetch-next" = false;
+          "network.predictor.enabled" = false;
+          "network.http.speculative-parallel-limit" = 0;
+          "network.proxy.failover_direct" = false;
+          "network.proxy.allow_hijacking_localhost" = true;
 
           # --- WebRTC (IP leak over peer connections) -----------------------
           "media.peerconnection.enabled" = false;
@@ -53,6 +69,27 @@
 
           # --- Tracking protection / anti-fingerprinting --------------------
           "privacy.fingerprintingProtection" = true;
+          # Unsupported by enterprise Preferences: installed in the dedicated
+          # strict profile's user.js, alongside the supported locked policies.
+          "privacy.resistFingerprinting" = config.my.browser.strictPrivacy;
+          "privacy.resistFingerprinting.letterboxing" = config.my.browser.strictPrivacy;
+          "privacy.spoof_english" = 2;
+          "layout.css.font-visibility.standard" = 1;
+          "layout.css.font-visibility.trackingprotection" = 1;
+          "layout.css.font-visibility.private" = 1;
+          "browser.display.use_document_fonts" = 1;
+          "browser.contentblocking.category" = "strict";
+          "network.cookie.cookieBehavior" = 5;
+          # HTTPS-First permits HTTP-only login portals; never force HTTPS on
+          # local addresses such as the unauthed 192.168.1.1 gateway.
+          "dom.security.https_only_mode" = false;
+          "dom.security.https_only_mode_pbm" = false;
+          "dom.security.https_only_mode.upgrade_local" = false;
+          "dom.security.https_first" = true;
+          "dom.security.https_first_for_local_addresses" = false;
+          "webgl.disabled" = config.my.browser.strictPrivacy;
+          "dom.webgpu.enabled" = false;
+          "geo.enabled" = false;
           "privacy.trackingprotection.enabled" = true;
           "privacy.trackingprotection.socialtracking.enabled" = true;
           "privacy.trackingprotection.emailtracking.enabled" = true;
@@ -85,9 +122,9 @@
           "extensions.htmlaboutaddons.recommendations.enabled" = false;
         };
         description = ''
-          User-branch prefs applied (and locked) through the policy engine.
-          Defaults mirror the security-relevant prefs already present in this
-          machine's Zen profile.
+          Supported prefs are locked by enterprise policy. All values also
+          seed user.js in the dedicated strict profile; unsupported policy
+          prefs such as RFP take effect there and are not runtime locks.
         '';
       };
 
@@ -105,26 +142,11 @@
       # The install URL is derived from the ID -- AMO resolves the latest signed
       # XPI by ID (`/downloads/latest/<id>/latest.xpi`), so nothing needs a hash
       # or a version bump. Only the ID changing would need an edit here, and the
-      # list mirrors what this machine's Zen profile already has installed.
+      # default keeps a single blocker instead of stacking overlapping addons.
       extensions = lib.mkOption {
         type = lib.types.attrsOf (lib.types.enum [ "normal_installed" "force_installed" ]);
         default = {
-          "adguardadblocker@adguard.com" = "normal_installed";
-          "CanvasBlocker@kkapsner.de" = "normal_installed";
-          "firefox@tampermonkey.net" = "normal_installed";
-          "uBlock0@raymondhill.net" = "normal_installed";
-          "addon@darkreader.org" = "normal_installed";
-          "x-comment-blocker@amahteru" = "normal_installed";
-          "{73a6fe31-595d-460b-a920-fcc0f8843232}" = "normal_installed"; # NoScript
-          "{5efceaa7-f3a2-4e59-a54b-85319448e305}" = "normal_installed"; # Immersive Translate
-          "{8e515334-52b5-4cc5-b4e8-675d50af677d}" = "normal_installed"; # ScriptCat
-          "{b9db16a4-6edc-47ec-a1f4-b86292ed211d}" = "normal_installed"; # Video DownloadHelper
-          "ffext_basicvideoext@startpage24" = "normal_installed"; # Video Downloader professional
-          "jid1-NIfFY2CA8fy1tg@jetpack" = "normal_installed"; # AdBlock for Firefox
-          "{fda20e5e-61ff-43d2-b6aa-e8f323b648f3}" = "normal_installed"; # csdn和知乎增强器
-          "{c1809289-dca4-44b3-9f2d-f3d34dcce930}" = "normal_installed"; # csdn便利助手
-          "{3fc4b50b-4786-4753-b3d8-9350bbe4e1e6}" = "normal_installed"; # fuckcsdn
-          "{8537be35-53d7-4b62-976f-11f190f9dc73}" = "normal_installed"; # csdn_cleaner
+          "uBlock0@raymondhill.net" = "force_installed";
         };
         description = ''
           Map of extension ID -> "normal_installed" (install, user may remove) or
@@ -145,13 +167,20 @@
         default = {
           # ECH wherever the origin publishes an ECHConfig...
           EncryptedClientHelloEnabled = true;
-          # ...which needs DoH. `automatic` (not `secure`): use the templates
-          # while the core is up, fall back in Mode A rather than black-holing.
+          # Keep managed resolver fallback available for captive portals in A.
           DnsOverHttpsMode = "automatic";
           DnsOverHttpsTemplates = "https://1.1.1.1/dns-query https://8.8.8.8/dns-query";
           # Telemetry off.
           MetricsReportingEnabled = false;
           UrlKeyedAnonymizedDataCollectionEnabled = false;
+          WebRtcIPHandling = "disable_non_proxied_udp";
+          NetworkPredictionOptions = 2;
+          DefaultLocalFontsSetting = 2;
+          BlockThirdPartyCookies = true;
+          BackgroundModeEnabled = false;
+          SyncDisabled = true;
+          BrowserSignin = 0;
+          ExtensionInstallBlocklist = [ "*" ];
         };
         description = "Raw Chrome managed-policy JSON.";
       };

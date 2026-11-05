@@ -11,6 +11,25 @@ import (
 	"github.com/metacubex/mihomo/common/yaml"
 )
 
+func TestLFManagedStrictSniffer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(path, []byte(`{"sniffer.enable":false}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	raw := DefaultRawConfig()
+	raw.Sniffer.Enable = true
+	if _, err := lfValidateRaw(raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw.Sniffer.Enable {
+		t.Fatal("cached profile enabled strict-mode sniffing")
+	}
+	if err := ValidateManagedPatch(map[string]any{"sniffer": map[string]any{"enable": true}}); err == nil {
+		t.Fatal("PATCH enabled strict-mode sniffing")
+	}
+}
+
 func TestLFManagedPolicy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "policy.json")
 	if err := os.WriteFile(path, []byte(`{"listeners":[],"tunnels":[],"dns.listen":"127.0.0.1:1053","tun.include-uid":[],"tun.stack":"mixed","tun.dns-mode":"hijack"}`), 0600); err != nil {

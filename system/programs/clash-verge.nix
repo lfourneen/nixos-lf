@@ -45,6 +45,9 @@ let
       ./systemd/netsec/managed_profile_test.go
       ./systemd/netsec/managed_route.go
       ./systemd/netsec/managed_route_test.go
+      ./systemd/netsec/managed_direct_test.go
+      ./systemd/netsec/managed_dns_test.go
+      ./systemd/netsec/managed_udp_test.go
       ./systemd/netsec/target_guard.go
       ./systemd/netsec/target_guard_test.go
     ];
@@ -59,6 +62,8 @@ let
       go test -mod=vendor ./config ./hub/route -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/inbound ./transport/socks5 -count=1
       go test -mod=vendor ./component/lfguard -count=1
+      go test -mod=vendor ./adapter/outbound -run '^TestLFManagedDirect' -count=1
+      go test -mod=vendor ./tunnel -run '^TestLFManaged' -count=1
       runHook postCheck
     '';
     postConfigure = (old.postConfigure or "") + ''

@@ -56,11 +56,12 @@ let
     exec ${pkgs.python3}/bin/python3 ${./netsec/tun.py} ${tunSettings}
   '';
 
-  # A DIRECT-routed name used for the TUN self-test: its fake-ip answer is only
+  # A name used for the TUN self-test: its fake-ip answer is only
   # reachable through the TUN. The probe resolves the name to the fake IP, sends a
   # real HTTP request over the TUN and requires both a final status and the core's
   # exact-source-port route log, so a DNS-only success is not accepted. It is a
-  # domestic name so the test does not depend on the node.
+  # distinct transparent-path observation. Rule profiles may send this domestic
+  # name DIRECT; opt-in proxyOnly routing sends it through the proxy as well.
   # Single source: home/config/cvr-merge.nix asserts it is not fake-ip-filtered.
   tunProbeName = config.my.proxy.tunProbeName;
 

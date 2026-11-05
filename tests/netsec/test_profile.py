@@ -19,7 +19,9 @@ for case in cases:
     assert data["tproxy-port"] == expected["tproxy"]
     assert data["ipv6"] == expected["ipv6"]
     assert data["mode"] == "rule"
+    assert data["sniffer"]["enable"] == (not expected["proxyOnly"])
     assert data["lf-private-targets"] == expected["targets"]
+    assert data["lf-private-targets"]["proxy-only"] == expected["proxyOnly"]
     assert not data["allow-lan"]
     for key in ("port", "socks-port", "redir-port"):
         assert data[key] == 0

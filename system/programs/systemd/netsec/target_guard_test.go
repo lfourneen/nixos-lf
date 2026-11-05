@@ -39,18 +39,14 @@ func TestProtectedTargets(t *testing.T) {
 	if err != nil || result.Host != "" || result.DstIP.String() != "2001:db8::42" || metadata.Host == "" {
 		t.Fatal("checked IP not pinned on a clone", result, err)
 	}
-	// A resolver hiccup is not a target verdict: refusing the dial turned every
-	// DNS glitch into a host-wide outage. The dial proceeds unresolved.
+	// Exhausted/empty lookups cannot authorize an unchecked second resolution.
 	metadata = &C.Metadata{Host: "public.example", Type: C.TUN, DNSMode: C.DNSFakeIP}
 	failed := func(context.Context, string) ([]netip.Addr, error) { return nil, errors.New("no DNS") }
 	empty := func(context.Context, string) ([]netip.Addr, error) { return nil, nil }
 	for name, resolve := range map[string]func(context.Context, string) ([]netip.Addr, error){"error": failed, "empty": empty} {
 		result, err := Protect(context.Background(), metadata, metadata, resolve)
-		if err != nil {
-			t.Fatal(name, "lookup failure refused a dial", err)
-		}
-		if result.Host != "public.example" || result != metadata {
-			t.Fatal(name, "unresolved dial must pass through unchanged", result)
+		if err == nil || result != nil {
+			t.Fatal(name, "unresolved dial must fail closed", result, err)
 		}
 	}
 	for _, host := range []string{"home.arpa", "printer.home.arpa", "192.168.1.1", ""} {
@@ -77,9 +73,8 @@ func TestProtectedTargets(t *testing.T) {
 	}
 }
 
-// A retry means one flaky lookup is not a verdict; a persistent failure lets
-// the dial resolve on its own path instead of failing as a dead node.
-func TestUnresolvedDialPassesThrough(t *testing.T) {
+// A transient error gets one retry; persistent failure never grants a dial.
+func TestUnresolvedDialFailsClosed(t *testing.T) {
 	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8", "100.64.0.0/10", "192.168.0.0/16"}})
 	metadata := &C.Metadata{Host: "peer.example", Type: C.SOCKS5, NetWork: C.TCP}
 	calls := 0
@@ -88,14 +83,77 @@ func TestUnresolvedDialPassesThrough(t *testing.T) {
 		return nil, errors.New("no DNS")
 	}
 	result, err := Protect(context.Background(), metadata, metadata, lookup)
-	if err != nil || result != metadata || calls != 2 {
-		t.Fatal("unresolved dial must pass through after one retry", result, err, calls)
+	if err == nil || result != nil || calls != 2 {
+		t.Fatal("unresolved dial must fail after one retry", result, err, calls)
+	}
+	calls = 0
+	recovered := func(context.Context, string) ([]netip.Addr, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("temporary failure")
+		}
+		return []netip.Addr{netip.MustParseAddr("203.0.113.42")}, nil
+	}
+	result, err = Protect(context.Background(), metadata, metadata, recovered)
+	if err != nil || result.Host != "" || result.DstIP.String() != "203.0.113.42" || calls != 2 {
+		t.Fatal("validated retry did not pin target", result, err, calls)
 	}
 	resolve := func(context.Context, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("100.100.100.100")}, nil
 	}
 	if _, err := Protect(context.Background(), metadata, metadata, resolve); err == nil {
 		t.Fatal("carrier-grade NAT answer accepted")
+	}
+}
+
+func TestProxyOnlyDirectScope(t *testing.T) {
+	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"}, "proxy-only": true})
+	for _, kind := range []C.Type{C.HTTP, C.HTTPS, C.SOCKS5, C.TUN, C.TPROXY} {
+		for _, network := range []C.NetWork{C.TCP, C.UDP} {
+			if CheckDirect(&C.Metadata{Type: kind, NetWork: network}) == nil {
+				t.Fatal("application direct egress allowed", kind, network)
+			}
+		}
+	}
+	if err := CheckDirect(&C.Metadata{Type: C.INNER}); err != nil {
+		t.Fatal(err)
+	}
+	for _, network := range []C.NetWork{C.TCP, C.UDP} {
+		if CheckDirect(&C.Metadata{Type: C.INNER, NetWork: network, LFRuleDNS: true}) == nil {
+			t.Fatal("rule-routed DNS DIRECT was treated as bootstrap", network)
+		}
+	}
+	if err := Configure(map[string]any{"prefixes": []string{"10.0.0.0/8"}, "proxy-only": false}); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckDirect(&C.Metadata{Type: C.HTTP}); err != nil {
+		t.Fatal(err)
+	}
+	for _, network := range []C.NetWork{C.TCP, C.UDP} {
+		if err := CheckDirect(&C.Metadata{Type: C.INNER, NetWork: network, LFRuleDNS: true}); err != nil {
+			t.Fatal("split-mode DNS DIRECT must remain available", network, err)
+		}
+	}
+}
+
+func TestSpecialAndTranslatedDNSAnswers(t *testing.T) {
+	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8", "169.254.0.0/16", "192.168.0.0/16"}})
+	metadata := &C.Metadata{Host: "external.example", Type: C.SOCKS5}
+	for _, address := range []string{"240.0.0.1", "255.255.255.255", "198.18.0.1", "198.19.255.254", "192.0.0.8", "192.0.0.170", "::a9fe:a9fe", "64:ff9b::a9fe:a9fe", "64:ff9b::c0a8:101", "64:ff9b::f000:1", "64:ff9b:1::1", "2001::1", "2002:c0a8:101::1"} {
+		lookup := func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr(address)}, nil
+		}
+		if _, err := Protect(context.Background(), metadata, metadata, lookup); err == nil {
+			t.Fatal("special DNS target accepted", address)
+		}
+	}
+	for _, address := range []string{"192.0.0.9", "192.0.0.10", "64:ff9b::808:808", "2001:4860:4860::8888"} {
+		lookup := func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr(address)}, nil
+		}
+		if _, err := Protect(context.Background(), metadata, metadata, lookup); err != nil {
+			t.Fatal("public anycast/NAT64 target rejected", address, err)
+		}
 	}
 }
 

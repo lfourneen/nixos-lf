@@ -16,6 +16,6 @@
     systemd-boot.configurationLimit = 8;
 
     # Physical access must not get a root shell by editing the boot cmdline.
-    #systemd-boot.editor = false;
+    systemd-boot.editor = false;
   };
 }
