@@ -2,7 +2,7 @@
 
 let
   pname = "bilibili";
-  version = "1.19.0";
+  version = "1.20.0";
   src = ./local-apps/bilibili-${version}-x86_64.AppImage;
   appimageContents = pkgs.appimageTools.extract { inherit pname version src; };
 
