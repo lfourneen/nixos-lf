@@ -31,6 +31,8 @@ in
         http_proxy = "${gostHttp}";
         https_proxy = "${gostHttp}";
         NO_PROXY = noProxy;
+        GTK_THEME = "Adwaita-dark";
+        QT_QPA_PLATFORMTHEME = "gtk3";
       };
       Context = {
         filesystems = [ "xdg-run/dconf" ];
