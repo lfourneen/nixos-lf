@@ -147,6 +147,7 @@
         type = lib.types.attrsOf (lib.types.enum [ "normal_installed" "force_installed" ]);
         default = {
           "uBlock0@raymondhill.net" = "force_installed";
+          "{fb25c100-22ce-4d5a-be7e-75f3d6f0fc13}" = "normal_installed";  # KISS Translator
         };
         description = ''
           Map of extension ID -> "normal_installed" (install, user may remove) or
