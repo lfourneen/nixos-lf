@@ -97,23 +97,34 @@ Tailscale declares `accept-dns=false`, `accept-routes=false`, no advertised subn
 
 Time synchronization uses Chrony with NTS-only sources (`my.machine.ntsUpstreams`, Cloudflare and Netnod by default), `authselectmode require` and certificate time checks enabled. UDP/123 and TCP/4460 are scoped to the chrony UID in B's firewall exceptions; C retains its non-core egress refusal, including time synchronization. Failed authentication leaves the clock unsynchronized instead of selecting ordinary NTP. Persistent `/var/lib/chrony` state and `chronyd -s` supply an RTC/drift-file time floor after restart; the module's `rtcfile`/`rtcautotrim` keep that floor accurate, so a clock too far off for NTS certificates recovers from the RTC instead of deadlocking DNS. The local command port stays enabled, so `chronyc sources` and `chronyc authdata` can tell a failed NTS-KE from a failed source. If the clock is still too wrong for TLS, an administrator must correct it; no certificate-time bypass or plaintext time fallback is configured.
 
-### 3.3 Managed browsers
+### 3.3 Managed Firefox
 
-`my.browser.strictPrivacy` defaults to true and controls browser fingerprinting, font and extension protection independently of the network mode. Zen and Chrome use a fixed HTTP proxy at the mode-aware gost listener (`127.0.0.1:33332`), with no browser-side direct fallback. A deliberately passes traffic through, B forwards to mihomo under the selected routing policy, and C closes the app-facing path. Boot defaults to A; enabling browser privacy or `proxyOnly` does not request B.
+Firefox is a native Nix package, configured in `home/programs/firefox/firefox.nix`. Its binary, enterprise policies, AutoConfig and fixed font packages belong to the same immutable store closure. Home Manager manages the separate `~/.config/mozilla/firefox/lfour` profile. Browser updates follow the locked Nixpkgs input and a rebuilt system generation; Firefox's own binary updater is disabled. Existing Flatpak profiles and their data are not imported or deleted.
 
-Menu/MIME entries invoke `browser-private zen` or `browser-private chrome` with separate profiles. Managed desktop entries are also installed in the user application directory, which takes precedence over Flatpak exports regardless of the order of `XDG_DATA_DIRS`. In A, launch does not require public DNS or a working proxy: an offline wired or Wi-Fi portal at `http://192.168.1.1/` remains reachable through the relay. Captive-portal support and NetworkManager connectivity checks remain enabled. Zen uses HTTPS-First with local-address upgrades disabled so HTTP gateway login remains available. In B, launch requires fresh, same-generation proxy/DNS/relay/verification state and a live core identity/managed-policy check through `health.py --fast`. In both modes, the installed browser policy must match the current Nix generation. A shell preflight in the actual Flatpak sandbox checks the visible policy and, under strict privacy, Fontconfig contents, FONTCONFIG_FILE and font paths, without injecting overrides or filesystems. A second observation rejects a mode/generation transition during preflight. C and unknown states refuse launch. After launch, the fixed relay and kernel guards enforce mode transitions; the launcher is not a continuous monitor.
+Firefox uses a locked manual HTTP/HTTPS proxy at the mode-aware gost listener (`127.0.0.1:33332`), derived from `my.machine.ports.gostHttp`. The bypass list and PAC/SOCKS settings are empty, localhost proxying is enabled, and direct failover is disabled. A deliberately passes traffic through, B forwards to mihomo under the selected routing policy, and C closes the application path. Browser privacy does not select a network mode or turn on `proxyOnly`; boot still defaults to A. WebRTC is disabled and HTTP/3 is disabled, keeping browser web transport on the TCP relay rather than opening a separate UDP path.
 
-Zen prefers DoH and permits the managed system resolver as fallback by default; `my.browser.zen.dohOnly=true` explicitly removes that fallback. Chrome uses automatic DoH. Browser DoH does not inherit dnsmasq's blocklist, Unbound's local DNSSEC validation or approved split DNS. With an HTTP proxy, target resolution can be delegated to the proxy: DoH/ECH preferences alone do not establish target HTTPS-record discovery or an ECH handshake. ECH requires origin support, a usable ECHConfig and support on the actual browser/transport path. Enabling ECH or GREASE does not hide destination IPs or the target named in a proxy request.
+The package's `firefox` command runs `firefox --check` prerequisites before opening the managed profile. In B it requires fresh, same-generation proxy/DNS/relay/verification state and a live core identity/managed-policy check through `health.py --fast`. In A it does not require public DNS or an Internet-capable core, so a literal HTTP portal such as `http://192.168.1.1/` can be opened before authentication. Captive-portal detection and NetworkManager connectivity checks remain enabled; HTTPS-First leaves local addresses available over HTTP. C, unknown and unenforced states refuse launch. A second state observation rejects transitions during preflight. The fixed relay and kernel guards enforce changes after launch; preflight is not a continuous monitor.
 
-Zen's systemconfig Flatpak extension supplies enterprise policies. Supported Preferences are typed and locked; additional Gecko preferences are generated into `user.js` for the separate profile. With strict privacy enabled, this profile enables RFP and letterboxing, restricts font visibility, and disables WebRTC, WebGL, WebGPU and location. `user.js` restores values at launch but is not a runtime lock. The default extension set contains only uBlock Origin; strict policy blocks other extensions unless explicitly configured. The host profile is `~/.var/app/app.zen_browser.zen/.zen/netsec-private`, mapped to `~/.zen/netsec-private` inside Flatpak. The explicit profile path scopes Gecko remoting: subsequent checked launches can send links to this profile's existing window. Policy/preference changes still require a full browser restart; checking current files does not refresh an existing process's loaded settings.
+Browser DoH is disabled and locked (`network.trr.mode=5`), so browser-originated DNS uses the managed system path, including conditional split DNS and MagicDNS. HTTP proxy requests can delegate target-name resolution to gost/mihomo; those lookups follow that component's resolver policy rather than automatically passing through dnsmasq's blocklist. The list is a DNS filter, not a URL/content filter, and disabling DoH does not turn it into one. Mode A's validating Unbound and bounded plaintext windows, and Mode B's managed Mihomo DNS and domain-target guard, retain their boundaries from section 3.2.
 
-Chrome reads managed policy through its Flatpak host-etc launcher and uses a separate `~/.var/app/com.google.Chrome/config/netsec-private` user-data directory. Its policy restricts non-proxied WebRTC UDP, Local Font Access, third-party cookies, background operation, sign-in/sync and extensions. Chrome has no equivalent contract to Zen's RFP/letterboxing; Local Font Access policy alone does not prevent CSS font inference.
+The `strictPrivacy` value in `home/programs/firefox/firefox.nix` defaults to true. Native AutoConfig uses `lockPref` for preferences, including namespaces the enterprise Preferences policy cannot lock. These locks apply to every profile opened with this package and resist conflicting `user.js` values; Home Manager also supplies the managed profile's startup preferences. The layers serve different purposes:
 
-Under strict privacy, Fontconfig uses runtime/application fonts plus a fixed Noto CJK package, rather than personal host font directories. This bounds font discovery while keeping Chinese coverage; it does not make browser rendering identical. Strict Flatpak overrides use Wayland, disable X11/fallback-X11, CUPS and PC/SC sockets, and replace all-device access with DRI. `browser-policy-install.service` installs real extension files on changed generations and reconciles them every five minutes. Chrome's host-etc Fontconfig is a real file copy so sandbox paths do not depend on /etc/static. Browsers need a full restart to consume changed startup policy/preferences. Bookmarks, accounts and site data from other profiles are not imported.
+| Layer | Configuration and scope |
+|---|---|
+| RFP / letterboxing | `privacy.resistFingerprinting` and letterboxing reduce exposed Canvas, time zone, hardware and window-size signals. They do not make a customized desktop identical to Tor Browser. |
+| FPP / tracking protection | FPP plus locked strict tracking protection, cryptominer/fingerprinter blocking, social/email tracker protection and Total Cookie Protection reduce script and cross-site state correlation. RFP is the broader fingerprinting layer; enabling both does not imply two independent Canvas protections. |
+| URL / referrer / profiling | Query stripping, strip-on-share, bounce-tracker cleanup, cross-origin referrer restrictions and GPC reduce link decoration and cross-site correlation. Search suggestions, speculative connections, telemetry, studies, sponsored content, account sync and built-in IP Protection are disabled. GPC expresses a preference; it cannot compel a site to comply. |
+| Local API / fonts | WebRTC, WebGPU, geolocation, battery and sensor APIs are disabled; strict privacy also disables WebGL and limits font visibility. Fontconfig uses only fixed DejaVu/Noto/CJK/emoji packages, excluding personal/system font directories. |
+| ECH / TLS | ECH discovery, native HTTPS-record queries and GREASE are enabled. A real ECH handshake still requires origin support, an acceptable ECHConfig and support on the actual DNS/proxy path. GREASE is cover traffic, not proof of an encrypted ClientHello. HTTP proxy requests still identify their target to the relay/core, and ECH does not hide destination IPs or traffic timing. |
+| Network exit | The browser uses the same A/B/C policy, core mark and `proxyOnly` choice as other applications. In B with `proxyOnly=false`, a DIRECT rule can expose the real exit; section 3.4 explains the optional uniform routing policy. |
 
-Direct Flatpak invocations can bypass the launcher's profile choice and preflight, though system enterprise policies still apply. Same-UID processes can change user profiles and user Flatpak overrides. Neither these settings nor a proxy provide anonymity against account correlation, exit-IP reputation, protocol classification or traffic timing. Setting `strictPrivacy=false` relaxes fingerprinting, font and extension restrictions; the managed relay, profile launchers and explicit network-mode controls remain in place.
+Strict extension policy blocks undeclared extensions. uBlock Origin is force-installed; KISS Translator is installed as a removable extension. Their signed packages and updates come from Mozilla Add-ons through the same relay and require connectivity. Gecko's own tracking protection and package preference locks apply even before an extension downloads. Neither these protections nor the proxy prevent account-based correlation, exit-IP reputation labels, TLS/protocol classification or statistical traffic analysis.
 
-Use `browser-private zen --check` or `browser-private chrome --check` to run preflight without opening a browser or creating its profile. A missing/stale Zen extension can be restored with `sudo systemctl restart browser-policy-install.service`; the periodic reconciliation also restores managed content.
+The launcher selects the explicit managed profile, validates the font inventory under strict privacy, forces Wayland and removes inherited switches that disable Gecko process sandboxes. Desktop/MIME entries use this command. User application entries take precedence over system exports; the former Zen/Chrome desktop IDs redirect to Firefox for existing pinned launchers. A profile lock owned by an older package causes launch to request a complete Firefox restart, preventing links from being forwarded to a process with obsolete settings.
+
+Firefox's content-process sandbox stays enabled. The native parent process runs with ordinary desktop-user file and socket access; this configuration does not reproduce Flatpak's outer filesystem, device and session-bus confinement. The package-private unchecked binary or another Firefox installation can bypass startup checks; same-UID code is not a security boundary. Immutable policies still apply when the private binary uses this package's runtime. `strictPrivacy=false` relaxes RFP, letterboxing, font, WebGL and extension restrictions, while the managed relay, system DNS and launch prerequisites remain. Run `firefox --check` to inspect prerequisites without opening a browser or creating the profile. Changed package policy requires a full browser restart.
+
+Policy semantics are documented in Mozilla's [DNSOverHTTPS reference](https://firefox-admin-docs.mozilla.org/reference/policies/dnsoverhttps/), [Preferences reference](https://firefox-admin-docs.mozilla.org/reference/policies/preferences/) and [AutoConfig guide](https://support.mozilla.org/kb/customizing-firefox-using-autoconfig).
 
 ### 3.4 Optional uniform proxy routing
 
@@ -232,7 +243,7 @@ nix build .#checks.x86_64-linux.proxy-core
 nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
-These checks validate generated rules, profile variants, core policy and network behavior in isolated environments without activating the host configuration. Complete-system builds require the [local application assets](overlays/local-apps/README.md).
+These checks validate native Firefox policy locks and offline browser behavior, generated rules, profile variants, core policy and network behavior in isolated environments without activating the host configuration. Complete-system builds require the [local application assets](overlays/local-apps/README.md).
 
 The supervisor and verifier share `netsec/tun.py`: a bounded JSON observation of the device, both routing tables/rules, and actual unmarked IPv6 routes for root and the desktop UID. A route that chooses an uplink despite a surviving TUN table forces Mode C through the existing supervisor decision/commit path. Managed TUN inputs also pin rule priority 9000, internal marks 8227/8228, fallback priority 32768 and file-descriptor 0; profile parsing, PATCH, templates and the health view share those values. An upstream RawTun schema coverage test requires explicit classification of new fields.
 
@@ -259,9 +270,8 @@ Verification results carry CLOCK_BOOTTIME and a boot ID. Readiness requires both
 * `my.proxy.splitDnsProfileUuids` (default empty) and `plaintextBootBudgetSeconds` (default null) — split-DNS profile exceptions and an additional boot-wide plaintext deadline. Approved profiles become dnsmasq `server=/domain/server@interface` entries and connection-bound interface/server leases (public upstreams unsupported); resolved itself stays on the managed resolver.
 * `proxy-inspect` — read-only JSON of link/queue/offload/qdisc statistics, softirq counters, service CPU/RSS and current state; it sends no test traffic and changes no tuning.
 * `my.hardening.allowPrivateEgress` (default true) — keep `privateV4`/ULA/link-local directly reachable in B; `false` subjects host private-address flows to the proxy policy too (affecting the tailnet and portals). `my.hardening.guestHostServices` (default false) enables explicitly configured VM→host service ports; both port lists default empty. Resolved has no wildcard DNS listener; guest gateway DNS remains separate.
-* `my.browser.strictPrivacy` (default true) — fingerprinting, font and extension protection, independent of A/B/C and `proxyOnly` (section 3.3).
+* `strictPrivacy` in `home/programs/firefox/firefox.nix` (default true) — Firefox fingerprinting, font and extension protection, independent of A/B/C and `proxyOnly` (section 3.3).
 * `my.proxy.proxyOnly` (default false) — optional uniform proxy routing and core DIRECT/COMPATIBLE refusal; false keeps Rule routing and known probe-domain overrides (section 3.4).
-* `my.browser.zen.dohOnly` (default false) — true requires DoH; false permits the managed system resolver as fallback for offline/portal operation.
 * `my.machine` — interface names, ports (`mihomoDns`/`dnsmasq`/`unbound`/`gostHttp`/`gostRedirect`/`mihomoMixed`/`mihomoTproxy`/`dot`/`ntp`), uids, `mihomoMark`, and the local address ranges (`privateV4`, `multicastV4`, `ulaV6`, `linkLocalV6`, `multicastV6`, `limitedBroadcastV4`).
 * The Clash core and its Merge template are configured in `home/config/cvr-merge.nix` (TUN stack, `dns-hijack`, `route-exclude-address`, `routing-mark`, fake-ip DNS + filter, sniffer, `respect-rules`).
 
@@ -269,8 +279,9 @@ Verification results carry CLOCK_BOOTTIME and a boot ID. Readiness requires both
 
 | File | Responsibility |
 |---|---|
-| `system/programs/browser-options.nix`、`browser-policies.nix`、`browser-guard.py` | browser policy, strict profiles and launch prerequisites |
-| `home/config/browser.nix` | desktop/MIME entries for managed browser profiles |
+| `home/programs/firefox/default.nix` | Firefox module entry point |
+| `home/programs/firefox/firefox.nix` | native Firefox package, immutable policies/AutoConfig, fixed fonts, profile and desktop/MIME entries |
+| `home/programs/firefox/guard.py` | shared network readiness, font inventory, profile selection and running-package checks |
 | `system/config/machine.nix` | interface/uid/port/mark/TUN/tunable single sources |
 | `system/config/proxy-options.nix` | `my.proxy.tunMode`, `tunDev`, `fakeIpRange`, `fakeIpNet`, `routeTable`, `nodeProbeUrls` |
 | `system/config/network.nix` | nftables ruleset, `proxyModeRules`, `blockedModeRules`, `redirect_guard`, `:53` redirect, env-proxy vars, `dnsmasq`/`unbound`/`resolved`, NM dispatcher, dhcpcd hook |
@@ -430,23 +441,34 @@ Tailscale 声明 `accept-dns=false`、`accept-routes=false`，不宣告子网路
 
 域名目标校验也拒绝部分特殊用途地址，包括 benchmark、IPv4 保留段、IPv4-compatible IPv6 及部分转换前缀；well-known NAT64 按嵌入的 IPv4 目标继续判定，保留公开 PCP/TURN anycast 例外。这是有范围的特殊目标表，不是完整 IANA 分类。字面 IP 仍刻意豁免域名目标校验，包括代理可能在自身网络解释的私网/loopback 目标；proxyOnly 对应用 DIRECT 拨号的拒绝仍然生效。
 
-### 3.3 受管浏览器
+### 3.3 受管 Firefox
 
-`my.browser.strictPrivacy` 默认 true，控制浏览器抗指纹、字体与扩展防护，与网络模式独立。Zen 与 Chrome 均固定使用随模式切换的 gost HTTP 监听（`127.0.0.1:33332`），浏览器自身不配置直连后备。A 按明确意图直通，B 转发到 mihomo 并采用所选分流策略，C 关闭应用路径。开机默认 A；浏览器隐私保护和 `proxyOnly` 都不会自动请求 B。
+Firefox 使用 Nix 原生包，集中配置在 `home/programs/firefox/firefox.nix`。程序、企业策略、AutoConfig 和固定字体包属于同一个不可变 store 闭包；Home Manager 管理独立的 `~/.config/mozilla/firefox/lfour` profile。浏览器随锁定的 Nixpkgs 输入和重新构建的系统代更新，自带的二进制更新器关闭。原 Flatpak profile 与其中的数据不会被自动导入或删除。
 
-菜单/MIME 入口调用 `browser-private zen` 或 `browser-private chrome`，使用独立 profile。受管桌面入口同时安装到用户应用目录，优先于 Flatpak 导出入口，不依赖 `XDG_DATA_DIRS` 的排列顺序。A 中启动不要求公网 DNS 或代理就绪：有线、Wi-Fi 尚未通过认证时，仍可经中继访问 `http://192.168.1.1/` 门户。保留门户检测与 NetworkManager 连通性检查；Zen 使用 HTTPS-First，并关闭本地地址的强制升级，允许 HTTP 网关登录。B 中启动要求 proxy/DNS/relay/规则验证状态新鲜且属于同一策略代次，并通过 `health.py --fast` 实时检查核心身份及受管策略。两种模式都要求已安装的浏览器策略与当前 Nix 代一致，并在实际 Flatpak 沙箱中检查策略可见性；严格隐私下还检查 Fontconfig 内容、FONTCONFIG_FILE 和字体路径，不临时注入覆盖或文件系统。预检后再读状态，拒绝期间发生的模式/代次切换。C 和未知状态拒绝启动。启动后由固定中继与内核 guard 执行模式变化；启动器不持续监控每个连接。
+Firefox 将 HTTP/HTTPS 代理锁定到随模式切换的 gost（`127.0.0.1:33332`），端口读取 `my.machine.ports.gostHttp`。绕过列表、PAC 与 SOCKS 配置为空，localhost 同样经过代理，不允许代理失败后直连。A 按明确意图直通，B 转发至 mihomo 并采用系统分流策略，C 关闭应用通道。浏览器隐私不会自动选择网络模式或开启 `proxyOnly`，开机仍默认 A。关闭 WebRTC 和 HTTP/3，浏览器网页传输使用 TCP 中继，不另开 UDP 路径。
 
-Zen 默认优先 DoH，允许受管系统解析器后备；显式设置 `my.browser.zen.dohOnly=true` 才取消后备。Chrome 使用 automatic DoH。浏览器 DoH 不继承 dnsmasq 黑名单、Unbound 本地 DNSSEC 验证或批准的 split DNS。HTTP 代理可能将目标解析交给代理，DoH/ECH 参数本身不能证明目标 HTTPS 记录发现或 ECH 握手。ECH 还需要源站支持、可用 ECHConfig 及实际浏览器/传输路径支持；启用 ECH/GREASE 不隐藏目的 IP，也不隐藏代理请求中携带的目标名称。
+包内的 `firefox` 命令在打开受管 profile 前执行 `firefox --check` 同样的前提检查。B 要求 proxy/DNS/relay/规则验证状态新鲜且属于同一策略代次，并通过 `health.py --fast` 实时检查核心身份和受管策略。A 不要求公网 DNS 或能访问互联网的核心，因此可在认证前访问 `http://192.168.1.1/` 这类字面地址 HTTP 门户。保留门户检测和 NetworkManager 连通性检查；HTTPS-First 不强制升级本地地址。C、未知及 unenforced 状态拒绝启动；预检后再读取状态，拒绝期间发生的模式或代次切换。启动后由固定中继与内核 guard 执行模式变化，启动检查不持续监控连接。
 
-Zen 通过 Flatpak systemconfig 扩展读取企业策略。支持的 Preferences 显式指定类型并锁定，其他 Gecko 参数在独立 profile 的生成 `user.js` 中下发。启用严格隐私时，该 profile 启用 RFP 与 letterboxing、限制字体可见性，关闭 WebRTC、WebGL、WebGPU 与定位。`user.js` 在启动时恢复参数，但不是运行时锁。默认扩展仅 uBlock Origin；严格策略拒绝其他扩展，除非显式声明。宿主 profile 为 `~/.var/app/app.zen_browser.zen/.zen/netsec-private`，在 Flatpak 内映射到 `~/.zen/netsec-private`。显式 profile 路径用于限定 Gecko 的远程转发目标，后续通过预检的启动可把链接交给该 profile 的现有窗口。策略/偏好变化仍需完整重启浏览器；当前文件通过检查不代表已有进程刷新了内存中的配置。
+浏览器 DoH 关闭并锁定（`network.trr.mode=5`），浏览器自身发起的 DNS 查询使用受管系统链路，保留 split DNS 和 MagicDNS。HTTP 代理请求可能将目标名字解析交给 gost/mihomo；这些查询遵循对应组件的解析策略，并不会自动经过 dnsmasq 黑名单。该名单是 DNS 过滤器，不是 URL 或内容过滤器，关闭 DoH 也不会改变这个边界。A 中 Unbound 的验证与有界明文窗口、B 中 Mihomo 的受管 DNS 和域名目标 guard 仍遵循 3.2 的范围。
 
-Chrome 经其 Flatpak host-etc 启动器读取受管策略，使用独立的 `~/.var/app/com.google.Chrome/config/netsec-private` 数据目录。策略限制非代理 WebRTC UDP、Local Font Access、第三方 cookie、后台运行、登录/同步及扩展。Chrome 没有与 Zen RFP/letterboxing 等价的合同，Local Font Access 策略本身也不能阻止 CSS 字体推断。
+`home/programs/firefox/firefox.nix` 中的 `strictPrivacy` 默认 true。原生 AutoConfig 用 `lockPref` 锁定偏好，包括企业 Preferences 策略不能锁定的命名空间。锁适用于该包打开的所有 profile，冲突的 `user.js` 无法覆盖；Home Manager 同时生成受管 profile 的启动偏好。各层职责如下：
 
-严格隐私下，Fontconfig 限定到运行时/应用字体及固定 Noto CJK 包，不使用宿主个人字体目录，在保留中文覆盖的同时约束字体发现范围；这不使不同浏览器的绘制结果完全一致。严格 Flatpak 覆盖使用 Wayland，关闭 X11/fallback-X11、CUPS、PC/SC socket，将全部设备访问替换为 DRI。`browser-policy-install.service` 随生成文件变化安装扩展实文件，并每五分钟协调一次；Chrome 的 host-etc Fontconfig 使用真实文件副本，不依赖沙箱中的 /etc/static。策略和启动参数变化需要完整重启浏览器才能被消费，不自动导入其他 profile 的书签、账号或站点数据。
+| 层次 | 配置与范围 |
+|---|---|
+| RFP / letterboxing | 启用 `privacy.resistFingerprinting` 与 letterboxing，收窄 Canvas、时区、硬件及窗口尺寸等暴露信号；定制桌面并不因此等同于 Tor Browser。 |
+| FPP / 跟踪保护 | FPP、锁定的严格跟踪保护、挖矿/指纹脚本拦截、社交/邮件跟踪防护和 Total Cookie Protection 限制脚本与跨站状态关联。RFP 是更广的指纹防护层，同时开启不代表有两套独立的 Canvas 防护。 |
+| URL / 来源 / 画像 | 查询参数清理、分享链接清理、跳转跟踪状态清理、跨站 referrer 限制及 GPC 减少链接标签和跨站关联；关闭搜索建议、推测连接、遥测、实验、推广内容、账号同步及内置 IP Protection。GPC 表达意愿，不能强制网站遵守。 |
+| 本地 API / 字体 | 关闭 WebRTC、WebGPU、定位、电池和传感器；严格隐私另关闭 WebGL 并限制字体可见性。Fontconfig 只读取固定 DejaVu/Noto/CJK/emoji 包，不枚举个人或系统字体目录。 |
+| ECH / TLS | 开启 ECH 发现、原生 HTTPS 记录查询和 GREASE；真实握手仍要求站点支持、可接受的 ECHConfig 及实际 DNS/代理路径支持。GREASE 是掩护流量，不是已加密 ClientHello 的证据；HTTP 代理仍向中继/核心标明目标，ECH 也不隐藏目标 IP 或流量时序。 |
+| 网络出口 | 与其他应用共用 A/B/C、核心 mark 和 `proxyOnly` 选择。B 中 `proxyOnly=false` 时，命中 DIRECT 仍可暴露真实出口；统一路由选项见 3.4。 |
 
-直接调用 Flatpak 可以绕过启动器的 profile 选择和预检，系统企业策略仍然适用；同 UID 进程仍可更改用户 profile 与用户级 Flatpak 覆盖。这些设置和代理都不提供对账号关联、出口 IP 信誉、协议分类或流量时序的匿名保证。`strictPrivacy=false` 放宽抗指纹、字体与扩展限制，受管中继、独立 profile 启动入口和显式网络模式控制继续保留。
+严格扩展策略拒绝未声明扩展；uBlock Origin 强制安装，KISS Translator 自动安装但允许移除。签名扩展及更新经相同中继从 Mozilla Add-ons 下载，需要网络可用；扩展尚未下载时，Gecko 自身跟踪保护与包内偏好锁已经生效。上述保护和代理无法阻止登录账号关联、出口 IP 信誉标签、TLS/协议分类或统计流量分析。
 
-可用 `browser-private zen --check` 或 `browser-private chrome --check` 仅执行预检，不打开浏览器或创建 profile。Zen 扩展丢失/过期时，可用 `sudo systemctl restart browser-policy-install.service` 恢复；周期协调也会恢复受管内容。
+启动器显式选定受管 profile，在严格隐私下校验字体清单，强制 Wayland，并清除继承环境中关闭 Gecko 进程沙箱的开关。菜单/MIME 统一使用该命令；用户应用目录入口优先于系统导出，原 Zen/Chrome desktop ID 也转交 Firefox，兼容已有固定项。若 profile 锁属于旧版本包的进程，启动器要求完整退出 Firefox 再重开，避免将链接送到仍使用旧配置的窗口。
+
+Firefox 内容进程沙箱保持启用。原生父进程具有普通桌面用户的文件和 socket 权限，本配置不重现 Flatpak 外层的文件系统、设备和会话总线隔离。调用包内私有的未检查程序、或另一套 Firefox，可以绕过启动检查；同 UID 代码不构成安全边界。私有程序使用该包的 runtime 时，仍受不可变策略约束。`strictPrivacy=false` 放宽 RFP、letterboxing、字体、WebGL 与扩展限制，受管中继、系统 DNS 和启动前提保持不变。`firefox --check` 只检查前提，不打开浏览器或创建 profile；包内策略变化需要完整重启浏览器。
+
+策略语义参见 Mozilla 的 [DNSOverHTTPS 参考](https://firefox-admin-docs.mozilla.org/reference/policies/dnsoverhttps/)、[Preferences 参考](https://firefox-admin-docs.mozilla.org/reference/policies/preferences/)与 [AutoConfig 指南](https://support.mozilla.org/kb/customizing-firefox-using-autoconfig)。
 
 ### 3.4 可选的统一代理
 
@@ -565,7 +587,7 @@ nix build .#checks.x86_64-linux.proxy-core
 nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
-这些检查在隔离环境中验证生成的规则、配置分支、核心策略与网络行为，不激活宿主配置。完整系统构建需要准备[本地应用资源](overlays/local-apps/README.md)。
+这些检查在隔离环境中验证原生 Firefox 策略锁与离线浏览器行为、生成的规则、配置分支、核心策略与网络行为，不激活宿主配置。完整系统构建需要准备[本地应用资源](overlays/local-apps/README.md)。
 
 监督器与校验器共用 `netsec/tun.py`：在有界期限内读取设备、双栈规则/路由表，以及 root 和桌面 UID 的未打标 IPv6 实际选路。即使 TUN 表仍存在，只要选路偏向上行口，监督器也会通过既有决策/原子提交路径进入模式 C。受管 TUN 同时固定规则优先级 9000、内部 mark 8227/8228、fallback 优先级 32768 与 file-descriptor 0；最终解析、PATCH、模板和健康视图共用这些值。RawTun schema 覆盖测试要求为上游新增字段作出显式分类。
 
@@ -592,9 +614,8 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 * `my.proxy.splitDnsProfileUuids`（默认空）与 `plaintextBootBudgetSeconds`（默认 null）——split DNS profile 例外与额外的本次开机明文总截止。被批准的 profile 会生成 dnsmasq `server=/domain/server@interface` 与绑定连接的接口/服务器租约（不支持公网上游）；resolved 自身仍走受管解析器。
 * `proxy-inspect`——只读输出接口/队列/offload/qdisc、softirq、服务 CPU/RSS 与当前状态 JSON，不发测试流量，不修改调优参数。
 * `my.hardening.allowPrivateEgress`（默认 true）——在 B 中保留 `privateV4`/ULA/link-local 直达；`false` 会把宿主私网流量也置于代理策略约束下（影响 tailnet 与门户）。`my.hardening.guestHostServices`（默认 false）开启显式配置的 VM→宿主服务端口，两组端口列表默认为空。resolved 不提供通配 DNS 监听，访客网关 DNS 独立保留。
-* `my.browser.strictPrivacy`（默认 true）——抗指纹、字体与扩展防护，与 A/B/C 和 `proxyOnly` 独立（见 3.3）。
+* `home/programs/firefox/firefox.nix` 中的 `strictPrivacy`（默认 true）——Firefox 抗指纹、字体与扩展防护，与 A/B/C 和 `proxyOnly` 独立（见 3.3）。
 * `my.proxy.proxyOnly`（默认 false）——可选的统一代理与核心 DIRECT/COMPATIBLE 拒绝；false 保留 Rule 分流及已知探针代理覆盖（见 3.4）。
-* `my.browser.zen.dohOnly`（默认 false）——true 时仅用 DoH；false 允许受管系统解析器后备，保留离线/门户场景的解析通道。
 * `my.machine`——接口名、端口（`mihomoDns`/`dnsmasq`/`unbound`/`gostHttp`/`gostRedirect`/`mihomoMixed`/`mihomoTproxy`/`dot`/`ntp`）、uid、`mihomoMark`，以及本地地址段（`privateV4`、`multicastV4`、`ulaV6`、`linkLocalV6`、`multicastV6`、`limitedBroadcastV4`）。
 * Clash 内核与其 Merge 模板配置在 `home/config/cvr-merge.nix`（TUN 栈、`dns-hijack`、`route-exclude-address`、`routing-mark`、fake-ip DNS 与过滤器、sniffer、`respect-rules`）。
 
@@ -602,8 +623,9 @@ nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 
 | 文件 | 职责 |
 |---|---|
-| `system/programs/browser-options.nix`、`browser-policies.nix`、`browser-guard.py` | 浏览器策略、严格 profile 与启动前提 |
-| `home/config/browser.nix` | 受管浏览器的桌面/MIME 入口 |
+| `home/programs/firefox/default.nix` | Firefox 模块导入入口 |
+| `home/programs/firefox/firefox.nix` | 原生 Firefox 包、不可变策略/AutoConfig、固定字体、profile 与桌面/MIME 入口 |
+| `home/programs/firefox/guard.py` | 共用网络就绪检查、字体清单、profile 选择与运行中包校验 |
 | `system/config/machine.nix` | 接口/uid/端口/mark/TUN/可调项的单点定义 |
 | `system/config/proxy-options.nix` | `my.proxy.tunMode`、`tunDev`、`fakeIpRange`、`fakeIpNet`、`routeTable`、`nodeProbeUrls` |
 | `system/config/network.nix` | nftables ruleset、`proxyModeRules`、`blockedModeRules`、`redirect_guard`、`:53` 重定向、env 代理变量、`dnsmasq`/`unbound`/`resolved`、NM dispatcher、dhcpcd hook |
