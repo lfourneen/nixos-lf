@@ -59,17 +59,16 @@
         touch "$out"
       '';
       proxy-rules = self.nixosConfigurations.lfour.config.my.proxy.expectedRules;
+      browser-privacy = import ./tests/netsec/firefox.nix {
+        inherit pkgs;
+        config = self.nixosConfigurations.lfour.config;
+      };
       proxy-profile = import ./tests/netsec/profile.nix {
         inherit pkgs;
         config = self.nixosConfigurations.lfour.config;
         uniformProxyConfig = (self.nixosConfigurations.lfour.extendModules {
           modules = [ { my.proxy.proxyOnly = true; } ];
         }).config;
-      };
-      browser-privacy = import ./tests/netsec/browser.nix {
-        inherit pkgs;
-        config = self.nixosConfigurations.lfour.config;
-        options = self.nixosConfigurations.lfour.options;
       };
       proxy-network-vm = import ./tests/netsec/vm.nix {
         inherit pkgs;

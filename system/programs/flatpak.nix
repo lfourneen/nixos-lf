@@ -72,11 +72,9 @@ in
 
     packages = [
       # Communication tools
-      "app.zen_browser.zen"
       "com.baidu.NetDisk"
       "com.dingtalk.DingTalk"
       "com.discordapp.Discord"
-      "com.google.Chrome"
       "com.qq.QQ"
       "im.riot.Riot"
       "com.tencent.WeChat"

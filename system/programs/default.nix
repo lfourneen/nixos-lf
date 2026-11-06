@@ -5,8 +5,6 @@
     ./systemd
 
     # Files
-    ./browser-options.nix
-    ./browser-policies.nix
     ./clash-verge.nix
     ./git.nix
     ./flatpak.nix

@@ -5,7 +5,6 @@
     ./niri
 
     # file
-    ./browser.nix
     ./agent-skills.nix
     ./cvr-merge.nix
     ./dconf.nix

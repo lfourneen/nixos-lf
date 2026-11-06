@@ -272,7 +272,6 @@ let
         builtin_ids = [ "btop" "helix" "kitty" "niri" ];
         community_ids = [
           "opencode"
-          "zen-browser"
           "discord"
           "telegram"
           "gimp"
