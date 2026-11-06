@@ -160,8 +160,9 @@ let
   # /proc holds no persistent data, so allowing writes there does not widen what
   # this sandbox protects; home/ and the rest of the filesystem stay read-only.
   #
-  # Escape hatch, for when the allowlist is too tight while debugging:
-  #   DSH_NO_LANDLOCK=1 dsh-desktop
+  # Escape hatches, for when the allowlist is too tight while debugging:
+  #   DSH_NO_LANDLOCK=1 dsh-desktop                  # no ruleset at all
+  #   DSH_EXTRA_RW="$HOME/.aws:$HOME/tmp" dsh-desktop  # widen, one run only
   launcher = pkgs.writeShellScript "dsh-desktop-launch" ''
     sandboxArgs=()
     if ! ${pkgs.util-linux}/bin/unshare -Ur true 2>/dev/null; then
@@ -183,8 +184,7 @@ let
 
     # Electron needs its profile dirs, the Wayland/PipeWire/dbus endpoints in
     # the runtime dir, the device nodes under /dev, and /dev/shm. The agent
-    # needs a workspace and a place to land downloads. Everything else stays
-    # read-only, which is the whole point.
+    # needs a workspace and a place to land downloads.
     writePaths=(
       /tmp
       /dev
@@ -196,11 +196,55 @@ let
       "$HOME/Projects"
       "$HOME/Downloads"
     )
+
+    # Language toolchains
+    toolchainPaths=(
+      "$HOME/.npm"
+      "$HOME/.bun"
+      "$HOME/.yarn"
+      "$HOME/go"
+      "$HOME/.cargo"
+      "$HOME/.rustup"
+      "$HOME/.gradle"
+      "$HOME/.m2"
+      "$HOME/.nuget"
+      "$HOME/.dotnet"
+      "$HOME/.cabal"
+      "$HOME/.stack"
+      "$HOME/.ghcup"
+      "$HOME/.opam"
+      "$HOME/.mix"
+      "$HOME/.hex"
+      "$HOME/.gem"
+      "$HOME/.bundle"
+      "$HOME/.composer"
+      "$HOME/.conda"
+      "$HOME/.kube"
+      "$HOME/.docker"
+      "$HOME/.terraform.d"
+      "$HOME/Android"
+      "$HOME/.android"
+    )
+    for path in "''${toolchainPaths[@]}"; do
+      [ -d "$path" ] || ${pkgs.coreutils}/bin/mkdir -p "$path"
+    done
+
     rwArgs=()
-    for path in "''${writePaths[@]}"; do
+    for path in "''${writePaths[@]}" "''${toolchainPaths[@]}"; do
       # landrun fails the entire ruleset on one missing path, so probe first.
       [ -e "$path" ] && rwArgs+=(--rw "$path")
     done
+
+    # Extra writable paths for anything not listed above, colon-separated.
+    # Read from the environment that starts the app, so it stays an operator
+    # decision instead of something a sandboxed process grants itself:
+    #   DSH_EXTRA_RW="$HOME/.aws:$HOME/tmp" dsh-desktop
+    if [ -n "''${DSH_EXTRA_RW:-}" ]; then
+      IFS=':' read -r -a extraWritePaths <<< "''${DSH_EXTRA_RW}"
+      for path in "''${extraWritePaths[@]}"; do
+        [ -e "$path" ] && rwArgs+=(--rw "$path")
+      done
+    fi
 
     # landrun drops the environment unless each variable is passed explicitly;
     # forward whatever the session carries so proxy/display/locale survive.

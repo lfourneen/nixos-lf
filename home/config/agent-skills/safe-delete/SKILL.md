@@ -45,7 +45,7 @@ nushell 里 `rm` 被 `def --wrapped rm` 覆盖成 `trash-put`，但**你（agent
 
 | 层 | 覆盖范围 | 被拦时的表现 | 谁设的 |
 |---|---|---|---|
-| Landlock（DSH 桌面 launcher） | 全盘只读 + 白名单可写：`~/Projects`、`~/Downloads`、`~/.cache`、`~/.config`、`~/.local`、`~/.dsh`、`/tmp`、`/run/user/$UID`、`/dev`、`/proc`（仅为了 Chromium 建 renderer 的 user namespace，不含持久数据） | `Permission denied`，进程内**无法解除**（内核态，只能收窄，`sudo` 也不行） | `overlays/dsh-desktop-appimage.nix` |
+| Landlock（DSH 桌面 launcher） | 全盘只读 + 白名单可写：工作区 `~/Projects`、`~/Downloads`；应用与 XDG 状态 `~/.dsh`、`~/.config`、`~/.local`、`~/.cache`；各语言工具链的 home/缓存（npm/bun/yarn、go、cargo/rustup、gradle/m2、nuget/dotnet、haskell·ocaml·elixir、gem/bundle、composer、conda、kube/docker、terraform、Android；完整清单见 `overlays/dsh-desktop-appimage.nix` 的 `toolchainPaths`）；`/tmp`、`/run/user/$UID`、`/dev`、`/proc`（仅为了 Chromium 建 renderer 的 user namespace，不含持久数据）。临时加目录：`DSH_EXTRA_RW=<path>[:...] dsh-desktop`（启动时读环境变量，沙箱内进程无法给自己扩权） | `Permission denied`，进程内**无法解除**（内核态，只能收窄，`sudo` 也不行） | `overlays/dsh-desktop-appimage.nix` |
 | immutable 位 | `~/Documents`、`~/Videos`、`~/Music`、`~/.ssh/id_*`、`~/.ssh/config`、`~/.ssh/authorized_keys`、`~/.config/sops/age/keys.txt` | `Operation not permitted`，需 root 才能解开 | `system/programs/systemd/home-guard.nix` |
 | 回收站 | 所有用户数据 | 可 `trash-restore` 找回 | trash-cli |
 
