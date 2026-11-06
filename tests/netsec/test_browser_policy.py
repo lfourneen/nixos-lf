@@ -37,6 +37,8 @@ if manifest["strictPrivacy"]:
         assert manifest["policyRepairTimer"] == "5min"
     assert zen["ExtensionSettings"]["*"]["installation_mode"] == "blocked"
     assert zen["ExtensionSettings"]["uBlock0@raymondhill.net"]["installation_mode"] == "force_installed"
+    assert zen["ExtensionSettings"]["{fb25c100-22ce-4d5a-be7e-75f3d6f0fc13}"][
+        "installation_mode"] == "normal_installed"
     prefs = Path(files["preferences"]).read_text()
     assert 'user_pref("privacy.resistFingerprinting", true);' in prefs
     assert 'user_pref("privacy.resistFingerprinting.letterboxing", true);' in prefs
