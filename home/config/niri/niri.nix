@@ -226,6 +226,14 @@ let
       open-maximized true
     }
 
+    // Firefox login/OAuth pop-ups, including Google, GitHub and Microsoft.
+    // Override the main Firefox rule above; match English and Chinese titles.
+    window-rule {
+      match app-id=r#"firefox$"# title=r#"(?i)^(sign[ -]?in\b|log[ -]?in\b|登录|登入|登錄)"#
+      open-floating true
+      open-maximized false
+    }
+
     window-rule {
       match app-id=r#"obsidian$"#
       open-maximized true
@@ -270,11 +278,6 @@ let
     // above. Keep them in one app-id alternation so the list stays compact.
     window-rule {
       match app-id=r#"^(org\.kde\.dolphin|org\.kde\.konsole|org\.kde\.systemsettings|systemsettings|org\.kde\.discover|org\.kde\.spectacle|org\.kde\.gwenview|org\.kde\.okular|org\.kde\.ark|org\.kde\.kate|org\.kde\.kwrite|org\.kde\.kinfocenter|org\.kde\.plasma-systemmonitor|org\.kde\.kwalletmanager|org\.kde\.khelpcenter|org\.kde\.kmenuedit|org\.kde\.kfontview|org\.kde\.kcolorschemeeditor|org\.kde\.kcalc|org\.kde\.kdeconnect\.app|org\.kde\.filelight|org\.kde\.partitionmanager|org\.kde\.ksystemlog|org\.kde\.skanpage|org\.kde\.kamoso|org\.kde\.plasma\.emojier|org\.kde\.qrca|org\.kde\.bluedevilwizard|org\.kde\.knetattach|org\.kde\.PrintQueue|org\.kde\.ConfigurePrinter|org\.kde\.drkonqi|org\.kde\.drkonqi\.coredump\.gui)$"#
-      open-floating true
-    }
-
-    window-rule {
-      match title=r#".*Sign in - Google Accounts — Mozilla Firefox"#
       open-floating true
     }
 
