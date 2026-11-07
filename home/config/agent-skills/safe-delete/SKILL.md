@@ -1,68 +1,42 @@
 ---
 name: safe-delete
-description: 删除任何文件或目录之前先读。本机 /home 上的 rm 语义被改成了回收站（trash），DSH 桌面跑在 Landlock 只读边界内，关键目录还带 root 设的 immutable 位；用于判断该用 trash-put 还是真 rm、被内核拒绝时该怎么做、以及哪些路径永远不许碰。触发词：删除、删掉、清理、清空、rm、rm -rf、回收站、trash、delete、remove、purge、清理缓存。
+description: 删除文件、目录或清理缓存时使用。核对删除范围，为用户数据选择回收站，并处理路径、恢复和权限问题。
 ---
 
-# 安全删除（safe-delete）
+# 安全删除
 
-这台机器的删除语义被刻意改过。动手删任何东西之前，按下面四步走。
+按数据用途选择删除方式，在任务已授权的范围内执行。
 
-## 1. 默认进回收站，不真删
+## 确认目标
 
-- 删除用户数据 → `trash-put <path>`。`-r` / `-f` 会被接受并忽略（GNU rm 兼容），所以 `trash-put -rf dir` 是合法写法。
-- 回收站是 `~/.local/share/Trash`。`/home` 是**单个 btrfs 子卷**，所以"进回收站"是 `rename(2)`：瞬时、零拷贝、不占额外空间（不存在跨子卷 `EXDEV` 的问题）。
-- 找回：`trash-list`（看） / `trash-restore`（交互式还原）。
-- `trash-empty` 才是真删除，**属于破坏性操作**，不要顺手执行。
+查看目标及父目录，确认路径、文件类型和内容。递归操作还需检查子目录和挂载点，区分用户数据、可再生成的产物及其他项目文件。
 
-只有这几类可以直接 `rm`：构建产物（`target/`、`node_modules/`、`dist/`、`result*`）、`/tmp` 下的临时文件、`~/.cache` 内的缓存。
+- 符号链接：确认要删除链接本身还是其目标；`realpath` 只用于核对位置，不自动替换删除参数。
+- 变量和批量路径：检查空值与展开结果，先形成明确清单，再逐项处理。
+- 删除范围：以实际内容和任务用途判断，目录名为 `cache`、`dist` 或 `node_modules` 也需核对。
 
-## 2. `rm` 只在交互式 shell 里被改写
+## 执行删除
 
-nushell 里 `rm` 被 `def --wrapped rm` 覆盖成 `trash-put`，但**你（agent）执行的命令跑在 `bash -c` 里，不读 nushell 配置，你的 `rm` 仍然真删**。
+用户文件和需要保留恢复机会的数据，显式使用回收站：
 
-所以：命令里显式写 `trash-put`，不要指望 alias，也不要把"用户自己敲 rm 是安全的"当成"我敲 rm 是安全的"。
-
-## 3. 删除前自检（很便宜，必须做）
-
-1. `realpath <目标>`，确认落在预期目录；变量未展开时要先展开再看。
-2. 任何递归删除之前先 `ls` 一遍目标，确认没有意外展开（glob 与带空格路径是主要事故源）。
-3. 批量删除时逐个路径来，别写 `rm -r $DIR/*`。
-4. 手上有 `trash-list | head` 可以确认刚删的东西确实躺在回收站。
-
-## 4. 被内核拒绝 = 停下来，不许绕过
-
-出现下面任一信号，**立即停止并向用户报告**：
-
-- `Permission denied` / `Operation not permitted` 出现在 `~` 下的删除或写入；
-- `chattr: Operation not permitted`；
-- DSH 桌面里写 `~/Documents`、`~/.ssh`、`~/.config/sops` 等被拒。
-
-禁止的"绕过"动作：`sudo`、`chattr -i`、`mount -o remount`、`unshare` / `nsenter` / `bwrap`、`dd`、改用 `find -delete`、写个脚本让用户自己跑。
-
-被拒绝意味着**这是受保护路径**，或**当前进程不在可写白名单内** —— 那正是要保护的东西，不是待修的 bug。
-
-## 5. 本机的保护层（现状）
-
-| 层 | 覆盖范围 | 被拦时的表现 | 谁设的 |
-|---|---|---|---|
-| Landlock（DSH 桌面 launcher） | 全盘只读 + 白名单可写：工作区 `~/Projects`、`~/Downloads`；应用与 XDG 状态 `~/.dsh`、`~/.config`、`~/.local`、`~/.cache`；各语言工具链的 home/缓存（npm/bun/yarn、go、cargo/rustup、gradle/m2、nuget/dotnet、haskell·ocaml·elixir、gem/bundle、composer、conda、kube/docker、terraform、Android；完整清单见 `overlays/dsh-desktop-appimage.nix` 的 `toolchainPaths`）；`/tmp`、`/run/user/$UID`、`/dev`、`/proc`（仅为了 Chromium 建 renderer 的 user namespace，不含持久数据）。临时加目录：`DSH_EXTRA_RW=<path>[:...] dsh-desktop`（启动时读环境变量，沙箱内进程无法给自己扩权） | `Permission denied`，进程内**无法解除**（内核态，只能收窄，`sudo` 也不行） | `overlays/dsh-desktop-appimage.nix` |
-| immutable 位 | `~/Documents`、`~/Videos`、`~/Music`、`~/.ssh/id_*`、`~/.ssh/config`、`~/.ssh/authorized_keys`、`~/.config/sops/age/keys.txt` | `Operation not permitted`，需 root 才能解开 | `system/programs/systemd/home-guard.nix` |
-| 回收站 | 所有用户数据 | 可 `trash-restore` 找回 | trash-cli |
-
-查看/临时调整（需要用户密码，agent 不应自己调用）：
-
-```
-sudo home-guard status           # 哪些路径被锁着
-sudo home-guard unlock ~/.ssh    # 临时解锁（例如接受新主机指纹）
-sudo home-guard lock             # 重新上锁
+```bash
+trash-put -- "$target"
 ```
 
-注意：被 immutable 锁住的**目录**连新建文件都会失败，所以往 `~/Documents` 存东西前要先 unlock。
+明确属于当前任务、可直接丢弃的临时文件、构建产物或缓存，可用 `rm -- "$target"`；删除目录时再增加递归参数。参数加引号，并用 `--` 结束选项。批量查找结果需经过核对，再交给删除命令。
 
-## 6. 永远不要
+`trash-put` 缺失时先补齐工具；移动失败时查明原因，保留原文件，避免自动降级为永久删除。清空回收站只在任务明确要求时执行。
 
-- 删除 `~`、`/home/*`、`/nix/store`、`/etc`、`/var/lib` 下不是你创建的东西；
-- 对 `~` 整体做 `chmod` / `chown` / `find -delete` / `rsync --delete`；
-- 在没有被明确要求时"顺手清理"用户目录；
-- 把 `trash-empty`、`btrfs subvolume delete`、`rm -rf /` 当成可自主决定的操作；
-- 因为"删不掉"就去改动保护机制本身。
+本机 Nushell 将 `rm` 包装为回收站操作；其他 shell 需要显式使用回收站命令。Python 删除接口、外部 `rm` 等不会被这个包装改写。
+
+## 验证与恢复
+
+用 `trash-list` 核对移入回收站的原路径与时间，需要恢复时使用 `trash-restore`。默认 home 回收站在 `${XDG_DATA_HOME:-$HOME/.local/share}/Trash`，文件位于 `files`，恢复信息位于 `info`；其他挂载点可能使用各自的回收站，应以工具记录为准。
+
+直接删除后检查预期目标已移除，父目录和相邻文件仍符合任务范围。说明结果时区分已移入回收站和永久删除。
+
+## 处理权限拒绝
+
+暂停失败的删除，检查权限、挂载属性、文件标志和当前客户端的沙箱范围。本机的默认可写路径、受限目录和 immutable 文件见 [本机删除保护](references/local-protection.md)。
+
+确认原因后，在已有授权和客户端权限机制允许的范围内继续。解除 immutable、修改挂载或扩大沙箱范围需要相应授权；目标归属或删除范围不明时，先保留文件并报告缺少的信息。
