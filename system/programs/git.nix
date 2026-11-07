@@ -11,7 +11,7 @@
 
       user = {
         name  = "lfourneen";
-        email = "lfourneen@qq.com";
+        email = "lfourneen@outlook.com";
       };
 
       # Use gh's credentials for GitHub (gh auth login already done).
