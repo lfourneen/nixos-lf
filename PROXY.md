@@ -243,7 +243,7 @@ nix build .#checks.x86_64-linux.proxy-core
 nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
-These checks validate native Firefox policy locks and offline browser behavior, generated rules, profile variants, core policy and network behavior in isolated environments without activating the host configuration. Complete-system builds require the [local application assets](overlays/local-apps/README.md).
+These checks validate native Firefox policy locks and offline browser behavior, generated rules, profile variants, core policy and network behavior in isolated environments without activating the host configuration.
 
 The supervisor and verifier share `netsec/tun.py`: a bounded JSON observation of the device, both routing tables/rules, and actual unmarked IPv6 routes for root and the desktop UID. A route that chooses an uplink despite a surviving TUN table forces Mode C through the existing supervisor decision/commit path. Managed TUN inputs also pin rule priority 9000, internal marks 8227/8228, fallback priority 32768 and file-descriptor 0; profile parsing, PATCH, templates and the health view share those values. An upstream RawTun schema coverage test requires explicit classification of new fields.
 
@@ -587,7 +587,7 @@ nix build .#checks.x86_64-linux.proxy-core
 nix build .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
-这些检查在隔离环境中验证原生 Firefox 策略锁与离线浏览器行为、生成的规则、配置分支、核心策略与网络行为，不激活宿主配置。完整系统构建需要准备[本地应用资源](overlays/local-apps/README.md)。
+这些检查在隔离环境中验证原生 Firefox 策略锁与离线浏览器行为、生成的规则、配置分支、核心策略与网络行为，不激活宿主配置。
 
 监督器与校验器共用 `netsec/tun.py`：在有界期限内读取设备、双栈规则/路由表，以及 root 和桌面 UID 的未打标 IPv6 实际选路。即使 TUN 表仍存在，只要选路偏向上行口，监督器也会通过既有决策/原子提交路径进入模式 C。受管 TUN 同时固定规则优先级 9000、内部 mark 8227/8228、fallback 优先级 32768 与 file-descriptor 0；最终解析、PATCH、模板和健康视图共用这些值。RawTun schema 覆盖测试要求为上游新增字段作出显式分类。
 

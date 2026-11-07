@@ -1,8 +1,6 @@
 # Local-only large assets
 home/wallpapers/*
 !home/wallpapers/README.md
-overlays/local-apps/*
-!overlays/local-apps/README.md
 
 # Generated build input
 local-data/*

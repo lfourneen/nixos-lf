@@ -69,7 +69,6 @@ sudo nixos-rebuild switch --flake .#yourname
 │   └── userpkgs/           # 用户软件包
 │
 ├── overlays/               # Nixpkgs overlays
-│   └── local_apps/         # 自定义本地应用
 │
 ├── local-data/                   # 生成的构建输入
 │   └── dns-blocklist.txt.xz      # DNS 黑名单合并后的上游名单

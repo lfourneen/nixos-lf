@@ -9,7 +9,10 @@ let
   # a hicolor icon set under usr/share. Since 2.0.18 the JavaScript payload is
   # packed into resources/app.asar, with native addons (and anything the Host
   # child process must read) beside it in resources/app.asar.unpacked.
-  src = ./local-apps/DSH-NEXT-${version}-next-x86_64.AppImage;
+  src = pkgs.fetchurl {
+    url = "https://github.com/anywhere-labs/dsh-desktop/releases/download/v${version}-next/DSH-NEXT-${version}-next-x86_64.AppImage";
+    hash = "sha256-U04xJC0pWnHPkqgAHrXH536cc2EmU1+pMCbtI7NzZGc=";
+  };
 
   # Single unpack, reused as the runtime tree plus the desktop entry and icons.
   # postExtract patches vendor bugs (see inline notes); `--replace-fail` is
@@ -263,10 +266,6 @@ let
   '';
 
 in
-# No nixpkgs fallback; a missing local AppImage is a hard error.
-if !builtins.pathExists src then
-  throw "dsh-desktop: ${toString src} is missing; see overlays/local-apps/README.md"
-else
 # Prebuilt Electron trees are hostile to autoPatchelf: the runtime ships its own
 # libffmpeg/libvulkan and dozens of native .node addons that resolve siblings
 # through $ORIGIN RPATHs. An FHS supplies the standard library search paths
@@ -355,7 +354,7 @@ pkgs.buildFHSEnv {
   meta = {
     mainProgram = pname;
     description = "DSH Desktop: an Electron shell composed as a DeepSeek Harness Cordis plugin";
-    homepage = "https://github.com/anywhere-labs/deepseek-harness-desktop";
+    homepage = "https://github.com/anywhere-labs/dsh-desktop";
     license = pkgs.lib.licenses.mit;
     platforms = pkgs.lib.platforms.linux;
     sourceProvenance = with pkgs.lib.sourceTypes; [ binaryNativeCode ];
