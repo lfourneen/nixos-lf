@@ -1,11 +1,13 @@
-{ pkgs, config }:
+{ pkgs, config, compatConfig }:
 
 let
   home = config.home-manager.users.${config.my.machine.desktopUser};
+  compatHome = compatConfig.home-manager.users.${compatConfig.my.machine.desktopUser};
   firefox = home.programs.firefox.finalPackage;
   manifest = pkgs.writeText "firefox-test.json" (builtins.toJSON {
     package = firefox;
     inherit (firefox.netsec) settings prefs;
+    compatPrefs = compatHome.programs.firefox.finalPackage.netsec.prefs;
     policies = home.programs.firefox.policies;
     relayPort = config.my.machine.ports.gostHttp;
     desktop = home.xdg.dataFile."applications/firefox.desktop".source;

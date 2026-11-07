@@ -4,6 +4,7 @@ let
   # Browser traffic follows the same gost relay as the rest of the session.
   relay = "127.0.0.1:${toString osConfig.my.machine.ports.gostHttp}";
   strictPrivacy = true;
+  compat = config.my.firefox.videoSiteCompat;
   profile = "${config.programs.firefox.configPath}/lfour";
   fontPackages = [ pkgs.dejavu_fonts pkgs.noto-fonts pkgs.noto-fonts-cjk-sans pkgs.noto-fonts-color-emoji ];
   fonts = pkgs.writeText "firefox-fonts.conf" ''
@@ -100,7 +101,9 @@ let
     "extensions.htmlaboutaddons.recommendations.enabled" = false;
 
     # Referrer / preconnect
-    "network.http.referer.XOriginPolicy" = 2;
+    # Cross-origin Referer stays suppressed unless the compatibility
+    # switch is enabled for media CDNs that reject requests without it.
+    "network.http.referer.XOriginPolicy" = if compat then 0 else 2;
     "network.http.referer.XOriginTrimmingPolicy" = 2;
     "browser.urlbar.speculativeConnect.enabled" = false;
     "browser.places.speculativeConnect.enabled" = false;
@@ -226,6 +229,8 @@ let
 
 in
 {
+  imports = [ ./options.nix ];
+
   programs.firefox = {
     enable = true;
     package = (pkgs.firefox.override {
