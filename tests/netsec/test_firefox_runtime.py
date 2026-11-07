@@ -43,6 +43,15 @@ for desktop in [manifest["desktop"], *manifest["aliases"]]:
     commands = [line for line in content.splitlines() if line.startswith("Exec=")]
     assert commands and all(line.startswith("Exec=" + str(package) + "/bin/firefox ") for line in commands)
     assert "flatpak run" not in content and "--ProfileManager" not in content
+
+# The compatibility switch must be the only thing that changes the Referer
+# policy; trimming stays origin-only in both modes.
+referer = "network.http.referer.XOriginPolicy"
+trimming = "network.http.referer.XOriginTrimmingPolicy"
+assert manifest["prefs"][referer] == 2
+assert manifest["prefs"][trimming] == 2
+assert manifest["compatPrefs"][referer] == 0
+assert manifest["compatPrefs"][trimming] == 2
 for name in ("text/html", "x-scheme-handler/http", "x-scheme-handler/https"):
     assert manifest["mime"][name] == ["firefox.desktop"]
 archive_bytes = (package / "lib/firefox/browser/omni.ja").read_bytes()
@@ -58,6 +67,7 @@ with zipfile.ZipFile(io.BytesIO(archive_bytes + archive_bytes[offset:offset + si
 guard.verify_fonts(settings)
 
 PAGE = r"""<!doctype html><meta charset=utf-8><title>Offline privacy fixture</title>
+<img src="http://media.example.invalid/pixel.png" alt="">
 <script>
 const c=document.createElement('canvas');c.width=64;c.height=64;
 const ctx=c.getContext('2d');ctx.fillStyle='rgb(17,83,149)';ctx.fillRect(0,0,64,64);
@@ -69,11 +79,13 @@ window.result=JSON.stringify({changed:data.reduce((n,b,i)=>n+(b!==expected[i%4])
  webgpu:!!navigator.gpu, language:navigator.language, cpu:navigator.hardwareConcurrency});
 </script>"""
 requests = []
+referers = {}
 
 
 class Proxy(BaseHTTPRequestHandler):
     def do_GET(self):
         requests.append(self.path)
+        referers[self.path] = self.headers.get("Referer")
         body = PAGE.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -205,6 +217,11 @@ return prefs;
             assert record["web"]["webRTC"] == "undefined"
             assert not record["web"]["webgl"] and not record["web"]["webgpu"]
             assert "http://privacy-fixture.invalid/" in requests, requests
+            media = "http://media.example.invalid/pixel.png"
+            assert media in referers, referers
+            expect = "http://privacy-fixture.invalid/" \
+                if manifest["prefs"]["network.http.referer.XOriginPolicy"] == 0 else None
+            assert referers[media] == expect, referers
             # A literal HTTP portal and loopback address must also use the relay.
             for url in ("http://192.168.1.1/portal", "http://127.0.0.1/relay-check"):
                 client.call("WebDriver:Navigate", {"url": url})

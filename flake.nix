@@ -62,6 +62,13 @@
       browser-privacy = import ./tests/netsec/firefox.nix {
         inherit pkgs;
         config = self.nixosConfigurations.lfour.config;
+        compatConfig = (self.nixosConfigurations.lfour.extendModules {
+          modules = [ {
+            home-manager.users.${self.nixosConfigurations.lfour.config.my.machine.desktopUser} = {
+              my.firefox.videoSiteCompat = true;
+            };
+          } ];
+        }).config;
       };
       proxy-profile = import ./tests/netsec/profile.nix {
         inherit pkgs;
