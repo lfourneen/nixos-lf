@@ -7,7 +7,7 @@
 # password is asked at most once for the whole run (zero times while sudo's
 # timestamp is still valid). Running it as root (`su -`) works too.
 #
-# Copied:  home/ (incl. wallpapers), overlays/ (incl. local-apps/*.AppImage),
+# Copied:  home/ (incl. wallpapers), overlays/,
 #          system/ (incl. secrets/secrets.yaml), tests/ (flake check sources),
 #          local-data/ (generated inputs kept out of Git, e.g.
 #          dns-blocklist.txt.xz - the flake cannot evaluate without it),
@@ -143,7 +143,7 @@ excludes=(
 # home/ : keep local wallpapers; README placeholders are dropped by *.md.
 rsync -a --delete --no-owner --no-group "${excludes[@]}" \
   "$REPO_DIR/home/" "$DEST_DIR/home/"
-# overlays/ : MUST keep local-apps/*.AppImage (bilibili build dep).
+# overlays/
 rsync -a --delete --no-owner --no-group "${excludes[@]}" \
   "$REPO_DIR/overlays/" "$DEST_DIR/overlays/"
 # local-data/ : generated build inputs that are git-ignored (see

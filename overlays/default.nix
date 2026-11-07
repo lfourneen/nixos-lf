@@ -1,10 +1,8 @@
 final: prev:
 {
-  # bilibili-appimage.nix owns the AppImage version and falls back to nixpkgs'
-  # bilibili when the local file is missing, so no version lives here.
-  bilibili = final.callPackage ./bilibili-appimage.nix {
-    fallback = prev.bilibili;
-  };
+  # bilibili-appimage.nix pins the upstream AppImage version and fetches it
+  # from the GitHub release, so pure flake builds work without a local file.
+  bilibili = final.callPackage ./bilibili-appimage.nix { };
 
   dsh-desktop = final.callPackage ./dsh-desktop-appimage.nix { };
 

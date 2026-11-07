@@ -3,19 +3,16 @@
 let
   pname = "waywallen";
   version = "0.5.0";
-  src = ./local-apps/waywallen-${version}-x86_64.AppImage;
+  src = pkgs.fetchurl {
+    url = "https://github.com/waywallen/waywallen/releases/download/v${version}/waywallen-${version}-x86_64.AppImage";
+    hash = "sha256-5iFsX//HBWEisQXldFlQye53cQ4pSmO2h8Szhx4ZAIM=";
+  };
 
   # Single extraction, reused for the runtime AppDir plus the desktop entry,
   # icon and metainfo.
   appDir = pkgs.appimageTools.extract { inherit pname version src; };
 
 in
-# Single source of truth for the local AppImage version. There is no nixpkgs
-# package to fall back to, so a missing file is a hard error instead of a
-# silently missing package. See overlays/local-apps/README.md for the filename.
-if !builtins.pathExists src then
-  throw "waywallen: ${toString src} is missing; see overlays/local-apps/README.md"
-else
 pkgs.appimageTools.wrapAppImage {
   inherit pname version;
   src = appDir;

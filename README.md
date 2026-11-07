@@ -71,7 +71,6 @@ sudo nixos-rebuild switch --flake .#yourname
 │   └── userpkgs/           # User packages
 │
 ├── overlays/               # Nixpkgs overlays
-│   └── local_apps/         # Custom local applications
 │
 ├── local-data/               # Generated build inputs
 │   └── dns-blocklist.txt.xz  # Merged upstream name list for the DNS blocklist

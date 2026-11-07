@@ -3,8 +3,8 @@
 let
   # Questa*-Altera FPGA Edition (Standard/Starter). Install it with the vendor
   # BitRock installer first:
-  #   chmod +x overlays/local-apps/QuestaSetup-25.1std.0.1129-linux.run
-  #   overlays/local-apps/QuestaSetup-25.1std.0.1129-linux.run \
+  #   chmod +x "$HOME/Downloads/QuestaSetup-25.1std.0.1129-linux.run"
+  #   "$HOME/Downloads/QuestaSetup-25.1std.0.1129-linux.run" \
   #     --mode unattended --unattendedmodeui none \
   #     --installdir "$HOME/FHS/altera/25.1std" \
   #     --accept_eula 1 --questa_edition questa_fse
