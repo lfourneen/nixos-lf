@@ -1,11 +1,9 @@
-# local-data — generated inputs that stay off Git
+# local-data — generated build inputs
 
-Anything in this directory is build input, not source: it is produced by a
-script in `scripts/`, it is large, and it changes whenever its upstream lists
-do. The contents are git-ignored (only this README is tracked) so the
-repository stays small and history does not carry a multi-megabyte blob per
-refresh. The file still has to be present wherever the flake is evaluated —
-that is the prerequisite described below.
+This directory contains generated build inputs produced by scripts in
+`scripts/`. The DNS blocklist snapshot is tracked so a Git-backed flake
+evaluation includes the same input as the checkout. Other generated files
+are ignored unless explicitly listed in `.gitignore`.
 
 ## What lives here
 
@@ -16,7 +14,7 @@ that is the prerequisite described below.
 `dns-blocklist.txt.xz` is the merged, de-duplicated name list behind the DNS
 blocklist: one lowercase name per line, combining every entry of the upstreams
 recorded in the header of `system/config/dns-blocklist.nix`. Its size follows
-those upstreams, so it is not pinned here.
+those upstreams. Each configuration build uses the checked-in snapshot.
 
 ## Regenerating
 
@@ -44,8 +42,7 @@ checkout, then `nixos-rebuild --flake /etc/nixos#lfour`. The script copies
 `local-data/` along with the tree and refuses to start when the data file is
 missing, so an incomplete tree cannot reach the evaluator.
 
-A *pure* evaluation straight from the Git checkout cannot see the file (Nix
-copies tracked files only). For a one-off build from here, evaluate the
-checkout as a plain path instead: `nixos-rebuild switch --flake
-path:/home/lfour/Projects/Nix/nixos-lf#lfour`. The flake checks in `.#checks`
-do not read this file, so they keep working in the checkout either way.
+Git-backed evaluation includes tracked files. After refreshing the snapshot,
+stage the updated file together with its header before running flake checks
+or committing. Both `nixos-rebuild --flake .#lfour` and the `.#checks` outputs
+can then use the snapshot from this checkout.

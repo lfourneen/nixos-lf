@@ -94,6 +94,11 @@ in
       vmess-config = "";
       "tuic-server.enable" = false;
       "iptables.enable" = false;
+      "geo-auto-update" = false;
+      # Providers can smuggle a catch-all rule past the top-level rule check;
+      # the managed profile pins the map empty until a reviewed provider policy
+      # exists. Rulesets that need providers must be added here explicitly.
+      "rule-providers" = { };
       mixed-port = m.ports.mihomoMixed;
       port = 0;
       socks-port = 0;

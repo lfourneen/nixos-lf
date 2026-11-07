@@ -242,15 +242,15 @@ in
     # system.slice/clash-verge.service, the user helper selects only GUI processes.
     # The shared helper recognizes public and historical wrapped GUI names.
     def clash-gui-running [] {
-      (^${pkgs.python3}/bin/python3 ${../../system/programs/clash-verge-gui.py} --running | complete).exit_code == 0
+      (^${pkgs.python3}/bin/python3 ${../../system/programs/clash/clash-verge-gui.py} --running | complete).exit_code == 0
     }
 
     # Stop the Clash core and return to Mode A (direct egress).
-    # In service mode the core is owned by the always-on clash-verge.service
+    # In service mode the core is owned by the on-demand clash-verge.service
     # helper, so quitting the GUI does NOT stop it -- stopping the unit does.
     def clash-off [] {
       print $"(ansi yellow_bold)Stopping the Clash core \(service mode\)...(ansi reset)"
-      let gui = (^${pkgs.python3}/bin/python3 ${../../system/programs/clash-verge-gui.py} --stop | complete)
+      let gui = (^${pkgs.python3}/bin/python3 ${../../system/programs/clash/clash-verge-gui.py} --stop | complete)
       if $gui.exit_code != 0 {
         print -e $gui.stderr
         print $"(ansi red_bold)Failed to stop the Clash GUI ✗(ansi reset)"
@@ -274,6 +274,11 @@ in
       sudo proxy-control on
       if $env.LAST_EXIT_CODE != 0 {
         print $"(ansi red_bold)Core start failed; protection remains active.(ansi reset)"
+        # A first run has no runtime profile yet: the launcher refuses before
+        # the GUI has written one. Open the GUI so it can materialize the
+        # profile, then let the operator rerun clash-on.
+        job spawn { ^clash-verge }
+        print $"Run (ansi yellow_bold)clash-on(ansi reset) again after the GUI has written its profile."
         return
       }
       # Always pass through the current launcher: it preserves a current GUI

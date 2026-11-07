@@ -4,6 +4,7 @@ import hashlib
 import http.client
 import ipaddress
 import json
+import os
 from pathlib import Path
 import re
 import signal
@@ -55,6 +56,17 @@ def check_config(config, settings):
                     raise ProbeFailure("config", f"tun.{field} differs from managed configuration")
         elif view.get(key) != expected:
             raise ProbeFailure("config", f"{key} differs from managed configuration")
+    digest_path = settings.get("digest_file")
+    directory = settings.get("effective_directory")
+    if directory and (settings.get("snapshot_required") or (digest_path and os.path.exists(digest_path))):
+        try:
+            result = subprocess.run([sys.executable, settings["snapshot_tool"], "verify", directory,
+                                     digest_path, settings["authorization_file"]],
+                                    text=True, capture_output=True, timeout=3, check=False)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ProbeFailure("config", f"cannot verify the authorized snapshot: {error}")
+        if result.returncode:
+            raise ProbeFailure("config", "authorized snapshot verification failed")
     return hashlib.sha256(json.dumps(view, sort_keys=True).encode()).hexdigest()
 
 

@@ -13,12 +13,43 @@ let
     text = builtins.readFile ./clash-verge-defaults.sh;
   };
   guiDefaultsCheck = pkgs.runCommand "proxy-gui-defaults" { } ''
-    ${pkgs.nodejs}/bin/node ${../../tests/netsec/test_gui_defaults.js} \
+    ${pkgs.nodejs}/bin/node ${../../../tests/netsec/test_gui_defaults.js} \
       ${guiDefaults}/bin/clash-verge-defaults ${pkgs.yq-go}/bin/yq \
       ${lib.escapeShellArg config.my.proxy.delayTestUrl}
-    ${pkgs.python3}/bin/python3 ${../../tests/netsec/test_gui_process.py} ${./clash-verge-gui.py}
+    ${pkgs.python3}/bin/python3 ${../../../tests/netsec/test_gui_process.py} ${./clash-verge-gui.py}
     touch "$out"
   '';
+
+  desktopUser = config.my.machine.desktopUser;
+  desktopUid = config.users.users.${desktopUser}.uid;
+  guiData = "${config.users.users.${desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev";
+  stageSettings = pkgs.writeText "clash-stage-settings.json" (builtins.toJSON {
+    gui_data = guiData;
+    desktop_uid = desktopUid;
+    runtime = "/run/clash-verge-rev";
+    state = "/run/proxy-mode";
+    data = "/var/lib/clash-core";
+    setpriv = "${pkgs.util-linux}/bin/setpriv";
+  });
+  # Root launcher behind bin/verge-mihomo. It enforces the clash-on intent,
+  # stages and validates the effective configuration, and drops the core to a
+  # dedicated service identity before it opens a TUN or listener.
+  coreLauncher = pkgs.writeShellScript "verge-mihomo-launcher" ''
+    export PATH=${lib.makeBinPath [ pkgs.bash pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.socat pkgs.util-linux ]}:$PATH
+    ${builtins.replaceStrings
+      [ "@desktopUid@" "@guiData@" "@clashCore@" "@python@" "@stageTool@" "@stageSettings@" "@controlGroup@" ]
+      [ (toString desktopUid) guiData "clash-core" "${pkgs.python3}/bin/python3" "${./clash-verge-stage.py}" (toString stageSettings) config.programs.clash-verge.group ]
+      (builtins.readFile ./clash-verge-core-launcher.sh)}
+  '';
+
+  # The packaged helper (2.3.3) execs the client-supplied core_path as root.
+  # Pin the single spawn choke point to a root-owned, non-writable path; the
+  # remaining authorization lives in the launcher and the firewall.
+  patchedService = pkgs.unstable.clash-verge-rev.service.overrideAttrs (old: {
+    postPatch = (old.postPatch or "") + ''
+      ${pkgs.python3}/bin/python3 ${./patch_clash_service.py} .
+    '';
+  });
 
   # HTTP-only policy used by the core checks.
   httpOnlyConfig = config // {
@@ -29,27 +60,31 @@ let
       };
     };
   };
-  httpOnlyPolicy = (import ../config/proxy-profile.nix {
+  httpOnlyPolicy = (import ../../config/proxy-profile.nix {
     inherit lib;
     config = httpOnlyConfig;
   }).options.my.proxy.managedProfile.default;
   # Rebuild the core only when its source patches change.
+  netsecDir = ../systemd/netsec;
   managedSources = lib.fileset.toSource {
-    root = ./systemd/netsec;
+    root = netsecDir;
     fileset = lib.fileset.unions [
-      ./systemd/netsec/patch_mihomo.py
-      ./systemd/netsec/patch_sing_tun.py
-      ./systemd/netsec/patch_socks.py
-      ./systemd/netsec/socks_addr_test.go
-      ./systemd/netsec/managed_profile.go
-      ./systemd/netsec/managed_profile_test.go
-      ./systemd/netsec/managed_route.go
-      ./systemd/netsec/managed_route_test.go
-      ./systemd/netsec/managed_direct_test.go
-      ./systemd/netsec/managed_dns_test.go
-      ./systemd/netsec/managed_udp_test.go
-      ./systemd/netsec/target_guard.go
-      ./systemd/netsec/target_guard_test.go
+      (netsecDir + "/patch_mihomo.py")
+      (netsecDir + "/patch_sing_tun.py")
+      (netsecDir + "/patch_socks.py")
+      (netsecDir + "/socks_addr_test.go")
+      (netsecDir + "/managed_profile.go")
+      (netsecDir + "/managed_profile_test.go")
+      (netsecDir + "/managed_route.go")
+      (netsecDir + "/managed_route_test.go")
+      (netsecDir + "/managed_rules_test.go")
+      (netsecDir + "/policy_middleware.go")
+      (netsecDir + "/policy_middleware_test.go")
+      (netsecDir + "/managed_direct_test.go")
+      (netsecDir + "/managed_dns_test.go")
+      (netsecDir + "/managed_udp_test.go")
+      (netsecDir + "/target_guard.go")
+      (netsecDir + "/target_guard_test.go")
     ];
   };
   managedCore = pkgs.unstable.mihomo.overrideAttrs (old: {
@@ -58,7 +93,7 @@ let
       runHook preCheck
       export LF_MANAGED_TEST_POLICY=${pkgs.writeText "mihomo-managed-test-policy.json" (builtins.toJSON config.my.proxy.managedProfile)}
       export LF_MANAGED_TEST_HTTP_POLICY=${pkgs.writeText "mihomo-managed-test-http-policy.json" (builtins.toJSON httpOnlyPolicy)}
-      export LF_MANAGED_TEST_LEGACY_PROFILE=${../../tests/netsec/legacy-managed-profile.json}
+      export LF_MANAGED_TEST_LEGACY_PROFILE=${../../../tests/netsec/legacy-managed-profile.json}
       go test -mod=vendor ./config ./hub/route -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/inbound ./transport/socks5 -count=1
       go test -mod=vendor ./component/lfguard -count=1
@@ -76,7 +111,8 @@ let
 
 in
 {
-  # Service mode runs the core as root; the firewall permits its routing mark.
+  imports = [ ./runtime.nix ];
+  # Service mode drops the core to its pinned UID; the firewall permits its mark.
   # Source patches enforce the managed profile and correct nftables interval
   # endpoints and SOCKS address parsing. Exact anchors reject incompatible
   # upstream sources at build time.
@@ -87,6 +123,15 @@ in
     }).overrideAttrs (old: {
       nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.makeWrapper ];
       postFixup = (old.postFixup or "") + ''
+        # Replace the helper copied by the GUI package with the locally pinned
+        # build. The module starts bin/clash-verge-service from this package.
+        rm -f "$out/bin/clash-verge-service"
+        install -m 0755 ${patchedService}/bin/clash-verge-service "$out/bin/clash-verge-service"
+        # bin/.verge-mihomo-wrapped is the package's symlink to the real
+        # mihomo binary; keep it as the launcher's read-only passthrough
+        # target and replace only the public wrapper.
+        rm -f "$out/bin/verge-mihomo"
+        install -m 0555 ${coreLauncher} "$out/bin/verge-mihomo"
         mv "$out/bin/clash-verge" "$out/bin/.clash-verge-launcher"
         # The inner wrapper must expose the public name to clash-on/off. A
         # nested shell otherwise changes argv[0] to .clash-verge-launcher.
@@ -96,7 +141,7 @@ in
           --run "${guiProcess}/bin/clash-verge-gui-prepare \"$out/bin/clash-verge\" || exit 1" \
           --run ${lib.escapeShellArg ''${guiDefaults}/bin/clash-verge-defaults ${lib.escapeShellArg config.my.proxy.delayTestUrl} || echo "Clash Verge: could not set the default delay-test URL" >&2''}
       '';
-      passthru = (old.passthru or { }) // { inherit managedCore guiDefaultsCheck; };
+      passthru = (old.passthru or { }) // { inherit managedCore guiDefaultsCheck stageSettings; };
     });
     serviceMode = true;
     group = "clash-verge-control";
@@ -106,15 +151,4 @@ in
       == toString pkgs.unstable.clash-verge-rev.unwrapped;
     message = "The GUI delay default must reuse the unmodified Clash Verge application.";
   }];
-  users.groups.clash-verge-control.members = [ config.my.machine.desktopUser ];
-
-  # Persist the helper's requested core state under ProtectSystem=strict.
-  systemd.services.clash-verge.serviceConfig.StateDirectory = [ "clash-verge-service" ];
-  # Keep the managed dual-stack TUN present even when the core starts on an
-  # IPv4-only uplink. The helper's spawned core inherits this environment.
-  systemd.services.clash-verge.environment = lib.optionalAttrs
-    (config.networking.enableIPv6 && config.my.proxy.tunMode) { SKIP_SYSTEM_IPV6_CHECK = "1"; }
-    // { LF_MANAGED_PROXY_POLICY = pkgs.writeText "mihomo-managed-policy.json"
-      (builtins.toJSON config.my.proxy.managedProfile); };
 }
-

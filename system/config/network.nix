@@ -274,11 +274,11 @@ let
     # Retain the loopback-source reply allowance for the PREROUTING redirect
     # path. Reverse NAT runs after this chain, so replies still carry the
     # redirect listener's local source here.
-    add rule inet lf_filter lf_blocked_guard meta skuid 0 ip saddr 127.0.0.1 ip daddr ${fakeIpNet} accept
+    add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.clashCore} } ip saddr 127.0.0.1 ip daddr ${fakeIpNet} accept
     # The patched OUTPUT DNAT uses the TUN's local address, preserving sockets
     # bound to that interface. Permit only root TCP replies to those DNAT flows
     # so the fake-IP self-test can recover while C still refuses client egress.
-    add rule inet lf_filter lf_blocked_guard meta skuid 0 ip saddr ${tunIpv4Address} ip daddr ${fakeIpNet} meta l4proto tcp ct direction reply ct status dnat ct original ip daddr ${fakeIpNet} ct original proto-dst { 80, 443 } accept
+    add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.clashCore} } ip saddr ${tunIpv4Address} ip daddr ${fakeIpNet} meta l4proto tcp ct direction reply ct status dnat ct original ip daddr ${fakeIpNet} ct original proto-dst { 80, 443 } accept
     # Retain pinned DHCP clients, including unicast renewals. Server replies
     # are only needed for the explicitly enabled AP and its own subnet.
     add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept
@@ -795,7 +795,7 @@ in
           # Leave 1054 open: uplink :53 is redirected there with the caller UID.
           oifname "lo" meta l4proto { tcp, udp } th dport { ${toString port.mihomoDns}, ${toString port.unbound} } meta skuid != { 0, ${toString dnsmasqUid} } counter drop
           # A port occupier must not answer allowed clients between checks.
-          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.mihomoDns} meta skuid != 0 counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.mihomoDns} meta skuid != { 0, ${toString m.uids.clashCore} } counter drop
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.dnsmasq} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.unbound} meta skuid != { 0, ${toString unboundUid} } counter drop
         }
@@ -972,6 +972,7 @@ in
         chain lf_dns_egress_guard {
           type filter hook output priority -196; policy accept;
           meta skuid ${toString unboundUid} oifname { "${wired}", "${wireless}" } ip daddr ${dnsDotUpstreams} tcp dport ${toString port.dot} accept
+          meta skuid ${toString m.uids.clashCore} meta mark ${coreMark} meta l4proto { tcp, udp } th dport ${toString port.dot} accept
           meta skuid != { 0, ${toString unboundUid} } meta l4proto { tcp, udp } th dport ${toString port.dot} counter drop
         }
 

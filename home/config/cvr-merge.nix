@@ -156,7 +156,7 @@ in
       # locally-generated IPv6 bypass TUN.
       #
       # auto-redirect needs the sing-tun patch applied in
-      # system/programs/clash-verge.nix.
+      # system/programs/clash/default.nix.
         stack: ${osConfig.my.proxy.tunStack}
         device: ${tunDev}
         auto-route: true

@@ -5,6 +5,7 @@ home/wallpapers/*
 # Generated build input
 local-data/*
 !local-data/README.md
+!local-data/dns-blocklist.txt.xz
 
 # Local working files and reports
 audit/

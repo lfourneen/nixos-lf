@@ -135,6 +135,9 @@ func lfValidateRaw(raw *RawConfig) (string, error) {
 	if err := lfManagedProfileDefaults(raw); err != nil {
 		return "", err
 	}
+	if err := lfValidateRuleInvariants(raw); err != nil {
+		return "", err
+	}
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return "", err
@@ -150,6 +153,37 @@ func lfValidateRaw(raw *RawConfig) (string, error) {
 	return id, err
 }
 
+// lfValidateRuleInvariants rejects only the rule that would bypass the proxy
+// for every destination. Rule lists are otherwise user-authoritative and are
+// authorized by clash-on; this gate makes an accidental or malicious
+// "send everything direct" profile fail at startup instead of silently
+// disabling the proxy while the TUN still carries every flow.
+func lfValidateRuleInvariants(raw *RawConfig) error {
+	policy, _, err := lfManagedPolicy()
+	if err != nil {
+		return err
+	}
+	if policy == nil {
+		// Development and fixture builds run without the managed policy; the
+		// invariant belongs to the managed deployment only.
+		return nil
+	}
+	for _, rule := range raw.Rule {
+		fields := strings.Split(rule, ",")
+		if len(fields) < 2 {
+			continue
+		}
+		kind := strings.ToUpper(strings.TrimSpace(fields[0]))
+		if kind != "MATCH" && kind != "FINAL" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(fields[1]), "DIRECT") {
+			return fmt.Errorf("managed proxy policy rejects an unconditional DIRECT rule")
+		}
+	}
+	return nil
+}
+
 // Upgrade only known older managed values before the final policy check, on
 // every full-config path. Controller PATCH remains strict; no caller-supplied
 // value may weaken the resulting policy.
@@ -157,6 +191,12 @@ func lfManagedProfileDefaults(raw *RawConfig) error {
 	policy, _, err := lfManagedPolicy()
 	if err != nil || policy == nil {
 		return err
+	}
+	if value, ok := policy["geo-auto-update"].(bool); ok {
+		// The core runs as a service identity; it must not download geodata on
+		// its own schedule. PATCH cannot reach this field anyway, but a cached
+		// profile or a GUI profile extension may still carry the old value.
+		raw.GeoAutoUpdate = value
 	}
 	if value, ok := policy["lf-private-targets"].(map[string]any); ok {
 		// Entirely derived from the root policy: a cached profile may predate

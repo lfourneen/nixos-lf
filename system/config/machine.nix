@@ -58,6 +58,7 @@
     };
 
     uids = {
+      clashCore = lib.mkOption { type = lib.types.int; default = 982; };
       unbound = lib.mkOption { type = lib.types.int; default = 983; };
       dnsmasq = lib.mkOption { type = lib.types.int; default = 985; };
       dhcpcd = lib.mkOption { type = lib.types.int; default = 986; };

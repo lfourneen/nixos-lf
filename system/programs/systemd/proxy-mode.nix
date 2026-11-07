@@ -65,14 +65,15 @@ let
   # Single source: home/config/cvr-merge.nix asserts it is not fake-ip-filtered.
   tunProbeName = config.my.proxy.tunProbeName;
 
-  # The desktop user's Clash Verge runtime owns the mihomo control socket; the core
-  # creates it on start and removes it on stop, so watching it (and its directory,
-  # which survives the socket) is the event that says "the Clash core changed
-  # state".
-  mihomoDir = "/run/user/${
-    toString config.users.users.${config.my.machine.desktopUser}.uid
-  }/clash-verge-rev";
-  mihomoSock = "${mihomoDir}/verge-mihomo.sock";
+  # The core runs as clash-core and owns its control socket outside the desktop
+  # user's 0700 runtime directory. A root forwarder exposes the legacy
+  # /run/user/<uid>/clash-verge-rev/verge-mihomo.sock path for the GUI, so the
+  # supervisors watch the socket the core actually creates.
+  clashCoreUid = m.uids.clashCore;
+  coreUids = if config.programs.clash-verge.enable then [ clashCoreUid ] else [ 0 clashCoreUid ];
+  mihomoDir = "/run/clash-verge-rev/core";
+  mihomoSock = "${mihomoDir}/mihomo.sock";
+  frontSock = "/run/user/${toString config.users.users.${config.my.machine.desktopUser}.uid}/clash-verge-rev/verge-mihomo.sock";
   listener = service: uids: protocol: address: port: {
     inherit uids protocol address port;
     cgroup = "/system.slice/${service}.service";
@@ -82,10 +83,10 @@ let
   listenerSettings = pkgs.writeText "proxy-listeners.json" (builtins.toJSON {
     ss = "${pkgs.iproute2}/bin/ss";
     groups = {
-      core-dns = dnsListeners "clash-verge" [ 0 ] port.mihomoDns;
-      core-mixed = [ (listener "clash-verge" [ 0 ] "tcp" "127.0.0.1" port.mihomoMixed) ];
-      core = [ (listener "clash-verge" [ 0 ] "tcp" "127.0.0.1" port.mihomoMixed) ]
-        ++ dnsListeners "clash-verge" [ 0 ] port.mihomoDns;
+      core-dns = dnsListeners "clash-verge" coreUids port.mihomoDns;
+      core-mixed = [ (listener "clash-verge" coreUids "tcp" "127.0.0.1" port.mihomoMixed) ];
+      core = [ (listener "clash-verge" coreUids "tcp" "127.0.0.1" port.mihomoMixed) ]
+        ++ dnsListeners "clash-verge" coreUids port.mihomoDns;
       dns = dnsListeners "dnsmasq" [ 0 config.users.users.dnsmasq.uid ] port.dnsmasq
         ++ dnsListeners "unbound" [ 0 config.users.users.unbound.uid ] port.unbound
         ++ lib.optionals config.networking.enableIPv6
@@ -104,6 +105,11 @@ let
     curl = "${pkgs.curl}/bin/curl";
     dig = "${pkgs.dnsutils}/bin/dig";
     socket = mihomoSock;
+    snapshot_tool = "${../clash/clash-verge-stage.py}";
+    effective_directory = "/run/clash-verge-rev/effective";
+    snapshot_required = config.programs.clash-verge.enable;
+    digest_file = "/run/proxy-mode/config-digest";
+    authorization_file = "/run/proxy-mode/authorized-config";
     listener_check = listenerCheck;
     runtime = "/run/proxy-mode";
     budget_seconds = config.my.proxy.healthBudgetSeconds;
@@ -156,13 +162,13 @@ let
   # Single source of truth for "Clash is on": dns-upstream.nix calls the same script, so
   # the criterion cannot drift between the two supervisors.
   isClashOn = pkgs.writeShellScript "is-clash-on" ''
-    # clash-verge.service also runs an always-on root helper, so its state alone is
-    # not "Clash is on": require the core inside the unit's cgroup, which a local
+    # clash-verge.service also runs an on-demand root helper, so its state alone
+    # is not "Clash is on": require the core inside the unit's cgroup, which a local
     # process cannot forge. Matching a process name would let any user process pin
     # the host in proxy mode with a dead core. The cgroup is read directly -- an
     # `is-active` would only add a D-Bus round-trip the cgroup already answers.
     for p in $(${pkgs.coreutils}/bin/cat /sys/fs/cgroup/system.slice/clash-verge.service/cgroup.procs 2>/dev/null); do
-      ${pkgs.gnugrep}/bin/grep -qa 'bin/verge-mihomo' "/proc/$p/cmdline" 2>/dev/null && exit 0
+      ${pkgs.gnugrep}/bin/grep -qa -e 'bin/verge-mihomo' -e 'bin/.verge-mihomo-wrapped' "/proc/$p/cmdline" 2>/dev/null && exit 0
     done
     exit 1
   '';
@@ -540,6 +546,11 @@ NFT_OFF
 
         if [ "$intent" = direct ]; then
           want=blocked; want_reason="stopping"
+        elif [ "$intent" != proxy ]; then
+          # Mode B needs an explicit clash-on. A core started by the GUI (or
+          # restored by the helper) while the boot default is Mode A stays
+          # blocked instead of silently turning the host into Mode B.
+          want=blocked; want_reason="unauthorized-core"
         elif [ "$tun_ok" = "1" ]; then
           # A TUN-up core in "direct" mode leaks exactly like a node-dead one:
           # everything leaves DIRECT under the exempt mark. The mode is read over
@@ -777,13 +788,43 @@ NFT_OFF
           exec 8>/run/proxy-mode/operator.lock
           flock -x -w 30 8
           if [ "$1" = on ]; then
+            # An explicit operator action authorizes the configuration the GUI
+            # currently holds. The window is single-use: the first core start
+            # consumes it, so a later profile edit needs another clash-on.
             ${modeScript} --request-proxy
+            systemctl stop clash-verge.service
+            exec 9>/run/proxy-mode/authorization.lock
+            flock -x -w 30 9
+            rm -f /run/proxy-mode/authorized-config /run/proxy-mode/config-digest
+            (umask 077; : > /run/proxy-mode/authorize-window)
+            flock -u 9
             systemctl start clash-verge.service
           else
             ${modeScript} --request-direct
             if ! systemctl stop clash-verge.service; then
               ${modeScript} --request-proxy
               exit 1
+            fi
+            exec 9>/run/proxy-mode/authorization.lock
+            flock -x -w 30 9
+            rm -f /run/proxy-mode/authorized-config /run/proxy-mode/config-digest \
+              /run/proxy-mode/authorize-window ${frontSock}
+            flock -u 9
+            if [ -f /run/clash-verge-rev/forwarder.pid ]; then
+              forwarder_pid=$(cat /run/clash-verge-rev/forwarder.pid 2>/dev/null || true)
+              if [ -n "$forwarder_pid" ]; then
+                case "$forwarder_pid" in
+                  *[!0-9]*) ;;
+                  *)
+                    if [ -r "/proc/$forwarder_pid/cmdline" ] \
+                      && tr '\0' ' ' <"/proc/$forwarder_pid/cmdline" \
+                        | grep -q "UNIX-LISTEN:.*verge-mihomo.sock"; then
+                      kill "$forwarder_pid" 2>/dev/null || true
+                    fi
+                    ;;
+                esac
+              fi
+              rm -f /run/clash-verge-rev/forwarder.pid
             fi
             ${modeScript} --once
           fi
@@ -834,6 +875,7 @@ in
   options.my.proxy.requestVerify = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.healthSettings = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.listenerCheck = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.listenerSettings = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.tunCheck = lib.mkOption { type = lib.types.path; internal = true; };
 
   options.my.proxy.isClashOn = lib.mkOption {
@@ -850,6 +892,7 @@ in
     my.proxy.requestVerify = verifyRequest;
     my.proxy.healthSettings = healthSettings;
     my.proxy.listenerCheck = listenerCheck;
+    my.proxy.listenerSettings = listenerSettings;
     my.proxy.tunCheck = tunCheck;
     systemd.tmpfiles.rules = [
       "d /run/netsec 0755 root root -"
@@ -880,6 +923,9 @@ in
         # survive so a core that crashes after a proxy-mode restart is still read
         # as a crash (block), not as a fresh boot (direct).
         RuntimeDirectoryPreserve = true;
+        # /run is writable under ProtectSystem=strict. Do not list
+        # /run/user/<uid>: that path does not exist at boot, and a
+        # ReadWritePaths entry on a missing path fails the unit.
         ReadWritePaths = [ "/run/netsec" ];
         # The loop synchronizes before its first sleep; nftables has already
         # atomically installed the initial safe mode.
@@ -888,12 +934,11 @@ in
         Restart = "always";
         RestartSec = "5";
 
-        # Only nft needs NET_ADMIN; DAC_READ_SEARCH traverses the desktop user's
-        # private runtime directory. Read-only cgroup/sysctl mounts permit all
-        # live checks without granting write access. ProtectHome stays off: the
-        # mihomo control socket lives under /run/user/<uid>/, which ProtectHome
-        # would make inaccessible, breaking the log capture, /configs and the
-        # node delay call.
+        # Only nft needs NET_ADMIN; DAC_READ_SEARCH traverses the core's 0750
+        # socket directory. Read-only cgroup/sysctl mounts permit all live
+        # checks without granting write access. ProtectHome stays off so
+        # the operator CLI can remove the legacy GUI forward socket under
+        # /run/user/<uid>/ outside this unit's sandbox.
         NoNewPrivileges = true;
         CapabilityBoundingSet = [ "CAP_NET_ADMIN" "CAP_DAC_READ_SEARCH" ];
         ProtectSystem = "strict";

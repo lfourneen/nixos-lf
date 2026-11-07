@@ -1,4 +1,4 @@
-{ pkgs, core, ... }:
+{ pkgs, core, clashPackage, ... }:
 
 let
   signedZone = import ./signed-zone.nix { inherit pkgs; };
@@ -10,6 +10,7 @@ pkgs.testers.runNixOSTest {
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
+      ../../system/programs/clash/identity.nix
       ../../system/config/machine.nix
       ../../system/config/hardening-options.nix
       ../../system/config/proxy-options.nix
@@ -39,6 +40,7 @@ pkgs.testers.runNixOSTest {
       ../../system/programs/systemd/network-bootstrap.nix
     ];
     users.users.lfour = { isNormalUser = true; uid = 1000; };
+    programs.clash-verge.package = clashPackage;
     # The test driver's default VLAN owns 192.168.1.1 on the host. Move that
     # auxiliary network so the portal fixture really traverses an uplink.
     virtualisation.vlans = [ 9 ];
@@ -197,13 +199,23 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-events-test.py".source = ./events_fixture.py;
     environment.etc."netsec-listeners-test.py".source = ./listeners_fixture.py;
     environment.etc."netsec-listener-check".source = config.my.proxy.listenerCheck;
+    environment.etc."netsec-launcher".text = "${config.programs.clash-verge.package}/bin/verge-mihomo\n";
     systemd.services.clash-verge.serviceConfig.ExecStart = pkgs.writeShellScript "test-core-listeners" ''
       if test -e /run/netsec-real-profile.json; then
+        install -d -m 0755 /run/clash-verge-rev/core /run/user/1000/clash-verge-rev
+        rm -f /run/user/1000/clash-verge-rev/verge-mihomo.sock
+        ${pkgs.socat}/bin/socat \
+          UNIX-LISTEN:/run/user/1000/clash-verge-rev/verge-mihomo.sock,mode=0777,fork,unlink-early \
+          UNIX-CONNECT:/run/clash-verge-rev/core/mihomo.sock &
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+          test -S /run/user/1000/clash-verge-rev/verge-mihomo.sock && break
+          sleep 0.1
+        done
         exec ${pkgs.runCommand "vm-managed-core" { } ''
           mkdir -p "$out/bin"
           ln -s ${core}/bin/mihomo "$out/bin/verge-mihomo"
         ''}/bin/verge-mihomo -d /run/netsec-real-core -f /run/netsec-real-profile.json \
-          -ext-ctl-unix /run/user/1000/clash-verge-rev/verge-mihomo.sock
+          -ext-ctl-unix /run/clash-verge-rev/core/mihomo.sock
       fi
       exec ${pkgs.python3}/bin/python3 /etc/netsec-listeners-test.py serve "$(cat /run/listener-good-protocol)" --mixed
     '';
@@ -265,7 +277,6 @@ pkgs.testers.runNixOSTest {
   };
   testScript = ''
     import ipaddress
-    import time
 
     def dot_guard_drops():
         # The guard sits at priority -196, ahead of sing-tun's auto-redirect, so
@@ -398,7 +409,7 @@ pkgs.testers.runNixOSTest {
     # left open must visibly shrink the remaining allowance.
     pool_start = int(machine.succeed("jq -r .budget_remaining /run/dns-upstream/state.json"))
     assert 0 < pool_start <= 1800, pool_start
-    time.sleep(10)
+    machine.wait_until_succeeds(f"jq -e '.mode == \"bootstrap-plaintext\" and .budget_remaining < {pool_start - 4}' /run/dns-upstream/state.json", timeout=45)
     pool_spent = int(machine.succeed("jq -r .budget_remaining /run/dns-upstream/state.json"))
     assert pool_spent < pool_start - 4, (pool_start, pool_spent)
     machine.succeed("test $(jq -r .window_until /run/dns-upstream/state.json) -le $(( $(jq -r .monotonic_seconds /run/dns-upstream/state.json) + 120 )); rm /run/systemd/system/dns-upstream.service.d/dnssec-test.conf; systemctl daemon-reload; systemctl restart dns-upstream.service")
@@ -409,7 +420,7 @@ pkgs.testers.runNixOSTest {
     assert int(machine.succeed("jq -r .budget_remaining /run/dns-upstream/state.json")) <= 1800
     machine.succeed("printf '[Service]\\nEnvironment=NETSEC_DNSSEC_PROBE_NAME=bogus.signed.fixture.example.\\nEnvironment=NETSEC_DNSSEC_PROBE_TYPE=1\\nEnvironment=NETSEC_DOT_PRIME_ROUNDS=0\\n' > /run/systemd/system/dns-upstream.service.d/dnssec-test.conf; systemctl daemon-reload; systemctl restart dns-upstream.service")
     machine.wait_until_succeeds("jq -e '.mode == \"bootstrap-plaintext\"' /run/dns-upstream/state.json", timeout=60)
-    time.sleep(8)
+    machine.wait_until_succeeds("jq -e '.mode == \"bootstrap-plaintext\" and .budget_remaining > 0 and .budget_remaining < 1800' /run/dns-upstream/state.json", timeout=45)
     flap_pool = int(machine.succeed("jq -r .budget_remaining /run/dns-upstream/state.json"))
     assert 0 < flap_pool < 1800, flap_pool
     machine.succeed("rm /run/systemd/system/dns-upstream.service.d/dnssec-test.conf; systemctl daemon-reload; systemctl stop dns-upstream.service")
@@ -586,6 +597,45 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("ip netns exec outside ss -ltn | grep -q ':18080 '")
     machine.succeed("systemctl start clash-verge.service dns-upstream.service")
     wait_proxy()
+    # A core started without proxy intent must never reach Mode B (A1/A2).
+    machine.succeed("rm -f /run/proxy-mode/intent")
+    machine.wait_until_succeeds("/etc/netsec-mode-script --reload", timeout=60)
+    machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = blocked && grep -qx unauthorized-core /run/proxy-mode/reason", timeout=45)
+    machine.succeed("echo proxy >/run/proxy-mode/intent")
+    machine.wait_until_succeeds("/etc/netsec-mode-script --reload", timeout=60)
+    wait_proxy()
+
+    # The launcher is the only root path to the core: it refuses a non-root
+    # caller and a root caller without proxy intent before touching the config.
+    launcher = machine.succeed("cat /etc/netsec-launcher").strip()
+    machine.fail(f"setpriv --reuid=1000 --clear-groups {launcher} -d /tmp -f /tmp/x -ext-ctl-unix /tmp/x.sock")
+    machine.succeed("echo direct >/run/proxy-mode/intent")
+    machine.fail(f"{launcher} -d /tmp -f /tmp/x -ext-ctl-unix /tmp/x.sock")
+    machine.succeed("echo proxy >/run/proxy-mode/intent")
+    machine.wait_until_succeeds("/etc/netsec-mode-script --reload", timeout=60)
+    wait_proxy()
+
+    # Actual launcher/helper credentials are covered by proxy-control-vm;
+    # this broad packet suite deliberately retains its injectable root core.
+    # Control-plane policy: reads and proxy selection pass; configuration and
+    # core lifecycle mutations are refused by the core itself, not just the GUI.
+    def api(method, path, body=None):
+        cmd = ("curl --noproxy '*' --unix-socket /run/clash-verge-rev/core/mihomo.sock "
+               "-s -o /dev/null -w '%{http_code}' -X " + method)
+        if body is not None:
+            cmd += " -H 'Content-Type: application/json' -d '" + body + "'"
+        return machine.succeed(cmd + " http://localhost" + path).strip()
+
+    assert api("GET", "/configs") == "200"
+    assert api("PUT", "/configs", '{}') == "403"
+    assert api("POST", "/restart") == "403"
+    assert api("POST", "/upgrade") == "403"
+    assert api("PUT", "/providers/rules/Fixture") == "403"
+    assert api("PATCH", "/rules/disable", '{"0":true}') == "403"
+    assert api("PATCH", "/configs", '{"mode":"direct"}') == "403"
+    assert api("PATCH", "/configs", '{"mode":"global"}') == "204"
+    assert api("PATCH", "/configs", '{"mode":"rule"}') == "204"
+
     machine.succeed("/etc/netsec-tun-check")
     # SO_BINDTODEVICE must survive transparent TCP DNAT. Redirecting these
     # sockets to loopback used to send 127/8 into the TUN and cause martians.

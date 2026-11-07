@@ -96,7 +96,7 @@ sudo nixos-rebuild switch --flake .#yourname
 ## 脚本
 
 * **`scripts/sync-to-git.sh`** — 将 `/etc/nixos` 复制到 `~/Projects/Nix/nixos`（如 `~/Projects/Nix` 不存在则自动创建），把所有权改为当前用户并设置宽松权限（目录 755 / 文件 644），以便提交到 Git。
-* **`scripts/push-to-dir.sh`** — 上面脚本的逆操作。将仓库中的 `home/`、`overlays/`、`system/`、`tests/`、`local-data/`、`flake.nix`、`flake.lock` 和 `.sops.yaml` 复制到 `/etc/nixos` 并应用安全权限（目录 700 / 文件 600）。以普通用户运行，脚本内部调用 `sudo`。`tests/` 提供 flake 检查源码，复制时不会执行测试。`local-data/` 存放被 Git 忽略的生成输入——没有它 flake 无法求值，所以脚本在开始前会检查该文件，缺失就直接报错退出。
+* **`scripts/push-to-dir.sh`** — 上面脚本的逆操作。将仓库中的 `home/`、`overlays/`、`system/`、`tests/`、`local-data/`、`flake.nix`、`flake.lock` 和 `.sops.yaml` 复制到 `/etc/nixos` 并应用安全权限（目录 700 / 文件 600）。以普通用户运行，脚本内部调用 `sudo`。`tests/` 提供 flake 检查源码，复制时不会执行测试。`local-data/` 存放生成的构建输入——没有它 flake 无法求值，所以脚本在开始前会检查该文件，缺失就直接报错退出。
 * **`scripts/refresh-dns-blocklist.py`** — 拉取上游清单，合并去重后写入 `local-data/dns-blocklist.txt.xz`，并重写 `system/config/dns-blocklist.nix` 的上游/快照头部。`--check` 只报告漂移不写入。构建时与运行时都不下载任何东西。
 
 ---

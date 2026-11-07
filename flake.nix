@@ -80,7 +80,43 @@
       proxy-network-vm = import ./tests/netsec/vm.nix {
         inherit pkgs;
         core = self.nixosConfigurations.lfour.config.programs.clash-verge.package.managedCore;
+        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
       };
+      proxy-control-vm = import ./tests/netsec/control-vm.nix {
+        inherit pkgs;
+        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+      };
+      proxy-control = pkgs.runCommand "proxy-control-regressions" {
+        nativeBuildInputs = [ pkgs.python3 ];
+      } ''
+        export PYTHONDONTWRITEBYTECODE=1
+        python3 ${./tests/netsec/test_control.py} ${./system/programs/clash/clash-verge-stage.py}
+        touch "$out"
+      '';
+      proxy-control-config = let
+        c = self.nixosConfigurations.lfour.config;
+        small = self.checks.${system}.proxy-control-vm.config.nodes.machine;
+        broad = self.checks.${system}.proxy-network-vm.config.nodes.machine;
+        uid = c.my.machine.uids.clashCore;
+      in assert builtins.isInt uid && uid > 0 && c.users.users.clash-core.uid == uid;
+      assert pkgs.lib.count (u: u.uid == uid) (pkgs.lib.attrValues c.users.users) == 1;
+      assert small.users.users.clash-core.uid == uid && broad.users.users.clash-core.uid == uid;
+      assert small.programs.clash-verge.package == c.programs.clash-verge.package;
+      assert broad.programs.clash-verge.package == c.programs.clash-verge.package;
+      assert small.systemd.services.clash-verge.serviceConfig.CapabilityBoundingSet
+        == c.systemd.services.clash-verge.serviceConfig.CapabilityBoundingSet;
+      pkgs.runCommand "proxy-control-config" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+        python3 - ${c.my.proxy.listenerSettings} ${toString uid} <<'PY'
+        import json
+        import sys
+        settings = json.load(open(sys.argv[1]))
+        for name in ('core', 'core-dns', 'core-mixed'):
+            for listener in settings['groups'][name]:
+                assert listener['uids'] == [int(sys.argv[2])], listener
+                assert listener['cgroup'] == '/system.slice/clash-verge.service', listener
+        PY
+        touch "$out"
+      '';
       proxy-core = self.nixosConfigurations.lfour.config.programs.clash-verge.package.managedCore;
       proxy-gost = self.nixosConfigurations.lfour.config.my.proxy.gostPackage;
       proxy-gui = self.nixosConfigurations.lfour.config.programs.clash-verge.package.guiDefaultsCheck;

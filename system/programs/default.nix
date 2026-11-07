@@ -1,11 +1,11 @@
 {
   imports = [
     # Folders
+    ./clash
     ./fhs
     ./systemd
 
     # Files
-    ./clash-verge.nix
     ./git.nix
     ./flatpak.nix
     ./hermes.nix
@@ -24,4 +24,3 @@
     ./virtualisation.nix
   ];
 }
-

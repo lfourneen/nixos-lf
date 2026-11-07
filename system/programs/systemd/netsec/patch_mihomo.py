@@ -11,6 +11,12 @@ def replace(path, old, new):
 
 
 root = Path(sys.argv[1])
+# Managed geodata must come from the authorized snapshot. Even a missing or
+# damaged database must not trigger an unaudited network replacement in -t.
+replace(root / "component/geodata/init.go",
+        'func downloadToPath(url string, path string) (err error) {',
+        'func downloadToPath(url string, path string) (err error) {\n'
+        '\tif os.Getenv("LF_MANAGED_PROXY_POLICY") != "" { return fmt.Errorf("managed geodata requires a new clash-on snapshot") }')
 replace(root / "constant/metadata.go", "type Metadata struct {",
         'type Metadata struct {\n\t// Set only by the internal rule-routed DNS dialer, never decoded from wire JSON.\n'
         '\tLFRuleDNS bool `json:"-"`')
@@ -76,6 +82,11 @@ replace(root / "hub/route/configs.go", '''func patchConfigs(w http.ResponseWrite
 	if !managedOK { return }''')
 replace(root / "hub/route/configs.go", "general := executor.GetGeneral()",
         "general := executor.GetGeneral()\n\tgeneral.ManagedPolicy = config.ManagedPolicyID()")
+# Restrict the controller API to the GUI operations that do not change the
+# privileged core's configuration or binaries. Installed only for managed
+# builds; the middleware itself checks LF_MANAGED_PROXY_POLICY.
+replace(root / "hub/route/server.go", "\tr := chi.NewRouter()\n\tcors.Apply(r)",
+        "\tr := chi.NewRouter()\n\tlfPolicyUse(r)\n\tcors.Apply(r)")
 source = Path(__file__).parent
 (root / "component/lfguard").mkdir()
 (root / "component/lfguard/guard.go").write_text((source / "target_guard.go").read_text())
@@ -87,3 +98,6 @@ source = Path(__file__).parent
 (root / "config/lf_managed_test.go").write_text((source / "managed_profile_test.go").read_text())
 (root / "hub/route/lf_managed.go").write_text((source / "managed_route.go").read_text())
 (root / "hub/route/lf_managed_test.go").write_text((source / "managed_route_test.go").read_text())
+(root / "hub/route/lf_policy.go").write_text((source / "policy_middleware.go").read_text())
+(root / "hub/route/lf_policy_test.go").write_text((source / "policy_middleware_test.go").read_text())
+(root / "config/lf_managed_rules_test.go").write_text((source / "managed_rules_test.go").read_text())
