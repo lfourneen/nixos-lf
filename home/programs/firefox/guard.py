@@ -21,7 +21,8 @@ def verify_core(settings):
     except ValueError:
         raise ValueError("current core verification is unavailable") from None
     if result.returncode or not isinstance(verdict, dict) or not verdict.get("ok"):
-        raise ValueError("current core policy is not verified")
+        detail = (verdict.get("detail") or verdict.get("reason")) if isinstance(verdict, dict) else None
+        raise ValueError("current core policy is not verified" + (": " + str(detail) if detail else ""))
 
 
 def environment(settings):

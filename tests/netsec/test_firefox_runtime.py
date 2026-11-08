@@ -24,6 +24,21 @@ manifest = json.loads(Path(sys.argv[1]).read_text())
 output = Path(sys.argv[2])
 package = Path(manifest["package"])
 settings = json.loads(Path(manifest["settings"]).read_text())
+# Browser preflight must not inherit the root-only controller/snapshot inputs.
+# Keep its live policy and passive listener checks identical to the supervisor's.
+assert settings["healthSettings"] == manifest["desktopHealthSettings"]
+desktop_health = json.loads(Path(settings["healthSettings"]).read_text())
+root_health = json.loads(Path(manifest["rootHealthSettings"]).read_text())
+assert set(desktop_health) == {"budget_seconds", "listener_check", "expected", "socket"}
+assert desktop_health["socket"] == (
+    f'/run/user/{manifest["desktopUid"]}/clash-verge-rev/verge-mihomo.sock')
+for key in ("expected", "listener_check", "budget_seconds"):
+    assert desktop_health[key] == root_health[key], key
+assert root_health["socket"] == "/run/clash-verge-rev/core/mihomo.sock"
+assert root_health["snapshot_required"] is True
+assert root_health["digest_file"] == "/run/proxy-mode/config-digest"
+assert root_health["authorization_file"] == "/run/proxy-mode/authorized-config"
+assert root_health["effective_directory"] == "/run/clash-verge-rev/effective"
 spec = importlib.util.spec_from_file_location("guard", os.environ["FIREFOX_GUARD"])
 guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)

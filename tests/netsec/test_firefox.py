@@ -1,8 +1,13 @@
 """Launch prerequisites and transition races, with no host state changes."""
 import importlib.util
+from http.server import BaseHTTPRequestHandler
+import json
 import os
 from pathlib import Path
+from socketserver import UnixStreamServer
+import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -39,6 +44,60 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(self.profile.stat().st_mode & 0o777, 0o700)
         with self.assertRaisesRegex(ValueError, "core is old"):
             self.prepare(good, lambda _: (_ for _ in ()).throw(ValueError("core is old")))
+
+    def test_live_core_preflight_uses_desktop_socket_and_preserves_rejection(self):
+        # Exercise the actual subprocess/API path rather than mocking verify_core.
+        # The privileged snapshot contract is checked by the root supervisor;
+        # this desktop view contains only the live API/listener expectations.
+        directory = self.profile.parent
+        listener_check = directory / "listeners"
+        listener_check.write_text(f"#!{sys.executable}\nraise SystemExit(0)\n")
+        listener_check.chmod(0o700)
+        config = {"mode": "rule", "managed-policy": "expected", "mixed-port": 7897}
+
+        class Controller(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path != "/configs":
+                    self.send_error(404)
+                    return
+                body = json.dumps(config).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        socket_path = directory / "gui.sock"
+        server = UnixStreamServer(str(socket_path), Controller)
+        worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+        worker.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(worker.join)
+        self.addCleanup(server.shutdown)
+        health_settings = directory / "desktop-health.json"
+        health_settings.write_text(json.dumps({
+            "socket": str(socket_path), "listener_check": str(listener_check),
+            "budget_seconds": 4, "expected": {"managed-policy": "expected", "mixed-port": 7897},
+        }))
+        self.settings.update(
+            healthModule=os.environ.get("FIREFOX_HEALTH", str(Path(__file__).resolve().parents[2]
+                / "system/programs/systemd/netsec/health.py")),
+            healthSettings=str(health_settings))
+        good = lambda **_: dict(mode="proxy", ready=True, policy_version=8)
+        self.assertEqual(self.prepare(good, check_only=True), [])
+        self.assertFalse(self.profile.exists())
+        config["managed-policy"] = "wrong-policy"
+        with self.assertRaisesRegex(ValueError, "managed-policy differs"):
+            self.prepare(good, check_only=True)
+        config["managed-policy"] = "expected"
+        config["mode"] = "direct"
+        with self.assertRaisesRegex(ValueError, "core mode is direct"):
+            self.prepare(good, check_only=True)
+        health_settings.write_text(health_settings.read_text().replace("gui.sock", "absent.sock"))
+        with self.assertRaisesRegex(ValueError, "controller reply unavailable"):
+            self.prepare(good, check_only=True)
 
     def test_direct_admits_offline_portal_but_no_other_mode(self):
         offline = lambda **_: dict(mode="direct", ready=False, policy_version=7)

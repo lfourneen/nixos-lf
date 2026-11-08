@@ -1,8 +1,19 @@
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 
+let
+  defaultApplications = import ./mimeapps.nix;
+
+in
 {
   # Dconf
   programs.dconf.enable = true;
+
+  # Default applications live at the system level so ~/.config/mimeapps.list
+  # stays a writable file the desktop can rewrite ("set as default").
+  # See system/config/mimeapps.nix for why home-manager's xdg.mimeApps broke it.
+  environment.etc."xdg/mimeapps.list".text =
+    "[Default Applications]\n"
+    + lib.concatStrings (lib.mapAttrsToList (type: app: "${type}=${app}\n") defaultApplications);
   
   # Desktop Evironment 
   services = {

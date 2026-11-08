@@ -7,13 +7,17 @@ let
   manifest = pkgs.writeText "firefox-test.json" (builtins.toJSON {
     package = firefox;
     inherit (firefox.netsec) settings prefs;
+    rootHealthSettings = config.my.proxy.healthSettings;
+    desktopHealthSettings = config.my.proxy.desktopHealthSettings;
+    desktopUid = config.users.users.${config.my.machine.desktopUser}.uid;
     compatPrefs = compatHome.programs.firefox.finalPackage.netsec.prefs;
     policies = home.programs.firefox.policies;
     relayPort = config.my.machine.ports.gostHttp;
     desktop = home.xdg.dataFile."applications/firefox.desktop".source;
     aliases = map (id: home.xdg.dataFile."applications/${id}.desktop".source)
       [ "app.zen_browser.zen" "com.google.Chrome" ];
-    mime = home.xdg.mimeApps.defaultApplications;
+    # System-level defaults; values are single strings, the runtime test expects lists.
+    mime = builtins.mapAttrs (_: app: [ app ]) (import ../../system/config/mimeapps.nix);
     flatpaks = config.services.flatpak.packages;
   });
 
@@ -23,6 +27,7 @@ pkgs.runCommand "firefox-privacy-checks" {
 } ''
   export PYTHONDONTWRITEBYTECODE=1
   export FIREFOX_GUARD=${../../home/programs/firefox/guard.py}
+  export FIREFOX_HEALTH=${../../system/programs/systemd/netsec/health.py}
   export XDG_CACHE_HOME="$TMPDIR/firefox-cache"
   mkdir -p "$XDG_CACHE_HOME"
   python3 ${./test_firefox.py}

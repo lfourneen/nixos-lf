@@ -209,7 +209,7 @@ let
     fontList = "${pkgs.fontconfig}/bin/fc-list";
     stateModule = ../../../system/programs/systemd/netsec/state.py;
     healthModule = ../../../system/programs/systemd/netsec/health.py;
-    healthSettings = osConfig.my.proxy.healthSettings;
+    healthSettings = osConfig.my.proxy.desktopHealthSettings;
     maxAge = osConfig.my.proxy.stateMaxAgeSeconds;
     verificationMaxAge = osConfig.my.proxy.verificationMaxAgeSeconds;
   });
@@ -279,14 +279,8 @@ in
         noDisplay = true;
       }}/share/${path}";
     });
-  xdg.mimeApps = {
-    enable = true;
-    defaultApplications = {
-      "text/html" = "firefox.desktop";
-      "x-scheme-handler/http" = "firefox.desktop";
-      "x-scheme-handler/https" = "firefox.desktop";
-      "x-scheme-handler/about" = "firefox.desktop";
-      "x-scheme-handler/unknown" = "firefox.desktop";
-    };
-  };
+  # Default application assignments are declared in the system layer instead:
+  # system/config/mimeapps.nix. home-manager's xdg.mimeApps turns
+  # ~/.config/mimeapps.list into a read-only /nix/store symlink, which makes
+  # every "set as default" in the desktop fail with EROFS.
 }

@@ -66,7 +66,7 @@ let
   tunProbeName = config.my.proxy.tunProbeName;
 
   # The core runs as clash-core and owns its control socket outside the desktop
-  # user's 0700 runtime directory. A root forwarder exposes the legacy
+  # user's 0700 runtime directory. An unprivileged forwarder exposes the legacy
   # /run/user/<uid>/clash-verge-rev/verge-mihomo.sock path for the GUI, so the
   # supervisors watch the socket the core actually creates.
   clashCoreUid = m.uids.clashCore;
@@ -101,7 +101,7 @@ let
   listenerCheck = pkgs.writeShellScript "proxy-listeners" ''
     exec ${pkgs.python3}/bin/python3 ${./netsec/listeners.py} ${listenerSettings} "$@"
   '';
-  healthSettings = pkgs.writeText "proxy-health.json" (builtins.toJSON {
+  healthConfig = {
     curl = "${pkgs.curl}/bin/curl";
     dig = "${pkgs.dnsutils}/bin/dig";
     socket = mihomoSock;
@@ -157,6 +157,14 @@ let
         exclude-uid-range = [ ];
       });
     };
+  };
+  healthSettings = pkgs.writeText "proxy-health.json" (builtins.toJSON healthConfig);
+  # Desktop consumers require the root supervisor's fresh readiness verdict,
+  # then check live API invariants through their own forwarder. Snapshot files
+  # and the internal controller remain private; only the supervisor verifies them.
+  desktopHealthSettings = pkgs.writeText "proxy-desktop-health.json" (builtins.toJSON {
+    inherit (healthConfig) budget_seconds listener_check expected;
+    socket = frontSock;
   });
 
   # Single source of truth for "Clash is on": dns-upstream.nix calls the same script, so
@@ -874,6 +882,7 @@ in
   options.my.proxy.modeScript = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.requestVerify = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.healthSettings = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.desktopHealthSettings = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.listenerCheck = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.listenerSettings = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.tunCheck = lib.mkOption { type = lib.types.path; internal = true; };
@@ -891,6 +900,7 @@ in
     my.proxy.modeScript = modeScript;
     my.proxy.requestVerify = verifyRequest;
     my.proxy.healthSettings = healthSettings;
+    my.proxy.desktopHealthSettings = desktopHealthSettings;
     my.proxy.listenerCheck = listenerCheck;
     my.proxy.listenerSettings = listenerSettings;
     my.proxy.tunCheck = tunCheck;
