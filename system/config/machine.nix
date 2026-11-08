@@ -14,9 +14,9 @@
       type = lib.types.str;
       default = "lfour";
       description = ''
-        Desktop login user. Its Clash Verge runtime owns the mihomo control socket
-        under /run/user/<uid>/, which the proxy event trigger watches to turn the
-        supervisors from pollers into event-driven loops.
+        Desktop login user. Its runtime holds the unprivileged GUI forwarder
+        socket under /run/user/<uid>/. Supervisors use and watch the real core
+        control socket under /run/clash-verge-rev/core/.
       '';
     };
 

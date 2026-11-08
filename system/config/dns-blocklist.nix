@@ -8,7 +8,7 @@
 #
 # The bulk set lives in ../../local-data/dns-blocklist.txt.xz: one bare
 # lowercase name per line, merged and de-duplicated from the upstream lists
-# recorded below. It is kept out of Git (see local-data/README.md); the flake
+# recorded below. The snapshot is tracked in Git (see local-data/README.md); the flake
 # is evaluated from /etc/nixos, where scripts/push-to-dir.sh copies it together
 # with this tree. Run that script before nixos-rebuild. It is
 # parsed once at dnsmasq start and nothing is fetched at build time or at run
@@ -34,9 +34,8 @@
 # lines and leave the merged file alone.
 let
   data = ../../local-data/dns-blocklist.txt.xz;
-  # The file is git-ignored, so a fresh clone does not have it and a pure
-  # evaluation from the checkout cannot see it. Say where it comes from instead
-  # of failing with a bare "path does not exist".
+  # Diagnose an incomplete checkout or deployment before evaluation fails with
+  # a bare "path does not exist". A complete clone includes the tracked input.
   dataExists = builtins.pathExists data;
   dataSrc =
     if dataExists then data

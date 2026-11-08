@@ -23,14 +23,14 @@
 * **Shell**：带自定义配置的 Nushell
 * **系统管理**：使用 Home Manager 管理用户配置
 * **硬件支持**：NVIDIA、AMDGPU、蓝牙、音频等硬件配置
-* **安全**：SSH、防火墙及安全加固
+* **网络与安全**：受管 DNS、nftables 防火墙、代理策略及系统加固
 * **虚拟化**：Docker 等虚拟化工具
 
 ---
 
-## 代理
+## 网络文档
 
-出站流量走一条基于 Clash 的代理链路。其组件、三种执行模式（A/B/C）、DNS 处理、fail-closed 规则及其限制，详见 **[PROXY.md](PROXY.md)**。
+从 **[网络文档](docs/CN/README_CN.md)** 阅读架构、A/B/C 模式、DNS 和受管 Firefox；日常使用及恢复见 **[操作与诊断](docs/CN/operations_CN.md)**，组件自定义、升级方法和检查对应关系见 **[补丁维护](docs/CN/maintenance_CN.md)**。
 
 ---
 ## 使用方法
@@ -62,6 +62,8 @@ sudo nixos-rebuild switch --flake .#yourname
 .
 ├── flake.nix               # Flake 主配置
 ├── flake.lock              # Flake 锁文件
+├── docs/                   # 架构、操作与补丁维护
+│   └── CN/                 # 中文文档
 ├── home/                   # 用户配置
 │   ├── config/             # 用户级配置
 │   ├── programs/           # 用户程序
@@ -96,7 +98,7 @@ sudo nixos-rebuild switch --flake .#yourname
 ## 脚本
 
 * **`scripts/sync-to-git.sh`** — 将 `/etc/nixos` 复制到 `~/Projects/Nix/nixos`（如 `~/Projects/Nix` 不存在则自动创建），把所有权改为当前用户并设置宽松权限（目录 755 / 文件 644），以便提交到 Git。
-* **`scripts/push-to-dir.sh`** — 上面脚本的逆操作。将仓库中的 `home/`、`overlays/`、`system/`、`tests/`、`local-data/`、`flake.nix`、`flake.lock` 和 `.sops.yaml` 复制到 `/etc/nixos` 并应用安全权限（目录 700 / 文件 600）。以普通用户运行，脚本内部调用 `sudo`。`tests/` 提供 flake 检查源码，复制时不会执行测试。`local-data/` 存放生成的构建输入——没有它 flake 无法求值，所以脚本在开始前会检查该文件，缺失就直接报错退出。
+* **`scripts/push-to-dir.sh`** — 仅将明确选择的 `home/`、`overlays/`、`system/`、`tests/`、`local-data/`、`flake.nix`、`flake.lock` 和 `.sops.yaml` 复制到 `/etc/nixos`，目录 700 / 文件 600。以普通用户运行，脚本内部使用 `sudo`；`docs/` 和 `scripts/` 留在仓库。`tests/` 提供检查源码，复制不会执行测试。`local-data/` 的必要 DNS 快照已由 Git 跟踪，脚本在触碰目标前检查它。可用 `python3 tests/test_deployment.py scripts/push-to-dir.sh` 在临时目录验证复制行为。
 * **`scripts/refresh-dns-blocklist.py`** — 拉取上游清单，合并去重后写入 `local-data/dns-blocklist.txt.xz`，并重写 `system/config/dns-blocklist.nix` 的上游/快照头部。`--check` 只报告漂移不写入。构建时与运行时都不下载任何东西。
 
 ---

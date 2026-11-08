@@ -9,10 +9,10 @@
 #
 # Copied:  home/ (incl. wallpapers), overlays/,
 #          system/ (incl. secrets/secrets.yaml), tests/ (flake check sources),
-#          local-data/ (generated inputs kept out of Git, e.g.
+#          local-data/ (generated inputs, including the tracked
 #          dns-blocklist.txt.xz - the flake cannot evaluate without it),
 #          flake.nix, flake.lock, .sops.yaml
-# Skipped: .git/, .gitignore, scripts/, *.md (GitHub-only READMEs, except
+# Skipped: docs/, .git/, .gitignore, scripts/, *.md (repository manuals, except
 #          system/programs/hermes-skills/** which the Hermes build needs),
 #          LICENSE, and junk (result*, *.swp, *~, *.bak, .DS_Store, .direnv/).
 # IMPORTANT: do NOT filter by .gitignore — that would drop the AppImage and
@@ -36,9 +36,9 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 DEST_DIR="${DEST_DIR:-/etc/nixos}"
 SUDO="${SUDO-sudo}"
 
-# local-data/dns-blocklist.txt.xz is git-ignored and read at evaluation time,
-# so a fresh clone does not have it. Check before elevating (and before
-# touching DEST_DIR) instead of leaving behind a tree that cannot be evaluated.
+# local-data/dns-blocklist.txt.xz is tracked and read at evaluation time.
+# Check before elevating (and before touching DEST_DIR) so an incomplete
+# checkout cannot leave behind a tree that cannot be evaluated.
 if [ ! -f "$REPO_DIR/local-data/dns-blocklist.txt.xz" ]; then
   echo "❌ $REPO_DIR/local-data/dns-blocklist.txt.xz is missing." >&2
   echo "   The flake cannot be evaluated without it. Run" >&2
@@ -126,7 +126,7 @@ fi
 
 echo "📂 Syncing config to $DEST_DIR ..."
 
-# Junk that must never end up in /etc/nixos. *.md = GitHub-only README/docs.
+# Junk that must never end up in /etc/nixos. *.md = repository README/docs.
 excludes=(
   --exclude '.git/' --exclude '.direnv/'
   --exclude 'result' --exclude 'result-*'
@@ -140,26 +140,23 @@ excludes=(
 
 # --delete: stale files inside the synced trees are dropped even if the cleanup
 # above could not empty the directory completely.
-# home/ : keep local wallpapers; README placeholders are dropped by *.md.
-rsync -a --delete --no-owner --no-group "${excludes[@]}" \
-  "$REPO_DIR/home/" "$DEST_DIR/home/"
-# overlays/
-rsync -a --delete --no-owner --no-group "${excludes[@]}" \
-  "$REPO_DIR/overlays/" "$DEST_DIR/overlays/"
-# local-data/ : generated build inputs that are git-ignored (see
+# Copy only build-input trees. docs/ and scripts/ stay in the checkout;
+# adding a top-level repository directory must not deploy it implicitly.
+# home/ keeps local wallpapers; system/ keeps secrets/secrets.yaml and Hermes
+# skill Markdown; tests/ supplies flake checks without executing them here.
+config_trees=(home overlays system tests)
+for tree in "${config_trees[@]}"; do
+  rsync -a --delete --no-owner --no-group "${excludes[@]}" \
+    "$REPO_DIR/$tree/" "$DEST_DIR/$tree/"
+done
+
+# local-data/ : generated build inputs, including the tracked DNS snapshot (see
 # local-data/README.md). `system/config/dns-blocklist.nix` reads
 # dns-blocklist.txt.xz from here, so /etc/nixos needs it too. Keep the README
 # (the module's error message points at it), hence no *.md cut for this tree.
 rsync -a --delete --no-owner --no-group \
   --exclude 'result' --exclude 'result-*' \
   "$REPO_DIR/local-data/" "$DEST_DIR/local-data/"
-# system/ : must keep secrets/secrets.yaml.
-rsync -a --delete --no-owner --no-group "${excludes[@]}" \
-  "$REPO_DIR/system/" "$DEST_DIR/system/"
-# tests/ : flake checks import the test modules, scripts and fixtures directly.
-rsync -a --delete --no-owner --no-group "${excludes[@]}" \
-  "$REPO_DIR/tests/" "$DEST_DIR/tests/"
-
 for f in flake.nix flake.lock .sops.yaml; do
   install -m 600 "${OWN[@]}" "$REPO_DIR/$f" "$DEST_DIR/$f"
 done

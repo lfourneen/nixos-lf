@@ -13,7 +13,7 @@ Run it from the repository root when you want to pick up upstream changes:
 Only the compressed data file is rewritten; the comment header of the Nix file
 (upstreams, snapshot date, per-source counts) is regenerated in place between
 the `BEGIN GENERATED` / `END GENERATED` markers. The data file lives under
-local-data/, which is git-ignored: `scripts/push-to-dir.sh` copies it to
+local-data/ and is tracked in Git; `scripts/push-to-dir.sh` copies it to
 /etc/nixos so the flake can be evaluated there (see local-data/README.md).
 
 No dependencies beyond the Python standard library. Formats understood:

@@ -110,8 +110,8 @@ let
   # into its listener. Root is no longer exempt: root's :53 lands in dnsmasq now.
   dnsRedirectExemptUidSet = "{ ${toString config.users.users.dnsmasq.uid} }";
 
-  # The DNS/DoT/NTP/NTS channels is pinned per-process instead of opened to any
-  # destination: unbound needs DoT (tcp/853) to its two fixed upstreams -- the
+  # DNS/DoT/NTP/NTS channels are pinned per-process instead of opened to any
+  # destination: unbound needs DoT (tcp/853) to its configured upstreams -- the
   # only resolver left when Clash is down -- and chrony uses authenticated NTP (udp/123)
   # with NTS key exchange (tcp/4460).
   #
@@ -630,8 +630,8 @@ in
     MemoryDenyWriteExecute = true;
   };
 
-  # Encrypted fallback resolver (DoT via Cloudflare) used while clash is down, so
-  # the "direct" DNS path is not plaintext. dns-upstream points dnsmasq here.
+  # Encrypted resolver (DoT via the configured 360 endpoints) while clash is down.
+  # dns-upstream uses this for direct mode, with separately leased portal fallback.
   # Keep `unbound-with-systemd`: the unit uses Type=notify, a plain build lacks
   # --enable-systemd.
   services.unbound = {
@@ -965,10 +965,10 @@ in
         # auto-redirect (-150): that redirect rewrites a locally generated,
         # non-root TCP flow to 127.0.0.1:<redirect-inbound>, so a rule in the
         # priority-0 chain below would only ever see the rewritten destination
-        # and the original :853 would be invisible — the core, running as root,
+        # and the original :853 would be invisible — the managed core
         # then completes the connection and the app keeps its own resolver.
-        # Only unbound may open DoT/DoQ; DoH shares 443 and stays addressable
-        # (PROXY.md records that residual).
+        # Root, the marked core and the configured Unbound path may use :853.
+        # DoH shares 443 and stays addressable (see docs/dns.md).
         chain lf_dns_egress_guard {
           type filter hook output priority -196; policy accept;
           meta skuid ${toString unboundUid} oifname { "${wired}", "${wireless}" } ip daddr ${dnsDotUpstreams} tcp dport ${toString port.dot} accept

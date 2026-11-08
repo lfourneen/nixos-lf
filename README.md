@@ -23,16 +23,17 @@ A declarative NixOS system configuration using Nix flakes, featuring a customize
 * **Shell**: Nushell with custom config
 * **System Management**: Home Manager for user configuration
 * **Hardware Support**: NVIDIA, AMDGPU, Bluetooth, audio, and other hardware configurations
-* **Security**: SSH, firewall, and security hardening
+* **Network and Security**: Managed DNS, nftables firewall, proxy policy and system hardening
 * **Virtualization**: Docker and other virtualization tools
 
 ---
 
-## Proxy
+## Network documentation
 
-Outbound traffic runs through a Clash-based chain. Its components, the three
-enforcement modes (A/B/C), DNS handling, the fail-closed rules and their
-limitations are documented in **[PROXY.md](PROXY.md)**.
+Start with the **[network documentation](docs/README.md)** for the architecture,
+A/B/C modes, DNS and managed Firefox. The **[operations guide](docs/operations.md)**
+covers daily use and recovery; **[patch maintenance](docs/maintenance.md)** maps
+customized components to their sources, upgrade workflow and checks.
 
 ---
 ## Usage
@@ -64,6 +65,8 @@ sudo nixos-rebuild switch --flake .#yourname
 .
 ├── flake.nix               # Main flake configuration
 ├── flake.lock              # Flake lock file
+├── docs/                   # Architecture, operations and patch maintenance
+│   └── CN/                 # Chinese guides
 ├── home/                   # User configuration
 │   ├── config/             # User-specific configs
 │   ├── programs/           # User programs
@@ -98,7 +101,7 @@ sudo nixos-rebuild switch --flake .#yourname
 ## Scripts
 
 * **`scripts/sync-to-git.sh`** — Copies `/etc/nixos` to `~/Projects/Nix/nixos` (creating `~/Projects/Nix` if needed), changes ownership to the current user, and sets permissive permissions (dirs 755 / files 644) so the config can be committed to Git.
-* **`scripts/push-to-dir.sh`** — Reverse of the above. Copies `home/`, `overlays/`, `system/`, `tests/`, `local-data/`, `flake.nix`, `flake.lock`, and `.sops.yaml` from the repo into `/etc/nixos` and applies secure permissions (dirs 700 / files 600). Run as your normal user; the script uses `sudo` internally. `tests/` supplies the flake check sources; copying it does not execute tests. `local-data/` holds generated build inputs — the flake cannot be evaluated without them.
+* **`scripts/push-to-dir.sh`** — Copies the explicitly selected `home/`, `overlays/`, `system/`, `tests/`, `local-data/`, `flake.nix`, `flake.lock`, and `.sops.yaml` into `/etc/nixos` with dirs 700 / files 600. Run as your normal user; the script uses `sudo` internally. `docs/` and `scripts/` stay in the checkout. `tests/` supplies check sources without executing them. The required DNS snapshot in `local-data/` is tracked; the script checks it before touching the destination. Verify copying in a disposable directory with `python3 tests/test_deployment.py scripts/push-to-dir.sh`.
 * **`scripts/refresh-dns-blocklist.py`** — Fetches the upstream lists, merges and de-duplicates them into `local-data/dns-blocklist.txt.xz`, and rewrites the upstream/snapshot header of `system/config/dns-blocklist.nix`. `--check` reports drift without writing. Nothing is downloaded at build time or at run time.
 
 ---

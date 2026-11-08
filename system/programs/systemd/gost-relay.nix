@@ -24,8 +24,8 @@ let
 in
 {
   my.proxy.gostPackage = gost;
-  # Dedicated user so clash's tun.exclude-uid and network.nix nft rules can
-  # target the proxy by UID without touching the desktop user's traffic.
+  # Dedicated user so network.nix's redirect exemption and listener checks can
+  # identify the relay without exempting the desktop user's traffic.
   users.groups.gost = { };
   users.users.gost = {
     isSystemUser = true;
