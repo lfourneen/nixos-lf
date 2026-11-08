@@ -64,6 +64,7 @@
 
     # Editors
     neovim
+    openidea
     vim
 
     # Reverse engineering

@@ -6,6 +6,8 @@ final: prev:
 
   dsh-desktop = final.callPackage ./dsh-desktop-appimage.nix { };
 
+  openidea = final.callPackage ./openidea-appimage.nix { };
+
   waywallen = final.callPackage ./waywallen-appimage.nix { };
 
   wemeet-cursor-hook = final.callPackage ./wemeet-cursor-hook.nix { };
