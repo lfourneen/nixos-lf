@@ -25,6 +25,9 @@ Go patchers run in `postConfigure`, after `buildGoModule` has populated `vendor/
 | dnsmasq | [network.nix](../system/config/network.nix), inline `src/forward.c` replacement | Return terminal strict-order UDP SERVFAIL/REFUSED, including DNSSEC EDE |
 | Firefox package | [firefox.nix](../home/programs/firefox/firefox.nix), [guard.py](../home/programs/firefox/guard.py) | Immutable policy/AutoConfig/fonts and managed launcher; no Gecko source patch |
 | Unbound / Chrony / networking | [network.nix](../system/config/network.nix), [network-time.nix](../system/config/network-time.nix), [systemd modules](../system/programs/systemd) | Declarative policy and repository-owned coordinators; no local Unbound/Chrony source patch |
+| Tailscale transport | [tailscale-transport.nix](../system/config/tailscale-transport.nix), [tailscale_contract.py](../system/programs/systemd/netsec/tailscale_contract.py) | Upstream socket-mark contract enforced by normal system builds; review mark/fallback/socket changes and run the real CLI VM on upgrades; no Tailscale source patch |
+| Direct egress | [hardening-options.nix](../system/config/hardening-options.nix), [network.nix](../system/config/network.nix), [egress_policy.py](../system/programs/systemd/netsec/egress_policy.py) | Actor/socket identity, pre-NAT grants, canonical CIDR validation, scoped time/DoT and shared root/GUI private exclusions; compare compatibility and restricted modes |
+| Sunshine | [sunshine.nix](../system/programs/sunshine.nix) | Graphical-session Desktop service, local administration and no UPnP; retain CUDA, verify the exact package in the configured CUDA cache with local builds disabled |
 
 ## Mihomo
 
@@ -104,7 +107,12 @@ Use the attributes below from the checkout. Nix builds normally use the local da
 | `proxy-control` | Temporary-file snapshot authorization, expiry, restart, hostile inputs and permissions |
 | `proxy-regressions` | Health/state/rules/DNS leases, budget and supervisor regressions |
 | `proxy-profile`, `proxy-gui` | Generated profile variants, policy/template agreement, GUI defaults and process wrapper |
-| `proxy-rules` | Complete mode rules parsed by the build-time LKL nft environment |
+| `proxy-rules`, `proxy-egress-rules` | Complete compatibility/restricted mode rules parsed by the build-time LKL nft environment |
+| `proxy-egress-config` | Canonical CIDRs and bounded grant/time scopes; also required by normal system builds |
+| `proxy-egress-vm` | Restricted counterpart of the Tailscale VM; scoped dual-stack private/multicast/DNS/DoT/NTS traffic, UID/interface/port denials, established grant revocation and C |
+| `proxy-egress-control-vm` | Restricted policy before real production TUN/NAT, including allowed/denied private destinations |
+| `tailscale-transport` | Selected upstream Linux bypass constant and reviewed magicsock/STUN socket marking paths; also required by normal system builds |
+| `proxy-tailscale-vm` | Real selected Tailscale CLI, isolated dual-stack STUN, both uplinks, socket/packet/UID restrictions, B/C recovery and remote desktop port policy |
 | `proxy-control-config` | Production/test identities, helper capabilities and generated listeners agree |
 | `proxy-core` | Patched core build plus injected parser, router, target, direct/UDP/DNS and SOCKS Go tests |
 | `proxy-gost` | Patched relay build and vendored HTTP parser tests |
@@ -121,6 +129,9 @@ nix build --no-link .#checks.x86_64-linux.proxy-core \
   .#checks.x86_64-linux.proxy-regressions .#checks.x86_64-linux.proxy-gui
 nix build --no-link .#checks.x86_64-linux.proxy-control-vm \
   .#checks.x86_64-linux.proxy-network-vm
+nix build --no-link .#checks.x86_64-linux.proxy-egress-config \
+  .#checks.x86_64-linux.proxy-egress-rules .#checks.x86_64-linux.proxy-egress-vm \
+  .#checks.x86_64-linux.proxy-egress-control-vm
 nix build --no-link .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 

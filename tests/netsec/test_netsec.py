@@ -35,6 +35,7 @@ events, dns_sleep = (module(name) for name in ("events", "dns_sleep"))
 listeners = module('listeners')
 tun = module('tun')
 dnssec_probe = module('dnssec_probe')
+egress_policy = module('egress_policy')
 SOURCE = (MODULES / "proxy-mode.nix").read_text()
 
 
@@ -43,6 +44,26 @@ def shell_function(name):
     if not match:
         raise AssertionError(f"missing shell function {name}")
     return match.group(0).replace("''${", "${")
+
+
+class DirectEgressPolicyTests(unittest.TestCase):
+    def test_canonical_scoped_grants(self):
+        policy = {'scopes': ['10.0.0.0/8', 'fc00::/7', 'ff00::/8'],
+                  'exceptions': [{'cidr': '10.44.0.1/32', 'tcpPorts': [443], 'udpPorts': []},
+                                 {'cidr': 'ff02::fb/128', 'tcpPorts': [], 'udpPorts': [5353]}],
+                  'timeServerCidrs': ['203.0.113.10/32', '2001:db8::10/128']}
+        egress_policy.validate(policy)
+        for cidr in ('10.44.0.1/24', '203.0.113.10/32', '::/0', 'fc00::1/64'):
+            candidate = copy.deepcopy(policy)
+            candidate['exceptions'][0]['cidr'] = cidr
+            with self.subTest(cidr=cidr), self.assertRaises(ValueError):
+                egress_policy.validate(candidate)
+
+    def test_time_restriction_does_not_accept_global_or_multicast_targets(self):
+        policy = {'scopes': [], 'exceptions': [], 'timeServerCidrs': []}
+        for cidr in ('0.0.0.0/0', '::/0', '239.0.0.0/8', 'ff02::/16', '203.0.113.1/24'):
+            with self.subTest(cidr=cidr), self.assertRaises(ValueError):
+                egress_policy.validate(policy | {'timeServerCidrs': [cidr]})
 
 
 class HealthTests(unittest.TestCase):

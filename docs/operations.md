@@ -18,6 +18,25 @@ proxy-inspect
 
 `status` returns readiness JSON; `wait` waits for the requested mode's shared readiness conditions. `proxy-status` in Nushell combines mode, DNS, relay, verifier, alarms and a live probe. `egress-audit` supplies additional active diagnostics. `proxy-inspect` only reads state, service resources and link/queue/offload statistics; it sends no probe traffic.
 
+## Remote desktop
+
+Sunshine is enabled and starts with `graphical-session.target`, exposing the current session as **Desktop**. After deployment, log into the desktop and open `https://localhost:47990` on the computer to set credentials and approve Moonlight's pairing PIN. Both the phone and computer must be logged into the same permitted tailnet. Add the computer's Tailscale IP manually in Moonlight; discovery is not required. The same overlay address works on LAN and over the internet, subject to the tailnet's access policy. Direct access by physical LAN IP is not enabled by the default empty `trustedLanCidrs`.
+
+The web UI accepts only local clients; it is not a default tailnet firewall allowance. UPnP is disabled. Streaming uses the explicit tailnet TCP/UDP port lists in [hardening-options.nix](../system/config/hardening-options.nix). Configure phone-to-computer grants in the Tailscale admin console separately; that policy is not stored in this repository. A and healthy B allow remote desktop; C cuts the session, including existing UDP flows and decrypted tailnet input. Use `clash-off` locally when direct A is intended.
+
+[sunshine.nix](../system/programs/sunshine.nix) retains the global CUDA build variant. The locked 2026.914.233613 CUDA package is available from the already configured `https://cache.nixos-cuda.org`. A substituter must provide the exact derivation selected by the lock and package options; adding a CUDA cache does not guarantee every CUDA package/version. Before upgrades, verify downloading the selected package with `nix build --max-jobs 0 --no-link .#nixosConfigurations.lfour.config.services.sunshine.package`; this refuses local compilation. Credentials and pairing state remain in the user's Sunshine directory; the Desktop entry and safety settings are declarative. Hardware capture/encoding and phone streaming require validation in the deployed graphical session.
+
+```sh
+systemctl --user status sunshine.service
+journalctl --user -b -u sunshine.service
+sudo tailscale netcheck
+sudo tailscale ping <phone-tailnet-name-or-IP>
+```
+
+For the optional restricted B policy, Unbound DoT switch and time destination pins, see [Direct egress](egress.md). Restricted B retains negotiated Sunshine media; C always cuts remote control.
+
+On Tailscale upgrades, run `tailscale-transport`, `proxy-rules`, `proxy-egress-rules`, `proxy-tailscale-vm` and `proxy-egress-vm`. The source contract check is also required by normal system builds. `0x80000` is Tailscale's upstream Linux socket mark, stable across network changes but reviewed on upgrades. If the mark is unavailable or bind-to-device is forced, B does not reopen all-root UDP: diagnose marking/permissions and use intentional A if needed.
+
 ## State and diagnosis
 
 | File | Meaning |

@@ -23,7 +23,7 @@ let
     split_profiles = config.my.proxy.splitDnsProfileUuids;
     # Private exclusions are also what keep conditional upstreams outside
     # Mihomo's DNS hijack. Public split upstreams are deliberately unsupported.
-    split_cidrs = lib.optionals config.my.hardening.allowPrivateEgress (m.privateV4 ++ m.ulaV6);
+    split_cidrs = lib.optionals config.my.hardening.directEgress.privateRoutes (m.privateV4 ++ m.ulaV6);
     runtime = "/run/dns-upstream";
   });
   # Plaintext resolvers used only inside the bounded Mode-A window, and only

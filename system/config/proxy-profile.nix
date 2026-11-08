@@ -4,7 +4,7 @@ let
   m = config.my.machine;
   p = config.my.proxy;
   privateAddresses = import ./private-addresses.nix { inherit config lib; };
-  routeExclude = lib.optionals config.my.hardening.allowPrivateEgress
+  routeExclude = lib.optionals config.my.hardening.directEgress.privateRoutes
     (m.privateV4 ++ m.ulaV6 ++ m.linkLocalV6)
     ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6;
   emptyTunFields = [ "route-address" "route-address-set" "route-exclude-address-set"
@@ -52,7 +52,8 @@ in
         "lens.l.google.com" "+.srv.nintendo.net" "+.stun.playstation.net" "+.xboxlive.com"
         "+.msftncsi.com" "+.msftconnecttest.com" "capture.apple.com"
         "connectivitycheck.gstatic.com" "connectivitycheck.android.com"
-      ];
+      ] ++ lib.optionals (config.my.hardening.directEgress.timeServerCidrs != [ ])
+        (m.ntsUpstreams ++ config.my.hardening.directEgress.timeServerNames);
       use-hosts = true;
       respect-rules = true;
       default-nameserver = [ "tls://${lib.head m.mihomoDomesticDnsUpstreams}" "tls://119.29.29.29" ];

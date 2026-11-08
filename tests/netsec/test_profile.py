@@ -32,6 +32,11 @@ for case in cases:
         assert tun["stack"] == expected["stack"]
         assert tun["mtu"] == expected["mtu"]
         assert tun["route-exclude-address"]
+        assert tun["route-exclude-address"] == expected["routeExclude"], case["name"]
+        health = json.loads(Path(case["health"]).read_text())
+        assert health["expected"]["tun"]["route-exclude-address"] == sorted(expected["routeExclude"]), case["name"]
+        assert all((cidr in tun["route-exclude-address"]) == expected["privateRoutes"]
+                   for cidr in expected["privateV4"]), case["name"]
         assert tun["auto-route"] and tun["auto-redirect"] and tun["strict-route"]
         assert tun["dns-hijack"] == ["any:53", "tcp://any:53"]
         # The managed policy pins tun.dns-mode, and RawTun.DNSMode has no
@@ -48,4 +53,6 @@ for case in cases:
         assert tun["congestion-controller"] == expected["congestion"]
     else:
         assert "congestion-controller" not in tun
+    assert data["dns"]["fake-ip-filter"] == expected["fakeIpFilter"]
+    assert all(name in data["dns"]["fake-ip-filter"] for name in expected["realTimeNames"])
     print(f"{case['name']}: rendered Merge YAML passed")

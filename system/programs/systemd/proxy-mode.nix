@@ -144,7 +144,7 @@ let
         dns-hijack = lib.sort builtins.lessThan [ "any:53" "tcp://any:53" ];
         inet6-address = lib.optionals config.networking.enableIPv6 [ config.my.proxy.tunIpv6Address ];
         route-exclude-address = lib.sort builtins.lessThan (
-          lib.optionals config.my.hardening.allowPrivateEgress (m.privateV4 ++ m.ulaV6 ++ m.linkLocalV6)
+          lib.optionals config.my.hardening.directEgress.privateRoutes (m.privateV4 ++ m.ulaV6 ++ m.linkLocalV6)
           ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6);
         route-address-set = [ ];
         route-exclude-address-set = [ ];
@@ -374,6 +374,9 @@ flush chain inet lf_filter proxymode_tail
 flush chain inet lf_filter proxymode_forward
 flush chain inet lf_filter lf_blocked_guard
 flush chain inet lf_filter lf_guest_guard
+flush chain inet lf_filter lf_host_egress_guard
+flush chain inet lf_filter lf_host_direct
+flush chain inet lf_filter lf_tailnet_guard
 flush set inet lf_filter dns_plaintext4
 ${lib.optionalString (config.my.proxy.transparentGuestInterfaces != [ ]) "flush chain ip lf_mangle proxymode_tproxy"}
 NFT_OFF

@@ -18,6 +18,25 @@ proxy-inspect
 
 `status` 输出就绪 JSON，`wait` 等待目标模式满足共享就绪条件。Nushell 的 `proxy-status` 汇总模式、DNS、relay、验证、告警与实时探针，`egress-audit` 提供额外主动诊断。`proxy-inspect` 仅读取状态、服务资源及链路/队列/offload 统计，不发送探针。
 
+## 远程桌面
+
+Sunshine 已启用，随 `graphical-session.target` 启动，将当前图形会话提供为 **Desktop**。部署后先登录电脑桌面，在电脑本机打开 `https://localhost:47990` 设置凭据并批准 Moonlight 配对 PIN。手机与电脑需登录同一获准的 tailnet，在 Moonlight 中手动添加电脑的 Tailscale IP，不依赖自动发现。同一 overlay 地址可用于局域网和公网，仍受 tailnet 权限策略约束。默认 `trustedLanCidrs` 为空，不直接开放物理 LAN IP 的远控访问。
+
+管理界面仅接受本机客户端，默认 tailnet 防火墙也不放行该端口；UPnP 关闭。串流使用 [hardening-options.nix](../../system/config/hardening-options.nix) 的明确 TCP/UDP 清单。手机到电脑的 grants 需另在 Tailscale 管理后台配置，仓库不包含该权限策略。A 与健康 B 允许远控；C 会切断会话，包括已建立的 UDP 流及已解密 tailnet 入站。需要直连 A 时在本地使用 `clash-off`。
+
+[sunshine.nix](../../system/programs/sunshine.nix) 保留全局 CUDA 构建变体。锁定的 2026.914.233613 CUDA 包已存在于配置中的 `https://cache.nixos-cuda.org`。缓存必须提供锁定依赖和包选项生成的精确构建，加入 CUDA 缓存不代表覆盖全部包/版本。升级前可用 `nix build --max-jobs 0 --no-link .#nixosConfigurations.lfour.config.services.sunshine.package` 验证下载，它禁止本地编译。凭据与配对状态仍保存在用户的 Sunshine 目录，Desktop 和安全设置由 Nix 声明。硬件捕获/编码与手机串流需在部署后的图形会话验证。
+
+```sh
+systemctl --user status sunshine.service
+journalctl --user -b -u sunshine.service
+sudo tailscale netcheck
+sudo tailscale ping <手机的-tailnet-名称或-IP>
+```
+
+可选受限 B、Unbound DoT 开关和时间目标限制见[直连例外](egress_CN.md)。受限 B 保留协商后的 Sunshine 媒体；C 始终切断远控。
+
+升级 Tailscale 时运行 `tailscale-transport`、`proxy-rules`、`proxy-egress-rules`、`proxy-tailscale-vm` 和 `proxy-egress-vm`；正常系统构建也强制执行源码约定检查。`0x80000` 来自 Tailscale 上游 Linux socket 标记，切换网络不变，升级时复核。无法打标或强制 bind-to-device 时，B 不会重新放行全部 root UDP；应诊断标记/权限，必要时明确切到 A。
+
 ## 状态与定位
 
 | 文件 | 含义 |

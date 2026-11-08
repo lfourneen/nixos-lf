@@ -59,6 +59,31 @@
         touch "$out"
       '';
       proxy-rules = self.nixosConfigurations.lfour.config.my.proxy.expectedRules;
+      proxy-egress-config = self.nixosConfigurations.lfour.config.my.hardening.directEgress.configCheck;
+      tailscale-transport = self.nixosConfigurations.lfour.config.my.hardening.tailscale.transportCheck;
+      proxy-tailscale-vm = import ./tests/netsec/tailscale-vm.nix {
+        inherit pkgs;
+        tailscale = self.nixosConfigurations.lfour.config.services.tailscale.package;
+      };
+      proxy-egress-vm = import ./tests/netsec/tailscale-vm.nix {
+        inherit pkgs;
+        tailscale = self.nixosConfigurations.lfour.config.services.tailscale.package;
+        restricted = true;
+      };
+      proxy-egress-rules = (self.nixosConfigurations.lfour.extendModules {
+        modules = [ {
+          my.hardening.allowPrivateEgress = false;
+          my.hardening.directEgress = {
+            mode = "restricted";
+            unboundDotInProxy = false;
+            timeServerCidrs = [ "203.0.113.10/32" "2001:db8::10/128" ];
+            exceptions = [
+              { interface = "ens1"; cidr = "10.0.0.1/32"; uids = [ 1000 ]; tcpPorts = [ 443 ]; }
+              { interface = "wlo1"; cidr = "ff02::fb/128"; uids = [ ]; udpPorts = [ 5353 ]; }
+            ];
+          };
+        } ];
+      }).config.my.proxy.expectedRules;
       browser-privacy = import ./tests/netsec/firefox.nix {
         inherit pkgs;
         config = self.nixosConfigurations.lfour.config;
@@ -76,6 +101,19 @@
         uniformProxyConfig = (self.nixosConfigurations.lfour.extendModules {
           modules = [ { my.proxy.proxyOnly = true; } ];
         }).config;
+        restrictedConfig = (self.nixosConfigurations.lfour.extendModules {
+          modules = [ {
+            my.hardening.allowPrivateEgress = false;
+            my.hardening.directEgress = {
+              mode = "restricted";
+              timeServerCidrs = [ "203.0.113.10/32" ];
+              timeServerNames = [ "ntp.fixture.example" ];
+            };
+          } ];
+        }).config;
+        privateProxyConfig = (self.nixosConfigurations.lfour.extendModules {
+          modules = [ { my.hardening.allowPrivateEgress = false; } ];
+        }).config;
       };
       proxy-network-vm = import ./tests/netsec/vm.nix {
         inherit pkgs;
@@ -85,6 +123,11 @@
       proxy-control-vm = import ./tests/netsec/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+      };
+      proxy-egress-control-vm = import ./tests/netsec/control-vm.nix {
+        inherit pkgs;
+        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        restricted = true;
       };
       proxy-control = pkgs.runCommand "proxy-control-regressions" {
         nativeBuildInputs = [ pkgs.python3 ];

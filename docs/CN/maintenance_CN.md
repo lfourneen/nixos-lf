@@ -25,6 +25,9 @@ Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；
 | dnsmasq | [network.nix](../../system/config/network.nix) 内联替换 `src/forward.c` | 返回 strict-order 终端 UDP SERVFAIL/REFUSED，保留 DNSSEC EDE |
 | Firefox 包 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[guard.py](../../home/programs/firefox/guard.py) | 不可变 policy/AutoConfig/字体及受管启动；没有 Gecko 源码补丁 |
 | Unbound / Chrony / 网络 | [network.nix](../../system/config/network.nix)、[network-time.nix](../../system/config/network-time.nix)、[systemd 模块](../../system/programs/systemd) | 声明策略和仓库自有协调器；没有本地 Unbound/Chrony 源码补丁 |
+| Tailscale 传输 | [tailscale-transport.nix](../../system/config/tailscale-transport.nix)、[tailscale_contract.py](../../system/programs/systemd/netsec/tailscale_contract.py) | 正常系统构建强制检查上游 socket mark 约定；升级复核 mark/后备/socket 变化并跑真实 CLI VM；没有 Tailscale 源码补丁 |
+| 直连例外 | [hardening-options.nix](../../system/config/hardening-options.nix)、[network.nix](../../system/config/network.nix)、[egress_policy.py](../../system/programs/systemd/netsec/egress_policy.py) | 主体/socket 身份、NAT 前授权、规范 CIDR 校验、时间/DoT 范围及 root/GUI 共享私网排除；比较兼容和受限模式 |
+| Sunshine | [sunshine.nix](../../system/programs/sunshine.nix) | 随图形会话提供 Desktop，管理仅本机、关闭 UPnP；保留 CUDA，以禁止本地编译的方式验证所配置 CUDA 缓存中的精确包 |
 
 ## Mihomo
 
@@ -104,7 +107,12 @@ Firefox 在打包层加入不可变 policy、AutoConfig、字体和 preflight。
 | `proxy-control` | 临时文件验证快照授权、过期、重启、恶意输入和权限 |
 | `proxy-regressions` | 健康、状态、规则、DNS 租约、预算及监督器 |
 | `proxy-profile`、`proxy-gui` | 生成配置变体、策略/模板一致、GUI 默认与进程 wrapper |
-| `proxy-rules` | 构建期 LKL nft 解析完整模式规则 |
+| `proxy-rules`、`proxy-egress-rules` | 构建期 LKL nft 解析完整兼容/受限模式规则 |
+| `proxy-egress-config` | 规范 CIDR 与授权/时间目标范围；接入正常系统构建 |
+| `proxy-egress-vm` | Tailscale VM 的受限策略版本；双栈私网/多播/DNS/DoT/NTS、UID/接口/端口拒绝、已有连接撤权与 C |
+| `proxy-egress-control-vm` | 真实生产 TUN/NAT 之前的受限策略，包含私网允许与拒绝 |
+| `tailscale-transport` | 所选上游 Linux bypass 常量与已审查的 magicsock/STUN socket 打标路径；正常系统构建也强制执行 |
+| `proxy-tailscale-vm` | 所选真实 Tailscale CLI、隔离双栈 STUN、双上行、socket/packet/UID 约束、B/C 恢复及远控端口策略 |
 | `proxy-control-config` | 生产/测试身份、helper 能力与监听一致 |
 | `proxy-core` | 定制核心构建和 parser/router/目标/direct/UDP/DNS/SOCKS Go 测试 |
 | `proxy-gost` | 定制 relay 构建及 vendored HTTP 测试 |
@@ -121,6 +129,9 @@ nix build --no-link .#checks.x86_64-linux.proxy-core \
   .#checks.x86_64-linux.proxy-regressions .#checks.x86_64-linux.proxy-gui
 nix build --no-link .#checks.x86_64-linux.proxy-control-vm \
   .#checks.x86_64-linux.proxy-network-vm
+nix build --no-link .#checks.x86_64-linux.proxy-egress-config \
+  .#checks.x86_64-linux.proxy-egress-rules .#checks.x86_64-linux.proxy-egress-vm \
+  .#checks.x86_64-linux.proxy-egress-control-vm
 nix build --no-link .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 

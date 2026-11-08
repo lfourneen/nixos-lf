@@ -60,6 +60,6 @@ Override 可以超过额度，但仍记账并受单次租约续期约束；删�
 
 [nm_dns.py](../../system/programs/systemd/netsec/nm_dns.py) 为受管 Wi-Fi 的两种 IP 家族禁用自动 DNS，清除非预期显式服务器/搜索域，并以 `~.` 将 resolved 固定到本机网关。明文回退读取原始 DHCP 数据，不读取已改写的有效 DNS 列表；有线 dhcpcd 独立处理。
 
-`my.proxy.splitDnsProfileUuids` 默认空。批准 profile 可提供已经由 `allowPrivateEgress` 排除在 TUN 外的私网/ULA 条件解析器，dnsmasq 绑定 Wi-Fi 接口查询。租约绑定 UUID、ActiveConnection、ifindex、carrier-down 计数和撤销代次，最迟在原观测后 120 秒到期，dispatcher 转换时撤销。公网解析器、不可读或不支持的 profile 进入 `split-error`，不会打开默认转发。本地监听身份失败进入 `resolver-error`，也不能开启明文回退。
+`my.proxy.splitDnsProfileUuids` 默认空。批准 profile 可提供已由共享[直连路由策略](egress_CN.md)排除在 TUN 外的私网/ULA 条件解析器（含受限 B），dnsmasq 绑定 Wi-Fi 接口查询。租约绑定 UUID、ActiveConnection、ifindex、carrier-down 计数和撤销代次，最迟在原观测后 120 秒到期，dispatcher 转换时撤销。公网解析器、不可读或不支持的 profile 进入 `split-error`，不会打开默认转发。本地监听身份失败进入 `resolver-error`，也不能开启明文回退。
 
 [resolved_policy.py](../../system/programs/systemd/netsec/resolved_policy.py) 将受管 TUN 排除在 resolved 默认选择外。Tailscale 自动 DNS/路由关闭，仅已认证 tailnet 的当前 MagicDNS 后缀条件路由到其解析器，设 `DefaultRoute=no`。字面 peer 地址和验证后的后缀保留有意的私网访问。对外提供 LAN/tailnet DNS 需独立监听、客户端 ACL 与应答选路策略，宿主网关不是 wildcard resolver。

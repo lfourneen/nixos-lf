@@ -1,4 +1,4 @@
-{ lib, ... }:
+{ config, lib, ... }:
 
 {
   imports = [
@@ -8,14 +8,71 @@
       LAN/tailnet DNS requires an explicit listener, client ACL and answer route.
     '')
   ];
-  # Mode-A network posture (Clash closed). These options decide how much of the
-  # machine is reachable, not how private it is: a direct connection exposes the
-  # real address either way, and nothing here needs the proxy to be running.
+  # Input trust and direct-egress policy are separate. Restricted host egress
+  # applies in B; C never inherits its exceptions, including tailnet replies.
   options.my.hardening = {
     allowPrivateEgress = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Keep direct LAN/CGNAT/ULA access in B. Disable to subject host private-address flows to the proxy policy too (including tailnet).";
+      description = "Compatibility mode: keep direct LAN/CGNAT/ULA access in B; false subjects it to proxy routing. Use directEgress.mode=restricted for explicit host direct-access authorization.";
+    };
+    directEgress = {
+      mode = lib.mkOption {
+        type = lib.types.enum [ "compatibility" "restricted" ];
+        default = "compatibility";
+        description = "B host private/multicast policy. Restricted drops unapproved native socket traffic before TUN/NAT; A and C keep their own policies.";
+      };
+      privateRoutes = lib.mkOption {
+        type = lib.types.bool;
+        internal = true;
+        readOnly = true;
+        default = config.my.hardening.allowPrivateEgress
+          || config.my.hardening.directEgress.mode == "restricted";
+        description = "Keep private destinations outside TUN/NAT when compatibility or the early restricted guard owns their authorization.";
+      };
+      configCheck = lib.mkOption {
+        type = lib.types.package;
+        internal = true;
+        readOnly = true;
+        description = "Canonical CIDR/scope validation required by normal system builds.";
+      };
+      exceptions = lib.mkOption {
+        default = [ ];
+        type = lib.types.listOf (lib.types.submodule {
+          options = {
+            interface = lib.mkOption {
+              type = lib.types.strMatching "[a-zA-Z0-9_.:-]{1,15}";
+              description = "Exact output interface; no wildcard.";
+            };
+            cidr = lib.mkOption {
+              type = lib.types.strMatching "[a-fA-F0-9.:]+/[0-9]+";
+              description = "Destination CIDR; grants apply only to private, link-local, multicast and limited-broadcast traffic.";
+            };
+            uids = lib.mkOption {
+              type = lib.types.listOf (lib.types.ints.between 0 4294967294);
+              description = "Explicit socket owner UIDs; an explicitly empty list permits every UID for this entry.";
+            };
+            tcpPorts = lib.mkOption { type = lib.types.listOf lib.types.port; default = [ ]; };
+            udpPorts = lib.mkOption { type = lib.types.listOf lib.types.port; default = [ ]; };
+          };
+        });
+        description = "Restricted B host direct grants by interface, socket UID, CIDR and destination TCP/UDP ports; revocation also cuts established host-initiated flows.";
+      };
+      unboundDotInProxy = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Permit Unbound's UID/uplink/fixed-IP TCP DoT exception in B. False drops its DoT before redirection; A retains recovery DoT and C blocks it.";
+      };
+      timeServerCidrs = lib.mkOption {
+        type = lib.types.listOf (lib.types.strMatching "[a-fA-F0-9.:]+/[0-9]+");
+        default = [ ];
+        description = "Optional strict Chrony NTP/NTS-KE destination CIDRs in A/B. Empty keeps UID/uplink/port compatibility. Include both KE and negotiated NTP servers; address changes fail closed. C remains blocked.";
+      };
+      timeServerNames = lib.mkOption {
+        type = lib.types.listOf (lib.types.strMatching "[a-zA-Z0-9.-]+");
+        default = [ ];
+        description = "Additional negotiated NTP hostnames to exclude from fake-IP when timeServerCidrs is selected. Configured NTS-KE names are included automatically; this does not grant additional CIDRs.";
+      };
     };
     guestHostServices = lib.mkOption {
       type = lib.types.bool;
@@ -74,20 +131,21 @@
 
     tailnetTcpPorts = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ "22" "47984" "47989" "47990" "48010" ];
+      default = [ "47984" "47989" "48010" ];
       description = ''
         TCP ports the tailnet may reach on this host. A blanket
         `iifname "tailscale0" accept` exposes every 0.0.0.0-bound listener (the :53
         resolver, :5353 avahi, :27036 steam, the dev servers) to every device in
         the tailnet, and makes narrower rules unreachable.
 
-        22 covers sshd and Tailscale-SSH; add your own ports deliberately.
+        Defaults expose Sunshine streaming only. Its management UI stays local;
+        SSH is disabled. Add management or other service ports deliberately.
       '';
     };
 
     tailnetUdpPorts = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ "47998-48010" ];
+      default = [ "47998" "47999" "48000" "48002" "48010" ];
       description = "UDP ports the tailnet may reach on this host.";
     };
 

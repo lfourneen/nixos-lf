@@ -140,7 +140,7 @@ in
   options.my.proxy.splitDnsProfileUuids = lib.mkOption {
     type = lib.types.listOf lib.types.str;
     default = [ ];
-    description = "NetworkManager Wi-Fi profile UUIDs allowed explicit split DNS to private/ULA upstreams excluded by allowPrivateEgress. Leases bind the active connection and interface; public DNS upstreams are unsupported.";
+    description = "NetworkManager Wi-Fi profile UUIDs allowed explicit split DNS to private/ULA upstreams excluded by the shared direct-egress routing policy. Leases bind the active connection and interface; public DNS upstreams are unsupported.";
   };
   options.my.proxy.plaintextBootBudgetSeconds = lib.mkOption {
     type = lib.types.nullOr lib.types.ints.positive;

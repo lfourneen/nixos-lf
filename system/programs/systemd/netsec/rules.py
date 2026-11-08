@@ -9,7 +9,8 @@ import sys
 
 TABLES = {"lf_filter", "lf_nat", "lf_mangle", "lf_proxymode_nat"}
 DYNAMIC_CHAINS = {"proxymode_drops", "proxymode_tail", "proxymode_forward",
-                  "lf_blocked_guard", "lf_guest_guard", "proxymode_tproxy"}
+                  "lf_blocked_guard", "lf_guest_guard", "proxymode_tproxy",
+                  "lf_host_egress_guard", "lf_host_direct", "lf_tailnet_guard"}
 LEASE_SETS = {"dns_plaintext4": 4, "dns_split4": 4, "dns_split6": 6}
 
 

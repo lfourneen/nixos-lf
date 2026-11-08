@@ -1,7 +1,10 @@
 { config, lib, ... }:
 
-let uid = config.my.machine.uids.clashCore;
-in {
+let
+  uid = config.my.machine.uids.clashCore;
+
+in
+{
   users.groups.clash-core = { };
   users.users.clash-core = {
     inherit uid;

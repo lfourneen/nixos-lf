@@ -1,4 +1,4 @@
-{ pkgs, config, uniformProxyConfig }:
+{ pkgs, config, uniformProxyConfig, restrictedConfig, privateProxyConfig }:
 
 let
   inherit (pkgs) lib;
@@ -15,6 +15,7 @@ let
       inherit name;
       merge = pkgs.writeText "${name}-Merge.yaml" profile.home.file."${directory}/Merge.yaml".text;
       script = pkgs.writeText "${name}-Script.js" profile.home.file."${directory}/Script.js".text;
+      health = baseConfig.my.proxy.healthSettings;
       expected = {
         inherit ipv6;
         tun = proxy.tunMode;
@@ -29,11 +30,19 @@ let
         delayUrl = proxy.delayTestUrl;
         targets = osConfig.my.proxy.managedProfile.lf-private-targets;
         proxyOnly = proxy.proxyOnly;
+        routeExclude = osConfig.my.proxy.managedProfile."tun.route-exclude-address" or [ ];
+        fakeIpFilter = osConfig.my.proxy.managedDns.fake-ip-filter;
+        privateRoutes = osConfig.my.hardening.directEgress.privateRoutes;
+        privateV4 = osConfig.my.machine.privateV4;
+        realTimeNames = if osConfig.my.hardening.directEgress.timeServerCidrs == [ ] then [ ] else
+          osConfig.my.machine.ntsUpstreams ++ osConfig.my.hardening.directEgress.timeServerNames;
       };
     };
   manifest = pkgs.writeText "proxy-profile-tests.json" (builtins.toJSON (map render [
     { name = "default"; }
     { name = "uniform-proxy"; baseConfig = uniformProxyConfig; }
+    { name = "restricted-host"; baseConfig = restrictedConfig; }
+    { name = "legacy-private-proxy"; baseConfig = privateProxyConfig; }
     { name = "mips"; overrides = { tunStack = "mips"; tunCongestionControl = "bbr"; }; }
     { name = "ipv4"; ipv6 = false; }
     { name = "http-only"; overrides.tunMode = false; }

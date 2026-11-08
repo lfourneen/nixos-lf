@@ -8,7 +8,9 @@ let
   hotspotIface = m.hotspot.interface;
   port = m.ports;
   join = lib.concatStringsSep ", ";
-  privateEgress = config.my.hardening.allowPrivateEgress;
+  egress = config.my.hardening.directEgress;
+  restrictedEgress = egress.mode == "restricted";
+  privateEgress = egress.privateRoutes;
   allowedPrivate4 = lib.optionals privateEgress m.privateV4;
   allowedPrivate6 = lib.optionals privateEgress (m.linkLocalV6 ++ m.ulaV6);
 
@@ -39,8 +41,8 @@ let
     ${src} tcp dport 53317 accept                           # LocalSend
     ${src} udp dport 53317 accept
     ${src} tcp dport { 3389, 5900 } accept                  # RDP / VNC
-    ${src} tcp dport { 47984, 47989, 47990, 48010 } accept  # Sunshine
-    ${src} udp dport 47998-48010 accept
+    ${src} tcp dport { 47984, 47989, 48010 } accept         # Sunshine streaming
+    ${src} udp dport { 47998, 47999, 48000, 48002, 48010 } accept
     ${src} tcp dport 25565 accept                           # Minecraft
     # ${src} tcp dport 22 accept                            # SSH (ssh.nix)
   '';
@@ -93,7 +95,7 @@ let
 
   # Kill switch: everything leaving an uplink for a public destination must go
   # through the proxy core or be dropped (fail closed). The core is exempted by
-  # the packet mark it sets on its own sockets (`routing-mark`), not by uid 0, so
+  # matching socket+packet marks (`routing-mark`) and a root/core socket owner;
   # unmarked root traffic is subject to the same drop/redirect as anything else.
   proxyKillSwitch = true;
 
@@ -103,6 +105,18 @@ let
   # (6666 -> 0x00001a0a), so the fragment emits that form and the live rules
   # compare equal to it.
   coreMark = "0x" + lib.toLower (lib.fixedWidthString 8 "0" (lib.toHexString m.mihomoMark));
+  # Root is an explicit administrative actor (also used by isolated fixtures),
+  # not a blanket UID exemption. Other UIDs and packet-only marks cannot borrow
+  # the core transport. This does not isolate a NET_ADMIN-capable core or root.
+  coreSocket = "meta skuid { 0, ${toString m.uids.clashCore} } socket mark ${coreMark} meta mark ${coreMark}";
+
+  # Tailscale's LinuxBypassMarkNum (tsconst/linuxfw.go), also used by its
+  # netns.Listener for IPv4/IPv6 magicsock and standalone STUN sockets. Match
+  # SO_MARK as well as the packet mark: an unrelated unmarked root socket must
+  # not inherit this transport exception. This is a routing contract, not an
+  # isolation boundary against root, which can set SO_MARK itself.
+  tailscaleMark = "0x" + lib.toLower (lib.fixedWidthString 8 "0"
+    (lib.toHexString config.my.hardening.tailscale.transportMark));
 
   redirectExemptUidSet = "{ ${toString config.users.users.gost.uid} }";
 
@@ -121,6 +135,51 @@ let
   unboundUid = config.users.users.unbound.uid;
   dnsmasqUid = config.users.users.dnsmasq.uid;
   timeUid = config.users.users.chrony.uid;
+  timeCidrs4 = lib.filter (cidr: !lib.hasInfix ":" cidr) egress.timeServerCidrs;
+  timeCidrs6 = lib.filter (cidr: lib.hasInfix ":" cidr) egress.timeServerCidrs;
+  timeDestinations = if egress.timeServerCidrs == [ ] then [ "" ] else
+    lib.optional (timeCidrs4 != [ ]) "ip daddr { ${join timeCidrs4} }"
+    ++ lib.optional (timeCidrs6 != [ ]) "ip6 daddr { ${join timeCidrs6} }";
+  timeRules = uplink: lib.concatMap (destination: [
+    "meta skuid ${toString timeUid} ${uplink} ${destination} udp dport ${toString port.ntp} accept"
+    "meta skuid ${toString timeUid} ${uplink} ${destination} tcp dport ${toString port.nts} accept"
+  ]) timeDestinations;
+  timeNatReturn = cidrs: lib.optionalString (egress.timeServerCidrs == [ ] || cidrs != [ ])
+    ("meta skuid ${toString timeUid} "
+      + lib.optionalString (cidrs != [ ])
+        "${if lib.hasInfix ":" (lib.head cidrs) then "ip6" else "ip"} daddr { ${join cidrs} } "
+      + "tcp dport ${toString port.nts} return");
+  dnsSplitRules = [
+    "meta skuid ${toString dnsmasqUid} meta oifname . ip daddr @dns_split4 meta l4proto { tcp, udp } th dport 53 accept"
+    "meta skuid ${toString dnsmasqUid} meta oifname . ip6 daddr @dns_split6 meta l4proto { tcp, udp } th dport 53 accept"
+  ];
+  processDirectRules = [
+    "meta skuid ${toString unboundUid} oifname { \"${wired}\", \"${wireless}\" } ip daddr ${dnsDotUpstreams} tcp dport ${toString port.dot} accept"
+  ] ++ timeRules ''oifname { "${wired}", "${wireless}" }'' ++ dnsSplitRules;
+  addRules = chain: rules: lib.concatMapStrings (rule:
+    "add rule inet lf_filter ${chain} ${rule}\n") rules;
+  dhcpRules = [
+    ''meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept''
+    ''meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept''
+  ];
+  hostDirectExceptions = lib.concatMap (entry:
+    let
+      family = if lib.hasInfix ":" entry.cidr then "ip6" else "ip";
+      owner = lib.optionalString (entry.uids != [ ]) "meta skuid { ${join (map toString entry.uids)} }";
+      rule = protocol: ports: lib.optional (ports != [ ])
+        ''oifname "${entry.interface}" ${owner} ${family} daddr ${entry.cidr} ${protocol} dport { ${join (map toString ports)} } counter accept'';
+    in rule "tcp" entry.tcpPorts ++ rule "udp" entry.udpPorts
+  ) egress.exceptions;
+  egressConfigCheck = pkgs.runCommand "direct-egress-config" {
+    nativeBuildInputs = [ pkgs.python3 ];
+  } ''
+    python3 ${../programs/systemd/netsec/egress_policy.py} ${pkgs.writeText "direct-egress-policy.json" (builtins.toJSON {
+      inherit (egress) exceptions timeServerCidrs;
+      scopes = m.privateV4 ++ m.ulaV6 ++ m.linkLocalV6 ++ m.multicastV4
+        ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6;
+    })}
+    touch "$out"
+  '';
   guestInfrastructure = [
     { interface = m.vmBridge; address = m.vmAddress; subnet = m.vmSubnet; }
     { interface = m.waydroidBridge; address = m.waydroidAddress; subnet = m.waydroidSubnet; }
@@ -139,20 +198,46 @@ let
   # DHCP/DNS service ports -- never by uid. A daemon that drops privileges keeps
   # the listening socket's creator uid but its accepted TCP sockets carry the
   # dropped uid, so a uid match would allow UDP DNS and drop TCP DNS.
-  guestReplies = lib.concatMapStrings (g: ''
-    add rule inet lf_filter lf_blocked_guard oifname "${g.interface}" ip saddr ${g.address} ip daddr { ${g.subnet}, 255.255.255.255 } udp sport 67 udp dport 68 accept
-    add rule inet lf_filter lf_blocked_guard oifname "${g.interface}" ip saddr ${g.address} ip daddr ${g.subnet} meta l4proto { tcp, udp } th sport 53 accept
-  '') guestInfrastructure;
+  guestReplyRules = lib.concatMap (g: [
+    ''oifname "${g.interface}" ip saddr ${g.address} ip daddr { ${g.subnet}, 255.255.255.255 } udp sport 67 udp dport 68 accept''
+    ''oifname "${g.interface}" ip saddr ${g.address} ip daddr ${g.subnet} meta l4proto { tcp, udp } th sport 53 accept''
+  ]) guestInfrastructure;
 
   # Exemptions stay static so DNS/NTP keep working in direct mode; the drops and
   # the redirect are loaded only while Clash runs (see proxy-mode.nix).
-  killSwitchAccepts = lib.optionalString proxyKillSwitch ''
-    # Per-process, per-destination: only unbound's DoT and chrony's authenticated time.
-    meta skuid ${toString unboundUid} oifname { "${wired}", "${wireless}" } ip daddr ${dnsDotUpstreams} tcp dport ${toString port.dot} accept
-    meta skuid ${toString timeUid} oifname { "${wired}", "${wireless}" } udp dport ${toString port.ntp} accept
-    meta skuid ${toString timeUid} oifname { "${wired}", "${wireless}" } tcp dport ${toString port.nts} accept
-    meta skuid ${toString dnsmasqUid} meta oifname . ip daddr @dns_split4 meta l4proto { tcp, udp } th dport 53 accept
-    meta skuid ${toString dnsmasqUid} meta oifname . ip6 daddr @dns_split6 meta l4proto { tcp, udp } th dport 53 accept
+  killSwitchAccepts = lib.optionalString proxyKillSwitch (lib.concatStringsSep "\n" processDirectRules);
+
+  hostDirectGuard = ''
+    flush chain inet lf_filter lf_host_egress_guard
+    flush chain inet lf_filter lf_host_direct
+    ${lib.optionalString (!egress.unboundDotInProxy) ''
+    add rule inet lf_filter lf_host_egress_guard meta skuid ${toString unboundUid} tcp dport ${toString port.dot} counter drop
+    ''}
+    ${lib.optionalString restrictedEgress ''
+    add rule inet lf_filter lf_host_egress_guard ip daddr { ${local4}, ${join multicast4} } jump lf_host_direct
+    add rule inet lf_filter lf_host_egress_guard ip6 daddr { ${local6}, ${join m.multicastV6} } jump lf_host_direct
+    ${addRules "lf_host_direct" ([
+      "${coreSocket} accept"
+      ''meta skuid 0 oifname { "${wired}", "${wireless}" } meta l4proto udp socket mark ${tailscaleMark} meta mark ${tailscaleMark} accept''
+      ''oifname "lo" accept''
+      # Input policy authorizes the initiating peer/port. Revoking an outbound
+      # grant still cuts its ORIGINAL direction, even when already established.
+      "ct direction reply ct state established,related accept"
+    ] ++ dhcpRules ++ guestReplyRules ++ processDirectRules ++ [
+      ''oifname { "${wired}", "${wireless}" } ip6 hoplimit 255 meta l4proto icmpv6 icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept''
+      ''oifname { "${wired}", "${wireless}" } ip6 daddr ff02::/16 ip6 hoplimit 1 meta l4proto icmpv6 icmpv6 type { mld-listener-report, mld-listener-done, mld2-listener-report } accept''
+      # Physical hard-coded DNS is still redirected to the managed gateway.
+      # dnsmasq's own upstreams have already passed the earlier lease guard.
+      ''oifname { "${wired}", "${wireless}" } ip daddr != ${m.magicDns} meta l4proto { tcp, udp } th dport 53 accept''
+      ''oifname { "${wired}", "${wireless}" } meta nfproto ipv6 meta l4proto { tcp, udp } th dport 53 accept''
+    ] ++ lib.optionals (config.services.tailscale.enable && config.my.hardening.tailscale.magicDns) [
+      ''oifname "${config.services.tailscale.interfaceName}" meta skuid { 0, ${toString dnsmasqUid}, ${toString config.users.users.systemd-resolve.uid} } ip daddr ${m.magicDns} meta l4proto { tcp, udp } th dport 53 accept''
+    ] ++ lib.optionals (config.services.tailscale.enable && config.my.hardening.tailnetUdpPorts != [ ]) [
+      # Sunshine can initiate media from its fixed server ports after RTSP
+      # negotiation; ordinary tailnet client sockets need explicit grants.
+      ''oifname "${config.services.tailscale.interfaceName}" meta skuid ${toString config.users.users.${m.desktopUser}.uid} udp sport { ${tailnetUdp} } accept''
+    ] ++ hostDirectExceptions ++ [ "counter drop" ])}
+    ''}
   '';
 
   # Fragment proxy-mode.service applies while Clash runs: LAN/multicast stay
@@ -165,6 +250,8 @@ let
 
     # Leaving Mode C: the guard must be empty or its drop would refuse everything.
     flush chain inet lf_filter lf_blocked_guard
+    flush chain inet lf_filter lf_tailnet_guard
+    ${hostDirectGuard}
     flush set inet lf_filter dns_plaintext4
     ${guestGuard "proxy"}
     ${lib.optionalString vmTproxy ''
@@ -175,27 +262,22 @@ let
     flush chain inet lf_filter proxymode_drops
     # The proxy core marks its own outbound sockets (routing-mark): allow it, it
     # must reach the nodes directly.
-    add rule inet lf_filter proxymode_drops meta mark ${coreMark} accept
+    add rule inet lf_filter proxymode_drops ${coreSocket} accept
     # DHCP clients on the uplinks: NM is root, dhcpcd has its pinned UID.
     add rule inet lf_filter proxymode_drops meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept
-    add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
     add rule inet lf_filter proxymode_drops meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept
-    # Tailscale transport (tailscaled runs as root and does not carry the core's
-    # mark). Its outbound UDP must be allowed to arbitrary ports: peer
-    # hole-punching and STUN do not use the 41641 endpoint port, and bounding it
-    # to 41641 degraded Tailscale to a DERP relay (netcheck reported UDP: false).
-    # uid 0 is the only identity the build-time nft parse accepts (socket cgroupv2
-    # is unsupported in the LKL kernel), and it does not widen the trust boundary:
-    # root can already set the core's routing mark. Scoped to the uplinks and to
-    # this fragment -- Mode C still cuts the tailnet.
-    add rule inet lf_filter proxymode_drops meta skuid 0 oifname { "${wired}", "${wireless}" } meta l4proto udp accept
+    # Keep dynamic peer/STUN ports, but only for root sockets carrying
+    # Tailscale's own bypass SO_MARK. Unlike socket cgroupv2 this expression is
+    # supported by the build-time LKL kernel. Never fall back to all-root UDP
+    # when the socket is unmarked. Mode C still cuts the tailnet.
+    add rule inet lf_filter proxymode_drops meta skuid 0 oifname { "${wired}", "${wireless}" } meta l4proto udp socket mark ${tailscaleMark} meta mark ${tailscaleMark} counter accept
     # Everything else leaving an uplink for a non-local destination is dropped,
     # root included.
     add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } ip daddr != { ${exempt4} } counter drop
     add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } ip6 daddr != { ${exempt6} } counter drop
 
     flush chain inet lf_filter proxymode_tail
-    add rule inet lf_filter proxymode_tail meta mark ${coreMark} accept
+    add rule inet lf_filter proxymode_tail ${coreSocket} accept
     add rule inet lf_filter proxymode_tail oifname != { "lo", "${tunDev}" } ip daddr != { ${join multicast4} } counter drop
     add rule inet lf_filter proxymode_tail oifname != { "lo", "${tunDev}" } ip6 daddr != ${join m.multicastV6} counter drop
 
@@ -216,6 +298,9 @@ let
         # core's reply to the self-test, whose destination is the TUN address).
         # Never hand it to gost, which would re-source it and break the probe.
         ip daddr ${fakeIpNet} return
+        # Retain the declared Chrony direct exception in the Gost fallback;
+        # the earlier time guard checks the original target when constrained.
+        ${timeNatReturn timeCidrs4}
         meta mark != ${coreMark} meta skuid != ${redirectExemptUidSet} ip daddr != { ${redirectExempt4} } tcp dport != { 53, ${toString port.dot} } counter redirect to :${toString port.gostRedirect}
       }
     }
@@ -223,6 +308,7 @@ let
     table ip6 lf_proxymode_nat {
       chain output {
         type nat hook output priority -100; policy accept;
+        ${timeNatReturn timeCidrs6}
         meta mark != ${coreMark} meta skuid != ${redirectExemptUidSet} ip6 daddr != { ${redirectExempt6} } tcp dport != { 53, ${toString port.dot} } counter redirect to :${toString port.gostRedirect}
       }
     }
@@ -247,6 +333,12 @@ let
     flush chain inet lf_filter proxymode_drops
     flush chain inet lf_filter proxymode_tail
     flush chain inet lf_filter proxymode_forward
+    flush chain inet lf_filter lf_host_egress_guard
+    flush chain inet lf_filter lf_host_direct
+    flush chain inet lf_filter lf_tailnet_guard
+    ${lib.optionalString config.services.tailscale.enable ''
+    add rule inet lf_filter lf_tailnet_guard iifname "${config.services.tailscale.interfaceName}" counter drop
+    ''}
     flush set inet lf_filter dns_plaintext4
     ${guestGuard "blocked"}
     ${lib.optionalString vmTproxy "flush chain ip lf_mangle proxymode_tproxy"}
@@ -266,7 +358,7 @@ let
     add rule inet lf_filter lf_blocked_guard ip daddr 127.0.0.0/8 accept
     add rule inet lf_filter lf_blocked_guard ip6 daddr ::1 accept
     # The core keeps its egress so it can reach its nodes and recover.
-    add rule inet lf_filter lf_blocked_guard meta mark ${coreMark} accept
+    add rule inet lf_filter lf_blocked_guard ${coreSocket} accept
     # Root may reach the fake-ip network for the TUN self-test. Do not require
     # a particular oifname: the shared route checks and the probe's exact-source
     # log prove the effective path. Auto-redirect runs later at -150.
@@ -282,7 +374,7 @@ let
     # Retain pinned DHCP clients, including unicast renewals. Server replies
     # are only needed for the explicitly enabled AP and its own subnet.
     add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept
-    ${guestReplies}
+    ${addRules "lf_blocked_guard" guestReplyRules}
     add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept
     # Link maintenance has no application payload; without ND an IPv6-only
     # uplink cannot recover once its neighbour cache expires in Mode C.
@@ -331,16 +423,26 @@ let
 
 in
 {
-  imports = [ ./network-hardening.nix ./network-time.nix ];
+  imports = [
+    ./network-hardening.nix
+    ./network-time.nix
+    ./tailscale-transport.nix
+  ];
 
   # The nft rules match these daemons by uid, so the accounts are pinned.
   users.users.unbound.uid = m.uids.unbound;
   users.users.dnsmasq.uid = m.uids.dnsmasq;
   users.users.dhcpcd.uid = m.uids.dhcpcd;
+  my.hardening.directEgress.configCheck = egressConfigCheck;
+  system.checks = [ egressConfigCheck ];
 
   # A null or shared uid makes an exemption match nothing or the wrong daemon;
   # uniqueness is what the evaluator can check.
   assertions = [
+    {
+      assertion = lib.all (entry: entry.tcpPorts != [ ] || entry.udpPorts != [ ]) egress.exceptions;
+      message = "Host direct exceptions require at least one explicit TCP or UDP destination port.";
+    }
     {
       assertion = lib.all (entry: builtins.elem entry.interface restrictedGuestIfaces
         && builtins.match "[0-9a-fA-F:.]+/[0-9]+" entry.cidr != null
@@ -414,7 +516,7 @@ in
 
   systemd.network.links."10-wifi-${wireless}" = {
     linkConfig.Name = wireless;
-    
+
     matchConfig = {
       Path = m.wireless.path;
       Driver = m.wireless.driver;
@@ -738,7 +840,7 @@ in
 
   # Nftables (FireWall)
   networking.firewall.enable = false;
-  
+
   networking.nftables = {
     enable = true;
 
@@ -955,6 +1057,28 @@ in
           # direction/status, while the client cut still precedes NAT at -150.
           type filter hook output priority -197; policy accept;
         }
+        # B-only host direct grants see the original destination and socket
+        # before sing-tun/Gost can replace them. C runs earlier and flushes B.
+        chain lf_host_egress_guard {
+          type filter hook output priority -195; policy accept;
+        }
+        chain lf_host_direct { }
+        # Cut decrypted tailnet traffic in C before established input accepts,
+        # including packets already in flight when the transport is blocked.
+        chain lf_tailnet_guard {
+          type filter hook input priority -1; policy accept;
+        }
+        ${lib.optionalString (egress.timeServerCidrs != [ ]) ''
+        # Target-constrain Chrony before any transparent redirect, in A/B.
+        # A selected address may still route through the managed proxy; the
+        # direct exception below additionally requires a physical uplink.
+        chain lf_time_egress_guard {
+          type filter hook output priority -194; policy accept;
+          ${lib.concatStringsSep "\n" (timeRules "")}
+          meta skuid ${toString timeUid} udp dport ${toString port.ntp} counter drop
+          meta skuid ${toString timeUid} tcp dport ${toString port.nts} counter drop
+        }
+        ''}
         # Guest refusal must see original destinations before any transparent
         # redirect can turn a forwarded flow into local input to the core.
         chain lf_guest_guard {
@@ -971,9 +1095,9 @@ in
         # DoH shares 443 and stays addressable (see docs/dns.md).
         chain lf_dns_egress_guard {
           type filter hook output priority -196; policy accept;
-          meta skuid ${toString unboundUid} oifname { "${wired}", "${wireless}" } ip daddr ${dnsDotUpstreams} tcp dport ${toString port.dot} accept
-          meta skuid ${toString m.uids.clashCore} meta mark ${coreMark} meta l4proto { tcp, udp } th dport ${toString port.dot} accept
-          meta skuid != { 0, ${toString unboundUid} } meta l4proto { tcp, udp } th dport ${toString port.dot} counter drop
+          meta skuid ${toString unboundUid} ip daddr ${dnsDotUpstreams} tcp dport ${toString port.dot} accept
+          ${coreSocket} meta l4proto { tcp, udp } th dport ${toString port.dot} accept
+          meta skuid != 0 meta l4proto { tcp, udp } th dport ${toString port.dot} counter drop
         }
 
         # Only NAT may deliver traffic to gost's transparent listener. Reject
@@ -1197,4 +1321,3 @@ in
     traceroute
   ];
 }
-

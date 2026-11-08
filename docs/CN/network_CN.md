@@ -23,7 +23,7 @@
 
 这些监听均在本机。大小写环境变量、GSettings 和 Flatpak 覆盖将应用指向 `127.0.0.1:33332`。Gost 在 B 中把两种入口转给 `127.0.0.1:7897`，A 中直通，C 或未知状态下关闭监听。客户端显式连接透明入口 `33333` 会在 NAT 前被拒绝；该入口只供重定向流量使用。
 
-Mihomo 为出站 socket 设置 `6666`（`0x1a0a`）mark，防火墙据此豁免。默认 `my.proxy.proxyOnly=false` 时 Rule 可选 DIRECT；可选的[统一代理策略](proxy_CN.md#路由策略)在核心内拒绝应用 DIRECT。核心以外的私网和基础设施路径仍由各自规则控制。
+Mihomo 为出站 socket 设置 `6666`（`0x1a0a`）mark；核心例外同时要求 socket 与 packet mark，并核对 socket UID 为 root 或 `clash-core`。默认 `my.proxy.proxyOnly=false` 时 Rule 可选 DIRECT；可选的[统一代理策略](proxy_CN.md#路由策略)在核心内拒绝应用 DIRECT。核心以外的私网和基础设施路径仍由各自规则控制。
 
 [DNS](dns_CN.md) 是并行链路：resolved → dnsmasq → Mihomo 或 Unbound。[Firefox](browser_CN.md) 使用相同的 Gost HTTP 入口。
 
@@ -53,10 +53,17 @@ Mihomo 为出站 socket 设置 `6666`（`0x1a0a`）mark，防火墙据此豁免�
 | Output `-198` | 保留内部 DNS 端口并检查应答身份 |
 | Output `-197` | C guard，位于 conntrack（`-200`）之后、auto-redirect（`-150`）之前 |
 | Output `-196` | 限制独立使用 853 端口的 DoT/DoQ |
+| Output `-195` | B 可选私网/多播授权与 Unbound DoT 关闭，位于 NAT/TUN 前 |
+| Output `-194` | A/B 可选 Chrony 原始目标 CIDR 限制 |
+| Input `-1` | C 在 established 放行之前丢弃已解密 tailnet 数据 |
 
-B 重定向宿主公网 TCP，fake-IP 保留核心路径，其余公网出站在明确例外后丢弃。例外包括核心 mark、按 UID 限定的 Unbound DoT 与 Chrony NTS/NTP、窄 DHCP、组播和默认私网访问。为 Tailscale 打洞保留的例外允许上行口的**全部 root UDP**，范围大于 tailscaled 本身；root 也能设置 mark 或修改防火墙。
+B 重定向宿主公网 TCP，fake-IP 保留核心路径，其余公网出站在明确例外后丢弃。例外包括核心 mark、按 UID 限定的 Unbound DoT 与 Chrony NTS/NTP、窄 DHCP、组播和默认私网访问。Tailscale UDP 例外要求 UID 0、物理上行口，且 socket 的 `SO_MARK` 与 packet mark 都等于上游 Linux bypass mark（`0x80000`）。保留动态 peer/STUN 端口，不再整体放行未打标 root UDP。这是路由约定，不是服务身份认证或针对 root 的隔离；root 仍能设置 socket mark 或修改防火墙。当前 LKL 内核支持 `socket mark`，不支持 `socket cgroupv2`。
 
-C 的早期 output guard 在核心重定向前阻断应用，保留 loopback IPC、核心 mark、root 到代理/DNS 端口和 fake-IP 53/80/443 的恢复访问、窄 DHCP 与 hop-limit 255 的 NDP。非 root 到核心/Gost 应用端口的 TCP/UDP 被阻断。自测应答例外限定为预期 loopback 源，或 root/core 的 conntrack DNAT reply 且原目的地为 fake-IP HTTP。访客 DHCP/DNS 应答按网桥、网关源地址和端口识别，不依赖守护进程 UID。Unbound 和普通 tailnet 流量不能外出。
+[tailscale-transport.nix](../../system/config/tailscale-transport.nix) 将该 mark 作为上游常量，而非可自行分配的配置。正常系统构建会核对所选 Tailscale 源码的常量及已审查的 magicsock/STUN 打标路径。切换网络不会改变常量；升级时须通过该检查与 `proxy-tailscale-vm`，后者用所选真实 CLI 和隔离的双栈 STUN peer 验证。退回 `SO_BINDTODEVICE` 不会静默重新放行未打标 root UDP。
+
+[直连例外清单](egress_CN.md)逐项记录主体、目标、端口和模式。可选受限 B 按接口/UID/CIDR/端口授权，在 TUN/NAT 前切断撤权后的已有宿主主动连接。Unbound 即使在 A 也只能使用声明的 DoT 目标，B 的此项例外可关闭；Chrony 可在 A/B 固定目标 CIDR。默认保留 LAN 与 NTS 地址变化兼容性。
+
+C 的早期 output guard 在核心重定向前阻断应用，保留 loopback IPC、核心 mark、root 到代理/DNS 端口和 fake-IP 53/80/443 的恢复访问、窄 DHCP 与 hop-limit 255 的 NDP。非 root 到核心/Gost 应用端口的 TCP/UDP 被阻断。自测应答例外限定为预期 loopback 源，或 root/core 的 conntrack DNAT reply 且原目的地为 fake-IP HTTP。访客 DHCP/DNS 应答按网桥、网关源地址和端口识别，不依赖守护进程 UID。Unbound 和普通 tailnet 流量不能外出，包括已有远控连接；B 的授权不提供 C 远控例外。另有入站守卫在 established 放行前丢弃已解密 tailnet 数据，包括切换时仍在到达的数据包。
 
 [network-bootstrap.nix](../../system/programs/systemd/network-bootstrap.nix) 在 NetworkManager/dhcpcd 前安装入站和转发基线；首次完整装载失败仍保留它。静态漂移触发完整修复：直连意图回到 A，代理意图先回 C，再检查健康。失败报告 `unenforced`。
 
@@ -66,7 +73,7 @@ C 的早期 output guard 在核心重定向前阻断应用，保留 loopback IPC
 
 有线 `ens1` 由 dhcpcd 管理，NetworkManager 按名称和 MAC 排除它。Wi-Fi `wlo1` 由 NetworkManager 管理，以 PCI 路径稳定匹配。扫描使用随机 MAC，连接默认 `stable-ssid`；持久化的 NetworkManager 状态和 machine-id 使同一 SSID 的身份跨根回滚保持稳定。连接 profile 可覆盖[默认 MAC 策略](operations_CN.md#配置入口)。
 
-Tailscale 不自动接受 DNS、子网路由或出口节点；只有已认证 tailnet 的 MagicDNS 后缀获得条件 DNS 路由。宿主入站采用显式 tailnet 端口清单。Avahi 仅在 loopback、tailnet 及显式启用的 AP 上发布；外网 Wi-Fi 客户端不发布。本配置没有导入 sshd 模块，防火墙允许端口也不会自行创建 SSH 监听。
+Tailscale 不自动接受 DNS、子网路由或出口节点；只有已认证 tailnet 的 MagicDNS 后缀获得条件 DNS 路由。宿主入站默认仅 Sunshine 串流 TCP 47984/47989/48010 和 UDP 47998/47999/48000/48002/48010。Sunshine 随图形会话启动，管理界面仅本机可用，关闭 UPnP，见[远程桌面操作](operations_CN.md#远程桌面)。Avahi 仅在 loopback、tailnet 及显式启用的 AP 上发布；外网 Wi-Fi 客户端不发布。本配置没有导入 sshd 模块，防火墙允许端口也不会自行创建 SSH 监听。
 
 [network-time.nix](../../system/config/network-time.nix) 为 Chrony 配置认证 NTS、UDP 123 和 NTS-KE TCP 4460。RTC/drift 恢复提供离线时间下限；证书时间校验保留，不配置明文时间回退。[network-hardening.nix](../../system/config/network-hardening.nix) 提供共享 sysctl、redirect/source-route 和模块限制。Nix daemon 的 trusted-users 仅含 root。
 

@@ -145,6 +145,7 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-mode-script".source = config.my.proxy.modeScript;
     environment.etc."netsec-guest-services.py".source = ./guest_services_fixture.py;
     environment.etc."netsec-ntp.py".source = ./ntp_fixture.py;
+    environment.etc."netsec-tail.py".source = ./tailscale_fixture.py;
     environment.etc."netsec-private-rules.nft".text = (import ../../system/config/network.nix {
       inherit pkgs lib;
       config = config // {
@@ -385,16 +386,16 @@ pkgs.testers.runNixOSTest {
         for checking in ("", "+cdflag"):
             response = machine.succeed(f"dig {transport} {checking} +time=2 +tries=1 @127.0.0.1 -p 1054 bogus.signed.fixture.example A")
             assert "status: SERVFAIL" in response, response
-    # Only the validating resolver may open an encrypted DNS channel of its
-    # own: uid 0 for diagnostics and unbound's uid get through, everything else
-    # is dropped so no app can step outside the resolver policy over 853. The
+    # Root diagnostics may reach this fixture; Unbound must now use a declared
+    # upstream even in A, so its UID alone cannot reach an arbitrary DoT IP.
+    # Other applications cannot step outside the resolver policy over 853. The
     # listener sits in the peer namespace, so this is a real public-range
     # destination rather than one of the private ranges the output chain
     # accepts unconditionally.
     machine.succeed("systemd-run --unit=netsec-dot-fixture --working-directory=/tmp ip netns exec outside ${pkgs.python3}/bin/python3 -m http.server 853 --bind 203.0.113.10")
     machine.wait_for_unit("netsec-dot-fixture.service")
     machine.wait_until_succeeds("nc -z -w 2 203.0.113.10 853", timeout=30)
-    machine.succeed("setpriv --reuid=983 --clear-groups nc -z -w 2 203.0.113.10 853")
+    machine.fail("setpriv --reuid=983 --clear-groups nc -z -w 2 203.0.113.10 853")
     drops = dot_guard_drops()
     machine.fail("setpriv --reuid=1000 --clear-groups nc -z -w 2 203.0.113.10 853")
     assert dot_guard_drops() > drops, "the 853 drop counter did not move: the guard was not what refused the flow"
@@ -597,6 +598,30 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("ip netns exec outside ss -ltn | grep -q ':18080 '")
     machine.succeed("systemctl start clash-verge.service dns-upstream.service")
     wait_proxy()
+    # Tailscale's bypass routes precede Mihomo's rules. With the real TUN and
+    # auto-redirect installed, transport SO_MARK must survive to our exact
+    # socket+packet exception instead of being rewritten or proxied.
+    machine.succeed("ip rule add pref 5210 fwmark 0x80000/0xff0000 lookup main; ip -6 rule add pref 5210 fwmark 0x80000/0xff0000 lookup main")
+    # Reply from the destination IP, not a wildcard socket's primary address;
+    # otherwise the input firewall correctly treats it as a different flow.
+    machine.succeed("systemd-run --unit=netsec-tail-peer ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-tail.py server")
+    machine.wait_until_succeeds("ip netns exec outside ss -uln | grep -q ':42424 '")
+    def tail_transport_packets():
+        # The core now checks socket mark too; select the Tailscale contract,
+        # not the first socket expression or the core's non-counter accept.
+        rules = [line for line in machine.succeed("nft list chain inet lf_filter proxymode_drops").splitlines() if "socket mark 0x00080000" in line]
+        assert len(rules) == 1, rules
+        rule = rules[0]
+        return int(rule.split("counter packets ")[1].split()[0])
+    before_tail = tail_transport_packets()
+    try:
+        for address in ("203.0.113.10", "2001:db8:ffff::10"):
+            machine.succeed(f"ip netns exec outside python3 /etc/netsec-tail.py client {address} 42424")
+            machine.succeed(f"python3 /etc/netsec-tail.py client {address} 42424 --mark 524288")
+    except Exception:
+        print(machine.execute("ip rule show; ip -6 rule show; ip route get 203.0.113.10 mark 0x80000; nft list chain inet lf_filter proxymode_drops; ip netns exec outside ss -uln"))
+        raise
+    assert tail_transport_packets() >= before_tail + 2, "Tailscale UDP did not traverse its direct transport exception with the real core"
     # A core started without proxy intent must never reach Mode B (A1/A2).
     machine.succeed("rm -f /run/proxy-mode/intent")
     machine.wait_until_succeeds("/etc/netsec-mode-script --reload", timeout=60)

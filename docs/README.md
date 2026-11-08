@@ -7,6 +7,7 @@ This system combines physical uplinks, local DNS, a managed proxy core, guest ne
 | Guide | Contents |
 |---|---|
 | [Network architecture](network.md) | Traffic paths, A/B/C modes, firewall, uplinks, guests and Tailscale |
+| [Direct egress](egress.md) | Exception ledger, optional restricted B grants, time-server pins and C blocking |
 | [DNS](dns.md) | Resolver chain, DNSSEC, blocklist, bounded plaintext fallback and split DNS |
 | [Proxy core and permissions](proxy.md) | Configuration authorization, service identities, controller API and routing policy |
 | [Firefox](browser.md) | Managed launcher, proxy, DNS and privacy settings |
