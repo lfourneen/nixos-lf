@@ -586,8 +586,9 @@ let
   # has no fallback. Repair any id that no longer maps to an existing file
   # before the daemon reads its config, so its own restore always has a valid
   # target. Valid ids are left untouched, so the last applied wallpaper is
-  # preserved. Wired as the service's ExecStartPre below; upstream v0.5.0 and
-  # main still return WallpaperNotFound with no fallback.
+  # preserved. Wired as the service's ExecStartPre below. Upstream v0.6.0 still
+  # passes saved ids from event_process.rs to application/playback/apply.rs,
+  # which returns WallpaperNotFound without choosing a replacement.
   waywallenFallbackWallpaper = "Iochi_Mari.mp4"; # basename to prefer; "" = any video
   waywallenFixRestore = pkgs.writeText "waywallen-fix-restore.py" ''
     import os, re, sqlite3, sys

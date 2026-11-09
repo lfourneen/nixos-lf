@@ -2,10 +2,10 @@
 
 let
   pname = "waywallen";
-  version = "0.5.0";
+  version = "0.6.0";
   src = pkgs.fetchurl {
     url = "https://github.com/waywallen/waywallen/releases/download/v${version}/waywallen-${version}-x86_64.AppImage";
-    hash = "sha256-5iFsX//HBWEisQXldFlQye53cQ4pSmO2h8Szhx4ZAIM=";
+    hash = "sha256-0X4ZxnGrGWJpnqrfNIM9x1UVqL3G+nQoZJjgJVqzUf0=";
   };
 
   # Single extraction, reused for the runtime AppDir plus the desktop entry,
