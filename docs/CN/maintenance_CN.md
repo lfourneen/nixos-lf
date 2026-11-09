@@ -1,4 +1,4 @@
-# 补丁与自定义维护
+# 网络补丁与自定义维护
 
 [English](../maintenance.md) | 简体中文 | [文档目录](README_CN.md)
 
@@ -83,18 +83,6 @@ Firefox 在打包层加入不可变 policy、AutoConfig、字体和 preflight。
 默认 HTTP 和可选透明路径还需运行 `browser-ech-vm`，复核所选 Firefox 的 CONNECT 门、原生 type-65 API 和 NSS 重试/证书行为。自动化的原生 DNS 测试开关只放在临时 profile，区分认证后不带 ECH 重试与证书验证失败。[浏览器手册](browser_CN.md#ech-发现与代理兼容)介绍这些路径；本地 CA 与密钥只属于隔离 fixture。
 
 `dnsEncryption="strict"` 在协调器、broker 和静态防火墙中必须一致：不能自动或强制回退，不授予明文租约，不安装后备集合放行规则。保留已批准 split DNS、MagicDNS 和字面门户访问；两种传输策略都要验证，默认恢复预算仍是独立行为。
-
-## 其它桌面自定义
-
-以下项目独立于网络安全策略，更新对应包时也需维护：
-
-| 入口 | 自定义与维护 |
-|---|---|
-| [overlays/default.nix](../../overlays/default.nix) | Niri SHM screencast 固定 hash diff，此 override 禁用包检查；移除前比较上游并测试录屏 |
-| [dsh-desktop-appimage.nix](../../overlays/dsh-desktop-appimage.nix) | ASAR 菜单、内置 pnpm git 安装、解包/执行位和 Landlock 启动器；逐版本检查 JS 锚点、pnpm、sharp WASM 与可执行资源 |
-| [bilibili-appimage.nix](../../overlays/bilibili-appimage.nix) | 桌面命令替换与 Wayland 启动器；核对 desktop 布局和沙箱参数 |
-| [wemeet-cursor-hook.nix](../../overlays/wemeet-cursor-hook.nix) | 固定外部 cursor hook，源码构建；合成器更新后检查 preload/光标 |
-| [layout.nix](../../system/config/layout.nix) | 将 Rime Ice suggestion YAML 安装为默认；核对上游文件名 |
 
 ## 升级流程
 

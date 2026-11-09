@@ -1,4 +1,4 @@
-# Patch and customization maintenance
+# Network patch and customization maintenance
 
 English | [简体中文](CN/maintenance_CN.md) | [Documentation](README.md)
 
@@ -83,18 +83,6 @@ Firefox customization wraps the packaged browser with immutable policy, AutoConf
 Also run `browser-ech-vm` for the default HTTP and optional transparent paths. Review the selected Firefox CONNECT gate, native type-65 API and NSS retry/certificate behavior. Keep automation's native-DNS test switch inside the temporary profile, and distinguish authenticated retry without ECH from failed certificate validation. The [browser guide](browser.md#ech-discovery-and-proxy-compatibility) describes these paths; the test's local CA and keys are isolated fixtures.
 
 `dnsEncryption="strict"` must agree across the coordinator, broker and static firewall: no automatic or forced fallback, no plaintext leases, and no fallback-set accept rule. Retain approved split DNS, MagicDNS and literal portal access. Test both transport policies; the default recovery budget remains a separate behavior.
-
-## Other desktop customizations
-
-These are separate from the network's security policy, but also need attention when updating their packages:
-
-| Entry | Customization / maintenance |
-|---|---|
-| [overlays/default.nix](../overlays/default.nix) | Niri SHM screencast diff fetched with a fixed hash; checks disabled in this override. Compare upstream integration and exercise screencasting before retiring the diff |
-| [dsh-desktop-appimage.nix](../overlays/dsh-desktop-appimage.nix) | ASAR menu changes, bundled pnpm git-install behavior, unpack/executable preservation and Landlock launcher. Review exact JS anchors, bundled pnpm, sharp WASM and executable assets on each AppImage bump |
-| [bilibili-appimage.nix](../overlays/bilibili-appimage.nix) | Desktop command replacement and Wayland launcher; verify changed desktop layout and sandbox flags |
-| [wemeet-cursor-hook.nix](../overlays/wemeet-cursor-hook.nix) | Pinned external cursor-hook library, built from source; verify preload/cursor behavior with compositor updates |
-| [layout.nix](../system/config/layout.nix) | Rime Ice suggestion YAML installed as the default; check upstream data filenames |
 
 ## Upgrade workflow
 

@@ -97,6 +97,7 @@
     # AI agents
     dsh
     dsh-desktop
+    dsh-tui
 
     # Media
     ffmpeg-full

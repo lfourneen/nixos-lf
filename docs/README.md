@@ -12,7 +12,7 @@ This system combines physical uplinks, local DNS, a managed proxy core, guest ne
 | [Proxy core and permissions](proxy.md) | Configuration authorization, service identities, controller API and routing policy |
 | [Firefox](browser.md) | Managed launcher, network paths, DNS, ECH and privacy settings |
 | [Operations](operations.md) | Switching modes, status, recovery, configuration and checks |
-| [Patch maintenance](maintenance.md) | Customization inventory, build integration, component upgrades and validation |
+| [Network patch maintenance](maintenance.md) | Network customization inventory, build integration, component upgrades and validation |
 
 Start with the architecture guide to understand the system. Use Operations for day-to-day administration and Patch maintenance before updating dependencies.
 
