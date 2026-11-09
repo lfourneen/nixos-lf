@@ -6,7 +6,7 @@ final: prev:
 
   dsh-desktop = final.callPackage ./dsh-desktop-appimage.nix { };
 
-  openidea = final.callPackage ./openidea-appimage.nix { };
+  openidea = final.callPackage ./openidea/openidea-appimage.nix { };
 
   waywallen = final.callPackage ./waywallen-appimage.nix { };
 

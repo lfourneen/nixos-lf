@@ -2,16 +2,22 @@
 
 let
   pname = "openidea";
-  version = "0.1.39";
+  version = "0.1.40";
 
   # Tauri (WebKitGTK 4.1) AppImage. linuxdeploy strips the sysroot core, which
   # the FHS environment below supplies again.
   src = pkgs.fetchurl {
     url = "https://github.com/l0ng-ai/openidea/releases/download/v${version}/OpenIDEA_${version}_amd64.AppImage";
-    hash = "sha256-3QQEcibwvIWEgnn9ZzR36G9FhUCMGW2QjLLNdq/YWAM=";
+    hash = "sha256-+Z6b9X20BE0nyPQ0HHNyfdwGBz14T6bVECd6wjBIplc=";
   };
 
   appDir = pkgs.appimageTools.extract { inherit pname version src; };
+
+  repairTools = pkgs.writeShellApplication {
+    name = "openidea-repair-tools";
+    runtimeInputs = with pkgs; [ coreutils findutils patchelf ];
+    text = builtins.readFile ./repair-tools.sh;
+  };
 
 in
 pkgs.appimageTools.wrapAppImage {
@@ -19,22 +25,19 @@ pkgs.appimageTools.wrapAppImage {
   src = appDir;
 
   extraPkgs = pkgs: with pkgs; [
-    basedpyright
-
     # WebKit sandbox helpers; Debian ships them for libwebkit2gtk-4.1-0.
     # Opt-out if the host forbids nested user namespaces:
     # WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
     bubblewrap
     xdg-dbus-proxy
 
-    marksman
-    nil
-    nixd
-    
+    nodejs
+
     # The IDE downloads self-contained .NET tools (marksman, netcoredbg) and
     # runs them as children; they dlopen libicu, which NixOS exposes no loader
     # path for, so .NET fails fast with a misleading trace.
     icu
+    stdenv.cc.cc.lib
   ];
 
   # The session injects NixOS' GIO modules (gvfs, glib-networking, dconf) built
@@ -48,6 +51,13 @@ pkgs.appimageTools.wrapAppImage {
   profile = ''
     unset GIO_EXTRA_MODULES
     export XCURSOR_PATH="''${XDG_DATA_HOME:-$HOME/.local/share}/icons:$HOME/.icons''${XCURSOR_PATH:+:$XCURSOR_PATH}:/usr/share/icons:/usr/share/pixmaps"
+
+    # `go install` with Nix's Go may embed a store loader without creating a
+    # GC root. After collection the executable exists but execve returns ENOENT.
+    # Use this FHS environment's stable loader for affected managed tools.
+    if ! ${repairTools}/bin/openidea-repair-tools; then
+      echo "OpenIDEA: could not repair managed tools; see logs/nix-tools.log" >&2
+    fi
   '';
 
   # Upstream entry already reads Exec=openidea / StartupWMClass=openidea.
@@ -57,7 +67,13 @@ pkgs.appimageTools.wrapAppImage {
 
     mkdir -p $out/share/icons
     cp -r ${appDir}/usr/share/icons/. $out/share/icons/
+
+    ln -s ${repairTools}/bin/openidea-repair-tools $out/bin/openidea-repair-tools
   '';
+
+  passthru.tests.repair-tools = pkgs.callPackage ./test-repair-tools.nix {
+    inherit repairTools;
+  };
 
   meta = {
     mainProgram = pname;

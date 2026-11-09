@@ -53,6 +53,7 @@
         modules = [ { my.proxy.dnsEncryption = "strict"; } ];
       }).config;
     in {
+      openidea-tools = self.nixosConfigurations.lfour.pkgs.openidea.tests.repair-tools;
       proxy-regressions = pkgs.runCommand "proxy-regressions" {
         nativeBuildInputs = [ pkgs.python3 pkgs.bash pkgs.jq ];
       } ''
