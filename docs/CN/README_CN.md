@@ -8,7 +8,7 @@
 |---|---|
 | [网络架构](network_CN.md) | 流量路径、A/B/C 模式、防火墙、上行、访客与 Tailscale |
 | [直连例外](egress_CN.md) | 例外清单、可选受限 B 授权、时间服务器目标限制与 C 阻断 |
-| [DNS](dns_CN.md) | 解析链路、DNSSEC、黑名单、有界明文回退与分流 DNS |
+| [DNS](dns_CN.md) | 各路径责任、共享域名过滤、DNSSEC、可选严格加密、恢复与分流 DNS |
 | [代理核心与权限](proxy_CN.md) | 配置授权、服务身份、控制 API 与路由策略 |
 | [Firefox](browser_CN.md) | 受管启动器、代理、DNS 与隐私设置 |
 | [操作与诊断](operations_CN.md) | 模式切换、状态、恢复、配置入口与检查 |

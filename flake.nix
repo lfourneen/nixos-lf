@@ -49,6 +49,9 @@
   {
     checks.${system} = let
       pkgs = nixpkgs.legacyPackages.${system};
+      strictDnsConfig = (self.nixosConfigurations.lfour.extendModules {
+        modules = [ { my.proxy.dnsEncryption = "strict"; } ];
+      }).config;
     in {
       proxy-regressions = pkgs.runCommand "proxy-regressions" {
         nativeBuildInputs = [ pkgs.python3 pkgs.bash pkgs.jq ];
@@ -59,6 +62,12 @@
         touch "$out"
       '';
       proxy-rules = self.nixosConfigurations.lfour.config.my.proxy.expectedRules;
+      proxy-dns-strict-rules = strictDnsConfig.my.proxy.expectedRules;
+      proxy-dns-config = pkgs.runCommand "dns-policy-config" { } ''
+        ${pkgs.bash}/bin/bash -n ${self.nixosConfigurations.lfour.config.systemd.services.dns-upstream.serviceConfig.ExecStart}
+        ${pkgs.bash}/bin/bash -n ${strictDnsConfig.systemd.services.dns-upstream.serviceConfig.ExecStart}
+        touch "$out"
+      '';
       proxy-egress-config = self.nixosConfigurations.lfour.config.my.hardening.directEgress.configCheck;
       tailscale-transport = self.nixosConfigurations.lfour.config.my.hardening.tailscale.transportCheck;
       proxy-tailscale-vm = import ./tests/netsec/tailscale-vm.nix {
@@ -123,6 +132,11 @@
       proxy-control-vm = import ./tests/netsec/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+      };
+      proxy-dns-strict-vm = import ./tests/netsec/control-vm.nix {
+        inherit pkgs;
+        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        strictDns = true;
       };
       proxy-egress-control-vm = import ./tests/netsec/control-vm.nix {
         inherit pkgs;

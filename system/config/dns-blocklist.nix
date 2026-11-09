@@ -11,8 +11,7 @@
 # recorded below. The snapshot is tracked in Git (see local-data/README.md); the flake
 # is evaluated from /etc/nixos, where scripts/push-to-dir.sh copies it together
 # with this tree. Run that script before nixos-rebuild. It is
-# parsed once at dnsmasq start and nothing is fetched at build time or at run
-# time.
+# read by dnsmasq and the managed core; nothing is fetched at build/run time.
 #
 # Refresh, from the repository root:
 #   ./scripts/refresh-dns-blocklist.py          # fetch, merge, rewrite data + header
@@ -45,16 +44,19 @@ let
       local-data/ next to this flake (scripts/push-to-dir.sh does that for
       /etc/nixos). See local-data/README.md.
     '';
+  names = pkgs.runCommand "dns-blocklist.txt" { } ''
+    ${pkgs.xz}/bin/xz -dc ${dataSrc} > $out
+  '';
   rules = pkgs.runCommand "dnsmasq-dns-blocklist.d" { } ''
     mkdir -p $out
-    ${pkgs.xz}/bin/xz -dc ${dataSrc} \
-      | ${pkgs.gnugrep}/bin/grep -v '^$' \
+    ${pkgs.gnugrep}/bin/grep -v '^$' ${names} \
       | ${pkgs.gnused}/bin/sed -e 's|^|address=/|' -e 's|$|/|' \
       > $out/blocklist.conf
   '';
 
 in
 {
+  config.my.proxy.dnsBlocklistFile = names;
   # conf-dir is read as configuration, so the generated file is just a batch of
   # address= directives, the same form the hand-written list uses.
   config.services.dnsmasq.settings.conf-dir = "${rules}";

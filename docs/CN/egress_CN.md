@@ -25,6 +25,8 @@ UID、接口和端口来自 [machine.nix](../../system/config/machine.nix)、服
 
 loopback 保留本地 IPC。C 还保留[网络架构](network_CN.md)说明的窄核心恢复与自检路径；普通应用不能借 loopback 代理监听逃出 C。
 
+DNS 传输由 `my.proxy.dnsEncryption` 独立控制。默认允许 A 中有租约的明文恢复；`"strict"` 移除此权限，并阻断核心外部 53，仅保留指定 tailnet MagicDNS。已批准 split DNS 继续受租约约束，原生 MagicDNS 保留条件路由，见 [DNS](dns_CN.md#可选严格加密)。
+
 ## 可选的受限 B
 
 默认 `my.hardening.directEgress.mode="compatibility"` 保留 LAN 兼容性。需要限制原生宿主 socket 时，选择 `"restricted"` 并只授权必要服务：

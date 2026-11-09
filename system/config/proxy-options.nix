@@ -41,11 +41,30 @@ in
     default = [ ];
     example = [ "ads.example.com" "tracker.example.net" ];
     description = ''
-      Domains answered NXDOMAIN by dnsmasq before either mode's upstream is
-      asked. Blocking at the shared front door covers Mode A, Mode B and guest
-      lookups alike, and dnsmasq matches suffixes, so subdomains are included.
+      Domains answered NXDOMAIN by dnsmasq and the managed core DNS, and
+      refused before application proxy dials. All consumers match suffixes.
       Default: empty, i.e. no filtering; the host list is in
       system/config/dns-blocklist.nix.
+    '';
+  };
+
+  options.my.proxy.dnsBlocklistFile = lib.mkOption {
+    type = lib.types.nullOr lib.types.path;
+    default = null;
+    internal = true;
+    description = "Immutable bare-domain snapshot shared by dnsmasq and the managed core.";
+  };
+
+  options.my.proxy.dnsEncryption = lib.mkOption {
+    type = lib.types.enum [ "opportunistic" "strict" ];
+    default = "opportunistic";
+    description = ''
+      Public managed DNS transport policy. Opportunistic retains bounded
+      Mode-A plaintext recovery and the root force-plaintext override. Strict
+      disables both, including kernel lease grants; encrypted upstream failure
+      leaves only cached/local answers. Approved private split DNS and
+      Tailscale MagicDNS remain explicit exceptions. Independent application
+      DoH and privileged diagnostics are outside this policy.
     '';
   };
 
@@ -55,9 +74,9 @@ in
     example = [ "not-ads.example.com" ];
     description = ''
       Names inside a blocked domain that must keep resolving. Each entry is a
-      dnsmasq `server=/domain/#` exception: the more specific domain wins over
-      the `address=` blocklist, and `#` means the standard servers, so an
-      excepted name goes to the same per-mode upstream as any other name.
+      dnsmasq `server=/domain/#` exception and a matching core DNS/dial
+      exception. The most specific suffix wins; exceptions win ties. In
+      dnsmasq, `#` uses the current mode's standard upstream.
       Default: empty, i.e. nothing is excepted from the blocklist.
     '';
   };

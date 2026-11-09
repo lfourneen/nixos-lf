@@ -14,7 +14,7 @@ Firefox 是原生 Nix 包。[firefox.nix](../../home/programs/firefox/firefox.ni
 
 HTTP/HTTPS 代理锁定为 Gost `127.0.0.1:33332`，bypass/PAC/SOCKS 为空，localhost 也走代理，禁用直连 failover。A 直通，B 进入 Mihomo 路由，C 关闭应用路径。隐私设置不改变 `bootMode` 或 `proxyOnly`。
 
-WebRTC 和 HTTP/3 禁用，使网页传输使用 TCP relay。DoH 禁用并锁定（`network.trr.mode=5`），浏览器自身 DNS 走系统解析器。显式 HTTP 代理可委托 Gost/Mihomo 解析目标，不会自动经过 dnsmasq 黑名单。门户检测与 NetworkManager 连通性检查保留，HTTPS-First 仍允许本地 HTTP。
+WebRTC 和 HTTP/3 禁用，使网页传输使用 TCP relay。DoH 禁用并锁定（`network.trr.mode=5`），浏览器自身 DNS 走系统解析器。显式 HTTP 代理可委托 Gost/Mihomo 解析目标；核心在 DNS 应答及应用拨号前执行同一份域名快照、附加名单与例外。DNSSEC 和加密取决于解析路径及 `dnsEncryption`，见 [DNS](dns_CN.md)。门户检测与 NetworkManager 连通性检查保留，HTTPS-First 仍允许本地 HTTP。
 
 ## 隐私设置
 

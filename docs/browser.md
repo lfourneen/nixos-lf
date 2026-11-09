@@ -14,7 +14,7 @@ The launcher checks fonts under strict privacy, forces Wayland, removes inherite
 
 HTTP/HTTPS proxy settings are locked to Gost at `127.0.0.1:33332`, with empty bypass/PAC/SOCKS settings, localhost proxying enabled and direct failover disabled. A passes through, B reaches Mihomo's routing policy, C closes the application path. Browser privacy does not change `bootMode` or `proxyOnly`.
 
-WebRTC and HTTP/3 are disabled, keeping web traffic on the TCP relay. DoH is disabled and locked (`network.trr.mode=5`), so browser-originated DNS uses the managed system resolver. Explicit HTTP proxy requests can delegate target resolution to Gost/Mihomo; those requests do not automatically traverse dnsmasq's blocklist. Captive-portal detection and NetworkManager connectivity checks remain enabled; local HTTP remains available under HTTPS-First.
+WebRTC and HTTP/3 are disabled, keeping web traffic on the TCP relay. DoH is disabled and locked (`network.trr.mode=5`), so browser-originated DNS uses the managed system resolver. Explicit HTTP proxy requests can delegate target resolution to Gost/Mihomo; the core applies the same domain snapshot, additions and exceptions before DNS responses and application dials. DNSSEC and encryption depend on the selected resolver path and `dnsEncryption`, as described in [DNS](dns.md). Captive-portal detection and NetworkManager connectivity checks remain enabled; local HTTP remains available under HTTPS-First.
 
 ## Privacy settings
 

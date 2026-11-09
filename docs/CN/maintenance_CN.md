@@ -31,6 +31,8 @@ Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；
 
 ## Mihomo
 
+共享域名过滤位于 [dns_filter.go](../../system/programs/systemd/netsec/dns_filter.go)、[target_guard.go](../../system/programs/systemd/netsec/target_guard.go) 和 [dns-blocklist.nix](../../system/config/dns-blocklist.nix)。`dns.newHandler` 与 `Resolver.ExchangeContext` 接入点需保持在 hosts、fake-IP、缓存答案及引导上游查询之前，覆盖非地址 RR 类型；应用目标先过滤后缀，再判断私网域名豁免。保留与 dnsmasq 一致的最长后缀、同精度例外优先语义，拒绝不可读/无效名单。过滤代码和测试须加入包 fileset，并保留 `./dns` Go 测试。
+
 `patch_mihomo.py` 接入最终 `ParseRawConfig`、controller router/PATCH、direct adapter、DNS metadata/dialer、TCP dial、UDP mapping、geodata downloader 与 Global 路由日志。升级须检查全部入口，parser 能编译不证明实际拨号和写 API 仍经过预期约束。
 
 Root 策略来自 [proxy-profile.nix](../../system/config/proxy-profile.nix)，[cvr-merge.nix](../../home/config/cvr-merge.nix)、controller 输出及 [health.py](../../system/programs/systemd/netsec/health.py) 必须一致。新增 `RawTun` 字段须在 schema coverage 测试显式分类，检查监听/隧道字段、默认值、别名及 `GET /configs` 暴露值。保留重复键/非规范 PATCH 拒绝，以及同份解码对象的验证/应用。
@@ -76,6 +78,8 @@ Unbound 使用未改源码的 `pkgs.unbound-with-systemd`。未来 override 必�
 
 Firefox 在打包层加入不可变 policy、AutoConfig、字体和 preflight。Home Manager 最终包/wrapper 或偏好语义变化可能不会触发源码 patch 失败，需用 `browser-privacy` 检查最终启动器、桌面/MIME、policy lock、DoH/代理值、沙箱环境及旧 profile/进程。
 
+`dnsEncryption="strict"` 在协调器、broker 和静态防火墙中必须一致：不能自动或强制回退，不授予明文租约，不安装后备集合放行规则。保留已批准 split DNS、MagicDNS 和字面门户访问；两种传输策略都要验证，默认恢复预算仍是独立行为。
+
 ## 其它桌面自定义
 
 以下项目独立于网络安全策略，更新对应包时也需维护：
@@ -108,6 +112,9 @@ Firefox 在打包层加入不可变 policy、AutoConfig、字体和 preflight。
 | `proxy-regressions` | 健康、状态、规则、DNS 租约、预算及监督器 |
 | `proxy-profile`、`proxy-gui` | 生成配置变体、策略/模板一致、GUI 默认与进程 wrapper |
 | `proxy-rules`、`proxy-egress-rules` | 构建期 LKL nft 解析完整兼容/受限模式规则 |
+| `proxy-dns-strict-rules` | LKL 解析完整严格 DNS 防火墙规则 |
+| `proxy-dns-config` | 默认/严格 DNS 协调器生成脚本语法 |
+| `proxy-dns-strict-vm` | 真实 helper/核心、共享 DNS/代理过滤、严格故障/override/租约及残留集合拒绝、私网 split 权限与字面门户恢复 |
 | `proxy-egress-config` | 规范 CIDR 与授权/时间目标范围；接入正常系统构建 |
 | `proxy-egress-vm` | Tailscale VM 的受限策略版本；双栈私网/多播/DNS/DoT/NTS、UID/接口/端口拒绝、已有连接撤权与 C |
 | `proxy-egress-control-vm` | 真实生产 TUN/NAT 之前的受限策略，包含私网允许与拒绝 |

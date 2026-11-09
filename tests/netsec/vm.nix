@@ -248,6 +248,7 @@ pkgs.testers.runNixOSTest {
       split_profiles = [ "approved" ];
       split_cidrs = [ "10.0.0.0/8" ];
       runtime = "/run/dns-upstream";
+      allow_plaintext = true;
     };
     environment.etc."test-dns-sleep.json".text = builtins.toJSON {
       nft = pkgs.writeShellScript "fault-inject-sleep-nft" ''

@@ -85,6 +85,8 @@ let
       (netsecDir + "/managed_udp_test.go")
       (netsecDir + "/target_guard.go")
       (netsecDir + "/target_guard_test.go")
+      (netsecDir + "/dns_filter.go")
+      (netsecDir + "/dns_filter_test.go")
     ];
   };
   managedCore = pkgs.unstable.mihomo.overrideAttrs (old: {
@@ -97,6 +99,7 @@ let
       go test -mod=vendor ./config ./hub/route -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/inbound ./transport/socks5 -count=1
       go test -mod=vendor ./component/lfguard -count=1
+      go test -mod=vendor ./dns -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/outbound -run '^TestLFManagedDirect' -count=1
       go test -mod=vendor ./tunnel -run '^TestLFManaged' -count=1
       runHook postCheck

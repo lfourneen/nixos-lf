@@ -45,7 +45,7 @@ sudo tailscale ping <手机的-tailnet-名称或-IP>
 | `/run/proxy-mode/health.json` | 探针结论与分层耗时 |
 | `/run/proxy-mode/heartbeat.json` | 最近成功监督轮次 |
 | `/run/netsec/state.json` | 验证结论、所验证代次与新鲜度 |
-| `/run/dns-upstream/state.json` | DNS 模式/原因、会话、预算、截止和 override |
+| `/run/dns-upstream/state.json` | DNS 模式/原因、加密策略、会话、预算、截止和 override |
 | `/run/dns-policy/state.json` | Broker 租约状态与应用代次 |
 | `/run/gost-relay/state.json` | Relay 观测与应用代次 |
 | `/run/netsec/alerts/*.json` | 各 owner 告警；`/run/netsec/failed` 汇总 owner |
@@ -95,7 +95,7 @@ Restart/reload 原子重装所属静态策略和安全模式；代理意图先�
 | 来源 | 设置 |
 |---|---|
 | [machine.nix](../../system/config/machine.nix) | 用户、接口及匹配键、UID、端口、mark、网段和上游 |
-| [proxy-options.nix](../../system/config/proxy-options.nix) | TUN、表 2022、fake-IP、探针、开机意图、proxyOnly、访客、split DNS 和新鲜度 |
+| [proxy-options.nix](../../system/config/proxy-options.nix) | TUN、表 2022、fake-IP、探针、开机意图、proxyOnly、dnsEncryption、共享域名过滤、访客、split DNS 和新鲜度 |
 | [proxy-profile.nix](../../system/config/proxy-profile.nix) | root 受管 DNS/TUN/profile 约定 |
 | [hardening-options.nix](../../system/config/hardening-options.nix) | 宿主/访客私网、显式宿主端口、热点、tailnet 和 Wi-Fi MAC |
 | [cvr-merge.nix](../../home/config/cvr-merge.nix) | 匹配的 GUI Merge 及路由增强 |
@@ -115,7 +115,7 @@ nmcli connection modify uuid <UUID> 802-11-wireless.cloned-mac-address ""
 
 ## 离线恢复
 
-需要直连时用 `clash-off`。A 中门户/DNS 恢复先读 DNS 状态和历史，必要时显式开启有界续租 override：
+需要直连时用 `clash-off`。默认 `dnsEncryption="opportunistic"` 下，A 中门户/DNS 恢复先读 DNS 状态和历史，必要时显式开启有界续租 override：
 
 ```sh
 sudo touch /run/dns-upstream/force-plaintext
@@ -124,6 +124,8 @@ sudo rm /run/dns-upstream/force-plaintext
 ```
 
 它允许明文 DNS 并继续计入预算，不能越过 C 的出站 guard，范围见 [DNS](dns_CN.md)。
+
+`my.proxy.dnsEncryption="strict"` 忽略 override，不授予明文后备；`clash-off` 选择的 A 也保留加密 DNS。可尝试字面 HTTP 门户地址、更换上行或修复认证 DoT 配置。门户若依赖不可用的公网 DNS，需要主动改变策略，例如离线选择已构建的 `opportunistic` generation；在出行依赖严格模式前先准备可用 generation。私网 split DNS 和 MagicDNS 仍受各自批准及模式约束。
 
 Generation 故障时从 systemd-boot 选择旧条目；菜单保留八个以适应 ESP 容量。GC 尚未删除的 store 路径也能离线激活：查 `/nix/var/nix/profiles/system-*-link`，以 root 运行 `nix-env -p /nix/var/nix/profiles/system --set /nix/store/<nixos-system-…>`，再运行 `/nix/var/nix/profiles/system/bin/switch-to-configuration boot`。全部无法启动时用 NixOS ISO 解锁并挂载根及 ESP，在 `nixos-enter --root /mnt` 中恢复。
 

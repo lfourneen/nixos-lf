@@ -11,6 +11,14 @@ def replace(path, old, new):
 
 
 root = Path(sys.argv[1])
+# Filter before hosts/fake-IP and before resolver cache/transport selection.
+# The second hook also covers proxy-endpoint/bootstrap resolver queries.
+replace(root / "dns/middleware.go", '\tvar middlewares []middleware',
+        '\tvar middlewares []middleware\n\tmiddlewares = append(middlewares, lfDomainFilter)')
+replace(root / "dns/resolver.go",
+        'func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, err error) {',
+        'func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, err error) {\n'
+        '\tif reply := lfBlockedReply(m); reply != nil { return reply, nil }')
 # Managed geodata must come from the authorized snapshot. Even a missing or
 # damaged database must not trigger an unaudited network replacement in -t.
 replace(root / "component/geodata/init.go",
@@ -88,6 +96,8 @@ replace(root / "hub/route/configs.go", "general := executor.GetGeneral()",
 replace(root / "hub/route/server.go", "\tr := chi.NewRouter()\n\tcors.Apply(r)",
         "\tr := chi.NewRouter()\n\tlfPolicyUse(r)\n\tcors.Apply(r)")
 source = Path(__file__).parent
+(root / "dns/lf_filter.go").write_text((source / "dns_filter.go").read_text())
+(root / "dns/lf_filter_test.go").write_text((source / "dns_filter_test.go").read_text())
 (root / "component/lfguard").mkdir()
 (root / "component/lfguard/guard.go").write_text((source / "target_guard.go").read_text())
 (root / "component/lfguard/guard_test.go").write_text((source / "target_guard_test.go").read_text())

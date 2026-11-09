@@ -1,7 +1,7 @@
-{ pkgs, clashPackage, restricted ? false }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false }:
 
 pkgs.testers.runNixOSTest {
-  name = if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
@@ -24,7 +24,9 @@ pkgs.testers.runNixOSTest {
         };
       })
       ../../system/config/network.nix
+      ../../system/config/dns-blocklist.nix
       ../../system/programs/systemd/proxy-mode.nix
+      ../../system/programs/systemd/dns-upstream.nix
       ../../system/programs/systemd/gost-relay.nix
       ../../system/programs/clash/runtime.nix
     ];
@@ -39,6 +41,14 @@ pkgs.testers.runNixOSTest {
     };
     my.proxy.nodeProbeUrls = [ "http://node.fixture.example:8080/" ];
     my.proxy.tunProbeName = "tun.fixture.example";
+    my.proxy.dnsEncryption = if strictDns then "strict" else "opportunistic";
+    my.proxy.blockedDomains = [ "ads.fixture.example" "blocked.fixture.test" "metrics.home.arpa" ];
+    my.proxy.blockedDomainExceptions = [ "ok.blocked.fixture.test" ];
+    systemd.services.dns-upstream.environment = lib.mkIf strictDns {
+      NETSEC_DOT_PRIME_ROUNDS = "0";
+      NETSEC_PROBE_TIMEOUT = "0.5";
+      NETSEC_PROBE_TRANSPORT_TIMEOUT = "0.5";
+    };
     services.tailscale.enable = lib.mkForce false;
     my.hardening.allowPrivateEgress = !restricted;
     my.hardening.directEgress = lib.mkIf restricted {
@@ -74,7 +84,7 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     def wait_proxy():
         try:
-            machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = proxy && python3 /etc/netsec-control.py check", timeout=90)
+            machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = proxy && test $(jq -r .mode /run/dns-upstream/state.json) = proxy && python3 /etc/netsec-control.py check", timeout=90)
         except Exception:
             print(machine.execute("cat /run/proxy-mode/state.json /run/proxy-mode/health.json; journalctl -u clash-verge -u proxy-mode --no-pager -n 40; cat /run/clash-verge-rev/validator.log; find /var/lib/clash-verge-service -name '*.log' -exec tail -n 40 {} +"))
             raise
@@ -93,12 +103,54 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"systemd-run --unit=control-node ip netns exec outside {core} -d /run/netsec-node -f /run/netsec-node.json")
     machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18080")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
+    ${pkgs.lib.optionalString strictDns ''
+    machine.wait_until_succeeds("jq -e '.mode == \"degraded-dot-only\" and .encryption_policy == \"strict\" and .window_until == 0' /run/dns-upstream/state.json", timeout=90)
+    # A root override and a forged, long-lived request cannot mint public DNS
+    # permission. Even direct insertion into the old set has no accept rule.
+    machine.succeed("touch /run/dns-upstream/force-plaintext; systemctl restart dns-upstream.service")
+    machine.wait_until_succeeds("jq -e '.mode == \"degraded-dot-only\" and .plaintext_override == false and .window_until == 0' /run/dns-upstream/state.json", timeout=90)
+    machine.succeed("systemctl stop dns-upstream.service; python3 /etc/netsec-dns.py lease 100.67.0.1 120; systemctl start dns-policy.service")
+    machine.fail("nft get element inet lf_filter dns_plaintext4 '{ 100.67.0.1 }'")
+    machine.succeed("systemd-run --unit=control-plain-dns ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-dns.py server 53")
+    machine.wait_until_succeeds("ip netns exec outside ss -uln | grep -q ':53 '")
+    machine.succeed("nft add element inet lf_filter dns_plaintext4 '{ 100.67.0.1 timeout 120s }'")
+    machine.fail("python3 /etc/netsec-dns.py query 100.67.0.1 --uid 985")
+    machine.fail("python3 /etc/netsec-dns.py query 100.67.0.1 --mark 6666")
+    machine.succeed("nft add element inet lf_filter dns_split6 '{ ens1 . 2001:db8:dead::1 timeout 120s }'; python3 /etc/netsec-dns.py query 2001:db8:dead::1 --uid 985; nft flush set inet lf_filter dns_split6")
+    drops = int(machine.succeed("nft -j list chain inet lf_filter lf_dns_guard | jq '[.nftables[].rule.expr[]? | .counter.packets // 0] | add'"))
+    machine.fail("python3 /etc/netsec-dns.py query 2001:db8:dead::1 --mark 6666")
+    assert int(machine.succeed("nft -j list chain inet lf_filter lf_dns_guard | jq '[.nftables[].rule.expr[]? | .counter.packets // 0] | add'")) > drops
+    machine.succeed("ip link add tailscale0 type veth peer name tail-peer; ip link set tail-peer netns outside; ip addr add 100.100.100.99/24 dev tailscale0; ip link set tailscale0 up; ip -n outside addr add 100.100.100.100/24 dev tail-peer; ip -n outside link set tail-peer up")
+    machine.succeed("python3 /etc/netsec-dns.py query 100.100.100.100 --mark 6666")
+    # The MagicDNS address alone cannot exempt a physical-uplink query.
+    machine.succeed("ip route add 100.100.100.100/32 via 100.67.0.1 dev ens1")
+    machine.fail("python3 /etc/netsec-dns.py query 100.100.100.100 --mark 6666")
+    machine.succeed("ip route del 100.100.100.100/32; ip link del tailscale0")
+    # Explicit split permission remains usable in strict mode.
+    machine.succeed("nft add element inet lf_filter dns_split4 '{ ens1 . 100.67.0.1 timeout 120s }'; python3 /etc/netsec-dns.py query 100.67.0.1 --uid 985")
+    machine.succeed("nft flush set inet lf_filter dns_split4; nft flush set inet lf_filter dns_plaintext4; rm /run/dns-upstream/force-plaintext; systemctl start dns-upstream.service")
+    # Literal HTTP portal access in A needs no public DNS.
+    machine.succeed("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:8080/ >/dev/null")
+    ''}
 
     machine.succeed("python3 /etc/netsec-control.py refuse")
     machine.succeed("proxy-control on")
     machine.wait_for_file("/run/clash-verge-rev/service.sock")
     machine.succeed("python3 /etc/netsec-control.py start")
     wait_proxy()
+    # Same suffix/exception rules at dnsmasq, direct core DNS and HTTP proxy
+    # dialing, including a name otherwise exempt from the private-IP guard.
+    for transport in ("+notcp", "+tcp"):
+        for port in (1053, 1054):
+            for name in ("ads.fixture.example", "pixel.ads.fixture.example", "metrics.home.arpa", "doubleclick.net"):
+                response = machine.succeed(f"dig {transport} +time=2 +tries=1 @127.0.0.1 -p {port} {name} A")
+                assert "status: NXDOMAIN" in response, (port, name, response)
+            response = machine.succeed(f"dig {transport} +time=2 +tries=1 @127.0.0.1 -p {port} a.ok.blocked.fixture.test A")
+            assert "status: NOERROR" in response and "198.18." in response, response
+    for proxy in ("-x http://127.0.0.1:33332", "--proxytunnel -x http://127.0.0.1:33332", "--socks5-hostname 127.0.0.1:7897"):
+        for name in ("ads.fixture.example", "pixel.ads.fixture.example", "metrics.home.arpa", "doubleclick.net"):
+            machine.fail(f"curl --noproxy \"\" {proxy} -fsS --max-time 3 http://{name}:8080/")
+        machine.succeed(f"curl --noproxy \"\" {proxy} -fsS --max-time 5 http://a.ok.blocked.fixture.test:8080/ >/dev/null")
     ${pkgs.lib.optionalString restricted ''
     # Both ports have real peers. The permitted native private connection
     # stays direct; the other cannot escape via the running proxy/TUN.

@@ -25,6 +25,8 @@ UIDs, interfaces and ports come from [machine.nix](../system/config/machine.nix)
 
 Loopback remains local IPC. C additionally keeps the bounded recovery/self-test paths in [Network architecture](network.md); ordinary clients cannot escape C through loopback proxy listeners.
 
+DNS transport is independently controlled by `my.proxy.dnsEncryption`. The default permits leased Mode-A plaintext recovery; `"strict"` removes that permission and blocks the core's external port 53 except configured tailnet MagicDNS. Approved split DNS remains leased, and native MagicDNS keeps its conditional route. See [DNS](dns.md#optional-strict-encryption).
+
 ## Optional restricted B policy
 
 The default `my.hardening.directEgress.mode="compatibility"` preserves LAN access. To constrain native host sockets, select `"restricted"` and grant necessary services:

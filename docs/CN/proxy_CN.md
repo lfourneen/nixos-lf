@@ -46,6 +46,8 @@ Helper 保留身份切换、目录所有权和子进程管理所需权限，仅�
 
 配置加载、禁用规则、provider/geodata/storage 更新、重启及升级 API 均拒绝。PATCH 在应用前检查规范字段名和重复键，验证与应用使用同一份已解码上游 schema。升级新增写端点时需明确决定权限。
 
+Root 策略同时指定共享域名过滤文件、附加名单与例外。核心在 hosts/缓存/fake-IP 前检查 DNS，在 TCP/UDP 拨号前检查应用目标，使 HTTP/SOCKS 代解析使用与系统 DNS 相同的名单。内部引导解析查询也经过过滤，但其传输与目标验证范围独立；split DNS、原生 MagicDNS 和字面 IP 边界见 [DNS](dns_CN.md)。
+
 ## 路由策略
 
 ```nix

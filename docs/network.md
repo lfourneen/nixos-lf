@@ -37,6 +37,8 @@ Mihomo marks its outbound sockets with `6666` (`0x1a0a`); the exception requires
 
 `proxy-mode` follows root-written, boot-scoped intent. Closing the GUI or stopping/crashing the core after `clash-on` keeps C. Use `clash-off` to request A. Starting a GUI alone cannot authorize A → B. `my.proxy.bootMode="proxy"` installs C before physical networking and waits for B; the default is `"direct"`.
 
+DNS transport has an independent policy: `my.proxy.dnsEncryption="strict"` disables A's public plaintext recovery and its runtime override, while retaining approved split DNS and MagicDNS. The default `"opportunistic"` preserves portal recovery. Both modes share domain-filter data between dnsmasq and the core, including proxy target checks; see [DNS responsibilities](dns.md#responsibilities).
+
 `unenforced` reports that the expected kernel policy could not be confirmed or repaired. It is an error status, not another protected mode. Applications using the shared readiness check refuse it.
 
 The core's service cgroup, passive TCP/UDP listener identities, managed controller values, TUN device/routes and actual unmarked IPv6 selection for root and the desktop UID feed the health decision. HTTP probes must complete through the currently selected proxy leaf with matching source-port logs; another real HTTP request to a fake-IP proves the transparent TCP path. The default shared deadline is 12 seconds. Definite configuration, route or TUN failures block immediately; unavailable observations use two consecutive rounds, at least two seconds apart. This samples selected TCP paths, not every UDP, IPv6 or application destination.
@@ -49,7 +51,7 @@ The core's service cgroup, passive TCP/UDP listener identities, managed controll
 |---|---|
 | Output `-201` | Reject direct use of Gost's transparent inlet before NAT |
 | Prerouting `-201` | Apply guest public-destination restrictions before redirection |
-| Output `-199` | Limit dnsmasq upstream DNS to installed destination leases |
+| Output `-199` | Limit dnsmasq upstream DNS to installed destination leases; strict mode cuts the core's external port 53 except MagicDNS |
 | Output `-198` | Reserve internal DNS ports and authenticate their replies |
 | Output `-197` | C guard, after conntrack (`-200`) and before auto-redirect (`-150`) |
 | Output `-196` | Restrict independent DNS-over-TLS/QUIC on port 853 |

@@ -37,6 +37,8 @@ Mihomo 为出站 socket 设置 `6666`（`0x1a0a`）mark；核心例外同时要�
 
 `proxy-mode` 遵循 root 写入的单次开机意图。`clash-on` 后关闭 GUI、停止核心或崩溃均保持 C；需要 A 时使用 `clash-off`。只启动 GUI 无法授权 A → B。可选 `my.proxy.bootMode="proxy"` 在物理网络启动前安装 C，等待 B；默认是 `"direct"`。
 
+DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明文恢复及运行时 override，保留已批准 split DNS 和 MagicDNS；默认 `"opportunistic"` 保留门户恢复。两种策略都让 dnsmasq 和核心共享域名过滤数据，覆盖代理目标检查，见 [DNS 各路径的责任](dns_CN.md#各路径的责任)。
+
 `unenforced` 表示预期内核策略无法确认或修复，是错误状态。它不表示已经得到阻断保护；使用共用就绪检查的应用会拒绝该状态。
 
 健康判断检查核心 cgroup、TCP/UDP 监听身份、受管 API、TUN 设备与路由，以及 root/桌面 UID 未打标 IPv6 的实际选路。HTTP 探针须经当前选中代理叶子完成，且日志匹配源端口；另向 fake-IP 发真实 HTTP 请求证明透明 TCP 路径。默认共享截止为 12 秒。明确的配置、路由或 TUN 失败立即阻断；观测不可用需连续两轮，间隔至少两秒。它证明抽样的 TCP 路径，不能概括全部 UDP、IPv6 或应用目的地。
@@ -49,7 +51,7 @@ Mihomo 为出站 socket 设置 `6666`（`0x1a0a`）mark；核心例外同时要�
 |---|---|
 | Output `-201` | NAT 前拒绝显式使用 Gost 透明入口 |
 | Prerouting `-201` | 重定向前限制访客公网目的地 |
-| Output `-199` | 将 dnsmasq 上游 DNS 限定到已安装的目的地租约 |
+| Output `-199` | 将 dnsmasq 上游 DNS 限定到目的地租约；严格模式阻断核心外部 53，仅保留 MagicDNS |
 | Output `-198` | 保留内部 DNS 端口并检查应答身份 |
 | Output `-197` | C guard，位于 conntrack（`-200`）之后、auto-redirect（`-150`）之前 |
 | Output `-196` | 限制独立使用 853 端口的 DoT/DoQ |

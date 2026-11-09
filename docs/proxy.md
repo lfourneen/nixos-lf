@@ -36,6 +36,8 @@ An import authorizes the inputs selected for that session. It does not make an a
 
 The core reports a `managed-policy` digest to health consumers. This policy digest describes system invariants; the separate snapshot digest binds authorized YAML and assets.
 
+The root policy also supplies the shared domain-filter store path, additions and exceptions. The core checks DNS before hosts/cache/fake-IP and application targets before TCP/UDP dialing, so delegated HTTP/SOCKS resolution uses the same list as system DNS. Internal bootstrap resolver queries use the filter too; their transport and target-validation scope remain separate. See [DNS](dns.md) for split DNS, native MagicDNS and literal-IP boundaries.
+
 | Controller operation | Managed behavior |
 |---|---|
 | GET / HEAD / OPTIONS | Allowed, including GUI delay tests |

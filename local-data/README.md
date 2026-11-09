@@ -9,7 +9,7 @@ are ignored unless explicitly listed in `.gitignore`.
 
 | File | Produced by | Used by |
 | --- | --- | --- |
-| `dns-blocklist.txt.xz` | `scripts/refresh-dns-blocklist.py` | `system/config/dns-blocklist.nix` (rendered into `dnsmasq` `address=/…/` lines) |
+| `dns-blocklist.txt.xz` | `scripts/refresh-dns-blocklist.py` | `system/config/dns-blocklist.nix` (one immutable domain file for dnsmasq rules and the managed core's DNS/dial filter) |
 
 `dns-blocklist.txt.xz` is the merged, de-duplicated name list behind the DNS
 blocklist: one lowercase name per line, combining every entry of the upstreams

@@ -4,10 +4,55 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"testing"
 
 	C "github.com/metacubex/mihomo/constant"
 )
+
+func TestSharedDomainFilter(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "domains")
+	if err := os.WriteFile(file, []byte("ads.example\nmetrics.home.arpa\n_under.example\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ConfigureT(t, map[string]any{
+		"prefixes": []string{"10.0.0.0/8"}, "allowed-domains": []string{"home.arpa"},
+		"blocked-domains-file": file, "blocked-domains": []string{"again.ok.ads.example", "192.168.1.1"},
+		"blocked-domain-exceptions": []string{"ok.ads.example"},
+	})
+	for _, host := range []string{"ads.example", "Pixel.ADS.example.", "again.ok.ads.example", "metrics.home.arpa", "_under.example"} {
+		if CheckDomain(host) == nil {
+			t.Fatal("blocked name allowed", host)
+		}
+		for _, network := range []C.NetWork{C.TCP, C.UDP} {
+			metadata := &C.Metadata{Host: host, Type: C.SOCKS5, NetWork: network}
+			if _, err := Protect(context.Background(), metadata, metadata, nil); err == nil {
+				t.Fatal("proxy dial bypassed domain filter", host, network)
+			}
+		}
+	}
+	for _, host := range []string{"ok.ads.example", "a.ok.ads.example", "notads.example", "ads.example.org"} {
+		if err := CheckDomain(host); err != nil {
+			t.Fatal(host, err)
+		}
+	}
+	literal := &C.Metadata{Host: "192.168.1.1", Type: C.SOCKS5}
+	if result, err := Protect(context.Background(), literal, literal, nil); err != nil || result != literal {
+		t.Fatal("suffix filter changed intentional literal-IP access", result, err)
+	}
+	for _, invalid := range []string{"/nonexistent/lf-blocklist", file} {
+		if invalid == file {
+			_ = os.WriteFile(file, []byte("bad/domain\n"), 0600)
+		}
+		if Configure(map[string]any{"prefixes": []string{"10.0.0.0/8"}, "blocked-domains-file": invalid}) == nil {
+			t.Fatal("invalid blocklist accepted")
+		}
+		if CheckDomain("ads.example") == nil {
+			t.Fatal("invalid update removed active filter")
+		}
+	}
+}
 
 func ConfigureT(t *testing.T, value map[string]any) {
 	t.Helper()

@@ -81,6 +81,9 @@ in
     default = {
       lf-private-targets = {
         proxy-only = p.proxyOnly;
+        blocked-domains-file = if p.dnsBlocklistFile == null then "" else toString p.dnsBlocklistFile;
+        blocked-domains = map lib.toLower p.blockedDomains;
+        blocked-domain-exceptions = map lib.toLower p.blockedDomainExceptions;
         prefixes = privateAddresses.ipv4 ++ privateAddresses.ipv6;
         allowed-domains = p.privateTargetDomains;
         magic-dns-suffix-file = if config.my.hardening.tailscale.magicDns then "/run/netsec-tailnet/domain" else "";

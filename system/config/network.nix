@@ -413,10 +413,9 @@ let
     exec ${pkgs.python3}/bin/python3 ${../programs/systemd/netsec/nm_dns.py} ${nmDnsSettings} "$1" "$2"
   '';
 
-  # Optional DNS-level blocklist. dnsmasq is the single front door in both modes
-  # (Mode A -> unbound, Mode B -> mihomo) and also serves guests, so answering
-  # NXDOMAIN here covers every query the machine makes without adding a second
-  # filtering owner next to the resolver. Empty by default.
+  # DNS suffix rules, shared with the managed core's DNS and dial filter.
+  # dnsmasq filters gateway queries in A/B; native MagicDNS and explicit
+  # split-server delegation retain their separate routing precedence.
   blockedDomains = lib.unique (lib.filter (d: d != "") config.my.proxy.blockedDomains);
   blockedDomainExceptions =
     lib.unique (lib.filter (d: d != "") config.my.proxy.blockedDomainExceptions);
@@ -879,7 +878,7 @@ in
         set dns_split4 { type ifname . ipv4_addr; flags timeout; timeout 120s; }
         set dns_split6 { type ifname . ipv6_addr; flags timeout; timeout 120s; }
         chain dns_plaintext_mode {
-          ip daddr @dns_plaintext4 accept
+          ${lib.optionalString (config.my.proxy.dnsEncryption != "strict") "ip daddr @dns_plaintext4 accept"}
         }
         chain dns_egress {
           meta oifname . ip daddr @dns_split4 accept
@@ -890,6 +889,11 @@ in
         chain lf_dns_guard {
           type filter hook output priority -199; policy accept;
           meta skuid ${toString dnsmasqUid} oifname != "lo" meta l4proto { tcp, udp } th dport 53 jump dns_egress
+          ${lib.optionalString (config.my.proxy.dnsEncryption == "strict") ''
+          ${lib.optionalString config.my.hardening.tailscale.magicDns ''${coreSocket} oifname "${config.services.tailscale.interfaceName}" ip daddr ${m.magicDns} meta l4proto { tcp, udp } th dport 53 accept''}
+          meta skuid ${toString m.uids.clashCore} oifname != "lo" meta l4proto { tcp, udp } th dport 53 counter drop
+          ${coreSocket} oifname != "lo" meta l4proto { tcp, udp } th dport 53 counter drop
+          ''}
         }
         chain lf_local_dns_guard {
           type filter hook output priority -198; policy accept;

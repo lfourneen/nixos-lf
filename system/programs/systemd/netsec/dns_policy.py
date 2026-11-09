@@ -83,7 +83,7 @@ def split_dns(settings, run=subprocess.run, context=None, clock=lambda: time.clo
             'context': before, 'observed_at': observed_at}
 
 
-def transaction(request, policy, now, context=None):
+def transaction(request, policy, now, context=None, *, allow_plaintext=True):
     names = ["dns_plaintext4", "dns_split4", "dns_split6"]
     lines = ["flush set inet lf_filter " + name for name in names]
     if request.get("policy_version") != policy.get("policy_version", policy.get("version")) \
@@ -92,7 +92,7 @@ def transaction(request, policy, now, context=None):
     if policy["mode"] not in {"direct", "proxy"}:
         return "\n".join(lines) + "\n"
     leases = {}
-    if policy["mode"] == "direct":
+    if policy["mode"] == "direct" and allow_plaintext:
         ttl = min(120, int(request.get("plaintext_until", 0) - now))
         if ttl > 0:
             leases["dns_plaintext4"] = (ttl, [a for a in addresses(request.get("plaintext", []))
@@ -155,7 +155,7 @@ def main(settings):
             except (OSError, ValueError, subprocess.SubprocessError):
                 pass  # Still flush the old leases on an observation failure.
         now = time.clock_gettime(time.CLOCK_BOOTTIME)
-        value = transaction(request, policy, now, context)
+        value = transaction(request, policy, now, context, allow_plaintext=settings['allow_plaintext'])
         subprocess.run([settings["nft"], "-f", "-"], input=value, text=True,
                        capture_output=True, timeout=5, check=True)
         stale = isinstance(split, dict) and bool(split.get('entries')) and (

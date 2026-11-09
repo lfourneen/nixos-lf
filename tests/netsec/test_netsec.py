@@ -683,6 +683,18 @@ class DNSPolicyTests(unittest.TestCase):
     context = {'interface': 'wlo1', 'uuid': 'approved', 'connection': '/org/freedesktop/NetworkManager/ActiveConnection/1',
                'ifindex': 7, 'carrier_down_count': 0, 'boot': 'boot', 'epoch': '0'}
 
+    def test_strict_transport_refuses_plaintext_but_preserves_split(self):
+        request = {'policy_version': 10, 'monotonic_seconds': 100,
+                   'plaintext_until': 10000, 'plaintext': ['192.0.2.53'],
+                   'split': {'entries': [{'domain': 'corp.example', 'server': '10.1.2.53'}],
+                             'context': self.context, 'observed_at': 100}}
+        for mode in ('direct', 'proxy'):
+            value = dns_policy.transaction(request, {'mode': mode, 'version': 10}, 101,
+                                           self.context, allow_plaintext=False)
+            self.assertNotIn('192.0.2.53', value)
+            self.assertIn('flush set inet lf_filter dns_plaintext4', value)
+            self.assertIn('dns_split4 { "wlo1" . 10.1.2.53 timeout 119s }', value)
+
     def test_split_dns_preserves_empty_fields_in_both_families(self):
         settings = {"nmcli": "nmcli", "wireless": "wlo1", "split_profiles": ["approved"],
                     'split_cidrs': ['10.0.0.0/8', 'fc00::/7']}

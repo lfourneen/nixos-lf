@@ -5,8 +5,10 @@ let
   port = m.ports;
 
   dhcpIfaces = lib.attrNames (lib.filterAttrs (_: v: v.useDHCP == true) config.networking.interfaces);
-  dhcpcdExec = config.systemd.services.dhcpcd.serviceConfig.ExecStart;
-  dhcpcdConfig = builtins.head (builtins.match ".* --config ([^ ]+).*" dhcpcdExec);
+  dhcpcdExec = config.systemd.services.dhcpcd.serviceConfig.ExecStart or "";
+  dhcpcdMatch = builtins.match ".* --config ([^ ]+).*" dhcpcdExec;
+  # Disabled wired DHCP has no unit ExecStart (e.g. a static-address host).
+  dhcpcdConfig = if dhcpcdMatch == null then "/dev/null" else builtins.head dhcpcdMatch;
   linkSettings = pkgs.writeText "dns-uplink.json" (builtins.toJSON {
     ip = "${pkgs.iproute2}/bin/ip";
     nmcli = "${pkgs.networkmanager}/bin/nmcli";
@@ -25,6 +27,7 @@ let
     # Mihomo's DNS hijack. Public split upstreams are deliberately unsupported.
     split_cidrs = lib.optionals config.my.hardening.directEgress.privateRoutes (m.privateV4 ++ m.ulaV6);
     runtime = "/run/dns-upstream";
+    allow_plaintext = config.my.proxy.dnsEncryption != "strict";
   });
   # Plaintext resolvers used only inside the bounded Mode-A window, and only
   # when the link supplies none. Never Unbound upstreams, and a different
@@ -206,6 +209,7 @@ in
         PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.systemd pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.gnugrep pkgs.networkmanager ]}
         CLASH_ON=${config.my.proxy.isClashOn}
         runtime=/run/dns-upstream
+        allow_plaintext=${if config.my.proxy.dnsEncryption == "strict" then "0" else "1"}
         current=pending
         interval=2
         degraded_rounds=0
@@ -257,6 +261,7 @@ in
               [ "$budget_left" -le "$PL_TOTAL" ] || budget_left=$PL_TOTAL
             fi
           fi
+          [ "$allow_plaintext" = 1 ] || window_until=0
         }
         account_budget() {
           # Supplementary model instead of a refund one: plaintext costs 1:1
@@ -271,7 +276,7 @@ in
           [ "$last_tick" -ne 0 ] || last_tick=$now
           elapsed=$((now - last_tick)); last_tick=$now
           [ "$elapsed" -ge 0 ] || elapsed=0
-          if [ -e "$runtime/force-plaintext" ] || [ "$now" -lt "$window_until" ]; then active=1; fi
+          if [ "$allow_plaintext" = 1 ] && { [ -e "$runtime/force-plaintext" ] || [ "$now" -lt "$window_until" ]; }; then active=1; fi
           if [ "$active" = 1 ]; then
             budget_left=$((budget_left - elapsed))
             [ "$budget_left" -ge 0 ] || budget_left=0
@@ -290,6 +295,7 @@ in
           save_budget
         }
         open_window() {
+          [ "$allow_plaintext" = 1 ] || { window_until=0; save_budget; return 1; }
           now=$(now_mono)
           if [ "$budget_left" -le 0 ]; then window_until=0; save_budget; return 1; fi
           window_until=$((now + PL_TTL))
@@ -341,13 +347,14 @@ in
         publish_dns() {
           now=$(now_mono)
           override=false
-          [ ! -e "$runtime/force-plaintext" ] || override=true
+          [ "$allow_plaintext" = 0 ] || [ ! -e "$runtime/force-plaintext" ] || override=true
           jq -n --arg mode "$current" --arg reason "$state_reason" --arg session "$last_ident" \
             --argjson budget "$budget_left" --argjson total "$PL_TOTAL" --argjson window "$window_until" \
             --argjson now "$now" --argjson override "$override" --argjson version "$policy_version" \
             --argjson success "$last_success" --arg dnssec "$dot_state" --argjson probe "$dot_result" \
+            --arg encryption ${lib.escapeShellArg config.my.proxy.dnsEncryption} \
             '{mode:$mode,reason:$reason,session:$session,budget_remaining:$budget,budget_total:$total,
-              window_until:$window,plaintext_override:$override,
+              window_until:$window,plaintext_override:$override,encryption_policy:$encryption,
               monotonic_seconds:$now,policy_version:$version,last_success_monotonic:$success,dnssec_status:$dnssec,dnssec_probe:$probe}' \
               > "$runtime/state.json.$$" && mv -f "$runtime/state.json.$$" "$runtime/state.json"
           atomic_write "$runtime/reason" "$state_reason"
@@ -375,6 +382,11 @@ in
         }
         apply_state() {
           local target="$1" new_conf pid notify=0
+          # A stale budget file or override cannot reopen strict transport.
+          if [ "$allow_plaintext" = 0 ]; then
+            window_until=0
+            if [[ "$target" == *plaintext ]]; then target=degraded-dot-only; fi
+          fi
           apply_reason=""
           new_conf='server=127.0.0.1#${toString port.unbound}'
           if [ "$target" = proxy ]; then
@@ -515,7 +527,10 @@ in
               dot_fails=$((dot_fails + 1))
               new_status=degraded-dot-only
               state_reason='mode-a: encrypted resolver only; no plaintext upstream'
-              if [ -n "$servers" ]; then
+              if [ "$allow_plaintext" = 0 ]; then
+                window_until=0; save_budget
+                state_reason="mode-a: strict encryption; plaintext recovery disabled ($dot_state)"
+              elif [ -n "$servers" ]; then
                 no_resolver_logged=0
                 [ "$dot_fails" != 1 ] || open_window
                 now=$(now_mono)

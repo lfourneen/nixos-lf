@@ -45,7 +45,7 @@ On Tailscale upgrades, run `tailscale-transport`, `proxy-rules`, `proxy-egress-r
 | `/run/proxy-mode/health.json` | Probe verdict and per-layer durations |
 | `/run/proxy-mode/heartbeat.json` | Last successful supervisor round |
 | `/run/netsec/state.json` | Verification verdict, checked generation and freshness |
-| `/run/dns-upstream/state.json` | DNS mode/reason, session, budget, deadline and override |
+| `/run/dns-upstream/state.json` | DNS mode/reason, encryption policy, session, budget, deadline and override |
 | `/run/dns-policy/state.json` | Broker lease state and applied generation |
 | `/run/gost-relay/state.json` | Relay observation and applied generation |
 | `/run/netsec/alerts/*.json` | Per-owner alarms; `/run/netsec/failed` lists owners |
@@ -95,7 +95,7 @@ Restart/reload reinstalls the owned static policy plus the safety mode atomicall
 | Source | Settings |
 |---|---|
 | [machine.nix](../system/config/machine.nix) | User, interfaces/match keys, UIDs, ports, mark, address ranges and upstream endpoints |
-| [proxy-options.nix](../system/config/proxy-options.nix) | TUN, route table 2022, fake-IP pool, probe URLs, boot intent, proxyOnly, guests, split DNS and freshness |
+| [proxy-options.nix](../system/config/proxy-options.nix) | TUN, route table 2022, fake-IP pool, probe URLs, boot intent, proxyOnly, dnsEncryption, shared domain filtering, guests, split DNS and freshness |
 | [proxy-profile.nix](../system/config/proxy-profile.nix) | Root-owned managed DNS/TUN/profile contract |
 | [hardening-options.nix](../system/config/hardening-options.nix) | Host/guest private access, explicit host-service ports, hotspot, tailnet and Wi-Fi MAC policy |
 | [cvr-merge.nix](../home/config/cvr-merge.nix) | Matching Clash GUI Merge template and routing enhancement |
@@ -115,7 +115,7 @@ nmcli connection modify uuid <UUID> 802-11-wireless.cloned-mac-address ""
 
 ## Offline recovery
 
-If direct access is intended, use `clash-off`. For portal/DNS recovery in A, inspect DNS state/history, then explicitly enable the bounded-renewal override if needed:
+If direct access is intended, use `clash-off`. For portal/DNS recovery in A under the default `dnsEncryption="opportunistic"`, inspect DNS state/history, then explicitly enable the bounded-renewal override if needed:
 
 ```sh
 sudo touch /run/dns-upstream/force-plaintext
@@ -124,6 +124,8 @@ sudo rm /run/dns-upstream/force-plaintext
 ```
 
 This permits plaintext DNS and continues billing the session budget; it cannot override C's egress guard. See [DNS](dns.md) for the exact scope.
+
+With `my.proxy.dnsEncryption="strict"`, the override is ignored and no plaintext fallback is granted. `clash-off` still selects A with encrypted DNS. Try a literal HTTP portal address, another uplink, or repair the authenticated DoT configuration. A portal requiring unavailable public DNS needs an intentional policy change, for example an already built `opportunistic` generation selected offline. Prepare such a generation before relying on strict mode while travelling. Private split DNS and MagicDNS remain available under their normal approvals and mode constraints.
 
 For a broken generation, select an older systemd-boot entry. The boot menu retains eight entries to fit the ESP. A store path retained by garbage collection can also be reactivated offline: inspect `/nix/var/nix/profiles/system-*-link`, set the system profile with `nix-env -p /nix/var/nix/profiles/system --set /nix/store/<nixos-system-…>`, then run `/nix/var/nix/profiles/system/bin/switch-to-configuration boot` as root. If nothing boots, unlock/mount root and the ESP from a NixOS ISO and run the recovery inside `nixos-enter --root /mnt`.
 
