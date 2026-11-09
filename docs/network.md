@@ -25,7 +25,7 @@ The listeners are local. Environment variables (both cases), GSettings and Flatp
 
 Mihomo marks its outbound sockets with `6666` (`0x1a0a`); the exception requires both socket and packet marks plus socket UID root or `clash-core`. Rule routing can choose DIRECT under the default `my.proxy.proxyOnly=false`. The optional [uniform proxy policy](proxy.md#routing-policy) refuses application DIRECT inside the core. Private-network and infrastructure paths outside the core have their own firewall rules.
 
-[DNS](dns.md) runs alongside this path: resolved → dnsmasq → Mihomo or Unbound. [Firefox](browser.md) uses the same Gost HTTP inlet.
+[DNS](dns.md) runs alongside this path: resolved → dnsmasq → Mihomo or Unbound. [Firefox](browser.md) defaults to the same Gost HTTP inlet; its optional transparent path uses native DNS and host sockets under this TUN/firewall policy, allowing HTTPS-RR/ECH discovery.
 
 ## Modes and enforcement
 

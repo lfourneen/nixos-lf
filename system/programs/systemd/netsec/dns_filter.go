@@ -6,6 +6,8 @@ import (
 	D "github.com/miekg/dns"
 )
 
+func lfServiceRecords() bool { return lfguard.Managed() }
+
 func lfBlockedReply(request *D.Msg) *D.Msg {
 	for _, question := range request.Question {
 		if lfguard.CheckDomain(question.Name) != nil {

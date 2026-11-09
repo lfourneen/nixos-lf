@@ -43,6 +43,8 @@ Root 策略来自 [proxy-profile.nix](../../system/config/proxy-profile.nix)，[
 
 `patch_socks.py` 修改 `adapter/inbound/util.go` 运算并复制边界测试，头部记录上游参考。上游实现修正后，应比较长域名解码和畸形输入行为，保留回归覆盖，只移除冗余 patch 调用与 payload 项。
 
+受管 fake-IP 必须保留地址合成和共享过滤，同时完整转发 HTTPS/SVCB 参数。Rule 和统一代理均保持关闭嗅探，旧 profile 继承 root 策略，避免 ECH public name 替换请求目标。
+
 ## Mihomo 内的 sing-tun
 
 目标是 `vendor/github.com/metacubex/sing-tun`，不是独立安装的软件包；更新 Mihomo 可能同时改变它。检查 `go.mod`、replace 指令与实际 vendor 树。
@@ -77,6 +79,8 @@ Dnsmasq patch 是 `network.nix` 的内联 `--replace-fail`。Strict-order 重试
 Unbound 使用未改源码的 `pkgs.unbound-with-systemd`。未来 override 必须保留 `--enable-systemd`，unit 为 `Type=notify`。DNSSEC/CD、持久化锚初始化、TLS 认证、答案过滤、陈旧缓存上限和探针结论应与 [DNS](dns_CN.md) 一致；Chrony 仍须强制 NTS 和证书时间校验。
 
 Firefox 在打包层加入不可变 policy、AutoConfig、字体和 preflight。Home Manager 最终包/wrapper 或偏好语义变化可能不会触发源码 patch 失败，需用 `browser-privacy` 检查最终启动器、桌面/MIME、policy lock、DoH/代理值、沙箱环境及旧 profile/进程。
+
+默认 HTTP 和可选透明路径还需运行 `browser-ech-vm`，复核所选 Firefox 的 CONNECT 门、原生 type-65 API 和 NSS 重试/证书行为。自动化的原生 DNS 测试开关只放在临时 profile，区分认证后不带 ECH 重试与证书验证失败。[浏览器手册](browser_CN.md#ech-发现与代理兼容)介绍这些路径；本地 CA 与密钥只属于隔离 fixture。
 
 `dnsEncryption="strict"` 在协调器、broker 和静态防火墙中必须一致：不能自动或强制回退，不授予明文租约，不安装后备集合放行规则。保留已批准 split DNS、MagicDNS 和字面门户访问；两种传输策略都要验证，默认恢复预算仍是独立行为。
 
@@ -124,6 +128,7 @@ Firefox 在打包层加入不可变 policy、AutoConfig、字体和 preflight。
 | `proxy-core` | 定制核心构建和 parser/router/目标/direct/UDP/DNS/SOCKS Go 测试 |
 | `proxy-gost` | 定制 relay 构建及 vendored HTTP 测试 |
 | `browser-privacy` | 最终原生浏览器 policy lock 与离线启动 |
+| `browser-ech-vm` | 真实 Firefox/helper/核心、原生 HTTPS 发现、ECH 与 GREASE、密钥/无 ECH 重试、不可信拒绝、证书错误、掩护名不改目标及 A/C 行为 |
 | `proxy-control-vm` | 真实生产 helper/launcher、能力、授权、DNS、TUN/C 恢复 |
 | `proxy-network-vm` | 广泛内核故障注入：模式、DNS、租约、休眠、访客、TPROXY 和恢复 |
 

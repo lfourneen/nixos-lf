@@ -43,6 +43,8 @@ Managed mode uses `LF_MANAGED_PROXY_POLICY`; its absence deliberately retains up
 
 `patch_socks.py` changes arithmetic in `adapter/inbound/util.go` and copies boundary tests into that package. Its header records an upstream reference. If an upstream release implements the correction, compare long-domain decoding and malformed input behavior, retain the regression tests and remove only the redundant patch invocation/payload entries.
 
+Managed fake-IP must forward HTTPS/SVCB records with their parameters intact while retaining address synthesis and the shared filter. Keep sniffing disabled in both Rule and uniform modes; cached profiles must inherit the root policy so an ECH public name cannot replace the requested target.
+
 ## sing-tun inside Mihomo
 
 The target is `vendor/github.com/metacubex/sing-tun`, not an independently installed sing-tun package. A Mihomo update can change it even when no explicit sing-tun setting changes. Inspect Mihomo's `go.mod`, module replacement directives and generated vendor tree.
@@ -77,6 +79,8 @@ The dnsmasq patch is an inline `--replace-fail` in `network.nix`. In strict-orde
 Unbound uses unmodified `pkgs.unbound-with-systemd`. Preserve `--enable-systemd` if introducing a future override: the unit is `Type=notify`. Keep DNSSEC/CD behavior, persistent anchor initialization, TLS authentication, reply filtering, stale-cache limits and probe verdicts aligned with [DNS](dns.md). Chrony changes must preserve NTS requirement and certificate-time checks.
 
 Firefox customization wraps the packaged browser with immutable policy, AutoConfig, fonts and preflight. An update can alter Home Manager's final package/wrapper or preference semantics without any source patch failing. Check the final launcher and desktop/MIME entries, policy locks, DoH/proxy values, sandbox environment and existing-profile/process behavior with `browser-privacy`.
+
+Also run `browser-ech-vm` for the default HTTP and optional transparent paths. Review the selected Firefox CONNECT gate, native type-65 API and NSS retry/certificate behavior. Keep automation's native-DNS test switch inside the temporary profile, and distinguish authenticated retry without ECH from failed certificate validation. The [browser guide](browser.md#ech-discovery-and-proxy-compatibility) describes these paths; the test's local CA and keys are isolated fixtures.
 
 `dnsEncryption="strict"` must agree across the coordinator, broker and static firewall: no automatic or forced fallback, no plaintext leases, and no fallback-set accept rule. Retain approved split DNS, MagicDNS and literal portal access. Test both transport policies; the default recovery budget remains a separate behavior.
 
@@ -124,6 +128,7 @@ Use the attributes below from the checkout. Nix builds normally use the local da
 | `proxy-core` | Patched core build plus injected parser, router, target, direct/UDP/DNS and SOCKS Go tests |
 | `proxy-gost` | Patched relay build and vendored HTTP parser tests |
 | `browser-privacy` | Final native browser policy/locks and offline launch behavior |
+| `browser-ech-vm` | Real Firefox/helper/core, native HTTPS discovery, ECH versus GREASE, key/no-ECH retry, untrusted rejection, certificate errors, cover-name target preservation and A/C behavior |
 | `proxy-control-vm` | Real production helper/launcher, process capabilities, authorization, DNS and TUN/C recovery |
 | `proxy-network-vm` | Broad kernel fault injection: modes, DNS, leases, sleep, guests, TPROXY and recovery |
 

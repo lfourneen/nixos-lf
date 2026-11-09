@@ -57,13 +57,15 @@ my.proxy.proxyOnly = false; # 默认保留订阅 Rule 分流。
 
 默认保留国内 DIRECT，并前置已知探针/下载域代理规则。未列出的 IP 回显资源仍可能命中 DIRECT，看到真实出口。健康检查只证明其配置的样本路径。
 
-`true` 将进入核心的应用流量统一交给订阅最终代理 MATCH，要求存在可用代理兜底，覆盖地理/进程分流及 profile REJECT。核心同时拒绝应用 DIRECT/COMPATIBLE TCP/UDP，包括组内 direct 叶子和改名适配器。按规则路由的 DNS 也受约束；显式引导/端点解析和 `#DIRECT` MagicDNS 仍豁免。关闭嗅探，避免 cover SNI 替换实际拨号目标。
+`true` 将进入核心的应用流量统一交给订阅最终代理 MATCH，要求存在可用代理兜底，覆盖地理/进程分流及 profile REJECT。核心同时拒绝应用 DIRECT/COMPATIBLE TCP/UDP，包括组内 direct 叶子和改名适配器。按规则路由的 DNS 也受约束；显式引导/端点解析和 `#DIRECT` MagicDNS 仍豁免。
 
 部署 Nix generation 并导入/重启受管核心后生效，会增加包括国内流量在内的订阅消耗。`bootMode`、A 的门户访问、root UDP、组播及核心外宿主私网路径独立控制。
 
 ## 域名目标
 
-[target_guard.go](../../system/programs/systemd/netsec/target_guard.go) 在路由/嗅探后、TCP/UDP 出站前校验域名目的地，拒绝混合公网/私网答案、空结果，以及重试一次后仍无法解析的目标。限制包括私网、CGNAT、loopback、链路本地、未指定、组播及选定保留/过渡范围，含 mapped IPv4 和知名 NAT64 前缀内嵌私网 IPv4。这是针对性清单，并非整个 IANA 特殊用途地址表。
+受管核心在 Rule 和统一代理模式均禁用嗅探，使用显式目标和 fake-IP 映射作为域名路由身份；ECH 掩护 SNI 不能替代拨号目标，字面 IP 使用 IP 规则。Parser 也将旧 GUI 配置规范到这一策略，见[浏览器 ECH 发现](browser_CN.md#ech-发现与代理兼容)。
+
+[target_guard.go](../../system/programs/systemd/netsec/target_guard.go) 在路由后、TCP/UDP 出站前校验域名目的地，拒绝混合公网/私网答案、空结果，以及重试一次后仍无法解析的目标。限制包括私网、CGNAT、loopback、链路本地、未指定、组播及选定保留/过渡范围，含 mapped IPv4 和知名 NAT64 前缀内嵌私网 IPv4。这是针对性清单，并非整个 IANA 特殊用途地址表。
 
 DIRECT 与远程代理均固定已检查 IP，避免第二次未经检查的 DNS 解析。复用 UDP association 时，每个新目的映射重新验证，后续数据包使用该映射。
 

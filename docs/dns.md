@@ -72,7 +72,9 @@ When encrypted DNS fails, fresh public names fail; local and eligible cached ans
 
 Public name servers use Cloudflare/Google DoH; domestic names and proxy-endpoint bootstrap use the configured domestic resolvers. `respect-rules` is enabled, additional direct resolvers and proxy-server resolver-policy maps are disabled, and the core's parser/controller policy prevents runtime weakening of managed fields. B's resolver is separate from A's local Unbound validator.
 
-The core also validates and pins domain dial targets after routing/sniffing, for both direct and proxy TCP/UDP. New UDP destination mappings are checked; later packets reuse their checked mapping. The [target guard and its exemptions](proxy.md#domain-targets) are separate from DNS answer filtering.
+The core also validates and pins domain dial targets after routing, for both direct and proxy TCP/UDP. New UDP destination mappings are checked; later packets reuse their checked mapping. The [target guard and its exemptions](proxy.md#domain-targets) are separate from DNS answer filtering.
+
+In managed fake-IP mode, address-record behavior stays synthetic while HTTPS/SVCB queries use the configured resolver and retain their service parameters. The common filter runs before both. Firefox's use of these records, its CONNECT limitation and the optional native browser path are explained in [the browser guide](browser.md#ech-discovery-and-proxy-compatibility).
 
 ## Blocklist
 

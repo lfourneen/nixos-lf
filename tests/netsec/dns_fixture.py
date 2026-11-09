@@ -1,5 +1,6 @@
 """Local-only VM traffic fixtures; never used by the installed system."""
 import argparse
+import base64
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ parser.add_argument("--uid", type=int)
 parser.add_argument("--mark", type=int)
 parser.add_argument('--dns-answer')
 parser.add_argument('--rebind', action='store_true')
+parser.add_argument('--ech-config')
 args = parser.parse_args()
 
 if args.mode == "lease":
@@ -37,6 +39,25 @@ elif args.mode == "server":
                 end += data[end] + 1
             end += 5
             name = '.'.join(labels).lower()
+            if args.ech_config:
+                kind = struct.unpack('!H', data[end - 4:end - 2])[0]
+                print(json.dumps({'name': name, 'type': kind}), flush=True)
+                payloads = []
+                if kind == 1:
+                    address = '203.0.113.11' if name.split('.')[0].endswith('public') else args.dns_answer
+                    payloads = [socket.inet_aton(address)]
+                elif kind in (64, 65):
+                    config = json.loads(Path(args.ech_config).read_text()).get(name)
+                    if config:
+                        ech = base64.b64decode(config)
+                        # ServiceMode, owner target, HTTP/1.1 ALPN and real ECHConfigList.
+                        payloads = [b'\x00\x01\x00' + struct.pack('!HH', 1, 9) + b'\x08http/1.1'
+                                    + struct.pack('!HH', 5, len(ech)) + ech]
+                response = data[:2] + struct.pack('!5H', 0x8180, 1, len(payloads), 0, 0) + data[12:end]
+                response += b''.join(b'\xc0\x0c' + struct.pack('!HHIH', kind, 1, 30, len(payload)) + payload
+                                     for payload in payloads)
+                stream.sendto(response, peer)
+                continue
             answers = [args.dns_answer]
             if args.rebind and name in ('private.core.fixture.example', 'allowed.home.arpa'):
                 answers = ['100.67.0.1']

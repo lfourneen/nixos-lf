@@ -57,13 +57,15 @@ my.proxy.proxyOnly = false; # Default: subscription Rule routing.
 
 The default preserves domestic DIRECT and prepends known probe/download domain overrides. An unlisted IP-echo resource can still match DIRECT and see the actual exit address. Health confirms its configured sample paths, not every domain.
 
-With `true`, the generated profile routes application destinations reaching the core through the subscription's final proxy MATCH policy. It requires a usable proxy catch-all and overrides geographic/process splitting and profile REJECT rules. It also refuses application DIRECT/COMPATIBLE TCP/UDP dials inside the core, including direct leaves behind groups and renamed adapters. Rule-routed DNS is covered; explicit bootstrap/endpoint-resolution infrastructure and `#DIRECT` MagicDNS remain exempt. Sniffing is disabled to avoid replacing a dial target with a cover SNI.
+With `true`, the generated profile routes application destinations reaching the core through the subscription's final proxy MATCH policy. It requires a usable proxy catch-all and overrides geographic/process splitting and profile REJECT rules. It also refuses application DIRECT/COMPATIBLE TCP/UDP dials inside the core, including direct leaves behind groups and renamed adapters. Rule-routed DNS is covered; explicit bootstrap/endpoint-resolution infrastructure and `#DIRECT` MagicDNS remain exempt.
 
 Deploy the generation and import/restart the managed core for this policy to take effect. It increases subscription traffic, including domestic traffic. `bootMode`, A's portal access, root UDP, multicast and private host paths outside the core are independent choices.
 
 ## Domain targets
 
-[target_guard.go](../system/programs/systemd/netsec/target_guard.go) checks domain destinations after routing/sniffing and before TCP/UDP egress. It rejects mixed public/private answers, empty results and unresolved targets after one retry. Private, CGNAT, loopback, link-local, unspecified, multicast and selected reserved/transition ranges are denied, including mapped IPv4 and embedded private IPv4 under the well-known NAT64 prefix. The list is targeted, not the entire IANA special-purpose registry.
+Managed sniffing is disabled in both Rule and uniform proxy modes. Explicit target names and fake-IP mappings remain the routing identity; an ECH cover SNI cannot replace the dial target. Literal-IP traffic uses IP rules. The parser also normalizes cached GUI profiles to this policy. See [browser ECH discovery](browser.md#ech-discovery-and-proxy-compatibility).
+
+[target_guard.go](../system/programs/systemd/netsec/target_guard.go) checks domain destinations after routing and before TCP/UDP egress. It rejects mixed public/private answers, empty results and unresolved targets after one retry. Private, CGNAT, loopback, link-local, unspecified, multicast and selected reserved/transition ranges are denied, including mapped IPv4 and embedded private IPv4 under the well-known NAT64 prefix. The list is targeted, not the entire IANA special-purpose registry.
 
 The checked address is pinned for both DIRECT and remote proxy dials, avoiding a second unchecked DNS resolution. Each new mapping in a reused UDP association is validated; subsequent packets use that mapping.
 

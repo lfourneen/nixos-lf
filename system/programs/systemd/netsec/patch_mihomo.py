@@ -15,6 +15,10 @@ root = Path(sys.argv[1])
 # The second hook also covers proxy-endpoint/bootstrap resolver queries.
 replace(root / "dns/middleware.go", '\tvar middlewares []middleware',
         '\tvar middlewares []middleware\n\tmiddlewares = append(middlewares, lfDomainFilter)')
+replace(root / "dns/middleware.go", '\t\t\tcase D.TypeSVCB, D.TypeHTTPS:\n\t\t\t\treturn handleMsgWithEmptyAnswer(r), nil',
+        '\t\t\tcase D.TypeSVCB, D.TypeHTTPS:\n'
+        '\t\t\t\tif lfServiceRecords() { return next(ctx, r) }\n'
+        '\t\t\t\treturn handleMsgWithEmptyAnswer(r), nil')
 replace(root / "dns/resolver.go",
         'func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, err error) {',
         'func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, err error) {\n'

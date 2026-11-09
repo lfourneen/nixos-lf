@@ -10,14 +10,12 @@ import io
 import json
 import os
 from pathlib import Path
-import shlex
 import socket
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
-import time
 import zipfile
 
 manifest = json.loads(Path(sys.argv[1]).read_text())
@@ -116,50 +114,10 @@ class Proxy(BaseHTTPRequestHandler):
         pass
 
 
-class Marionette:
-    def __init__(self, browser, port):
-        deadline = time.monotonic() + 40
-        while True:
-            try:
-                self.socket = socket.create_connection(("127.0.0.1", port), timeout=2)
-                break
-            except OSError:
-                assert browser.poll() is None, "Firefox exited before automation startup"
-                if time.monotonic() > deadline:
-                    raise TimeoutError("Marionette startup timed out")
-                time.sleep(.2)
-        self.socket.settimeout(30)
-        self.identifier = 0
-        self.read()
-
-    def read(self):
-        size = b""
-        while True:
-            char = self.socket.recv(1)
-            if not char:
-                raise EOFError("automation socket closed")
-            if char == b":":
-                break
-            size += char
-        data = b""
-        while len(data) < int(size):
-            part = self.socket.recv(int(size) - len(data))
-            if not part:
-                raise EOFError("incomplete automation response")
-            data += part
-        return json.loads(data)
-
-    def call(self, name, parameters=None):
-        self.identifier += 1
-        payload = json.dumps([0, self.identifier, name, parameters or {}]).encode()
-        self.socket.sendall(str(len(payload)).encode() + b":" + payload)
-        response = self.read()
-        assert response[:2] == [1, self.identifier], response
-        assert not response[2], response[2]
-        return response[3]
-
-    def execute(self, source):
-        return self.call("WebDriver:ExecuteScript", {"script": source, "args": [], "newSandbox": True})["value"]
+spec = importlib.util.spec_from_file_location("driver", manifest["driver"])
+driver = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(driver)
+Marionette = driver.Marionette
 
 
 server = ThreadingHTTPServer(("127.0.0.1", manifest["relayPort"]), Proxy)
@@ -171,15 +129,7 @@ with tempfile.TemporaryDirectory() as work:
     # Home Manager pins MOZ_APP_DATA to the real home. Relocate only that
     # directory in a temporary copy of the library wrapper; the executed Nix
     # runtime and all policies/AutoConfig remain the production artifacts.
-    app_data = Path(work) / "app-data"
-    app_data.mkdir()
-    launcher = Path(work) / "firefox"
-    wrapper = (package / "bin/.firefox-unchecked").read_text()
-    # makeWrapper always quotes its --set value, even without shell metacharacters.
-    original = "export MOZ_APP_DATA='" + str(Path(settings["profile"]).parent) + "'"
-    assert original in wrapper
-    launcher.write_text(wrapper.replace(original, "export MOZ_APP_DATA=" + shlex.quote(str(app_data))))
-    launcher.chmod(0o700)
+    launcher = driver.isolated_launcher(package, settings, work)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]

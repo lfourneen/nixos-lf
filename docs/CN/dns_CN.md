@@ -72,7 +72,9 @@ my.proxy.dnsEncryption = "strict";
 
 公共解析使用 Cloudflare/Google DoH，国内域与代理端点引导使用配置的国内解析器。启用 `respect-rules`，禁用额外 direct 解析器和 proxy-server resolver-policy map；核心 parser/controller 防止运行时削弱受管字段。B 与 A 的本地 Unbound 验证器分开。
 
-核心还会在路由/嗅探后检查域名拨号目标，并为 DIRECT 和代理 TCP/UDP 固定已验证 IP。新 UDP 目的映射重新检查，后续包复用映射。[目标守卫及其豁免](proxy_CN.md#域名目标)与 DNS 答案过滤是不同层。
+核心还会在路由后检查域名拨号目标，并为 DIRECT 和代理 TCP/UDP 固定已验证 IP。新 UDP 目的映射重新检查，后续包复用映射。[目标守卫及其豁免](proxy_CN.md#域名目标)与 DNS 答案过滤是不同层。
+
+受管 fake-IP 模式保留地址记录的合成行为，同时让 HTTPS/SVCB 查询使用声明的解析器，保留服务参数；两者均先经过共享过滤。Firefox 如何使用这些记录、CONNECT 限制和可选原生路径见[浏览器手册](browser_CN.md#ech-发现与代理兼容)。
 
 ## 黑名单
 

@@ -114,8 +114,8 @@ in
       "tun.enable" = p.tunMode;
       "tun.file-descriptor" = 0;
       "dns.fallback" = [ ];
-    } // lib.optionalAttrs p.proxyOnly {
-      # ECH's outer SNI is a cover name, not a replacement dial target.
+      # ECH's outer SNI is a cover name in both Rule and uniform proxy modes.
+      # Fake-IP mappings and explicit proxy targets already supply the domain.
       "sniffer.enable" = false;
     } // lib.mapAttrs' (key: value: lib.nameValuePair "dns.${key}" value) p.managedDns
       // lib.genAttrs (map (key: "tun.${key}") emptyTunFields) (_: [ ])

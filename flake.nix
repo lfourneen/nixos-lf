@@ -104,6 +104,16 @@
           } ];
         }).config;
       };
+      browser-ech-vm = import ./tests/netsec/control-vm.nix {
+        inherit pkgs;
+        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        ech = {
+          http-proxy = self.nixosConfigurations.lfour.config.home-manager.users.lfour.programs.firefox.finalPackage;
+          transparent = (self.nixosConfigurations.lfour.extendModules {
+            modules = [ { home-manager.users.lfour.my.firefox.networkPath = "transparent"; } ];
+          }).config.home-manager.users.lfour.programs.firefox.finalPackage;
+        };
+      };
       proxy-profile = import ./tests/netsec/profile.nix {
         inherit pkgs;
         config = self.nixosConfigurations.lfour.config;

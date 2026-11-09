@@ -28,6 +28,9 @@ type policy struct {
 
 var current atomic.Pointer[policy]
 
+// The managed DNS service preserves HTTPS/SVCB discovery even with fake-IP.
+func Managed() bool { return current.Load() != nil }
+
 // Called by the DIRECT adapter before opening TCP or UDP sockets, including
 // named direct adapters and COMPATIBLE. A group selecting DIRECT cannot bypass
 // this check. Internal resolver/bootstrap metadata has a separate trust scope.

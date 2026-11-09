@@ -1,7 +1,17 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null }:
+
+let
+  echFixture = pkgs.runCommand "ech-origin-fixture" { nativeBuildInputs = [ pkgs.go ]; } ''
+    export GOCACHE="$TMPDIR/go-cache"
+    export GO111MODULE=off
+    export CGO_ENABLED=0
+    mkdir -p "$out/bin"
+    go build -trimpath -o "$out/bin/ech-fixture" ${./ech_server.go}
+  '';
+in
 
 pkgs.testers.runNixOSTest {
-  name = if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
@@ -75,11 +85,20 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-control.py".source = ./control_fixture.py;
     environment.etc."netsec-launcher".text = "${clashPackage}/bin/verge-mihomo";
     environment.etc."netsec-core".text = "${clashPackage.managedCore}/bin/mihomo";
+    environment.etc."netsec-firefox-driver.py" = lib.mkIf (ech != null) { source = ./firefox_driver.py; };
+    environment.etc."netsec-ech.py" = lib.mkIf (ech != null) { source = ./test_ech.py; };
+    environment.etc."netsec-ech.json" = lib.mkIf (ech != null) {
+      text = builtins.toJSON (lib.mapAttrs (_: firefox: {
+        package = firefox;
+        settings = firefox.netsec.settings;
+        guard = ../../home/programs/firefox/guard.py;
+      }) ech);
+    };
     environment.systemPackages = [
       (pkgs.python3.withPackages (p: [ p.pyyaml ]))
       pkgs.curl pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.nftables pkgs.util-linux
-    ];
-    virtualisation.memorySize = 1024;
+    ] ++ lib.optionals (ech != null) [ pkgs.nssTools ];
+    virtualisation.memorySize = if ech != null then 3072 else 1024;
   };
   testScript = ''
     def wait_proxy():
@@ -96,7 +115,11 @@ pkgs.testers.runNixOSTest {
     machine.succeed("ip addr add 100.67.0.2/24 dev ens1; ip link set ens1 up; ip -n outside addr add 100.67.0.1/24 dev peer0; ip -n outside addr add 203.0.113.10/32 dev peer0; ip -n outside link set peer0 up; ip -n outside link set lo up; ip route add default via 100.67.0.1 dev ens1 metric 1")
     machine.succeed("ip -6 addr add 2001:db8:dead::2/64 dev ens1 nodad; ip -n outside -6 addr add 2001:db8:dead::1/64 dev peer0 nodad; ip -6 route add default via 2001:db8:dead::1 dev ens1 metric 1")
     machine.succeed("python3 /etc/netsec-integration.py prepare; python3 /etc/netsec-control.py prepare")
-    machine.succeed("systemd-run --unit=control-dns ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-dns.py server 15354 --dns-answer 203.0.113.10")
+    ${pkgs.lib.optionalString (ech != null) ''
+    machine.succeed("${echFixture}/bin/ech-fixture prepare /run/netsec-ech; ip -n outside addr add 203.0.113.11/32 dev peer0; systemd-run --unit=ech-origin ip netns exec outside ${echFixture}/bin/ech-fixture serve /run/netsec-ech")
+    machine.wait_for_file("/run/netsec-ech/ready")
+    ''}
+    machine.succeed("systemd-run --unit=control-dns ${pkgs.lib.optionalString (ech != null) "--property=StandardOutput=append:/run/netsec-ech/dns.log"} ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-dns.py server 15354 --dns-answer 203.0.113.10 ${pkgs.lib.optionalString (ech != null) "--ech-config /run/netsec-ech/dns.json"}")
     for port in (80, 8080):
         machine.succeed(f"systemd-run --unit=control-http-{port} ip netns exec outside ${pkgs.python3}/bin/python3 -m http.server {port} --bind 0.0.0.0")
     core = machine.succeed("cat /etc/netsec-core").strip()
@@ -158,6 +181,21 @@ pkgs.testers.runNixOSTest {
     machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 2 http://100.67.0.1:80/")
     machine.fail("curl --noproxy '*' -fsS --max-time 2 http://100.67.0.1:8080/")
     ''}
+    ${pkgs.lib.optionalString (ech != null) ''
+    for port in (1053, 1054):
+        for transport in ("+notcp", "+tcp"):
+            machine.succeed(f"dig {transport} +time=2 +tries=1 @127.0.0.1 -p {port} accepted.ech.fixture.example HTTPS | grep -q 'ech='")
+    try:
+        machine.succeed("setpriv --reuid=lfour --regid=users --init-groups env HOME=/home/lfour XDG_RUNTIME_DIR=/run/user/1000 python3 /etc/netsec-ech.py")
+    except Exception:
+        print(machine.execute("cat /run/netsec-ech/events.jsonl; tail -n 40 /run/netsec-ech/dns.log; tail -n 40 /tmp/ech-firefox-*.log"))
+        raise
+    machine.succeed("systemctl stop clash-verge.service")
+    machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = blocked")
+    machine.fail("setpriv --reuid=lfour --regid=users --init-groups ${ech.transparent}/bin/firefox --check")
+    machine.succeed("systemctl start clash-verge.service")
+    wait_proxy()
+    ''}
     # The production TUN must preserve Tailscale's pre-existing bypass route
     # and SO_MARK. Keep this short check beside the actual helper/core test.
     machine.succeed("ip rule add pref 5210 fwmark 0x80000/0xff0000 lookup main; ip -6 rule add pref 5210 fwmark 0x80000/0xff0000 lookup main; ip -n outside -6 addr add 2001:db8:ffff::10/128 dev peer0 nodad")
@@ -189,5 +227,11 @@ pkgs.testers.runNixOSTest {
     machine.succeed("curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:8080/ >/dev/null")
     ''}
     machine.succeed("python3 /etc/netsec-control.py refuse")
+    ${pkgs.lib.optionalString (ech != null) ''
+    machine.succeed("setpriv --reuid=lfour --regid=users --init-groups env HOME=/home/lfour XDG_RUNTIME_DIR=/run/user/1000 python3 /etc/netsec-ech.py portal")
+    machine.copy_from_vm("/tmp/ech-browser-results.json")
+    machine.copy_from_vm("/run/netsec-ech/events.jsonl")
+    machine.copy_from_vm("/run/netsec-ech/dns.log")
+    ''}
   '';
 }

@@ -188,13 +188,10 @@ in
         fake-ip-range = fakeIpRange;
       })}
 
-      # Sniffing still matters with fake-ip: it recovers the domain for flows
-      # that arrive as a bare address (filtered/LAN names, pure-IP traffic), and
-      # it feeds QUIC where the TLS hello is unreadable. force-dns-mapping keeps
-      # the sniffed name in sync with the fake-ip mapping so DOMAIN/GEOSITE rules
-      # match TUN traffic.
+      # Preserve the requested/fake-IP target: ECH's outer SNI is a public
+      # cover name and cannot safely replace it, including in Rule mode.
       sniffer:
-        enable: ${lib.boolToString (!osConfig.my.proxy.proxyOnly)}
+        enable: false
         force-dns-mapping: true
         parse-pure-ip: true
         override-destination: true

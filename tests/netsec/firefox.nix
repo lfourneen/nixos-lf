@@ -6,6 +6,7 @@ let
   firefox = home.programs.firefox.finalPackage;
   manifest = pkgs.writeText "firefox-test.json" (builtins.toJSON {
     package = firefox;
+    driver = ./firefox_driver.py;
     inherit (firefox.netsec) settings prefs;
     rootHealthSettings = config.my.proxy.healthSettings;
     desktopHealthSettings = config.my.proxy.desktopHealthSettings;

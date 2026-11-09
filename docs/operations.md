@@ -99,7 +99,7 @@ Restart/reload reinstalls the owned static policy plus the safety mode atomicall
 | [proxy-profile.nix](../system/config/proxy-profile.nix) | Root-owned managed DNS/TUN/profile contract |
 | [hardening-options.nix](../system/config/hardening-options.nix) | Host/guest private access, explicit host-service ports, hotspot, tailnet and Wi-Fi MAC policy |
 | [cvr-merge.nix](../home/config/cvr-merge.nix) | Matching Clash GUI Merge template and routing enhancement |
-| [firefox.nix](../home/programs/firefox/firefox.nix) | Native browser, privacy, policy, fonts and launcher |
+| [firefox.nix](../home/programs/firefox/firefox.nix), [options.nix](../home/programs/firefox/options.nix) | Native browser, networkPath, privacy, policy, fonts and launcher |
 
 TUN defaults: `Mihomo`, table 2022, rule priority 9000, internal marks 8227/8228, fallback priority 32768, file descriptor 0. Parser, template and health share these values. `tunMode=false` selects HTTP-only/redir-host operation, dropping the requirement for a TUN. Fake-IP network is derived from `fakeIpRange`; avoid independent edits to consumers.
 

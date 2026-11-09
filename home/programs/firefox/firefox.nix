@@ -5,6 +5,7 @@ let
   relay = "127.0.0.1:${toString osConfig.my.machine.ports.gostHttp}";
   strictPrivacy = true;
   compat = config.my.firefox.videoSiteCompat;
+  transparent = config.my.firefox.networkPath == "transparent";
   profile = "${config.programs.firefox.configPath}/lfour";
   fontPackages = [ pkgs.dejavu_fonts pkgs.noto-fonts pkgs.noto-fonts-cjk-sans pkgs.noto-fonts-color-emoji ];
   fonts = pkgs.writeText "firefox-fonts.conf" ''
@@ -29,6 +30,9 @@ let
     "network.dns.echconfig.enabled" = true;
     "network.dns.http3_echconfig.enabled" = true;
     "network.dns.native_https_query" = true;
+    "network.dns.use_https_rr_as_altsvc" = true;
+    "network.dns.force_use_https_rr" = false;
+    "network.dns.echconfig.fallback_to_origin_when_all_failed" = false;
     "security.tls.ech.grease_probability" = 100;
     "network.dns.disablePrefetch" = true;
     "network.prefetch-next" = false;
@@ -166,7 +170,7 @@ let
       Cryptomining = true;
       Fingerprinting = true;
     };
-    Proxy = {
+    Proxy = if transparent then { Mode = "none"; Locked = true; } else {
       Mode = "manual";
       Locked = true;
       HTTPProxy = relay;
@@ -205,6 +209,7 @@ let
   };
   settings = pkgs.writeText "firefox-launch.json" (builtins.toJSON {
     inherit profile strictPrivacy fonts;
+    networkPath = config.my.firefox.networkPath;
     fontDirectories = map (p: "${p}/share/fonts") fontPackages;
     fontList = "${pkgs.fontconfig}/bin/fc-list";
     stateModule = ../../../system/programs/systemd/netsec/state.py;
@@ -230,6 +235,10 @@ let
 in
 {
   imports = [ ./options.nix ];
+  assertions = [{
+    assertion = !transparent || osConfig.my.proxy.tunMode;
+    message = "Firefox transparent networking requires my.proxy.tunMode=true.";
+  }];
 
   programs.firefox = {
     enable = true;
