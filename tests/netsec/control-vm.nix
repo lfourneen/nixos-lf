@@ -1,4 +1,4 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false }:
 
 let
   echFixture = pkgs.runCommand "ech-origin-fixture" { nativeBuildInputs = [ pkgs.go ]; } ''
@@ -11,7 +11,7 @@ let
 in
 
 pkgs.testers.runNixOSTest {
-  name = if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
@@ -54,6 +54,10 @@ pkgs.testers.runNixOSTest {
     my.proxy.dnsEncryption = if strictDns then "strict" else "opportunistic";
     my.proxy.blockedDomains = [ "ads.fixture.example" "blocked.fixture.test" "metrics.home.arpa" ];
     my.proxy.blockedDomainExceptions = [ "ok.blocked.fixture.test" ];
+    my.proxy.remoteTargetGrants = lib.optionals targetPolicy [{
+      proxy = "Fixture"; cidr = "127.0.0.1/32";
+      inlets = [ "SOCKS5" ]; network = "tcp"; ports = [ 18082 ];
+    }];
     systemd.services.dns-upstream.environment = lib.mkIf strictDns {
       NETSEC_DOT_PRIME_ROUNDS = "0";
       NETSEC_PROBE_TIMEOUT = "0.5";
@@ -83,6 +87,7 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-tail.py".source = ./tailscale_fixture.py;
     environment.etc."netsec-integration-policy.json".text = builtins.toJSON config.my.proxy.managedProfile;
     environment.etc."netsec-control.py".source = ./control_fixture.py;
+    environment.etc."netsec-target.py" = lib.mkIf targetPolicy { source = ./target_fixture.py; };
     environment.etc."netsec-launcher".text = "${clashPackage}/bin/verge-mihomo";
     environment.etc."netsec-core".text = "${clashPackage.managedCore}/bin/mihomo";
     environment.etc."netsec-firefox-driver.py" = lib.mkIf (ech != null) { source = ./firefox_driver.py; };
@@ -115,6 +120,16 @@ pkgs.testers.runNixOSTest {
     machine.succeed("ip addr add 100.67.0.2/24 dev ens1; ip link set ens1 up; ip -n outside addr add 100.67.0.1/24 dev peer0; ip -n outside addr add 203.0.113.10/32 dev peer0; ip -n outside link set peer0 up; ip -n outside link set lo up; ip route add default via 100.67.0.1 dev ens1 metric 1")
     machine.succeed("ip -6 addr add 2001:db8:dead::2/64 dev ens1 nodad; ip -n outside -6 addr add 2001:db8:dead::1/64 dev peer0 nodad; ip -6 route add default via 2001:db8:dead::1 dev ens1 metric 1")
     machine.succeed("python3 /etc/netsec-integration.py prepare; python3 /etc/netsec-control.py prepare")
+    ${pkgs.lib.optionalString targetPolicy ''
+    machine.succeed("python3 /etc/netsec-target.py prepare; python3 /etc/netsec-control.py prepare")
+    machine.succeed("systemd-run --unit=target-local python3 /etc/netsec-target.py server local 18081; systemd-run --unit=target-remote ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-target.py server remote 18081; systemd-run --unit=target-granted ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-target.py server granted 18082")
+    machine.wait_until_succeeds("curl --noproxy '*' -fsS http://127.0.0.1:18081/ | grep -qx local")
+    machine.wait_until_succeeds("ip netns exec outside curl --noproxy '*' -fsS http://127.0.0.1:18081/ | grep -qx remote")
+    machine.wait_until_succeeds("ip netns exec outside curl --noproxy '*' -fsS http://[::1]:18081/ | grep -qx remote")
+    machine.wait_until_succeeds("ip netns exec outside curl --noproxy '*' -fsS http://127.0.0.1:18082/ | grep -qx granted")
+    machine.wait_until_succeeds("ss -lnt | grep -q :33332")
+    machine.succeed("curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS http://127.0.0.1:18081/ | grep -qx local")
+    ''}
     ${pkgs.lib.optionalString (ech != null) ''
     machine.succeed("${echFixture}/bin/ech-fixture prepare /run/netsec-ech; ip -n outside addr add 203.0.113.11/32 dev peer0; systemd-run --unit=ech-origin ip netns exec outside ${echFixture}/bin/ech-fixture serve /run/netsec-ech")
     machine.wait_for_file("/run/netsec-ech/ready")
@@ -161,6 +176,14 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_file("/run/clash-verge-rev/service.sock")
     machine.succeed("python3 /etc/netsec-control.py start")
     wait_proxy()
+    ${pkgs.lib.optionalString targetPolicy ''
+    machine.succeed("python3 /etc/netsec-target.py check")
+    machine.succeed("systemctl stop clash-verge.service")
+    machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = blocked")
+    machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 2 http://127.0.0.1:18081/")
+    machine.succeed("systemctl start clash-verge.service")
+    wait_proxy()
+    ''}
     # Same suffix/exception rules at dnsmasq, direct core DNS and HTTP proxy
     # dialing, including a name otherwise exempt from the private-IP guard.
     for transport in ("+notcp", "+tcp"):
@@ -221,6 +244,9 @@ pkgs.testers.runNixOSTest {
     wait_proxy()
     machine.succeed("proxy-control off")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct", timeout=45)
+    ${pkgs.lib.optionalString targetPolicy ''
+    machine.wait_until_succeeds("curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 5 http://127.0.0.1:18081/ | grep -qx local")
+    ''}
     ${pkgs.lib.optionalString restricted ''
     # Incremental rules_off must remove B's guard, not require a full reload.
     machine.succeed("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:80/ >/dev/null")

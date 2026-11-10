@@ -22,6 +22,10 @@ for case in cases:
     assert data["sniffer"]["enable"] is False
     assert data["lf-private-targets"] == expected["targets"]
     assert data["lf-private-targets"]["proxy-only"] == expected["proxyOnly"]
+    assert data["lf-private-targets"]["remote-target-grants"] == []
+    assert data["lf-private-targets"]["nat64-prefixes"] == ["64:ff9b::/96"]
+    assert "127.0.0.0/8" in data["lf-private-targets"]["local-target-cidrs"]
+    assert data["lf-private-targets"]["fake-ip-prefix"].endswith("/16")
     assert not data["allow-lan"]
     for key in ("port", "socks-port", "redir-port"):
         assert data[key] == 0

@@ -694,7 +694,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("if python3 /etc/netsec-health.py /etc/netsec-health.json >/tmp/netsec-global-health.json; then jq -e .ok /tmp/netsec-global-health.json; else cat /tmp/netsec-global-health.json; exit 1; fi")
     machine.succeed("journalctl -u clash-verge --no-pager | grep 'node.fixture.example:8080' | grep -q 'GLOBAL\\[Fixture\\]'")
     machine.fail("curl --noproxy \"\" --socks5-hostname 127.0.0.1:7897 -fsS --max-time 3 http://private.core.fixture.example:8080/")
-    machine.succeed("python3 /etc/netsec-integration.py guarded-udp")
+    machine.succeed("python3 /etc/netsec-integration.py guarded-udp-remote")
     machine.succeed("dig +short @127.0.0.1 -p 1053 other.tailfixture.ts.net A | grep -qx 203.0.113.10")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = proxy && test $(jq -r .ok /run/proxy-mode/health.json) = true", timeout=90)
     machine.succeed(f"curl --noproxy '*' -fsS --unix-socket {socket} -X PATCH -H 'Content-Type: application/json' -d '{{\"mode\":\"rule\"}}' http://localhost/configs")

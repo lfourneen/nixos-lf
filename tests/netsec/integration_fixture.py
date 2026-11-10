@@ -78,7 +78,7 @@ def connect_test():
     print('Gost bracketed and legacy IPv6 CONNECT carried real HTTP responses')
 
 
-def guarded_udp():
+def guarded_udp(local_allowed=True):
     def receive(stream, length):
         result = b''
         while len(result) < length:
@@ -99,8 +99,13 @@ def guarded_udp():
             address = '127.0.0.1' if family == socket.AF_INET else '::1'
         with socket.socket(family, socket.SOCK_DGRAM) as stream:
             stream.settimeout(2)
-            for name, allowed in [('allowed.home.arpa', True), ('private.core.fixture.example', False),
-                                  ('mixed.core.fixture.example', False), ('allowed.home.arpa', True)]:
+            live = 'allowed.home.arpa' if local_allowed else 'node.fixture.example'
+            cases = [(live, True), ('private.core.fixture.example', False),
+                     ('mixed.core.fixture.example', False)]
+            if not local_allowed:
+                cases += [('allowed.home.arpa', False), ('127.0.0.1', False), ('::1', False),
+                          ('169.254.169.254', False)]
+            for name, allowed in [*cases, (live, True)]:
                 payload = b'netsec-fixture'
                 packet = b'\0\0\0\x03' + bytes([len(name)]) + name.encode() + struct.pack('!H', 15353) + payload
                 stream.sendto(packet, (address, port))
@@ -115,4 +120,4 @@ def guarded_udp():
 
 if __name__ == '__main__':
     {'prepare': prepare, 'check-node-log': check_node_log, 'http6': http6,
-     'connect-test': connect_test, 'guarded-udp': guarded_udp}[sys.argv[1]]()
+     'connect-test': connect_test, 'guarded-udp': guarded_udp, 'guarded-udp-remote': lambda: guarded_udp(False)}[sys.argv[1]]()

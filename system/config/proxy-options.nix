@@ -93,7 +93,32 @@ in
       "localhost" "lan" "local" "home.arpa" "internal"
       "wlan" "intranet" "private" "domain" "home" "host" "corp"
     ];
-    description = "Explicit internal domain/suffix exceptions to the managed core's domain-to-private target guard.";
+    description = "Internal suffixes whose locally resolved, pinned answers may use localTargetCidrs via DIRECT or an explicit remoteTargetGrants entry. Does not authorize remote-side DNS.";
+  };
+
+  options.my.proxy.localTargetCidrs = lib.mkOption {
+    type = lib.types.listOf lib.types.str;
+    default = let addresses = import ./private-addresses.nix { inherit config lib; };
+      in addresses.ipv4 ++ addresses.ipv6;
+    description = "Internal literal-IP and approved internal-name targets allowed through core DIRECT for host HTTP/CONNECT/SOCKS/REDIR/TUN inlets. Empty disables this access inside the core. proxyOnly still refuses application DIRECT; A portal passthrough and native firewall grants are independent. Metadata and unsafe/synthetic targets remain refused.";
+  };
+  options.my.proxy.remoteTargetGrants = lib.mkOption {
+    default = [ ];
+    description = "Explicit internal targets at a remote proxy, scoped to the actual leaf name, inlet, TCP/UDP, canonical CIDR and destination ports. No grant by default; metadata and unsafe/synthetic targets cannot be granted.";
+    type = lib.types.listOf (lib.types.submodule {
+      options = {
+        proxy = lib.mkOption { type = lib.types.nonEmptyStr; };
+        cidr = lib.mkOption { type = lib.types.str; };
+        inlets = lib.mkOption { type = lib.types.nonEmptyListOf (lib.types.enum [ "HTTP" "HTTPS" "SOCKS4" "SOCKS5" "REDIR" "TUN" "TPROXY" ]); };
+        network = lib.mkOption { type = lib.types.enum [ "tcp" "udp" ]; };
+        ports = lib.mkOption { type = lib.types.nonEmptyListOf lib.types.port; };
+      };
+    });
+  };
+  options.my.proxy.nat64Prefixes = lib.mkOption {
+    type = lib.types.listOf lib.types.str;
+    default = [ "64:ff9b::/96" ];
+    description = "Known RFC 6052 translation prefixes (/32, /40, /48, /56, /64 or /96). Embedded non-public IPv4 is refused, including literal targets. Declare network-specific prefixes explicitly; arbitrary unknown translators cannot be detected.";
   };
 
   options.my.proxy.gostPackage = lib.mkOption {

@@ -81,6 +81,7 @@ let
       (netsecDir + "/policy_middleware.go")
       (netsecDir + "/policy_middleware_test.go")
       (netsecDir + "/managed_direct_test.go")
+      (netsecDir + "/managed_target_test.go")
       (netsecDir + "/managed_dns_test.go")
       (netsecDir + "/managed_udp_test.go")
       (netsecDir + "/target_guard.go")
@@ -99,6 +100,7 @@ let
       go test -mod=vendor ./config ./hub/route -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/inbound ./transport/socks5 -count=1
       go test -mod=vendor ./component/lfguard -count=1
+      go test -mod=vendor ./adapter -run '^TestLFManaged' -count=1
       go test -mod=vendor ./dns -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/outbound -run '^TestLFManagedDirect' -count=1
       go test -mod=vendor ./tunnel -run '^TestLFManaged' -count=1

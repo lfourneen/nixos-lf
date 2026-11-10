@@ -31,7 +31,11 @@ replace(root / "component/geodata/init.go",
         '\tif os.Getenv("LF_MANAGED_PROXY_POLICY") != "" { return fmt.Errorf("managed geodata requires a new clash-on snapshot") }')
 replace(root / "constant/metadata.go", "type Metadata struct {",
         'type Metadata struct {\n\t// Set only by the internal rule-routed DNS dialer, never decoded from wire JSON.\n'
-        '\tLFRuleDNS bool `json:"-"`')
+        '\tLFRuleDNS bool `json:"-"`\n'
+        '\tLFGuarded bool `json:"-"`\n'
+        '\tLFLocalTarget bool `json:"-"`\n'
+        '\tLFEgressDirect bool `json:"-"`\n'
+        '\tLFEgressProxy string `json:"-"`')
 dns_dialer = root / "tunnel/dns_dialer.go"
 value = dns_dialer.read_text()
 anchor = '\t\tType:    C.INNER,\n'
@@ -44,7 +48,31 @@ for signature in [
         'func (d *Direct) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {',
         'func (d *Direct) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {']:
     replace(root / "adapter/outbound/direct.go", signature,
-            signature + '\n\tif err := lfguard.CheckDirect(metadata); err != nil { return nil, err }')
+            signature + '\n\tif err := lfguard.CheckDirect(metadata); err != nil { return nil, err }\n'
+            '\tvar guardErr error\n'
+            '\tmetadata, guardErr = lfguard.Protect(ctx, metadata, metadata, resolver.LookupIP)\n'
+            '\tif guardErr != nil { return nil, guardErr }\n'
+            '\tif err := lfguard.CheckEgress(metadata, true, d.Name()); err != nil { return nil, err }')
+# Check the actual child selected by a group, immediately before its dial.
+# Inspecting Unwrap and then dialing the group would race a new selection.
+replace(root / "adapter/adapter.go", '"github.com/metacubex/mihomo/component/ca"',
+        '"github.com/metacubex/mihomo/component/ca"\n'
+        '\t"github.com/metacubex/mihomo/component/lfguard"\n'
+        '\t"github.com/metacubex/mihomo/component/resolver"')
+for signature in [
+        'func (p *Proxy) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {',
+        'func (p *Proxy) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {']:
+    replace(root / "adapter/adapter.go", signature, signature + '''
+    switch p.Type() {
+    case C.Selector, C.Fallback, C.URLTest, C.LoadBalance:
+        // The selected child checks its actual egress.
+    default:
+        var err error
+        metadata, err = lfguard.Protect(ctx, metadata, metadata, resolver.LookupIP)
+        if err != nil { return nil, err }
+        if err = lfguard.CheckEgress(metadata, p.Type() == C.Direct || p.Type() == C.Compatible, p.Name()); err != nil { return nil, err }
+    }
+''')
 replace(root / "config/config.go", "type RawConfig struct {",
         'type RawConfig struct {\n\tLFPrivateTargets map[string]any `yaml:"lf-private-targets" json:"lf-private-targets"`')
 replace(root / "tunnel/tunnel.go", '"github.com/metacubex/mihomo/component/resolver"',
@@ -64,6 +92,25 @@ replace(root / "tunnel/connection.go", 'C "github.com/metacubex/mihomo/constant"
 # The initial dial already validates and seeds a pinned mapping. Validate only
 # an unmapped destination in a reused UDP association, then let AddMapping pin
 # it. Re-resolving every packet can disagree with the original dial/mapping.
+replace(root / "tunnel/connection.go", 'originToTarget map[string]netip.Addr',
+        'originToTarget map[string]*C.Metadata\n\tegressDirect bool\n\tegressProxy string\n\tegressSet bool')
+replace(root / "tunnel/connection.go", 'make(map[string]netip.Addr)', 'make(map[string]*C.Metadata)')
+replace(root / "tunnel/connection.go", '''if addr := s.originToTarget[originKey]; !addr.IsValid() { // overwrite only if the record is illegal
+		s.originToTarget[originKey] = targetAddr
+	}''', '''if target := s.originToTarget[originKey]; target == nil || !target.DstIP.IsValid() {
+        s.originToTarget[originKey] = metadata.Clone()
+    }
+    if !s.egressSet {
+        s.egressDirect, s.egressProxy, s.egressSet = metadata.LFEgressDirect, metadata.LFEgressProxy, true
+    }''')
+replace(root / "tunnel/connection.go", '''if targetAddr.IsValid() {
+		addr = net.UDPAddrFromAddrPort(netip.AddrPortFrom(targetAddr, metadata.DstPort))
+	}''', '''if targetAddr != nil && targetAddr.DstIP.IsValid() {
+        checked := targetAddr.Clone()
+        checked.DstPort, checked.Type, checked.NetWork = metadata.DstPort, metadata.Type, metadata.NetWork
+        if err := lfguard.CheckEgress(checked, s.egressDirect, s.egressProxy); err != nil { return }
+        addr = net.UDPAddrFromAddrPort(netip.AddrPortFrom(checked.DstIP, checked.DstPort))
+    }''')
 replace(root / "tunnel/connection.go", '\t\tmetadata = metadata.Pure()\n',
         '\t\tguardOrigin := metadata\n'
         '\t\tmetadata = metadata.Pure()\n'
@@ -71,7 +118,8 @@ replace(root / "tunnel/connection.go", '\t\tmetadata = metadata.Pure()\n',
         '\t\tprotected, guardErr := lfguard.Protect(guardCtx, guardOrigin, metadata, resolver.LookupIP)\n'
         '\t\tguardCancel()\n'
         '\t\tif guardErr != nil { log.Warnln("[Managed UDP target] %s", guardErr); return }\n'
-        '\t\tmetadata = protected\n')
+        '\t\tmetadata = protected\n'
+        '\t\tif err := lfguard.CheckEgress(metadata, s.egressDirect, s.egressProxy); err != nil { return }\n')
 # Global-mode logs previously omitted the actual connection leaf. The health
 # gate must observe the same group[leaf] chain as rule-mode connections.
 replace(root / "tunnel/tunnel.go",
@@ -105,6 +153,7 @@ source = Path(__file__).parent
 (root / "component/lfguard").mkdir()
 (root / "component/lfguard/guard.go").write_text((source / "target_guard.go").read_text())
 (root / "component/lfguard/guard_test.go").write_text((source / "target_guard_test.go").read_text())
+(root / "adapter/lf_managed_target_test.go").write_text((source / "managed_target_test.go").read_text())
 (root / "adapter/outbound/lf_managed_direct_test.go").write_text((source / "managed_direct_test.go").read_text())
 (root / "tunnel/lf_managed_udp_test.go").write_text((source / "managed_udp_test.go").read_text())
 (root / "tunnel/lf_managed_dns_test.go").write_text((source / "managed_dns_test.go").read_text())

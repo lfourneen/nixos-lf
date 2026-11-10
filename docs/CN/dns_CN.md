@@ -22,7 +22,7 @@
 |---|---|---|
 | 系统查询，含 Gost 在 A 的直连代解析 | dnsmasq 在选定上游前执行后缀规则 | A 使用 Unbound DoT 和本地 DNSSEC；默认恢复可使用有租约的明文；B 转交核心 |
 | 核心 DNS 监听与 TUN DNS hijack | 在 hosts、缓存和 fake-IP 分配前执行共享后缀规则 | 受管 DoH/DoT；B 不运行 A 的本地 DNSSEC 验证器 |
-| B 中 HTTP/SOCKS 代理目标 | 应用 TCP/UDP 拨号前执行共享规则，私网域名豁免也要先过过滤 | 验证并固定真实 IP；受保护的公网域名向远端代理传递已检查 IP |
+| B 中 HTTP/SOCKS 代理目标 | 应用 TCP/UDP 拨号前执行共享规则，私网域名豁免也要先过过滤 | 公网及已批准内部域名均验证并固定真实 IP；私网目标还需实际叶节点的出口授权 |
 | 节点与加密解析器引导 | 核心解析器在缓存/上游访问前执行共享过滤 | 独立的字面地址加密引导解析器避免依赖已连通代理；内部基础设施不受应用目标 IP 和 `proxyOnly` 检查约束 |
 | 已批准 split DNS / 原生 MagicDNS | split 转发遵守 dnsmasq 域名优先级；resolved 的原生 MagicDNS 条件路由绕过 dnsmasq | 明确的私网解析器 / Tailscale 隧道例外，不提供本地公网 DNSSEC 保证 |
 
@@ -72,7 +72,7 @@ my.proxy.dnsEncryption = "strict";
 
 公共解析使用 Cloudflare/Google DoH，国内域与代理端点引导使用配置的国内解析器。启用 `respect-rules`，禁用额外 direct 解析器和 proxy-server resolver-policy map；核心 parser/controller 防止运行时削弱受管字段。B 与 A 的本地 Unbound 验证器分开。
 
-核心还会在路由后检查域名拨号目标，并为 DIRECT 和代理 TCP/UDP 固定已验证 IP。新 UDP 目的映射重新检查，后续包复用映射。[目标守卫及其豁免](proxy_CN.md#域名目标)与 DNS 答案过滤是不同层。
+核心在路由后检查并固定域名拨号目标，包含已批准内部后缀。字面及解析后的私网目标还需本地 DIRECT 或限定远程叶节点的授权。新 UDP 映射重新验证，缓存映射不重解析，但每包重新检查出口和端口授权。[目标授权策略](proxy_CN.md#域名目标)与 DNS 答案过滤是不同层；DNS 或后缀例外不授予远程内部访问。
 
 受管 fake-IP 模式保留地址记录的合成行为，同时让 HTTPS/SVCB 查询使用声明的解析器，保留服务参数；两者均先经过共享过滤。Firefox 如何使用这些记录、CONNECT 限制和可选原生路径见[浏览器手册](browser_CN.md#ech-发现与代理兼容)。
 
@@ -82,7 +82,7 @@ my.proxy.dnsEncryption = "strict";
 
 `my.proxy.blockedDomains` 添加本机名字；`blockedDomainExceptions` 同时生成 `server=/domain/#` 和核心例外。两者均按标签边界、不区分大小写匹配后缀，最精确条目优先，同精度时例外优先。因此可以在例外子树内再次声明更窄的阻断。例外仅允许解析，不关闭路由或私网 IP 检查。显式 split-server 也参与 [dnsmasq 域名优先级](https://dnsmasq.org/docs/dnsmasq-man.html)，批准的私网命名空间可以覆盖更宽泛的阻断。
 
-核心的文件路径、附加名单和例外由 root 受管策略决定，旧 GUI 配置在解析时继承它们，控制 API 不能替换。名单缺失或无效时拒绝新配置并保留已有过滤状态。应用拨号先过域名过滤，再判断私网域名豁免，不能用豁免绕过阻断。内部解析器查询也共享过滤；显式 hosts/IP 基础设施映射仍有独立用途。命中名单的代理端点名也可能无法解析；确认有意信任该端点时，用窄范围 `blockedDomainExceptions` 声明例外。
+核心的文件路径、附加名单和例外由 root 受管策略决定，旧 GUI 配置在解析时继承它们，控制 API 不能替换。名单缺失或无效时拒绝新配置并保留已有过滤状态。应用拨号先过域名过滤，再判断内部后缀权限，不能用该权限绕过阻断。内部解析器查询也共享过滤；显式 hosts/IP 基础设施映射仍有独立用途。命中名单的代理端点名也可能无法解析；确认有意信任该端点时，用窄范围 `blockedDomainExceptions` 声明例外。
 
 用 [refresh-dns-blocklist.py](../../scripts/refresh-dns-blocklist.py) 刷新，`--check` 仅报告漂移。重新构建并重启解析器/核心 generation 后生效，保留 DNS 或连接缓存的客户端也需重启；既有连接不会被追溯检查。来源和快照信息见模块头及 [local-data 手册](../../local-data/README.md)。
 

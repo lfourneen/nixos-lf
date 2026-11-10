@@ -27,6 +27,8 @@ Mihomo 为出站 socket 设置 `6666`（`0x1a0a`）mark；核心例外同时要�
 
 [DNS](dns_CN.md) 是并行链路：resolved → dnsmasq → Mihomo 或 Unbound。[Firefox](browser_CN.md) 默认使用相同的 Gost HTTP 入口；可选透明路径使用原生 DNS 和宿主 socket，受本套 TUN/防火墙约束，支持 HTTPS-RR/ECH 发现。
 
+核心内的字面或解析后私网目标按[本地 DIRECT 与远程叶节点](proxy_CN.md#域名目标)分别授权；订阅规则选中节点不等于获准访问该节点的内部网络。
+
 ## 模式与执行
 
 | 模式 | 进入条件 | 应用出站 | 默认 DNS 上游 |

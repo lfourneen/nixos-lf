@@ -113,6 +113,8 @@ nmcli connection modify uuid <UUID> 802-11-wireless.cloned-mac-address ""
 
 `preserve` 保持当前 MAC，不恢复硬件地址。Profile 显式值优先于 `my.hardening.wifi.clonedMacAddress`；相同 SSID 的网络共用默认稳定身份。
 
+核心内部服务访问由[目标授权](proxy_CN.md#域名目标)单独管理：`localTargetCidrs` 限定本地 DIRECT，`remoteTargetGrants` 按实际叶节点、核心入口、协议和端口授权远程内部地址，`nat64Prefixes` 声明已知翻译前缀。内部后缀只允许本地解析私网答案，不授权节点代解析或拨号。Gost CONNECT 在核心中是 `HTTPS`；修改后需重建并有意导入/重启核心。A 字面门户、C 阻断与原生直连授权各自保持独立。
+
 ## 离线恢复
 
 需要直连时用 `clash-off`。默认 `dnsEncryption="opportunistic"` 下，A 中门户/DNS 恢复先读 DNS 状态和历史，必要时显式开启有界续租 override：

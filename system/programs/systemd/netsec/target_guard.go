@@ -8,20 +8,37 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 
 	C "github.com/metacubex/mihomo/constant"
 )
 
+type targetGrant struct {
+	Proxy   string   `json:"proxy"`
+	CIDR    string   `json:"cidr"`
+	Inlets  []string `json:"inlets"`
+	Network string   `json:"network"`
+	Ports   []uint16 `json:"ports"`
+	prefix  netip.Prefix
+}
+
 type policy struct {
-	ProxyOnly          bool     `json:"proxy-only"`
-	Prefixes           []string `json:"prefixes"`
-	AllowedDomains     []string `json:"allowed-domains"`
-	MagicDNSSuffixFile string   `json:"magic-dns-suffix-file"`
-	BlockedDomainsFile string   `json:"blocked-domains-file"`
-	BlockedDomains     []string `json:"blocked-domains"`
-	BlockExceptions    []string `json:"blocked-domain-exceptions"`
+	ProxyOnly          bool          `json:"proxy-only"`
+	Prefixes           []string      `json:"prefixes"`
+	AllowedDomains     []string      `json:"allowed-domains"`
+	MagicDNSSuffixFile string        `json:"magic-dns-suffix-file"`
+	BlockedDomainsFile string        `json:"blocked-domains-file"`
+	BlockedDomains     []string      `json:"blocked-domains"`
+	BlockExceptions    []string      `json:"blocked-domain-exceptions"`
+	LocalTargetCIDRs   []string      `json:"local-target-cidrs"`
+	RemoteTargetGrants []targetGrant `json:"remote-target-grants"`
+	NAT64Prefixes      []string      `json:"nat64-prefixes"`
+	FakeIPPrefix       string        `json:"fake-ip-prefix"`
+	local              []netip.Prefix
+	nat64              []netip.Prefix
+	fake               netip.Prefix
 	parsed             []netip.Prefix
 	blockedNames       map[string]bool
 }
@@ -95,6 +112,57 @@ func Configure(value map[string]any) error {
 	}
 	if p.MagicDNSSuffixFile != "" && p.MagicDNSSuffixFile != "/run/netsec-tailnet/domain" {
 		return fmt.Errorf("invalid MagicDNS context path")
+	}
+	for _, text := range p.LocalTargetCIDRs {
+		prefix, err := internalPrefix(text)
+		if err != nil {
+			return err
+		}
+		p.local = append(p.local, prefix)
+	}
+	for i := range p.RemoteTargetGrants {
+		g := &p.RemoteTargetGrants[i]
+		prefix, err := internalPrefix(g.CIDR)
+		if err != nil {
+			return err
+		}
+		g.prefix = prefix
+		if strings.TrimSpace(g.Proxy) != g.Proxy || g.Proxy == "" || len(g.Inlets) == 0 || len(g.Ports) == 0 ||
+			(g.Network != "tcp" && g.Network != "udp") {
+			return fmt.Errorf("invalid remote target grant")
+		}
+		for _, inlet := range g.Inlets {
+			if !localInlet(inlet) && inlet != "TPROXY" {
+				return fmt.Errorf("invalid grant inlet")
+			}
+		}
+		for _, port := range g.Ports {
+			if port == 0 {
+				return fmt.Errorf("invalid grant port")
+			}
+		}
+	}
+	p.nat64 = []netip.Prefix{netip.MustParsePrefix("64:ff9b::/96")}
+	for _, text := range p.NAT64Prefixes {
+		prefix, err := netip.ParsePrefix(text)
+		if err != nil || !prefix.Addr().Is6() || prefix != prefix.Masked() {
+			return fmt.Errorf("invalid NAT64 prefix")
+		}
+		switch prefix.Bits() {
+		case 32, 40, 48, 56, 64, 96:
+		default:
+			return fmt.Errorf("invalid RFC 6052 prefix length")
+		}
+		p.nat64 = append(p.nat64, prefix)
+	}
+	// Overlapping declared translators use the most specific prefix.
+	sort.Slice(p.nat64, func(i, j int) bool { return p.nat64[i].Bits() > p.nat64[j].Bits() })
+	if p.FakeIPPrefix != "" {
+		prefix, err := netip.ParsePrefix(p.FakeIPPrefix)
+		if err != nil || !prefix.Addr().Is4() || prefix != prefix.Masked() {
+			return fmt.Errorf("invalid fake-IP network")
+		}
+		p.fake = prefix
 	}
 	if err := p.loadBlocklist(); err != nil {
 		return err
@@ -216,24 +284,35 @@ var specialTargets = []netip.Prefix{
 	netip.MustParsePrefix("2002::/16"),
 }
 
-var wellKnownNAT64 = netip.MustParsePrefix("64:ff9b::/96")
+// Authorization scopes are deliberately smaller than the special-address
+// denylist: reserved, multicast and synthetic ranges cannot become grants.
+var internalScopes = []netip.Prefix{
+	netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"), netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("fc00::/7"), netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("::1/128"), netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("::/128"),
+}
 
-func (p *policy) blocked(ip netip.Addr) bool {
-	ip = ip.Unmap()
-	if !ip.IsValid() || !ip.IsGlobalUnicast() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-		return true
-	}
-	if wellKnownNAT64.Contains(ip) {
-		value := ip.As16()
-		return p.blocked(netip.AddrFrom4([4]byte{value[12], value[13], value[14], value[15]}))
-	}
-	for _, prefix := range specialTargets {
-		// IANA's globally reachable PCP/TURN anycast exceptions.
-		if prefix.Contains(ip) && ip.String() != "192.0.0.9" && ip.String() != "192.0.0.10" {
-			return true
+func internalPrefix(text string) (netip.Prefix, error) {
+	prefix, err := netip.ParsePrefix(text)
+	if err == nil && prefix == prefix.Masked() && !prefix.Addr().Is4In6() {
+		for _, scope := range internalScopes {
+			if scope.Bits() <= prefix.Bits() && scope.Contains(prefix.Addr()) {
+				return prefix, nil
+			}
 		}
 	}
-	for _, prefix := range p.parsed {
+	return netip.Prefix{}, fmt.Errorf("target CIDR must be canonical and internal: %s", text)
+}
+
+var metadataTargets = []netip.Prefix{
+	netip.MustParsePrefix("169.254.169.254/32"), netip.MustParsePrefix("169.254.170.2/32"),
+	netip.MustParsePrefix("100.100.100.200/32"), netip.MustParsePrefix("fd00:ec2::254/128"),
+}
+
+func contains(prefixes []netip.Prefix, ip netip.Addr) bool {
+	for _, prefix := range prefixes {
 		if prefix.Contains(ip) {
 			return true
 		}
@@ -241,50 +320,154 @@ func (p *policy) blocked(ip netip.Addr) bool {
 	return false
 }
 
-// Protect runs after routing/sniffing but before either TCP or UDP can dial.
-// Preserve explicit IP traffic and internal infrastructure; untrusted domain
-// targets are resolved once, all answers checked, then sent as an IP so neither
-// DIRECT nor a remote proxy can perform a second, unchecked target lookup.
+func (p *policy) translated(ip netip.Addr) (netip.Addr, bool) {
+	for _, prefix := range p.nat64 {
+		if !prefix.Contains(ip) {
+			continue
+		}
+		value := ip.As16()
+		var embedded [4]byte
+		pos := prefix.Bits() / 8
+		for i := range embedded {
+			if pos == 8 {
+				pos++
+			} // RFC 6052 reserved u octet
+			embedded[i] = value[pos]
+			pos++
+		}
+		return netip.AddrFrom4(embedded), true
+	}
+	return netip.Addr{}, false
+}
+
+func (p *policy) unsafe(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.IsValid() || ip.Zone() != "" || ip.IsUnspecified() || ip.IsMulticast() ||
+		(ip.Is4() && netip.MustParsePrefix("0.0.0.0/8").Contains(ip)) ||
+		contains(metadataTargets, ip) || (p.fake.IsValid() && p.fake.Contains(ip)) {
+		return true
+	}
+	if embedded, ok := p.translated(ip); ok {
+		return p.blocked(embedded)
+	}
+	return contains(specialTargets, ip) && ip.String() != "192.0.0.9" && ip.String() != "192.0.0.10"
+}
+
+func (p *policy) blocked(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if p.unsafe(ip) {
+		return true
+	}
+	if _, ok := p.translated(ip); ok {
+		return false
+	}
+	return !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+		contains(internalScopes, ip) || contains(p.parsed, ip)
+}
+
+func infrastructure(m *C.Metadata) bool { return m.Type == C.INNER && !m.LFRuleDNS }
+
+func localInlet(inlet string) bool {
+	switch inlet {
+	case "HTTP", "HTTPS", "SOCKS4", "SOCKS5", "REDIR", "TUN":
+		return true
+	}
+	return false
+}
+
+// Called at the actual leaf, never by guessing a group's next selection. The
+// same route is retained for every destination in a reused UDP association.
+func CheckEgress(m *C.Metadata, direct bool, leaf string) error {
+	p := current.Load()
+	if p == nil || infrastructure(m) {
+		return nil
+	}
+	if direct {
+		if err := CheckDirect(m); err != nil {
+			return err
+		}
+	}
+	ip := m.DstIP.Unmap()
+	if m.Host != "" || p.unsafe(ip) {
+		return fmt.Errorf("managed target guard: unsafe or unpinned target")
+	}
+	m.LFEgressDirect, m.LFEgressProxy = direct, leaf
+	if !p.blocked(ip) {
+		return nil
+	}
+	if !m.LFLocalTarget {
+		return fmt.Errorf("managed target guard: private DNS target")
+	}
+	if direct && localInlet(strings.ToUpper(m.Type.String())) && contains(p.local, ip) {
+		return nil
+	}
+	if !direct {
+		for _, g := range p.RemoteTargetGrants {
+			if g.Proxy != leaf || g.Network != strings.ToLower(m.NetWork.String()) || !g.prefix.Contains(ip) {
+				continue
+			}
+			inlet, port := false, false
+			for _, v := range g.Inlets {
+				inlet = inlet || v == strings.ToUpper(m.Type.String())
+			}
+			for _, v := range g.Ports {
+				port = port || v == m.DstPort
+			}
+			if inlet && port {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("managed target guard: internal target is not authorized for this egress")
+}
+
+// Protect runs before TCP/UDP dialing. All application names, including local
+// suffixes, resolve locally and remain pinned. Synthetic addresses must already
+// have been recovered to their name by preHandleMetadata.
 func Protect(ctx context.Context, original, dial *C.Metadata,
 	lookup func(context.Context, string) ([]netip.Addr, error)) (*C.Metadata, error) {
 	p := current.Load()
-	if p == nil || original.Type == C.INNER || original.Host == "" {
+	if p == nil || infrastructure(original) || dial.LFGuarded {
 		return dial, nil
 	}
 	host := strings.ToLower(strings.TrimSuffix(original.Host, "."))
-	if _, err := netip.ParseAddr(host); err == nil {
-		return dial, nil
+	result := dial.Clone()
+	result.LFGuarded = true
+	ip, literalErr := netip.ParseAddr(host)
+	if host == "" || literalErr == nil {
+		if literalErr != nil {
+			ip = original.DstIP
+		}
+		ip = ip.Unmap()
+		if p.unsafe(ip) {
+			return nil, fmt.Errorf("managed target guard: unsafe literal target")
+		}
+		result.Host, result.DstIP, result.LFLocalTarget = "", ip, true
+		return result, nil
 	}
 	if err := CheckDomain(host); err != nil {
 		return nil, err
 	}
-	if p.allows(host) {
-		return dial, nil
-	}
-	if original.DstIP.IsValid() && p.blocked(original.DstIP) {
+	result.LFLocalTarget = p.allows(host)
+	if original.DstIP.IsValid() && (p.unsafe(original.DstIP) || (!result.LFLocalTarget && p.blocked(original.DstIP))) {
 		return nil, fmt.Errorf("managed target guard: domain selected a private address")
+	}
+	if lookup == nil {
+		return nil, fmt.Errorf("managed target guard: no resolver")
 	}
 	ips, err := lookup(ctx, host)
 	if err != nil {
-		// One retry: a single timeout is usually a resolver warming up, and an
-		// unresolved dial must not be reported as a dead node. A pre-resolved
-		// private address is still refused above, and every answer of a
-		// successful lookup is still checked below.
 		ips, err = lookup(ctx, host)
 	}
 	if err != nil || len(ips) == 0 {
-		// An unverified second lookup must not bypass private-target validation.
 		return nil, fmt.Errorf("managed target guard: DNS target could not be validated")
 	}
 	for _, ip := range ips {
-		if p.blocked(ip) {
+		if p.unsafe(ip) || (!result.LFLocalTarget && p.blocked(ip)) {
 			return nil, fmt.Errorf("managed target guard: private DNS answer")
 		}
 	}
-	result := dial.Clone()
 	result.DstIP = ips[0].Unmap()
-	// Match the core's existing ResolveIP preference for IPv4, rather than
-	// pinning an arbitrary AAAA on a machine without a working IPv6 uplink.
 	for _, ip := range ips {
 		if ip.Unmap().Is4() {
 			result.DstIP = ip.Unmap()

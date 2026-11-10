@@ -144,6 +144,11 @@
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
       };
+      proxy-target-vm = import ./tests/netsec/control-vm.nix {
+        inherit pkgs;
+        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        targetPolicy = true;
+      };
       proxy-dns-strict-vm = import ./tests/netsec/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;

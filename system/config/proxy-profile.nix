@@ -86,6 +86,10 @@ in
         blocked-domain-exceptions = map lib.toLower p.blockedDomainExceptions;
         prefixes = privateAddresses.ipv4 ++ privateAddresses.ipv6;
         allowed-domains = p.privateTargetDomains;
+        local-target-cidrs = p.localTargetCidrs;
+        remote-target-grants = p.remoteTargetGrants;
+        nat64-prefixes = p.nat64Prefixes;
+        fake-ip-prefix = p.fakeIpNet;
         magic-dns-suffix-file = if config.my.hardening.tailscale.magicDns then "/run/netsec-tailnet/domain" else "";
       };
       listeners = [ ];

@@ -48,7 +48,7 @@ Entries require an exact interface, canonical destination CIDR, explicit UID lis
 
 The guard sees original targets at output `-195`, before redirection. Restricted mode keeps private routes excluded from TUN/NAT even with legacy `allowPrivateEgress=false`, so denied sockets cannot fall through to a proxy. Revocation cuts established host-initiated flows; only the **reply direction** of input-authorized established flows is retained automatically. Legacy compatibility mode with `allowPrivateEgress=false` continues to subject private targets to proxy routing.
 
-These grants govern native host sockets, not targets selected inside the trusted core, guest forwarding or incoming authorization. The proxy target and guest policies remain separate.
+These grants govern native host sockets. The core separately authorizes [local and remote internal targets](proxy.md#domain-targets) using `localTargetCidrs` and `remoteTargetGrants`; restricted native grants do not constrain or authorize those core sockets. Guest forwarding and incoming authorization remain separate.
 
 ## Optional time destination pins
 

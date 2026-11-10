@@ -16,6 +16,8 @@ Firefox 是原生 Nix 包。[firefox.nix](../../home/programs/firefox/firefox.ni
 
 WebRTC 和 HTTP/3 禁用，使网页传输使用 TCP。DoH 禁用并锁定（`network.trr.mode=5`），浏览器自身 DNS 走系统解析器。显式 HTTP 代理可委托 Gost/Mihomo 解析目标；核心在 DNS 应答及应用拨号前执行同一份域名快照、附加名单与例外。DNSSEC 和加密取决于解析路径及 `dnsEncryption`，见 [DNS](dns_CN.md)。门户检测与 NetworkManager 连通性检查保留，HTTPS-First 仍允许本地 HTTP。
 
+在 B，到达核心的本地服务目标需[本地 DIRECT 或限定远程节点的授权](proxy_CN.md#域名目标)；字面私网 IP 不会自动获得节点侧拨号权限，A 仍保留字面门户路径。
+
 ## ECH 发现与代理兼容
 
 ECH 加密 TLS ClientHello 的内部内容，包括站点 SNI。本配置由浏览器从 HTTPS DNS 记录取得 ECHConfig。GREASE 只添加形似 ECH 的合成扩展，不代表内部加密握手成立。

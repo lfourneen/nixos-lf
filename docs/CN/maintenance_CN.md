@@ -16,7 +16,7 @@ Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；
 |---|---|---|
 | Mihomo parser | [patch_mihomo.py](../../system/programs/systemd/netsec/patch_mihomo.py)、[managed_profile.go](../../system/programs/systemd/netsec/managed_profile.go) | 最终受管策略、摘要、已知旧配置规范化，拒绝无条件 DIRECT 兜底 |
 | Mihomo controller | [managed_route.go](../../system/programs/systemd/netsec/managed_route.go)、[policy_middleware.go](../../system/programs/systemd/netsec/policy_middleware.go) | 同 schema PATCH 解码与运行时写白名单 |
-| Mihomo 出站 / DNS / 日志 | [target_guard.go](../../system/programs/systemd/netsec/target_guard.go)、`patch_mihomo.py` | 域名验证/固定 IP、可选直拨拒绝、rule DNS metadata、Global 实际链路日志、只用快照 geodata |
+| Mihomo 出站 / DNS / 日志 | [target_guard.go](../../system/programs/systemd/netsec/target_guard.go)、`patch_mihomo.py` | 目标验证/固定 IP、本地与远程叶节点授权、可选直拨拒绝、rule DNS metadata、Global 实际链路日志、只用快照 geodata |
 | Mihomo SOCKS parser | [patch_socks.py](../../system/programs/systemd/netsec/patch_socks.py)、[socks_addr_test.go](../../system/programs/systemd/netsec/socks_addr_test.go) | 整数偏移避免长域名字节运算溢出 |
 | Vendored sing-tun | [patch_sing_tun.py](../../system/programs/systemd/netsec/patch_sing_tun.py) | nft 最大地址区间端点，以及 TUN-bound OUTPUT TCP DNAT |
 | Vendored Gost HTTP | [patch_gost.py](../../system/programs/systemd/netsec/patch_gost.py)、[gost_http.go](../../system/programs/systemd/netsec/gost_http.go) | 兼容裸数字 IPv6 CONNECT，保留 Go HTTP 解析 |
@@ -37,7 +37,7 @@ Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；
 
 Root 策略来自 [proxy-profile.nix](../../system/config/proxy-profile.nix)，[cvr-merge.nix](../../home/config/cvr-merge.nix)、controller 输出及 [health.py](../../system/programs/systemd/netsec/health.py) 必须一致。新增 `RawTun` 字段须在 schema coverage 测试显式分类，检查监听/隧道字段、默认值、别名及 `GET /configs` 暴露值。保留重复键/非规范 PATCH 拒绝，以及同份解码对象的验证/应用。
 
-目标检查位于路由/嗅探后、真实拨号前，远程代理也须保持已验证 IP。复用 UDP association 时检查新目的映射，不为每个后续包重解析。`LFRuleDNS` 区分按规则 DNS 与内部引导，避免 `proxyOnly` 豁免应用 DNS。Metadata、适配器命名和组叶子变化需对照直拨测试。
+目标检查位于路由/嗅探后、真实拨号前，远程代理也须保持已验证 IP。内部后缀与字面 IP 也需出口授权；检查应在实际选中的子节点执行，不能先检查 `Unwrap` 再重新拨代理组。复用 UDP association 时保留实际叶节点与已验证目标来源，检查新映射，缓存映射每包重查入口、端口和授权，不重复解析。保留 mapped IP、元数据、全部 RFC 6052 前缀长度、自定义 fake-IP 与基础设施范围测试。`LFRuleDNS` 区分按规则 DNS 与内部引导，避免 `proxyOnly` 豁免应用 DNS。Metadata、适配器命名和组叶子变化需对照直拨测试。
 
 生产 helper 必须设置 `LF_MANAGED_PROXY_POLICY`；未设置时保留上游行为，供开发 fixture 使用。策略摘要与 root 快照摘要分开；geodata 下载限制同时覆盖 parser 验证和损坏/缺失资源替换。
 
@@ -114,6 +114,7 @@ Firefox 在打包层加入不可变 policy、AutoConfig、字体和 preflight。
 | `proxy-tailscale-vm` | 所选真实 Tailscale CLI、隔离双栈 STUN、双上行、socket/packet/UID 约束、B/C 恢复及远控端口策略 |
 | `proxy-control-config` | 生产/测试身份、helper 能力与监听一致 |
 | `proxy-core` | 定制核心构建和 parser/router/目标/direct/UDP/DNS/SOCKS Go 测试 |
+| `proxy-target-vm` | 真实 helper/核心，宿主与节点 loopback 陷阱，HTTP/CONNECT/SOCKS、内部域名固定 IP、窄远程授权、Rule/Global 与 A/C 行为 |
 | `proxy-gost` | 定制 relay 构建及 vendored HTTP 测试 |
 | `browser-privacy` | 最终原生浏览器 policy lock 与离线启动 |
 | `browser-ech-vm` | 真实 Firefox/helper/核心、原生 HTTPS 发现、ECH 与 GREASE、密钥/无 ECH 重试、不可信拒绝、证书错误、掩护名不改目标及 A/C 行为 |
@@ -128,7 +129,7 @@ nix build --no-link .#checks.x86_64-linux.proxy-core \
   .#checks.x86_64-linux.proxy-control .#checks.x86_64-linux.proxy-control-config \
   .#checks.x86_64-linux.proxy-regressions .#checks.x86_64-linux.proxy-gui
 nix build --no-link .#checks.x86_64-linux.proxy-control-vm \
-  .#checks.x86_64-linux.proxy-network-vm
+  .#checks.x86_64-linux.proxy-network-vm .#checks.x86_64-linux.proxy-target-vm
 nix build --no-link .#checks.x86_64-linux.proxy-egress-config \
   .#checks.x86_64-linux.proxy-egress-rules .#checks.x86_64-linux.proxy-egress-vm \
   .#checks.x86_64-linux.proxy-egress-control-vm

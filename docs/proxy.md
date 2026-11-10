@@ -65,11 +65,46 @@ Deploy the generation and import/restart the managed core for this policy to tak
 
 Managed sniffing is disabled in both Rule and uniform proxy modes. Explicit target names and fake-IP mappings remain the routing identity; an ECH cover SNI cannot replace the dial target. Literal-IP traffic uses IP rules. The parser also normalizes cached GUI profiles to this policy. See [browser ECH discovery](browser.md#ech-discovery-and-proxy-compatibility).
 
-[target_guard.go](../system/programs/systemd/netsec/target_guard.go) checks domain destinations after routing and before TCP/UDP egress. It rejects mixed public/private answers, empty results and unresolved targets after one retry. Private, CGNAT, loopback, link-local, unspecified, multicast and selected reserved/transition ranges are denied, including mapped IPv4 and embedded private IPv4 under the well-known NAT64 prefix. The list is targeted, not the entire IANA special-purpose registry.
+[target_guard.go](../system/programs/systemd/netsec/target_guard.go) validates application targets before TCP/UDP egress. Public names must resolve locally to nonempty, entirely public answers; one resolver error gets one retry. The chosen IP is pinned for DIRECT and remote proxy dials, so the node never performs a second target-name lookup. Internal suffixes in `privateTargetDomains` and the authenticated MagicDNS suffix permit private answers, but still require local resolution, pinning and egress authorization. They do not create a resolver route or bypass the shared domain filter.
 
-The checked address is pinned for both DIRECT and remote proxy dials, avoiding a second unchecked DNS resolution. Each new mapping in a reused UDP association is validated; subsequent packets use that mapping.
+### Local and remote authorization
 
-Literal IPs, configured private suffixes, authenticated MagicDNS and core infrastructure are intentional exemptions. A literal private/loopback destination sent to a remote proxy can refer to that proxy's network. This guard therefore does not provide general internal-target isolation; `proxyOnly` separately controls application direct dialing.
+Authorization runs at the actual selected leaf, including nested, fallback and load-balancing groups. A name such as `DIRECT` does not confer direct authority on a remote adapter. Rule and Global routing use the same checks; `proxyOnly` still independently refuses application DIRECT.
+
+| Target reaching the core | Local DIRECT | Remote proxy |
+|---|---|---|
+| Public literal or checked public name | Allowed unless `proxyOnly` refuses DIRECT | Allowed |
+| Private/CGNAT/loopback/ULA/link-local literal, or private answer for an approved internal suffix | Must match `localTargetCidrs` and a host inlet | Requires a matching `remoteTargetGrants` entry |
+| Listed metadata endpoint, unspecified, multicast, selected reserved/transition range or raw fake-IP | Refused | Refused, including with a grant |
+| Known NAT64 translation | Embedded IPv4 must pass public-address checks | Same; a private embedded address cannot be granted |
+
+`localTargetCidrs` defaults to the shared local/private ranges. Host inlets are core metadata types `HTTP`, `HTTPS`, `SOCKS4`, `SOCKS5`, `REDIR` and `TUN`; guest `TPROXY` has no default local grant. Setting `localTargetCidrs=[]` removes this core permission. It does not alter native host firewall grants, guest forwarding or A's direct Gost passthrough.
+
+Remote grants default to empty. An intentional service in a node's private network needs an exact leaf name, canonical internal CIDR, core inlet, transport and destination ports:
+
+```nix
+my.proxy.remoteTargetGrants = [{
+  proxy = "Office node";
+  cidr = "10.20.30.40/32";
+  inlets = [ "SOCKS5" ];
+  network = "tcp";
+  ports = [ 443 ];
+}];
+```
+
+The grant authorizes the IP as interpreted by that node. It grants no remote DNS lookup and no other node, inlet, transport or port. For a name, also declare its internal suffix and provide an answer through authorized hosts or the core's resolver. A grant matches the configured leaf name; it does not authenticate a remote server. Review authorized profile/provider sources and avoid reusing a granted name for another node. Inlets describe what the core actually receives: Gost's forwarded CONNECT is `HTTPS`, including traffic relayed from its transparent inlet. They do not authenticate an application or preserve its original UID.
+
+Each new destination in a reused UDP association is validated and pinned against the association's actual leaf. Cached mappings retain that provenance and recheck the current inlet, destination port and egress grants on every packet; changing ports cannot reuse a narrower grant. Established TCP connections are not retroactively inspected. Rebuild and deliberately import/restart the core when changing policy.
+
+### Address classes and modes
+
+IPv4-mapped addresses are normalized before authorization. The non-grantable metadata list covers `169.254.169.254`, `169.254.170.2`, `100.100.100.200` and `fd00:ec2::254`. Scoped IPv6 literals with a zone are refused. The reserved/transition denylist is targeted, not the whole IANA special-purpose registry or every provider-specific metadata service.
+
+The well-known `64:ff9b::/96` is always recognized. `nat64Prefixes` declares additional [RFC 6052](https://www.rfc-editor.org/rfc/rfc6052.html) translation prefixes of length 32, 40, 48, 56, 64 or 96; overlapping declarations use the most specific prefix. Public embedded IPv4 remains usable, while private, metadata and synthetic embedded targets fail closed. The local-use `64:ff9b:1::/48` is refused unless explicitly declared as a translator. Unknown translation/gateway behavior cannot be inferred from an address alone.
+
+The configured fake-IP pool is a routing identity, never an egress destination. A live mapping must first recover its domain, which then passes normal filtering, resolution and authorization. Missing mappings and real DNS answers containing synthetic targets are refused, including with a customized pool.
+
+These checks govern applications reaching the core, normally in B. A retains literal HTTP portal access through direct Gost/native sockets under A's firewall policy. C blocks ordinary application access before the core; local/remote grants do not reopen it. Explicit internal bootstrap, proxy-endpoint transport and `#DIRECT` MagicDNS retain their trusted infrastructure scope; rule-routed DNS does not inherit that exemption. Native LAN access and guest forwarding have separate policies. Root, the `NET_ADMIN` core and authorized infrastructure remain trusted, so this is not universal internal-network isolation.
 
 ## Gost lifecycle
 

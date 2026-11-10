@@ -38,7 +38,7 @@ func TestSharedDomainFilter(t *testing.T) {
 		}
 	}
 	literal := &C.Metadata{Host: "192.168.1.1", Type: C.SOCKS5}
-	if result, err := Protect(context.Background(), literal, literal, nil); err != nil || result != literal {
+	if result, err := Protect(context.Background(), literal, literal, nil); err != nil || result.DstIP.String() != "192.168.1.1" || result.Host != "" {
 		t.Fatal("suffix filter changed intentional literal-IP access", result, err)
 	}
 	for _, invalid := range []string{"/nonexistent/lf-blocklist", file} {
@@ -94,11 +94,10 @@ func TestProtectedTargets(t *testing.T) {
 			t.Fatal(name, "unresolved dial must fail closed", result, err)
 		}
 	}
-	for _, host := range []string{"home.arpa", "printer.home.arpa", "192.168.1.1", ""} {
-		metadata.Host = host
-		if _, err := Protect(context.Background(), metadata, metadata, failed); err != nil {
-			t.Fatal(host, err)
-		}
+	// Local suffixes still require a local, validated and pinned resolution.
+	metadata.Host = "printer.home.arpa"
+	if _, err := Protect(context.Background(), metadata, metadata, failed); err == nil {
+		t.Fatal("unresolved local name accepted")
 	}
 	metadata.Host = "nothome.arpa"
 	private := func(context.Context, string) ([]netip.Addr, error) {
@@ -217,5 +216,151 @@ func TestInvalidConfigurationRetainsProtection(t *testing.T) {
 		if _, err := Protect(context.Background(), m, m, nil); err == nil {
 			t.Fatal("invalid update disabled protection")
 		}
+	}
+}
+
+func TestLiteralAndInternalEgressAuthorization(t *testing.T) {
+	ConfigureT(t, map[string]any{
+		"prefixes":           []string{"10.0.0.0/8", "100.64.0.0/10", "192.168.0.0/16", "fc00::/7"},
+		"allowed-domains":    []string{"home.arpa"},
+		"local-target-cidrs": []string{"192.168.0.0/16", "127.0.0.0/8", "fc00::/7"},
+		"fake-ip-prefix":     "203.0.114.0/24",
+		"nat64-prefixes":     []string{"2001:db8:64::/96", "2001:db8:aa00::/40"},
+		"remote-target-grants": []map[string]any{{"proxy": "node", "cidr": "192.168.1.20/32",
+			"inlets": []string{"SOCKS5"}, "network": "tcp", "ports": []uint16{443}}},
+	})
+	for _, network := range []C.NetWork{C.TCP, C.UDP} {
+		for _, address := range []string{"192.168.1.1", "::ffff:192.168.1.1", "127.0.0.1", "fd12::1"} {
+			for _, hostForm := range []bool{false, true} {
+				m := &C.Metadata{Type: C.SOCKS5, NetWork: network, DstPort: 80}
+				if hostForm {
+					m.Host = address
+				} else {
+					m.DstIP = netip.MustParseAddr(address)
+				}
+				result, err := Protect(context.Background(), m, m, nil)
+				if err != nil {
+					t.Fatal(address, err)
+				}
+				if err = CheckEgress(result, true, "renamed-direct"); err != nil {
+					t.Fatal(address, err)
+				}
+				if err = CheckEgress(result, false, "node"); err == nil {
+					t.Fatal("remote internal literal allowed", address)
+				}
+				result.Type = C.TPROXY
+				if err = CheckEgress(result, true, "DIRECT"); err == nil {
+					t.Fatal("guest inherited host local grant")
+				}
+			}
+		}
+	}
+	for _, address := range []string{"169.254.169.254", "::ffff:169.254.169.254", "169.254.170.2", "100.100.100.200", "fd00:ec2::254",
+		"0.1.2.3", "0.0.0.0", "::", "224.0.0.1", "ff02::1", "198.18.0.5", "203.0.114.5", "240.0.0.1",
+		"64:ff9b::c0a8:101", "2001:db8:64::7f00:1", "2001:db8:aac0:a801:1::", "fe80::1%eth0"} {
+		m := &C.Metadata{Host: address, Type: C.HTTP}
+		if _, err := Protect(context.Background(), m, m, nil); err == nil {
+			t.Fatal("unsafe literal accepted", address)
+		}
+	}
+	m := &C.Metadata{Host: "printer.home.arpa", Type: C.SOCKS5, NetWork: C.TCP, DstPort: 443}
+	resolve := func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("192.168.1.20")}, nil
+	}
+	pinned, err := Protect(context.Background(), m, m, resolve)
+	if err != nil || pinned.Host != "" {
+		t.Fatal("internal name not pinned", pinned, err)
+	}
+	if err = CheckEgress(pinned, false, "node"); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*C.Metadata){
+		func(m *C.Metadata) { m.DstPort = 80 }, func(m *C.Metadata) { m.Type = C.HTTP },
+		func(m *C.Metadata) { m.NetWork = C.UDP }, func(m *C.Metadata) { m.DstIP = netip.MustParseAddr("192.168.1.21") },
+	} {
+		copy := pinned.Clone()
+		change(copy)
+		if CheckEgress(copy, false, "node") == nil {
+			t.Fatal("grant scope widened", copy)
+		}
+	}
+	if CheckEgress(pinned, false, "other-node") == nil {
+		t.Fatal("wrong proxy allowed")
+	}
+	// A direct/local grant cannot turn a public name's rebinding answer into
+	// an internal-target authorization.
+	m.Host = "public.example"
+	if _, err = Protect(context.Background(), m, m, resolve); err == nil {
+		t.Fatal("public rebinding used remote grant")
+	}
+}
+
+func TestTranslatedTargetsAndConfiguration(t *testing.T) {
+	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"},
+		"nat64-prefixes": []string{"2001:db8:64::/96", "2001:db8:aa00::/40"}})
+	for _, address := range []string{"64:ff9b::808:808", "2001:db8:64::808:808", "2001:db8:aa08:808::"} {
+		m := &C.Metadata{DstIP: netip.MustParseAddr(address), Type: C.TUN}
+		result, err := Protect(context.Background(), m, m, nil)
+		if err != nil {
+			t.Fatal(address, err)
+		}
+		if err = CheckEgress(result, false, "node"); err != nil {
+			t.Fatal(address, err)
+		}
+	}
+	for _, bad := range []map[string]any{
+		{"local-target-cidrs": []string{"192.168.1.1/24"}},
+		{"local-target-cidrs": []string{"0.0.0.0/0"}},
+		{"nat64-prefixes": []string{"2001:db8::/72"}},
+		{"fake-ip-prefix": "198.18.0.1/16"},
+		{"remote-target-grants": []map[string]any{{"proxy": "node", "cidr": "192.168.1.1/32", "network": "tcp", "ports": []int{0}, "inlets": []string{"INNER"}}}},
+	} {
+		bad["prefixes"] = []string{"10.0.0.0/8"}
+		if Configure(bad) == nil {
+			t.Fatal("invalid authorization accepted", bad)
+		}
+	}
+}
+
+// RFC 6052's six placements, including the u octet at bits 64..71.
+func TestNAT64Formats(t *testing.T) {
+	for _, tc := range []struct{ prefix, public, private string }{
+		{"2001:db8::/32", "2001:db8:808:808::", "2001:db8:c0a8:101::"},
+		{"2001:db8:aa00::/40", "2001:db8:aa08:808:8::", "2001:db8:aac0:a801:1::"},
+		{"2001:db8:aa::/48", "2001:db8:aa:808:8:800::", "2001:db8:aa:c0a8:1:100::"},
+		{"2001:db8:aa:bb00::/56", "2001:db8:aa:bb08:8:808::", "2001:db8:aa:bbc0:a8:101::"},
+		{"2001:db8:aa:bb::/64", "2001:db8:aa:bb:8:808:800:0", "2001:db8:aa:bb:c0:a801:100:0"},
+		{"2001:db8:aa:bb::/96", "2001:db8:aa:bb::808:808", "2001:db8:aa:bb::c0a8:101"},
+	} {
+		t.Run(tc.prefix, func(t *testing.T) {
+			ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"}, "nat64-prefixes": []string{tc.prefix}})
+			for _, entry := range []struct {
+				address string
+				allow   bool
+			}{{tc.public, true}, {tc.private, false}} {
+				m := &C.Metadata{DstIP: netip.MustParseAddr(entry.address), Type: C.TUN}
+				result, err := Protect(context.Background(), m, m, nil)
+				if (err == nil) != entry.allow {
+					t.Fatal(entry, err)
+				}
+				if err == nil {
+					if err = CheckEgress(result, false, "node"); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestLocalAuthorizationCanBeRemoved(t *testing.T) {
+	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"}})
+	m := &C.Metadata{DstIP: netip.MustParseAddr("127.0.0.1"), Type: C.HTTP}
+	result, err := Protect(context.Background(), m, m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if CheckEgress(result, true, "DIRECT") == nil {
+		t.Fatal("empty local CIDRs authorized a local target")
 	}
 }

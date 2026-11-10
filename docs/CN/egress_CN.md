@@ -48,7 +48,7 @@ my.hardening.directEgress = {
 
 B 守卫在 output `-195`、透明重定向之前检查原始目标。即使旧 `allowPrivateEgress=false`，受限模式仍让私网留在 TUN/NAT 外，由前置守卫授权，被拒绝的 socket 不能再绕入代理。撤销授权也切断已有宿主主动连接，自动保留的只有已获入站授权连接的 **reply 方向**。兼容模式的旧 `allowPrivateEgress=false` 则继续让私网目标接受代理路由。
 
-此处约束原生宿主 socket，不隔离受信核心内部选定的目标，也不改变访客转发或代替入站授权；这些分别由核心目标与访客策略负责。
+此处约束原生宿主 socket。核心通过 `localTargetCidrs` 和 `remoteTargetGrants` 单独授权[本地与远程内部目标](proxy_CN.md#域名目标)，原生受限授权不约束也不授予这些核心 socket 的权限。访客转发和入站授权仍独立。
 
 ## 可选的时间服务器目标限制
 

@@ -94,3 +94,53 @@ func TestLFManagedUDPMappingPinsValidatedTargets(t *testing.T) {
 		t.Fatal("Pure metadata erased the domain guard", r.calls, pc.writes)
 	}
 }
+
+func TestLFManagedUDPInternalGrantsStayScoped(t *testing.T) {
+	if err := lfguard.Configure(map[string]any{"prefixes": []string{"10.0.0.0/8"},
+		"local-target-cidrs": []string{"127.0.0.0/8"},
+		"remote-target-grants": []map[string]any{{"proxy": "node", "cidr": "127.0.0.1/32",
+			"inlets": []string{"SOCKS5"}, "network": "udp", "ports": []int{1234}}}}); err != nil {
+		t.Fatal(err)
+	}
+	defer lfguard.Configure(nil)
+	for _, direct := range []bool{false, true} {
+		sender := newPacketSender().(*packetSender)
+		defer sender.Close()
+		pc := new(lfUDPConn)
+		first := &C.Metadata{DstIP: netip.MustParseAddr("203.0.113.10"), DstPort: 1234, NetWork: C.UDP, Type: C.SOCKS5,
+			LFEgressProxy: "node", LFEgressDirect: direct}
+		sender.AddMapping(first, first)
+		local := first.Clone()
+		local.DstIP = netip.MustParseAddr("127.0.0.1")
+		sender.processPacket(pc, &lfUDPPacket{metadata: local})
+		if len(pc.writes) != 1 {
+			t.Fatal("authorized new local mapping blocked", direct)
+		}
+		wrongPort := local.Clone()
+		wrongPort.DstPort = 1235
+		sender.processPacket(pc, &lfUDPPacket{metadata: wrongPort})
+		want := 1
+		if direct {
+			want = 2
+		}
+		if len(pc.writes) != want {
+			t.Fatal("cached mapping widened remote port grant", direct, pc.writes)
+		}
+		private := local.Clone()
+		private.DstIP = netip.MustParseAddr("10.1.2.3")
+		sender.processPacket(pc, &lfUDPPacket{metadata: private})
+		if len(pc.writes) != want {
+			t.Fatal("new private literal escaped UDP authorization", direct)
+		}
+		metadata := local.Clone()
+		metadata.DstIP = netip.MustParseAddr("169.254.169.254")
+		sender.processPacket(pc, &lfUDPPacket{metadata: metadata})
+		if len(pc.writes) != want {
+			t.Fatal("metadata sent on reused association")
+		}
+		sender.processPacket(pc, &lfUDPPacket{metadata: local})
+		if len(pc.writes) != want+1 {
+			t.Fatal("denial broke authorized UDP mapping")
+		}
+	}
+}
