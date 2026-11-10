@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler
 import json
 import os
 from pathlib import Path
+import stat
 from socketserver import UnixStreamServer
 import sys
 import tempfile
@@ -16,6 +17,56 @@ spec = importlib.util.spec_from_file_location("firefox_guard", os.environ.get(
     "FIREFOX_GUARD", Path(__file__).resolve().parents[2] / "home/programs/firefox/guard.py"))
 guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
+spec = importlib.util.spec_from_file_location("firefox_sandbox", os.environ.get(
+    "FIREFOX_SANDBOX", Path(__file__).resolve().parents[2] / "home/programs/firefox/sandbox.py"))
+sandbox = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sandbox)
+
+
+class GraphicsDevicesTests(unittest.TestCase):
+    def setUp(self):
+        work = tempfile.TemporaryDirectory()
+        self.addCleanup(work.cleanup)
+        self.devices = Path(work.name) / "dev"
+        self.sysfs = Path(work.name) / "sys"
+        self.char = {}
+        for name in ("dri/renderD128", "dri/renderD129", "dri/card0", "dri/card1",
+                     "nvidia0", "nvidiactl", "nvidia-uvm", "nvidia-modeset", "nvidia-uvm-tools"):
+            path = self.devices / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+            self.char[path] = os.makedev(226, 129 if name == "dri/renderD129" else 128)
+        # A regular file with a device-shaped name must not be exported.
+        (self.devices / "dri/renderD130").touch()
+        for minor, vendor, card in ((128, "0x10de", "card0"), (129, "0x1002", "card1")):
+            device = self.sysfs / f"dev/char/226:{minor}/device"
+            (device / "drm" / card).mkdir(parents=True)
+            (device / "vendor").write_text(vendor)
+        original_stat = Path.stat
+
+        def device_stat(path, *args, **kwargs):
+            if path in self.char:
+                return SimpleNamespace(st_mode=stat.S_IFCHR | 0o666, st_rdev=self.char[path])
+            return original_stat(path, *args, **kwargs)
+
+        self.patch = mock.patch.object(Path, "stat", device_stat)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+
+    def selected(self, nvidia):
+        return {str(p.relative_to(self.devices)) for p in
+                sandbox.graphics_devices(nvidia, self.devices, self.sysfs)}
+
+    def test_render_only_does_not_expose_primary_or_nvidia_devices(self):
+        self.assertEqual(self.selected(False), {"dri/renderD128", "dri/renderD129"})
+
+    def test_nvidia_access_is_scoped_to_its_gpu_and_rendering_interfaces(self):
+        self.assertEqual(self.selected(True), {"dri/renderD128", "dri/renderD129", "dri/card0",
+                                              "nvidia0", "nvidiactl", "nvidia-uvm"})
+
+    def test_driver_configuration_alone_cannot_expose_unrelated_primary_nodes(self):
+        (self.sysfs / "dev/char/226:128/device/vendor").write_text("0x1002")
+        self.assertEqual(self.selected(True), {"dri/renderD128", "dri/renderD129"})
 
 
 class LaunchTests(unittest.TestCase):

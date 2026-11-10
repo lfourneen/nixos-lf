@@ -138,6 +138,11 @@
         }).config;
       };
 
+      browser-sandbox-vm = import ./tests/netsec/firefox-sandbox-vm.nix {
+        inherit pkgs;
+        firefox = self.nixosConfigurations.lfour.config.home-manager.users.lfour.programs.firefox.finalPackage;
+      };
+
       browser-ech-vm = import ./tests/netsec/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;

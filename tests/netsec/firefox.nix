@@ -29,6 +29,7 @@ pkgs.runCommand "firefox-privacy-checks" {
 } ''
   export PYTHONDONTWRITEBYTECODE=1
   export FIREFOX_GUARD=${../../home/programs/firefox/guard.py}
+  export FIREFOX_SANDBOX=${../../home/programs/firefox/sandbox.py}
   export FIREFOX_HEALTH=${../../system/programs/systemd/netsec/health.py}
   export XDG_CACHE_HOME="$TMPDIR/firefox-cache"
   mkdir -p "$XDG_CACHE_HOME"

@@ -41,7 +41,8 @@ pkgs.testers.runNixOSTest {
       ../../system/programs/systemd/dns-upstream.nix
       ../../system/programs/systemd/gost-relay.nix
       ../../system/programs/clash/runtime.nix
-    ] ++ lib.optional guests ./guest-config.nix;
+    ] ++ lib.optional guests ./guest-config.nix
+      ++ lib.optional (ech != null) ./firefox-desktop.nix;
     users.users.lfour = { isNormalUser = true; uid = 1000; };
     users.groups.dhcpcd = { };
     users.users.dhcpcd = { isSystemUser = true; group = "dhcpcd"; };
@@ -128,6 +129,9 @@ pkgs.testers.runNixOSTest {
     start_all()
     machine.wait_for_unit("nftables.service")
     machine.wait_for_unit("proxy-mode.service")
+    ${pkgs.lib.optionalString (ech != null) ''
+    machine.wait_until_succeeds("test -S /run/user/1000/wayland-0 && test -S /run/user/1000/pulse/native", timeout=40)
+    ''}
     machine.succeed("ip netns add outside; ip link add ens1 type veth peer name peer0; ip link set peer0 netns outside")
     machine.succeed("ip addr add 100.67.0.2/24 dev ens1; ip link set ens1 up; ip -n outside addr add 100.67.0.1/24 dev peer0; ip -n outside addr add 203.0.113.10/32 dev peer0; ip -n outside link set peer0 up; ip -n outside link set lo up; ip route add default via 100.67.0.1 dev ens1 metric 1")
     machine.succeed("ip -6 addr add 2001:db8:dead::2/64 dev ens1 nodad; ip -n outside -6 addr add 2001:db8:dead::1/64 dev peer0 nodad; ip -6 route add default via 2001:db8:dead::1 dev ens1 metric 1")

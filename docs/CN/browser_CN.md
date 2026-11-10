@@ -8,7 +8,31 @@ Firefox 是原生 Nix 包。[firefox.nix](../../home/programs/firefox/firefox.ni
 
 公开启动器先运行 [guard.py](../../home/programs/firefox/guard.py)，再打开指定 profile。B 要求新鲜、同代次的模式/DNS/relay/验证状态、被动监听身份检查，并通过桌面 GUI 前向 socket 核对实时 API 不变量。私有配置快照及内部控制口由 root 监督器验证，浏览器使用其发布的就绪结果，不读取私有文件。A 允许在公共 DNS 尚不可用时打开字面 HTTP 门户。C、未知和 `unenforced` 拒绝启动；二次状态读取拒绝预检中途的切换，启动后的变化由 relay 和内核策略控制。
 
-启动器在严格隐私下检查字体，强制 Wayland，去掉禁用沙箱的继承开关，并拒绝复用占有 profile 锁的旧包进程。桌面/MIME 入口均使用它，原 Zen/Chrome ID 转向 Firefox。策略更新后需完整重启浏览器。`firefox --check` 仅检查前提，不创建 profile 或开窗口。
+启动器在严格隐私下检查字体，然后在下述外层沙箱中运行浏览器。宿主实例记录结合进程启动时间与包身份拒绝复用旧包；陈旧 profile 锁中的命名空间 PID 不作为桌面进程身份。桌面/MIME 入口均使用它，原 Zen/Chrome ID 转向 Firefox。策略更新后需完整重启浏览器。`firefox --check` 仅检查前提，不创建 profile 或开窗口。
+
+## 外层沙箱
+
+[sandbox.py](../../home/programs/firefox/sandbox.py) 保留桌面 UID 和宿主网络命名空间，由 bubblewrap 创建独立的挂载、用户、PID、IPC 和 UTS 命名空间。浏览器只看到合成主目录及私有 `/tmp`、`/dev`，清空 capabilities，以白名单重建环境，同时保留 Gecko 内容进程沙箱。复用原生 Firefox 二进制，由 Nix 包装和小型 [scope 辅助程序](../../home/programs/firefox/scope.c) 提供外层策略，不修改 Gecko 源码。
+
+| 资源 | 浏览器权限 |
+|---|---|
+| 持久文件 | 可读写受管 profile、`~/.cache/firefox-managed` 和 `~/Downloads`；其它个人文件需经文件选择器授权 |
+| 运行文件与信任 | 只读 Nix store、选定的解析器/CA 文件及图形驱动；不挂载完整宿主根目录、个人主目录或 runtime 目录 |
+| 显示与音频 | 指定 Wayland socket、可用的 Pulse socket 与 DRM render 节点；声明 NVIDIA 加速时另开放对应 primary 节点及渲染接口。不开放 X11、输入设备、摄像头或 NVIDIA modeset 接口 |
+| 会话总线 | 过滤代理仅允许文件选择、只读设置、请求/会话关闭、协议支持查询及当前精确 profile 的链接复用 |
+| 其它宿主接口 | 不开放系统总线、SSH/GPG agent、容器或核心控制 socket；Landlock 禁止连接宿主抽象 Unix socket 和向作用域外发送信号 |
+
+系统证书信任使用 `/etc/ssl/certs/ca-certificates.crt` 下的 NixOS CA bundle，包含声明的系统 CA。启动器解析其符号链接，将实际文件只读挂载到该路径，使 NSS/p11-kit 能读取它，同时不开放 `/etc/static` 或完整宿主证书目录。CA bundle 缺失时拒绝启动，证书校验保持开启。
+
+`my.firefox.nvidiaAcceleration` 默认跟随 NixOS 的 NVIDIA 驱动选择。NVIDIA 用户态渲染器需要对应的 DRM primary 节点、带数字编号的 `/dev/nvidia*` 设备、`nvidiactl`、`nvidia-uvm` 及只读 EGL 外部平台配置。启动器只在宿主读取 sysfs，用于将 primary 节点与 NVIDIA render 设备配对；不挂载整个 `/sys` 或 `/dev`。其它 GPU 的 primary 节点、`nvidia-modeset`、UVM tools 与 capability 设备仍隐藏。将此选项设为 `false` 可保留仅 render 节点的设备权限，NVIDIA 上可能因此使用软件渲染。Gecko 沙箱继续启用，WebGL 仍由锁定偏好禁用。
+
+系统调用过滤还禁止 keyring、进程检查、文件句柄打开及部分无需使用的内核接口，保留 Gecko 沙箱需要的命名空间和 seccomp 操作。要求 Landlock ABI 至少为 6，并允许非特权用户命名空间。隔离不可用或总线代理失败时拒绝启动或终止浏览器，不回退到无隔离运行。
+
+总线代理运行于另一份最小挂载命名空间。只读 `/.flatpak-info` 和宿主实例 PID 元数据通过桌面门户既有的 Flatpak 身份协议，将浏览器识别为受限应用 `org.nixos.ManagedFirefox`，不安装 Flatpak 应用或运行时。只将 `doc/by-app/org.nixos.ManagedFirefox` 挂载为浏览器的文档树，其它应用的授权保持隐藏。锁定的文件选择器使用门户：选择个人文件后只开放该文档，不开放整个父目录。挂载目录以外的文件不能仅靠传入宿主路径打开；可写目录本身不允许是符号链接。
+
+正常启动器通过当前精确 profile 的 D-Bus 名称把新链接交给已有窗口。代次记录和宿主启动锁不在浏览器挂载范围内。重建包后需关闭全部旧窗口，再打开新包；受管 profile 在重启后保留。`firefox --check` 还检查私有 runtime 目录、桌面 socket 和 Landlock 支持，不打开窗口。
+
+网络继续使用桌面 UID 及已有 A/B/C 规则，包括 Gost `33332`、系统 DNS 和可选的原生 ECH 路径。外层策略不为代理端口认证浏览器，也不隔离其它本地 TCP 服务。Wayland、音频、Downloads、profile 和用户选择的文档是明确开放的权限。已在桌面 UID 下无隔离运行的其它程序仍属于信任基础，可以自行调用包内私有二进制。
 
 ## 网络策略
 
@@ -72,13 +96,13 @@ NSS 选择配置、构造 ClientHelloInner/Outer、验证证书并处理已认�
 
 ### 集成维护
 
-`browser-ech-vm` 使用所选生产 Firefox 包和真实 helper/核心，配合本地 DNS、临时 CA、ECH 服务端及另一个地址上的掩护名陷阱。它区分已接受 ECH、普通 TLS/GREASE、密钥重试、认证后不带 ECH 重试、不可信拒绝和证书失败，检查掩护 SNI 不改变拨号目标，并保留 A 门户/C 启动检查；只使用全新 profile，不连接个人浏览器。
+`browser-ech-vm` 在外层沙箱中运行所选生产 Firefox 包及真实 helper/核心，配合本地 DNS、临时 CA、ECH 服务端及另一个地址上的掩护名陷阱。它区分已接受 ECH、普通 TLS/GREASE、密钥重试、认证后不带 ECH 重试、不可信拒绝和证书失败，检查掩护 SNI 不改变拨号目标，并保留 A 门户/C 启动检查；只使用全新 profile，不连接个人浏览器。
 
-浏览器或核心变更后，与 `browser-privacy`、`proxy-core`、`proxy-profile` 一同运行。浏览器升级可能改变 CONNECT 门、原生解析和重试处理，核心升级可能改变 fake-IP 下的服务记录处理；同步维护[维护手册](maintenance_CN.md)与所选版本的路径说明。
+浏览器或核心变更后，与 `browser-sandbox-vm`、`browser-privacy`、`proxy-core`、`proxy-profile` 一同运行。浏览器升级可能改变 CONNECT 门、原生解析和重试处理，核心升级可能改变 fake-IP 下的服务记录处理；同步维护[维护手册](maintenance_CN.md)与所选版本的路径说明。
 
 ## 隐私设置
 
-模块中的 `strictPrivacy` 默认 true。AutoConfig `lockPref` 覆盖 enterprise policy 无法锁定的命名空间，对该包打开的所有 profile 生效，抵抗冲突 `user.js`。
+模块固定启用 `strictPrivacy`。AutoConfig `lockPref` 覆盖 enterprise policy 无法锁定的命名空间，对该包打开的所有 profile 生效，抵抗冲突 `user.js`。
 
 | 层 | 行为与边界 |
 |---|---|
@@ -91,6 +115,6 @@ NSS 选择配置、构造 ClientHelloInner/Outer、验证证书并处理已认�
 
 严格扩展策略阻止未声明扩展，强制安装 uBlock Origin，KISS Translator 可移除。签名包及更新经选定网络路径从 Mozilla Add-ons 获取，需要联网；包策略和 Gecko 保护不依赖扩展下载完成。
 
-Gecko 内容进程沙箱保留，原生父进程仍有普通桌面用户的文件/socket 权限。同 UID 程序或包内私有 unchecked 二进制可绕过启动预检，不构成外层文件系统/会话总线沙箱。`strictPrivacy=false` 放宽指纹、字体、WebGL 与扩展限制，选定网络路径、系统 DNS 和启动前提保留。
+Gecko 内容进程沙箱与外层策略约束不同层次：外层策略限制原生父进程及其后代，隐私偏好约束浏览器行为，两者都不改变前述路由和解析器的信任边界。
 
 软件包升级与检查见[维护手册](maintenance_CN.md)，解析行为见 [DNS](dns_CN.md)。

@@ -23,7 +23,7 @@ Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；
 | Clash Verge helper | [patch_clash_service.py](../../system/programs/clash/patch_clash_service.py) | 固定 root 执行、日志及 socket/启动文件操作 |
 | Clash Verge 打包/启动 | [clash-verge.nix](../../system/programs/clash/clash-verge.nix)、[核心启动器](../../system/programs/clash/clash-verge-core-launcher.sh)、[stage 工具](../../system/programs/clash/clash-verge-stage.py)、[GUI 启动器](../../system/programs/clash/clash-verge-gui.py)、[GUI defaults](../../system/programs/clash/clash-verge-defaults.sh) | 授权快照、降权、singleton 处理、HTTPS 延迟默认；复用原 GUI 二进制 |
 | dnsmasq | [network.nix](../../system/config/network.nix) 内联替换 `src/forward.c` | 返回 strict-order 终端 UDP SERVFAIL/REFUSED，保留 DNSSEC EDE |
-| Firefox 包 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[guard.py](../../home/programs/firefox/guard.py) | 不可变 policy/AutoConfig/字体及受管启动；没有 Gecko 源码补丁 |
+| Firefox 包 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[guard.py](../../home/programs/firefox/guard.py)、[sandbox.py](../../home/programs/firefox/sandbox.py)、[scope.c](../../home/programs/firefox/scope.c) | 不可变 policy/AutoConfig/字体、预检、外层命名空间、过滤总线、门户身份及 Landlock/seccomp；无 Gecko 源码 patch |
 | Unbound / Chrony / 网络 | [network.nix](../../system/config/network.nix)、[network-time.nix](../../system/config/network-time.nix)、[systemd 模块](../../system/programs/systemd) | 声明策略和仓库自有协调器；没有本地 Unbound/Chrony 源码补丁 |
 | Tailscale 传输 | [tailscale-transport.nix](../../system/config/tailscale-transport.nix)、[tailscale_contract.py](../../system/programs/systemd/netsec/tailscale_contract.py) | 正常系统构建强制检查上游 socket mark 约定；升级复核 mark/后备/socket 变化并跑真实 CLI VM；没有 Tailscale 源码补丁 |
 | 直连例外 | [hardening-options.nix](../../system/config/hardening-options.nix)、[network.nix](../../system/config/network.nix)、[egress_policy.py](../../system/programs/systemd/netsec/egress_policy.py) | 主体/socket 身份、NAT 前授权、规范 CIDR 校验、时间/DoT 范围及 root/GUI 共享私网排除；比较兼容和受限模式 |
@@ -82,11 +82,13 @@ Dnsmasq patch 是 `network.nix` 的内联 `--replace-fail`。Strict-order 重试
 
 Unbound 使用未改源码的 `pkgs.unbound-with-systemd`。未来 override 必须保留 `--enable-systemd`，unit 为 `Type=notify`。DNSSEC/CD、持久化锚初始化、TLS 认证、答案过滤、陈旧缓存上限和探针结论应与 [DNS](dns_CN.md) 一致；Chrony 仍须强制 NTS 和证书时间校验。
 
-Firefox 在打包层加入不可变 policy、AutoConfig、字体和 preflight。Home Manager 最终包/wrapper 或偏好语义变化可能不会触发源码 patch 失败，需用 `browser-privacy` 检查最终启动器、桌面/MIME、policy lock、DoH/代理值、沙箱环境及旧 profile/进程。
+Firefox 在打包层加入不可变 policy、AutoConfig、字体、preflight 和外层隔离。Home Manager 最终包/wrapper 或偏好语义变化可能不会触发源码 patch 失败，需用 `browser-privacy` 检查最终启动器、桌面/MIME、policy lock、DoH/代理值、沙箱环境及旧 profile/进程。
 
-默认 HTTP 和可选透明路径还需运行 `browser-ech-vm`，复核所选 Firefox 的 CONNECT 门、原生 type-65 API 和 NSS 重试/证书行为。自动化的原生 DNS 测试开关只放在临时 profile，区分认证后不带 ECH 重试与证书验证失败。[浏览器手册](browser_CN.md#ech-发现与代理兼容)介绍这些路径；本地 CA 与密钥只属于隔离 fixture。
+用 `browser-sandbox-vm` 检查真实 Wayland 浏览器、系统 CA 的 TLS 接受及不可信/域名不匹配证书拒绝、父进程文件/设备/socket 限制、音频、门户身份与文档授权、精确 profile 的链接复用、代次拒绝、重启及代理故障。依赖或内核升级时复核 bubblewrap、xdg-dbus-proxy、Landlock ABI、seccomp 和 xdg-desktop-portal 身份协议，保留应用专用文档视图及宿主实例记录。设备选择检查须拒绝普通文件和无关 GPU 的 primary 节点；NVIDIA 权限跟随声明的驱动选择，也可单独关闭。同时核对解析符号链接后的 NixOS CA bundle 可读且 `/etc/static` 仍隐藏。系统信任测试使用未导入 CA 的全新浏览器 profile；向该 profile 导入测试 CA 无法验证 NSS/p11-kit 的系统信任路径。默认 HTTP 和可选透明路径还需在外层隔离内运行 `browser-ech-vm`，复核所选 Firefox 的 CONNECT 门、原生 type-65 API 和 NSS 重试/证书行为。自动化的原生 DNS 测试开关只放在临时 profile，区分认证后不带 ECH 重试与证书验证失败。[浏览器手册](browser_CN.md#ech-发现与代理兼容)介绍这些路径；本地 CA 与密钥只属于隔离 fixture。
 
 `dnsEncryption="strict"` 在协调器、broker 和静态防火墙中必须一致：不能自动或强制回退，不授予明文租约，不安装后备集合放行规则。保留已批准 split DNS、MagicDNS 和字面门户访问；两种传输策略都要验证，默认恢复预算仍是独立行为。
+
+NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWire/Pulse 后端。在相同软件包与隐私策略下对照隔离内外的 `about:support`，选择 NVIDIA 权限时应保留预期的硬件 WebRender 与 DMA-BUF 能力，并确认沙箱内 EGL 平台配置可解析。软件渲染 VM 无法验证物理 GPU 权限。硬件视频解码另有驱动及 Gecko 要求，需与无外层隔离的基线比较，不能由合成器测试推断解码可用。
 
 ## 升级流程
 
@@ -123,6 +125,7 @@ Firefox 在打包层加入不可变 policy、AutoConfig、字体和 preflight。
 | `proxy-target-vm` | 真实 helper/核心，宿主与节点 loopback 陷阱，HTTP/CONNECT/SOCKS、内部域名固定 IP、窄远程授权、Rule/Global 与 A/C 行为 |
 | `proxy-gost` | 定制 relay 构建及 vendored HTTP 测试 |
 | `browser-privacy` | 最终原生浏览器 policy lock 与离线启动 |
+| `browser-sandbox-vm` | 真实 Wayland Firefox、系统根 TLS 与无效证书拒绝、父进程隔离、音频、门户授权、链接复用、代次/重启及总线代理故障阻断 |
 | `browser-ech-vm` | 真实 Firefox/helper/核心、原生 HTTPS 发现、ECH 与 GREASE、密钥/无 ECH 重试、不可信拒绝、证书错误、掩护名不改目标及 A/C 行为 |
 | `proxy-control-vm` | 真实生产 helper/launcher、能力、授权、DNS、TUN/C 恢复 |
 | `proxy-network-vm` | 广泛内核故障注入：模式、DNS、租约、休眠、访客、TPROXY 和恢复 |

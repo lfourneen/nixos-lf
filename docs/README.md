@@ -10,7 +10,7 @@ This system combines physical uplinks, local DNS, a managed proxy core, guest ne
 | [Direct egress](egress.md) | Exception ledger, optional restricted B grants, time-server pins and C blocking |
 | [DNS](dns.md) | Resolver responsibilities, shared domain filter, DNSSEC, optional strict encryption, recovery and split DNS |
 | [Proxy core and permissions](proxy.md) | Configuration authorization, service identities, controller API and routing policy |
-| [Firefox](browser.md) | Managed launcher, network paths, DNS, ECH and privacy settings |
+| [Firefox](browser.md) | Managed launcher, outer sandbox, network paths, DNS, ECH and privacy settings |
 | [Operations](operations.md) | Switching modes, status, recovery, configuration and checks |
 | [Network patch maintenance](maintenance.md) | Network customization inventory, build integration, component upgrades and validation |
 

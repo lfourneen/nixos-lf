@@ -7,6 +7,12 @@ let
   compat = config.my.firefox.videoSiteCompat;
   transparent = config.my.firefox.networkPath == "transparent";
   profile = "${config.programs.firefox.configPath}/lfour";
+
+  scope = pkgs.runCommandCC "firefox-scope" { buildInputs = [ pkgs.libseccomp ]; } ''
+    mkdir -p "$out/bin"
+    $CC -O2 -Wall -Wextra -Werror ${./scope.c} -lseccomp -o "$out/bin/firefox-scope"
+  '';
+
   fontPackages = [ pkgs.dejavu_fonts pkgs.noto-fonts pkgs.noto-fonts-cjk-sans pkgs.noto-fonts-color-emoji ];
   fonts = pkgs.writeText "firefox-fonts.conf" ''
     <?xml version="1.0"?>
@@ -115,6 +121,9 @@ let
     # Local data
     "browser.formfill.enable" = false;
     "browser.sessionstore.privacy_level" = 2;
+    "widget.use-xdg-desktop-portal.file-picker" = 1;
+    "browser.download.dir" = "${config.home.homeDirectory}/Downloads";
+    "browser.download.folderList" = 2;
 
     # Suggestions / promotions
     "browser.search.suggest.enabled" = false;
@@ -164,12 +173,14 @@ let
     DisableFirefoxStudies = true;
     DisableEncryptedClientHello = false;
     DisableFirefoxAccounts = true;
+
     EnableTrackingProtection = {
       Value = true;
       Locked = true;
       Cryptomining = true;
       Fingerprinting = true;
     };
+
     Proxy = if transparent then { Mode = "none"; Locked = true; } else {
       Mode = "manual";
       Locked = true;
@@ -178,10 +189,12 @@ let
       UseHTTPProxyForAllProtocols = true;
       Passthrough = "";
     };
+
     DNSOverHTTPS = {
       Enabled = false;
       Locked = true;
     };
+
     DisableAppUpdate = true;
     DisableProfileImport = true;
     DisableProfileRefresh = true;
@@ -193,6 +206,7 @@ let
     DontCheckDefaultBrowser = true;
     OverrideFirstRunPage = "";
     OverridePostUpdatePage = "";
+
     UserMessaging = {
       ExtensionRecommendations = false;
       FeatureRecommendations = false;
@@ -200,6 +214,7 @@ let
       MoreFromMozilla = false;
       SkipOnboarding = true;
     };
+
     FirefoxHome = {
       Locked = true;
       SponsoredTopSites = false;
@@ -207,9 +222,11 @@ let
       Snippets = false;
     };
   };
+
   settings = pkgs.writeText "firefox-launch.json" (builtins.toJSON {
     inherit profile strictPrivacy fonts;
     networkPath = config.my.firefox.networkPath;
+    nvidiaAcceleration = config.my.firefox.nvidiaAcceleration;
     fontDirectories = map (p: "${p}/share/fonts") fontPackages;
     fontList = "${pkgs.fontconfig}/bin/fc-list";
     stateModule = ../../../system/programs/systemd/netsec/state.py;
@@ -217,7 +234,19 @@ let
     healthSettings = osConfig.my.proxy.desktopHealthSettings;
     maxAge = osConfig.my.proxy.stateMaxAgeSeconds;
     verificationMaxAge = osConfig.my.proxy.verificationMaxAgeSeconds;
+    sandboxModule = ./sandbox.py;
+    bwrap = "${pkgs.bubblewrap}/bin/bwrap";
+    dbusProxy = "${pkgs.xdg-dbus-proxy}/bin/xdg-dbus-proxy";
+    gdbus = "${pkgs.glib.bin}/bin/gdbus";
+    scope = "${scope}/bin/firefox-scope";
+    home = config.home.homeDirectory;
+    user = config.home.username;
+    runtime = "/run/user/${toString osConfig.users.users.${config.home.username}.uid}";
+    cache = "${config.xdg.cacheHome}/firefox-managed";
+    downloads = "${config.home.homeDirectory}/Downloads";
+    path = lib.makeBinPath [ pkgs.coreutils ];
   });
+
   desktop = pkgs.makeDesktopItem {
     name = "firefox";
     desktopName = "Firefox";
@@ -258,10 +287,12 @@ in
         substituteInPlace "$out/share/applications/firefox.desktop" \
           --replace-fail '@firefox@' "$out/bin/firefox"
       '';
+
       passthru = (old.passthru or { }) // {
         netsec = { inherit settings fonts lockedPrefs prefs; };
       };
     });
+
     configPath = "${config.xdg.configHome}/mozilla/firefox";
     profiles.lfour = {
       id = 0;
@@ -277,6 +308,14 @@ in
   xdg.dataFile = {
     "applications/firefox.desktop".source =
       "${config.programs.firefox.finalPackage}/share/applications/firefox.desktop";
+    "applications/org.nixos.ManagedFirefox.desktop".source =
+      "${pkgs.makeDesktopItem {
+        name = "org.nixos.ManagedFirefox";
+        desktopName = "Firefox";
+        exec = "${config.programs.firefox.finalPackage}/bin/firefox %U";
+        icon = "firefox";
+        noDisplay = true;
+      }}/share/applications/org.nixos.ManagedFirefox.desktop";
   } // lib.genAttrs
     [ "applications/app.zen_browser.zen.desktop" "applications/com.google.Chrome.desktop" ]
     (path: {

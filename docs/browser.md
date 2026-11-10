@@ -8,7 +8,31 @@ Firefox is a native Nix package. [firefox.nix](../home/programs/firefox/firefox.
 
 The public launcher runs [guard.py](../home/programs/firefox/guard.py) before opening the explicit managed profile. In B it requires fresh same-generation mode/DNS/relay/verification state, passive listener identity checks and live API invariants through the desktop's GUI forwarder. The root supervisor verifies the private configuration snapshot and internal controller; the browser uses its published readiness without reading those private files. A permits opening a literal HTTP captive portal without working public DNS. C, unknown and `unenforced` refuse launch. A second state read rejects a transition during preflight; the relay and kernel policy handle changes after launch.
 
-The launcher checks fonts under strict privacy, forces Wayland, removes inherited sandbox-disabling switches and rejects reuse of an older Firefox package holding the profile lock. Desktop/MIME entries use it; former Zen/Chrome entry IDs redirect to Firefox. Policy changes require a full browser restart. `firefox --check` inspects prerequisites without creating the profile or opening a window.
+The launcher checks fonts under strict privacy and starts the browser in the outer sandbox described below. Host-side instance records use process start times and package identity to reject reuse of an older package; namespace PIDs in stale profile locks do not identify desktop processes. Desktop/MIME entries use it; former Zen/Chrome entry IDs redirect to Firefox. Policy changes require a full browser restart. `firefox --check` inspects prerequisites without creating the profile or opening a window.
+
+## Outer sandbox
+
+[sandbox.py](../home/programs/firefox/sandbox.py) retains the desktop UID and host network namespace while bubblewrap creates separate mount, user, PID, IPC and UTS namespaces. The browser sees a synthetic home and a private `/tmp` and `/dev`. Capabilities are dropped, inherited environment variables are replaced by an allow-list, and Gecko's content-process sandbox remains enabled. The native Firefox binary is reused; the Nix wrapper and small [scope helper](../home/programs/firefox/scope.c) supply the outer policy without a Gecko source patch.
+
+| Resource | Browser access |
+|---|---|
+| Persistent files | Read/write managed profile, `~/.cache/firefox-managed` and `~/Downloads`; other personal files require a file-chooser grant |
+| Runtime and trust | Read-only Nix store, selected resolver/CA files and graphics driver; no host root filesystem or general home/runtime-directory mount |
+| Display and audio | Named Wayland socket, optional Pulse socket and DRM render nodes; configured NVIDIA access also exposes matching primary nodes and rendering interfaces. No X11 socket, input devices, camera or NVIDIA modeset interface |
+| Session bus | Filtered proxy: file chooser, read-only settings, request/session close, scheme-support query and remoting for this exact profile |
+| Other host interfaces | No system bus, SSH/GPG agents, container or core-controller sockets; Landlock prevents connecting to host abstract Unix sockets and signalling outside the scope |
+
+System certificate trust uses the NixOS CA bundle at `/etc/ssl/certs/ca-certificates.crt`, including declared system CAs. The launcher resolves its symlink and mounts the actual file read-only at that path: NSS/p11-kit can read it without exposing `/etc/static` or the full host certificate directory. A missing bundle refuses launch. Certificate verification remains enabled.
+
+`my.firefox.nvidiaAcceleration` defaults to the NixOS NVIDIA driver selection. NVIDIA's userspace renderer needs its matching DRM primary nodes, numbered `/dev/nvidia*` devices, `nvidiactl` and `nvidia-uvm`, plus the read-only EGL external-platform configuration. The launcher uses host sysfs only to associate primary nodes with NVIDIA render devices; neither the full `/sys` nor `/dev` is mounted. Other GPUs' primary nodes, `nvidia-modeset`, UVM tools and capability devices remain hidden. Setting this option to `false` keeps render-node-only device access and may require software rendering on NVIDIA. Gecko sandboxes remain active, and the locked preference continues to disable WebGL.
+
+The syscall filter also blocks keyring access, process inspection, file-handle opens and selected unused kernel interfaces. It leaves the namespace and seccomp operations needed by Gecko available. Landlock ABI 6 or newer and unprivileged user namespaces are required. Missing confinement or a failed bus proxy refuses or terminates the browser; there is no unconfined fallback.
+
+The bus proxy runs in its own minimal mount namespace. Read-only `/.flatpak-info` and per-instance host PID metadata let the desktop portal recognize `org.nixos.ManagedFirefox` as sandboxed, using its existing Flatpak identity protocol. This does not install a Flatpak application or runtime. Only `doc/by-app/org.nixos.ManagedFirefox` is mounted as the browser's document tree, so grants for other applications remain hidden. The locked file picker uses the portal: selecting a personal file exposes that document without exposing its parent directory. Files outside the mounted directories cannot be opened by passing a raw host file path alone. Writable-directory symlinks are refused.
+
+The normal launcher can open another link in the running browser through its exact profile-specific D-Bus name. Generation records and a host launch lock stay outside the browser mounts. Close all old windows before opening a rebuilt package; the managed profile persists across that restart. `firefox --check` also checks the private runtime directory, desktop sockets and Landlock support without opening a window.
+
+Network access keeps the desktop UID and the existing A/B/C rules, including Gost `33332`, system DNS and the optional native ECH path. The outer policy does not authenticate the browser to a proxy port or separate it from other local TCP services. Wayland, audio, Downloads, the profile and explicitly selected documents are deliberate permissions. Other programs already running unconfined as the desktop user remain trusted and can invoke the package-private binary themselves.
 
 ## Network policy
 
@@ -70,13 +94,13 @@ An explicit HTTP proxy can see CONNECT targets, including when another client su
 
 ### Maintaining the integration
 
-`browser-ech-vm` uses the selected production Firefox packages and real helper/core with a local DNS fixture, temporary CA, ECH server and a different address for the cover name. It distinguishes accepted ECH from ordinary TLS/GREASE, key retry, authenticated retry without ECH, untrusted rejection and certificate failure. It checks that cover SNI does not retarget the connection and retains A portal/C launch checks. It uses fresh profiles and never attaches to a personal browser.
+`browser-ech-vm` runs the selected production Firefox packages inside the outer sandbox with the real helper/core with a local DNS fixture, temporary CA, ECH server and a different address for the cover name. It distinguishes accepted ECH from ordinary TLS/GREASE, key retry, authenticated retry without ECH, untrusted rejection and certificate failure. It checks that cover SNI does not retarget the connection and retains A portal/C launch checks. It uses fresh profiles and never attaches to a personal browser.
 
-Run it alongside `browser-privacy`, `proxy-core` and `proxy-profile` after browser or core changes. Browser upgrades can change the CONNECT gate, native resolver behavior and retry handling; core upgrades can change fake-IP service-record handling. Keep the [maintenance guide](maintenance.md) and these path descriptions aligned with the selected versions.
+Run it alongside `browser-sandbox-vm`, `browser-privacy`, `proxy-core` and `proxy-profile` after browser or core changes. Browser upgrades can change the CONNECT gate, native resolver behavior and retry handling; core upgrades can change fake-IP service-record handling. Keep the [maintenance guide](maintenance.md) and these path descriptions aligned with the selected versions.
 
 ## Privacy settings
 
-`strictPrivacy` in the module defaults to true. AutoConfig `lockPref` covers preferences beyond enterprise policy lock support and resists conflicting `user.js` values for every profile opened with the package.
+`strictPrivacy` is enabled in the module. AutoConfig `lockPref` covers preferences beyond enterprise policy lock support and resists conflicting `user.js` values for every profile opened with the package.
 
 | Layer | Behavior and boundary |
 |---|---|
@@ -89,6 +113,6 @@ Run it alongside `browser-privacy`, `proxy-core` and `proxy-profile` after brows
 
 Strict extension policy blocks undeclared extensions. uBlock Origin is force-installed and KISS Translator is removable. Signed packages/updates come from Mozilla Add-ons through the selected network path and require connectivity; package policy and Gecko protections do not depend on extension download completing.
 
-Gecko's content-process sandbox remains enabled. The native parent retains ordinary desktop-user filesystem/socket access. Same-UID programs and the package-private unchecked binary can bypass launcher preflight; this is not an outer filesystem or session-bus sandbox. `strictPrivacy=false` relaxes fingerprinting, font, WebGL and extension restrictions while preserving the selected network path, system DNS and launch prerequisites.
+Gecko's content-process sandbox and the outer policy protect different layers. The outer policy constrains the native parent and its descendants; privacy preferences constrain browser behavior. Neither changes the routing or resolver trust boundaries above.
 
 Package integration and upgrade checks are covered in [Patch maintenance](maintenance.md); resolver behavior is covered in [DNS](dns.md).

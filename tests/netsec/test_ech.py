@@ -45,7 +45,7 @@ def browser(kind):
                  "network.dns.native_https_query_in_automation": True}
         (profile / "user.js").write_text("\n".join(
             "user_pref(" + json.dumps(k) + ", " + json.dumps(v) + ");" for k, v in prefs.items()))
-        launcher = driver.isolated_launcher(item["package"], settings, work)
+        launcher = driver.confined_launcher(item["package"], settings, work)
         env = guard.environment(settings)
         env["MOZ_REMOTE_ALLOW_SYSTEM_ACCESS"] = "1"
         log_path = Path("/tmp/ech-firefox-" + kind + ".log")

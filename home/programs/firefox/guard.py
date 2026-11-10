@@ -91,6 +91,13 @@ def verify_running_generation(profile, binary):
         raise ValueError("close the existing Firefox process to load the current Nix package")
 
 
+def outer_sandbox(settings):
+    spec = importlib.util.spec_from_file_location("firefox_sandbox", settings["sandboxModule"])
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def prepare(settings, binary, values=(), check=None, check_core=None, check_fonts=None,
             check_only=False):
     values = arguments(values)
@@ -110,7 +117,12 @@ def prepare(settings, binary, values=(), check=None, check_core=None, check_font
     if mode == "proxy":
         (verify_core if check_core is None else check_core)(settings)
     (verify_fonts if check_fonts is None else check_fonts)(settings)
-    verify_running_generation(settings["profile"], binary)
+    # A sandbox's profile lock contains a namespace PID, not a desktop PID.
+    # Its host supervisor records package identity outside the exposed mounts.
+    if "sandboxModule" in settings:
+        outer_sandbox(settings).check_generation(settings, binary)
+    else:
+        verify_running_generation(settings["profile"], binary)
     current = check(**kwargs)
     if (current.get("mode") != mode
             or current.get("policy_version") != verdict.get("policy_version")
@@ -133,9 +145,10 @@ def main():
         command = prepare(settings, sys.argv[2], () if check_only else sys.argv[3:],
                           check_only=check_only)
         if check_only:
-            print("Firefox fonts and network launch prerequisites verified")
+            outer_sandbox(settings).prerequisites(settings)
+            print("Firefox fonts, network and outer sandbox prerequisites verified")
             return 0
-        os.execve(command[0], command, environment(settings))
+        return outer_sandbox(settings).run(settings, sys.argv[2], command)
     except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError) as error:
         print("Firefox launch refused: " + str(error), file=sys.stderr)
         return 1

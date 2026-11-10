@@ -1,6 +1,17 @@
-{ lib, ... }:
+{ lib, osConfig ? { }, ... }:
 
 {
+  options.my.firefox.nvidiaAcceleration = lib.mkOption {
+    type = lib.types.bool;
+    default = osConfig.hardware.nvidia.enabled or false;
+    description = ''
+      Expose the NVIDIA graphics device nodes and the matching DRM primary
+      nodes inside the outer sandbox. Defaults to the NixOS NVIDIA driver
+      selection. Disabling this keeps render-node-only device access, which
+      can require software rendering on NVIDIA. Gecko sandboxes stay enabled.
+    '';
+  };
+
   options.my.firefox.networkPath = lib.mkOption {
     type = lib.types.enum [ "http-proxy" "transparent" ];
     default = "http-proxy";

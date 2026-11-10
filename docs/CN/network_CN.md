@@ -25,7 +25,7 @@
 
 Mihomo 为出站 socket 设置 `6666`（`0x1a0a`）mark；核心例外同时要求 socket 与 packet mark，并核对 socket UID 为 root 或 `clash-core`。默认 `my.proxy.proxyOnly=false` 时 Rule 可选 DIRECT；可选的[统一代理策略](proxy_CN.md#路由策略)在核心内拒绝应用 DIRECT。核心以外的私网和基础设施路径仍由各自规则控制。
 
-[DNS](dns_CN.md) 是并行链路：resolved → dnsmasq → Mihomo 或 Unbound。[Firefox](browser_CN.md) 默认使用相同的 Gost HTTP 入口；可选透明路径使用原生 DNS 和宿主 socket，受本套 TUN/防火墙约束，支持 HTTPS-RR/ECH 发现。
+[DNS](dns_CN.md) 是并行链路：resolved → dnsmasq → Mihomo 或 Unbound。[Firefox](browser_CN.md) 默认使用相同的 Gost HTTP 入口；可选透明路径使用原生 DNS 和宿主 socket，受本套 TUN/防火墙约束，支持 HTTPS-RR/ECH 发现。父进程及其后代运行于[外层文件系统与桌面接口沙箱](browser_CN.md#外层沙箱)，保留桌面 UID 和本套宿主网络策略。
 
 核心内的字面或解析后私网目标按[本地 DIRECT 与远程叶节点](proxy_CN.md#域名目标)分别授权；订阅规则选中节点不等于获准访问该节点的内部网络。
 

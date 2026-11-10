@@ -99,7 +99,7 @@ Restart/reload 原子重装所属静态策略和安全模式；代理意图先�
 | [proxy-profile.nix](../../system/config/proxy-profile.nix) | root 受管 DNS/TUN/profile 约定 |
 | [hardening-options.nix](../../system/config/hardening-options.nix) | 宿主/访客私网、逐接口访客信任/源地址、独立 socket 访客账户、宿主端口、热点、tailnet 和 Wi-Fi MAC |
 | [cvr-merge.nix](../../home/config/cvr-merge.nix) | 匹配的 GUI Merge 及路由增强 |
-| [firefox.nix](../../home/programs/firefox/firefox.nix)、[options.nix](../../home/programs/firefox/options.nix) | 原生浏览器、networkPath、隐私、策略、字体和启动器 |
+| [firefox.nix](../../home/programs/firefox/firefox.nix)、[options.nix](../../home/programs/firefox/options.nix) | 原生浏览器、networkPath、nvidiaAcceleration、隐私、策略、字体和外层沙箱 |
 
 TUN 默认 `Mihomo`，表 2022、规则优先级 9000、内部 mark 8227/8228、fallback priority 32768、file descriptor 0，由 parser、模板和健康检查共用。`tunMode=false` 选择 HTTP-only/redir-host，不再要求 TUN。Fake-IP 网络由 `fakeIpRange` 推导，避免单独修改消费者。
 

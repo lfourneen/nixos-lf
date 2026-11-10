@@ -1,8 +1,10 @@
 """Fresh-profile Firefox automation; never connect to a user's browser."""
 import json
+import os
 from pathlib import Path
 import shlex
 import socket
+import sys
 import time
 
 
@@ -15,6 +17,31 @@ def isolated_launcher(package, settings, directory):
     assert original in wrapper
     launcher = directory / "firefox"
     launcher.write_text(wrapper.replace(original, "export MOZ_APP_DATA=" + shlex.quote(str(app_data))))
+    launcher.chmod(0o700)
+    return launcher
+
+
+def confined_launcher(package, settings, directory):
+    """VM-only automation through the production outer policy, with fresh data.
+
+    The public entry point rejects automation. This private fixture opts into
+    Marionette *inside* confinement, without adding environment or CLI escapes
+    to the deployed launcher.
+    """
+    directory = Path(directory)
+    settings = {**settings, "profile": str(directory / "profile"), "cache": str(directory / "cache")}
+    binary = str(Path(package) / "bin/.firefox-unchecked")
+    env = str(Path(settings["path"].split(os.pathsep)[0]) / "env")
+    launcher = directory / "confined-firefox"
+    launcher.write_text(f"#!{sys.executable}\n" + """
+import importlib.util, sys
+settings = SETTINGS
+spec = importlib.util.spec_from_file_location('sandbox', settings['sandboxModule'])
+sandbox = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sandbox)
+raise SystemExit(sandbox.run(settings, BINARY,
+    [ENV, 'MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1', BINARY, *sys.argv[1:]]))
+""".replace("SETTINGS", repr(settings)).replace("BINARY", repr(binary)).replace("ENV", repr(env)))
     launcher.chmod(0o700)
     return launcher
 

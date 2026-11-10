@@ -10,7 +10,7 @@
 | [直连例外](egress_CN.md) | 例外清单、可选受限 B 授权、时间服务器目标限制与 C 阻断 |
 | [DNS](dns_CN.md) | 各路径责任、共享域名过滤、DNSSEC、可选严格加密、恢复与分流 DNS |
 | [代理核心与权限](proxy_CN.md) | 配置授权、服务身份、控制 API 与路由策略 |
-| [Firefox](browser_CN.md) | 受管启动器、网络路径、DNS、ECH 与隐私设置 |
+| [Firefox](browser_CN.md) | 受管启动器、外层沙箱、网络路径、DNS、ECH 与隐私设置 |
 | [操作与诊断](operations_CN.md) | 模式切换、状态、恢复、配置入口与检查 |
 | [网络补丁与自定义维护](maintenance_CN.md) | 网络自定义清单、构建接入、组件升级与验证方法 |
 
