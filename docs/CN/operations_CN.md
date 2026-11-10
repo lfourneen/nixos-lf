@@ -97,11 +97,33 @@ Restart/reload 原子重装所属静态策略和安全模式；代理意图先�
 | [machine.nix](../../system/config/machine.nix) | 用户、接口及匹配键、UID、端口、mark、网段和上游 |
 | [proxy-options.nix](../../system/config/proxy-options.nix) | TUN、表 2022、fake-IP、探针、开机意图、proxyOnly、dnsEncryption、共享域名过滤、访客、split DNS 和新鲜度 |
 | [proxy-profile.nix](../../system/config/proxy-profile.nix) | root 受管 DNS/TUN/profile 约定 |
-| [hardening-options.nix](../../system/config/hardening-options.nix) | 宿主/访客私网、显式宿主端口、热点、tailnet 和 Wi-Fi MAC |
+| [hardening-options.nix](../../system/config/hardening-options.nix) | 宿主/访客私网、逐接口访客信任/源地址、独立 socket 访客账户、宿主端口、热点、tailnet 和 Wi-Fi MAC |
 | [cvr-merge.nix](../../home/config/cvr-merge.nix) | 匹配的 GUI Merge 及路由增强 |
 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[options.nix](../../home/programs/firefox/options.nix) | 原生浏览器、networkPath、隐私、策略、字体和启动器 |
 
 TUN 默认 `Mihomo`，表 2022、规则优先级 9000、内部 mark 8227/8228、fallback priority 32768、file descriptor 0，由 parser、模板和健康检查共用。`tunMode=false` 选择 HTTP-only/redir-host，不再要求 TUN。Fake-IP 网络由 `fakeIpRange` 推导，避免单独修改消费者。
+
+需要不同访客信任级别时，应显式选择开发网桥，并只为其它访客授权必要的私网服务。宿主 socket 后端另需独立固定账户；选择空闲 UID 与互不重叠的 subordinate 范围：
+
+```nix
+my.hardening = {
+  guestNetworks.virbr0.trust = "trusted";
+  guestPrivateExceptions = [{
+    interface = "waydroid0"; cidr = "192.168.1.20/32";
+    tcpPorts = [ 443 ];
+  }];
+  socketGuestUsers = [ "guestnet" ];
+  socketGuestPrivateExceptions = [{
+    user = "guestnet"; interface = "ens1"; cidr = "192.168.1.20/32";
+    tcpPorts = [ 443 ];
+  }];
+};
+users.users.guestnet = { isNormalUser = true; uid = 1100; };
+```
+
+示例地址需要替换。内建网桥源地址/网关默认来自 `my.machine`；额外 `guestInterfaces` 必须有规范且互不重叠的 `guestNetworks` 源 CIDR。仅在需要开放宿主服务时，才为相应角色添加 `hostTcpPorts` / `hostUdpPorts`，目标限定于声明网关。IPv6 需显式 ULA 源地址/网关，访客 IPv6 公网仍拒绝。热点只有明确调整自身 trust 后才变为可信。
+
+先安装/协调完整 nft 策略，再以 `guestnet` 运行 pasta 或 rootless Docker。Docker 用户单元会为受限账户清除继承的显式代理环境变量，并使用声明的 rootless 包与设置。新增/更改身份或委派 UID 映射前停止旧后端。为运行中的后端撤销私网访问时，保持身份声明、移除授权并重载防火墙，已跟踪连接的双向流量都会切断。仅设置 `socketGuestUsers` 不会迁移桌面容器。这些账户使用单独的真实地址 DNS 路径，没有明文/split DNS 后备。见[访客边界](network_CN.md#访客与容器)。
 
 需要硬件 MAC 的 Wi-Fi profile 可设置：
 

@@ -18,6 +18,8 @@ The helper retains the privileges needed for identity changes, directory ownersh
 
 This reduces desktop-controlled root operations. A compromised core still has host `NET_ADMIN`; it is not isolated from host networking. Desktop programs with the same UID can use allowed GUI/controller operations. The helper's upstream IPC protocol is not a substitute for these execution and file-operation constraints.
 
+An explicitly enabled IPv4 guest TPROXY inlet binds `0.0.0.0:7896`; the ordinary mixed/DNS/controller endpoints remain local under `allow-lan=false`. The packaged listener handles this bind separately and selects IPv4 sockets. Its TCP/UDP UID and service cgroup are checked before B; guest interface/source authorization remains in the firewall. Later core auto-redirect preserves the owned guest mark instead of replacing its transparent socket. See [guest networking](network.md#guests-and-containers).
+
 ## Authorizing a configuration
 
 `clash-on` records proxy intent, enters C and starts a new import session. It clears previous authorization and opens one **single-use, 300-second** window. The GUI supplies the effective configuration; the packaged launcher imports it under a shared authorization lock before starting the core. A failed import consumes the window too. Run `clash-on` again after correcting inputs.

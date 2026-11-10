@@ -16,7 +16,6 @@ final: prev:
 
   niri = prev.niri.overrideAttrs (old: {
     doCheck = false;
-
     patches = (old.patches or [ ]) ++ [
       (prev.fetchurl {
         name = "niri-shm-screencast.diff";

@@ -8,12 +8,14 @@ in
 pkgs.testers.runNixOSTest {
   name = "proxy-policy-recovery";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
+
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
       ../../system/programs/clash/identity.nix
       ../../system/config/machine.nix
       ../../system/config/hardening-options.nix
       ../../system/config/proxy-options.nix
+
       ({ config, lib, ... }:
         let profile = import ../../system/config/proxy-profile.nix { inherit config lib; };
         in profile // {
@@ -31,6 +33,7 @@ pkgs.testers.runNixOSTest {
             };
           };
         })
+
       ../../system/config/network.nix
       ../../system/programs/systemd/proxy-mode.nix
       ../../system/programs/systemd/dns-upstream.nix
@@ -39,8 +42,10 @@ pkgs.testers.runNixOSTest {
       ../../system/programs/systemd/netsec-alert.nix
       ../../system/programs/systemd/network-bootstrap.nix
     ];
+
     users.users.lfour = { isNormalUser = true; uid = 1000; };
     programs.clash-verge.package = clashPackage;
+
     # The test driver's default VLAN owns 192.168.1.1 on the host. Move that
     # auxiliary network so the portal fixture really traverses an uplink.
     virtualisation.vlans = [ 9 ];
@@ -52,9 +57,11 @@ pkgs.testers.runNixOSTest {
     services.avahi.enable = lib.mkForce false;
     my.machine.ntsUpstreams = [ "nts.fixture.test" ];
     networking.extraHosts = "203.0.113.10 nts.fixture.test";
+
     services.chrony.extraConfig = ''
       ntstrustedcerts /run/netsec-nts/server.crt
     '';
+
     services.unbound.settings.server = {
       local-zone = [ ''"fixture.test." static'' ];
       local-data = [
@@ -62,6 +69,7 @@ pkgs.testers.runNixOSTest {
         ''"ok.blocked.fixture.test. 0 IN A 192.0.2.43"''
         ''"a.ok.blocked.fixture.test. 0 IN A 192.0.2.44"''
       ];
+
       # TLS is selected per forward zone here so this one isolated fixture can
       # use plaintext loopback. The production root forwarder still uses TLS.
       tls-upstream = lib.mkForce false;
@@ -70,6 +78,7 @@ pkgs.testers.runNixOSTest {
       domain-insecure = [ "rebind.fixture.example." "fixture.test." ];
       trust-anchor-file = "${signedZone}/trust.key";
     };
+
     services.unbound.settings.forward-zone = lib.mkForce [
       {
         name = ".";
@@ -77,27 +86,33 @@ pkgs.testers.runNixOSTest {
           config.my.machine.dotUpstreams;
         forward-tls-upstream = true;
       }
+
       {
         name = "rebind.fixture.example.";
         forward-addr = [ "127.0.0.1@15355" ];
         forward-first = false;
       }
+
       {
         name = "signed.fixture.example.";
         forward-addr = [ "127.0.0.1@15356" ];
         forward-first = false;
       }
     ];
+
     systemd.services.netsec-rebind-fixture = {
       wantedBy = [ "multi-user.target" ];
       serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 ${./rebind_fixture.py}";
     };
+
     systemd.services.netsec-dnssec-fixture = {
       wantedBy = [ "multi-user.target" ];
       serviceConfig.ExecStart = "${dnsPython}/bin/python3 ${./dnssec_fixture.py} ${signedZone}/zone";
     };
+
     systemd.services.dns-upstream.environment.NETSEC_DNSSEC_PROBE_NAME = "signed.fixture.example.";
     environment.etc."netsec-dnssec-probe.py".source = ../../system/programs/systemd/netsec/dnssec_probe.py;
+
     environment.etc."netsec-nts-server.conf".text = ''
       bindaddress 203.0.113.10
       local stratum 10
@@ -109,6 +124,7 @@ pkgs.testers.runNixOSTest {
       ntsserverkey /run/netsec-nts/server.key
       ntsprocesses 0
     '';
+
     environment.etc."netsec-nts-untrusted.conf".text = ''
       server nts.fixture.test nts iburst
       authselectmode require
@@ -118,45 +134,57 @@ pkgs.testers.runNixOSTest {
       pidfile /run/netsec-nts/untrusted.pid
       bindcmdaddress /run/netsec-nts/untrusted.sock
     '';
+
+    # Exercise the explicit legacy trusted development policy; the dedicated
+    # guest VM covers the restricted default and mixed per-interface roles.
+    my.hardening.guestPrivateEgress = true;
+    my.hardening.guestNetworks.virbr0.hostTcpPorts = [ 18081 ];
     my.proxy.transparentGuestInterfaces = [ "virbr0" ];
     networking.networkmanager.unmanaged = [
       "interface-name:eth*" "interface-name:guest*"
       "interface-name:virbr0" "interface-name:wlo1"
       "interface-name:tailscale0"
     ];
+
     # Keep the real unit dependency graph without needing a DHCP server. All
     # packet tests use namespaces and explicitly assigned addresses inside VM.
     systemd.services.dhcpcd.serviceConfig = {
       Type = lib.mkForce "simple";
       ExecStart = lib.mkForce "${pkgs.writeShellScript "test-dhcpcd" ''exec ${pkgs.coreutils}/bin/sleep infinity''} --config ${pkgs.writeText "test-dhcpcd.conf" ""}";
+
       # sleep.target's network hook reloads this mocked service. A real reload
       # command would start a host dhcpcd behind the sleeping placeholder.
       ExecReload = lib.mkForce "${pkgs.coreutils}/bin/true";
       PIDFile = lib.mkForce "";
     };
+
     systemd.services.nftables.serviceConfig.ExecStart = lib.mkForce [
       (pkgs.writeShellScript "first-load-fault" ''
         test -e /run/allow-full-policy || exit 1
         exec ${config.my.proxy.modeScript} --reload
       '')
     ];
+
     environment.etc."netsec-mode-b.nft".text = config.my.proxy.proxyModeRules;
     environment.etc."netsec-mode-c.nft".text = config.my.proxy.blockedModeRules;
     environment.etc."netsec-mode-script".source = config.my.proxy.modeScript;
     environment.etc."netsec-guest-services.py".source = ./guest_services_fixture.py;
     environment.etc."netsec-ntp.py".source = ./ntp_fixture.py;
     environment.etc."netsec-tail.py".source = ./tailscale_fixture.py;
+
     environment.etc."netsec-private-rules.nft".text = (import ../../system/config/network.nix {
       inherit pkgs lib;
       config = config // {
         my = config.my // {
           hardening = config.my.hardening // {
             guestPrivateEgress = false;
+            guestNetworks = lib.mapAttrs (_: n: n // { hostTcpPorts = [ ]; hostUdpPorts = [ ]; }) config.my.hardening.guestNetworks;
             guestPrivateExceptions = [ { interface = "virbr0"; cidr = "100.67.0.1/32"; tcpPorts = [ 8080 ]; udpPorts = [ ]; } ];
           };
         };
       };
     }).networking.nftables.ruleset;
+
     environment.etc."netsec-kernel-sockets.py".text = ''
       import errno
       from pathlib import Path
@@ -173,6 +201,7 @@ pkgs.testers.runNixOSTest {
       for module in ("rds", "tipc"):
           assert not (Path("/sys/module") / module).exists(), module
     '';
+
     environment.etc."netsec-tproxy.py".source = ./tproxy_fixture.py;
     environment.etc."netsec-dns.py".source = ./dns_fixture.py;
     environment.etc."netsec-core.py".source = ./core_fixture.py;
@@ -184,6 +213,7 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-health.json".source = config.my.proxy.healthSettings;
     environment.etc."netsec-health.py".source = ../../system/programs/systemd/netsec/health.py;
     environment.etc."netsec-resolved-policy.py".source = ../../system/programs/systemd/netsec/resolved_policy.py;
+
     environment.etc."netsec-tailnet.json".text = builtins.toJSON {
       ip = "${pkgs.iproute2}/bin/ip";
       resolvectl = "${pkgs.systemd}/bin/resolvectl";
@@ -196,11 +226,13 @@ pkgs.testers.runNixOSTest {
         cli = pkgs.writeShellScript "fixture-tailnet-status" ''cat /run/netsec-tailnet-status.json'';
       };
     };
+
     environment.etc."netsec-events.py".source = ../../system/programs/systemd/netsec/events.py;
     environment.etc."netsec-events-test.py".source = ./events_fixture.py;
     environment.etc."netsec-listeners-test.py".source = ./listeners_fixture.py;
     environment.etc."netsec-listener-check".source = config.my.proxy.listenerCheck;
     environment.etc."netsec-launcher".text = "${config.programs.clash-verge.package}/bin/verge-mihomo\n";
+
     systemd.services.clash-verge.serviceConfig.ExecStart = pkgs.writeShellScript "test-core-listeners" ''
       if test -e /run/netsec-real-profile.json; then
         install -d -m 0755 /run/clash-verge-rev/core /run/user/1000/clash-verge-rev
@@ -218,22 +250,26 @@ pkgs.testers.runNixOSTest {
         ''}/bin/verge-mihomo -d /run/netsec-real-core -f /run/netsec-real-profile.json \
           -ext-ctl-unix /run/clash-verge-rev/core/mihomo.sock
       fi
-      exec ${pkgs.python3}/bin/python3 /etc/netsec-listeners-test.py serve "$(cat /run/listener-good-protocol)" --mixed
+      exec ${pkgs.python3}/bin/python3 /etc/netsec-listeners-test.py serve "$(cat /run/listener-good-protocol)" --mixed --tproxy
     '';
+
     systemd.services.clash-verge.environment = {
       LF_MANAGED_PROXY_POLICY = pkgs.writeText "vm-managed-policy.json" (builtins.toJSON config.my.proxy.managedProfile);
       SKIP_SYSTEM_IPV6_CHECK = "1";
     };
+
     systemd.services.netsec-listener-impostor.serviceConfig = {
       User = "lfour";
       ExecStart = pkgs.writeShellScript "test-impostor-listeners" ''
         exec ${pkgs.python3}/bin/python3 /etc/netsec-listeners-test.py serve "$(cat /run/listener-bad-protocol)"
       '';
     };
+
     environment.etc."netsec-split-test.py".source = ./split_fixture.py;
     environment.etc."netsec-policy.py".source = ../../system/programs/systemd/netsec/dns_policy.py;
     environment.etc."netsec-rules-check".source = config.my.proxy.rulesCheck;
     environment.etc."netsec-expected".source = config.my.proxy.expectedRules;
+
     environment.etc."netsec-split.json".text = builtins.toJSON {
       nft = "${pkgs.nftables}/bin/nft";
       nmcli = pkgs.writeShellScript "test-split-nmcli" ''
@@ -250,6 +286,7 @@ pkgs.testers.runNixOSTest {
       runtime = "/run/dns-upstream";
       allow_plaintext = true;
     };
+
     environment.etc."test-dns-sleep.json".text = builtins.toJSON {
       nft = pkgs.writeShellScript "fault-inject-sleep-nft" ''
         test ! -e /run/fail-sleep-nft || exit 1
@@ -257,26 +294,31 @@ pkgs.testers.runNixOSTest {
       '';
       systemctl = "${pkgs.systemd}/bin/systemctl";
     };
+
     systemd.services.dns-policy-sleep.serviceConfig.ExecStart = lib.mkForce
       "${pkgs.python3}/bin/python3 ${../../system/programs/systemd/netsec/dns_sleep.py} /etc/test-dns-sleep.json before";
     systemd.services.dns-policy-resume.serviceConfig.ExecStart = lib.mkForce
       "${pkgs.python3}/bin/python3 ${../../system/programs/systemd/netsec/dns_sleep.py} /etc/test-dns-sleep.json resume";
+
     # Hold sleep.target without invoking suspend or freezing the test driver.
     systemd.services.netsec-test-sleep-hold = {
       requires = [ "sleep.target" ];
       after = [ "sleep.target" ];
       serviceConfig = { Type = "oneshot"; RemainAfterExit = true; ExecStart = "${pkgs.coreutils}/bin/true"; };
     };
+
     environment.etc."guest-dhcpcd.conf".text = ''
       nohook resolv.conf
       nohook ntp.conf
       nohook hostname
       noipv4ll
     '';
+
     environment.systemPackages = [ pkgs.curl pkgs.python3 pkgs.jq pkgs.iproute2 pkgs.nftables
       pkgs.dnsmasq pkgs.dhcpcd pkgs.dnsutils pkgs.util-linux pkgs.openssl pkgs.netcat ];
     virtualisation.memorySize = 1536;
   };
+
   testScript = ''
     import ipaddress
 
@@ -505,7 +547,6 @@ pkgs.testers.runNixOSTest {
     machine.succeed("systemd-run --unit=netsec-host-echo python3 /etc/netsec-guest-services.py server; systemd-run --unit=netsec-peer-echo ip netns exec outside /run/current-system/sw/bin/python3 /etc/netsec-guest-services.py server")
     machine.wait_until_succeeds("ss -ltn | grep -q ':18081 '", timeout=10)
     machine.wait_until_succeeds("ip netns exec outside ss -ltn | grep -q ':18081 '", timeout=10)
-    machine.succeed("nft insert rule inet lf_filter lf_guest_host iifname virbr0 ip saddr 192.168.122.0/24 ip daddr 192.168.122.1 tcp dport 18081 accept")
     machine.succeed("systemd-run --unit=netsec-guest-host ip netns exec guest /run/current-system/sw/bin/python3 /etc/netsec-guest-services.py client 192.168.122.1 guest-host; systemd-run --unit=netsec-guest-private ip netns exec guest /run/current-system/sw/bin/python3 /etc/netsec-guest-services.py client 100.67.0.1 guest-private")
     machine.wait_until_succeeds("test -e /tmp/guest-host.ready -a -e /tmp/guest-private.ready", timeout=15)
     machine.succeed("nft -f /etc/netsec-private-rules.nft; touch /tmp/guest-host.next /tmp/guest-private.next")

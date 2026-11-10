@@ -76,6 +76,12 @@ The core validates and pins domain dial targets after routing, including approve
 
 In managed fake-IP mode, address-record behavior stays synthetic while HTTPS/SVCB queries use the configured resolver and retain their service parameters. The common filter runs before both. Firefox's use of these records, its CONNECT limitation and the optional native browser path are explained in [the browser guide](browser.md#ech-discovery-and-proxy-compatibility).
 
+## Restricted socket guest DNS
+
+When `my.hardening.socketGuestUsers` is nonempty, [socket-guest-dns.nix](../system/config/socket-guest-dns.nix) starts an additional loopback dnsmasq on port 1056 as UID 985. It shares the immutable suffix filter, additions and exceptions, but always forwards to Unbound 1055 and returns real addresses. It has no plaintext lease, split-DNS or native MagicDNS path. Unavailable DoT, including `unboundDotInProxy=false` in B, makes fresh public names fail; eligible cached/local data may remain.
+
+The declared primary and subordinate UIDs have TCP/UDP port 53 redirected here before the core's auto-redirect. A post-NAT check rejects old conntrack associations that still point at a previous resolver, and direct calls to 1056 remain reserved for root. The private-destination guard refuses direct fake-IP/known translation targets and host proxy inlets. Independent HTTPS/DoH payloads remain outside suffix filtering, while their resulting literal socket targets still face the account policy. C cuts these accounts' tracked replies as well as public egress. This path belongs to [host-socket guest authorization](network.md#guests-and-containers); the normal desktop resolver and bridge gateway DNS retain their separate paths.
+
 ## Blocklist
 
 [dns-blocklist.nix](../system/config/dns-blocklist.nix) decompresses the tracked [snapshot](../local-data/dns-blocklist.txt.xz) once at build time. The same immutable bare-domain file supplies dnsmasq's suffix NXDOMAIN rules and the core's in-memory filter. Nothing is downloaded during a build or at runtime.

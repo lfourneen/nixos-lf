@@ -24,18 +24,11 @@
       # REA (MCP) native analysis engine: Ghidra is located via an env var,
       # not PATH.
       GHIDRA_INSTALL_DIR = "${pkgs.unstable.ghidra}/lib/ghidra";
-
-      # Proxy
-      #http_proxy = "";
-      #https_proxy = "";
-      #all_proxy = "";
-      #ALL_PROXY = "";
-      #NO_PROXY = "";
     };
-  
+
     variables = {
       EDITOR = "nvim";
-    
+
       # sops CLI age identity: /etc/environment is not $HOME-expanded, so use an
       # absolute path. Works even in root shells (sops set under /etc/nixos).
       SOPS_AGE_KEY_FILE = "${config.users.users.lfour.home}/.config/sops/age/keys.txt";

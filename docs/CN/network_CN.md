@@ -51,15 +51,21 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 
 | Hook / priority | 用途 |
 |---|---|
+| Output `-202` | 受限 socket 访客的原始目标/UID 守卫 |
 | Output `-201` | NAT 前拒绝显式使用 Gost 透明入口 |
 | Prerouting `-201` | 重定向前限制访客公网目的地 |
-| Output `-199` | 将 dnsmasq 上游 DNS 限定到目的地租约；严格模式阻断核心外部 53，仅保留 MagicDNS |
-| Output `-198` | 保留内部 DNS 端口并检查应答身份 |
+| Prerouting `-199` | 访客源地址、私网目标和网关服务检查 |
+| Output `-199` | 跟踪受限 socket 访客账户；将 dnsmasq 上游 DNS 限定到目的地租约；严格模式阻断核心外部 53，仅保留 MagicDNS |
+| Output `-198` | 保留内部 DNS 端口、检查应答身份并复核访客宿主服务回包 |
 | Output `-197` | C guard，位于 conntrack（`-200`）之后、auto-redirect（`-150`）之前 |
 | Output `-196` | 限制独立使用 853 端口的 DoT/DoQ |
 | Output `-195` | B 可选私网/多播授权与 Unbound DoT 关闭，位于 NAT/TUN 前 |
 | Output `-194` | A/B 可选 Chrony 原始目标 CIDR 限制 |
-| Input `-1` | C 在 established 放行之前丢弃已解密 tailnet 数据 |
+| Output NAT `-190`、filter `-90` | 将受限 socket 访客 DNS 强制送至 1056，并拒绝旧解析器关联 |
+| Input `-2`、forward `-1` | 按当前授权复核受限 socket / 转发访客回包 |
+| Input `-1` | C 在 established 放行前切断已解密 tailnet 数据及已跟踪 socket 访客回包 |
+
+NAT 优先级排列内核共享 destination-NAT hook 中的规则查找顺序；socket 访客 DNS 的 `-90` filter 在该 hook 之后检查实际改写后的目标。
 
 B 重定向宿主公网 TCP，fake-IP 保留核心路径，其余公网出站在明确例外后丢弃。例外包括核心 mark、按 UID 限定的 Unbound DoT 与 Chrony NTS/NTP、窄 DHCP、组播和默认私网访问。Tailscale UDP 例外要求 UID 0、物理上行口，且 socket 的 `SO_MARK` 与 packet mark 都等于上游 Linux bypass mark（`0x80000`）。保留动态 peer/STUN 端口，不再整体放行未打标 root UDP。这是路由约定，不是服务身份认证或针对 root 的隔离；root 仍能设置 socket mark 或修改防火墙。当前 LKL 内核支持 `socket mark`，不支持 `socket cgroupv2`。
 
@@ -83,10 +89,23 @@ Tailscale 不自动接受 DNS、子网路由或出口节点；只有已认证 ta
 
 ## 访客与容器
 
-`my.proxy.guestInterfaces` 默认包含 `virbr0`、`waydroid0`；独立 AP 仅在热点策略启用后加入，Wi-Fi 客户端上行不作为访客入口。B/C 在 NAT 前检查公网目的地，并在 established 放行前约束双向转发。
+[guest-policy.nix](../../system/config/guest-policy.nix) 区分经宿主转发的访客网络与创建宿主 socket 的后端。私网地址本身不构成信任依据。
 
-B/C 默认拒绝访客公网转发。`transparentGuestInterfaces` 显式选择健康 B 中的 IPv4 TPROXY 子集，默认空；访客 IPv6 公网仍拒绝。A 直接共享上行。热点选项仅安装防火墙角色，独立 AP 接口、hostapd 和 DHCP 仍需另行配置。
+| 类别 | 身份依据 | 私网目标 | 公网目标 |
+|---|---|---|---|
+| 受限桥接 / 热点（默认） | 精确入口接口与声明的源 CIDR | 明确的接口/CIDR/TCP 或 UDP 端口授权 | A 允许 IPv4；B 须显式选择 IPv4 TPROXY；C 拒绝 |
+| 可信开发桥 | 相同的接口/源地址检查，显式 `trust="trusted"` | 允许私网路由，仍拒绝不安全目标 | 与受限桥相同 |
+| 受限宿主 socket 后端 | 独立固定 UID 及其全部委派 subordinate UID | 明确的账户/原始出口接口/CIDR/端口授权 | 宿主 A/B/C 策略；C 也切断已跟踪回包 |
+| 桌面账户的 passt / rootless Docker | 共用桌面 UID | 宿主策略 | 宿主策略 |
 
-访客网关 DHCP/DNS 与宿主 loopback 解析器分开；默认宿主访问仅限该基础设施。Libvirt 桌面服务需要 `guestHostServices` 和明确的 TCP/UDP 清单，撤销后也切断已有访客主动连接。TUN 入站仅允许已跟踪的 established/related 流量。
+`my.proxy.guestInterfaces` 默认包含 `virbr0`、`waydroid0`；独立 AP 在热点启用后加入。`my.hardening.guestNetworks.<接口>` 声明信任级别、规范且互不重叠的 `sourceCidrs`、网关地址及宿主服务端口。内建角色默认使用 machine 中的 IPv4 子网/网关。IPv6 需要显式 ULA 源子网；所有模式均拒绝访客 IPv6 公网。Wi-Fi 客户端上行不能作为访客角色。创建 AP、DHCP 服务和网桥与安装防火墙策略仍是独立步骤。
 
-访客私网转发默认允许。`my.hardening.guestPrivateEgress=false` 配合 `guestPrivateExceptions` 按接口/CIDR/协议/端口限制 libvirt/Waydroid，不改变单独启用的热点策略。LAN/CGNAT/ULA 可达是兼容选择，不代表可信。Passt 或 rootless 容器若转换为宿主 socket，则走宿主路径，需要单独验证。
+所有角色（包括热点）的私网转发默认受限。`guestPrivateExceptions` 按精确入口接口、私网目标 CIDR、TCP/UDP 端口授权。开发网络可显式设 `trust="trusted"` 放行私网路由，但不会开放任意宿主服务或公网 B/C 转发。兼容选项 `guestPrivateEgress=true` 仅信任未明确设置 `trust` 的 libvirt/Waydroid 角色，逐接口选择优先。
+
+网关 DHCP/DNS 与宿主 loopback 解析器分开。`hostTcpPorts` / `hostUdpPorts` 仅在该角色声明的网关地址开放服务；旧 libvirt `guestHostServices` 与端口清单汇入同一策略。源检查先于重定向，宿主访问检查先于 established 入站放行，当前授权同时约束既有转发连接的双向流量及宿主服务回包。因此撤销也会切断服务端主动推送。不同信任级别需要独立网桥：此策略识别网络，不隔离同桥二层流量，也不认证具体访客。
+
+`transparentGuestInterfaces` 默认空，仅为健康 B 显式选择 IPv4 TPROXY 入口。有效 fake-IP 映射需要该入口；其它合成地址、选定元数据端点及已知转换/过渡网段仍拒绝。C 在保留核心恢复路径的同时切断已代理访客的回包。桥接私网授权与公网模式守卫独立。
+
+Passt 与 rootless 网络将访客报文转换为宿主 socket，桥接规则无法据此识别容器。对不可信后端，应以 `my.hardening.socketGuestUsers` 声明独立固定普通账户；正常构建拒绝桌面/root/基础设施身份、共用 UID 及重叠的委派范围。`socketGuestPrivateExceptions` 按账户、原始出口接口、私网 CIDR 和目标端口授权。loopback/代理入口、保留代理/DNS 目标端口、fake-IP 和已知转换目标不可授权。TCP/UDP 53 强制进入[过滤后的真实地址解析器](dns_CN.md#受限-socket-访客-dns)，避免 B 的合成地址遮蔽 UID 守卫需要检查的私网最终目标。这些账户的 rootless Docker 启动器会清除继承的显式代理环境变量。
+
+先安装策略，再以声明账户运行后端。新增/更改受限账户或 UID 映射前，应停止旧后端；回包跟踪无法追溯识别旧的未标记 socket。在身份保持声明时撤销私网授权，会切断已跟踪连接的双向流量。桌面账户的 rootless Docker 仍属于可信开发环境，因为它与桌面应用共用 UID。UID 策略约束网络出站；文件权限、共享 Unix socket、入站端口发布及同桥隔离需要另行控制。授权匹配宿主 socket/路由的原始目标，不检查应用隧道内部的目标。root 与拥有宿主 `NET_ADMIN` 的核心仍受信任。见[配置示例](operations_CN.md#配置入口)。

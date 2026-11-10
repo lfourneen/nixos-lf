@@ -27,6 +27,7 @@ for case in cases:
     assert "127.0.0.0/8" in data["lf-private-targets"]["local-target-cidrs"]
     assert data["lf-private-targets"]["fake-ip-prefix"].endswith("/16")
     assert not data["allow-lan"]
+    assert data["bind-address"] == "*", case["name"]
     for key in ("port", "socks-port", "redir-port"):
         assert data[key] == 0
     for key in ("inet6-address", "congestion-controller", "route-exclude-address"):

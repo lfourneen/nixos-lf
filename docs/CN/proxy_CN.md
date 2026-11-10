@@ -18,6 +18,8 @@ Helper 保留身份切换、目录所有权和子进程管理所需权限，仅�
 
 这些约束减少桌面可控制的 root 操作。核心仍有宿主 `NET_ADMIN`，不能视为与宿主网络隔离。同桌面 UID 程序可以调用允许的 GUI/API；helper 上游 IPC 协议不能代替执行路径和文件操作限制。
 
+显式启用的 IPv4 访客 TPROXY 入口绑定 `0.0.0.0:7896`；普通 mixed/DNS/controller 端点在 `allow-lan=false` 下仍仅本机。打包监听器单独处理该绑定并选择 IPv4 socket，进入 B 前检查 TCP/UDP 的 UID 与服务 cgroup；访客接口/源地址授权仍由防火墙负责。核心后续 auto-redirect 保留自有访客 mark 对应的透明 socket。见[访客网络](network_CN.md#访客与容器)。
+
 ## 配置授权
 
 `clash-on` 写入代理意图，进入 C 并开始新导入会话：清除旧授权，打开**一次性 300 秒**窗口。GUI 提供生效配置，打包启动器在共享授权锁下导入后再启动核心。失败也消费窗口，修正输入后需重新 `clash-on`。

@@ -36,6 +36,7 @@ listeners = module('listeners')
 tun = module('tun')
 dnssec_probe = module('dnssec_probe')
 egress_policy = module('egress_policy')
+guest_policy = module('guest_policy')
 SOURCE = (MODULES / "proxy-mode.nix").read_text()
 
 
@@ -64,6 +65,83 @@ class DirectEgressPolicyTests(unittest.TestCase):
         for cidr in ('0.0.0.0/0', '::/0', '239.0.0.0/8', 'ff02::/16', '203.0.113.1/24'):
             with self.subTest(cidr=cidr), self.assertRaises(ValueError):
                 egress_policy.validate(policy | {'timeServerCidrs': [cidr]})
+
+
+class GuestPolicyTests(unittest.TestCase):
+    def policy(self):
+        return {
+            'known': ['virbr0', 'waydroid0'], 'interfaces': ['virbr0', 'waydroid0', 'ap0'],
+            'networks': [
+                {'interface': 'virbr0', 'trust': 'trusted', 'sourceCidrs': ['192.168.122.0/24'],
+                 'gateways': ['192.168.122.1'], 'hostTcpPorts': [], 'hostUdpPorts': []},
+                {'interface': 'waydroid0', 'trust': 'restricted', 'sourceCidrs': ['192.168.240.0/24', 'fd42:240::/64'],
+                 'gateways': ['192.168.240.1', 'fd42:240::1'], 'hostTcpPorts': [8080], 'hostUdpPorts': []},
+                {'interface': 'ap0', 'trust': 'restricted', 'sourceCidrs': ['10.42.0.0/24'],
+                 'gateways': ['10.42.0.1'], 'hostTcpPorts': [], 'hostUdpPorts': []}],
+            'exceptions': [{'interface': 'ap0', 'cidr': '10.1.2.3/32', 'tcpPorts': [443], 'udpPorts': []}],
+            'socketUsers': [{'name': 'guestnet', 'uid': 1100}],
+            'socketExceptions': [{'user': 'guestnet', 'interface': 'ens1', 'cidr': '10.1.2.3/32',
+                                  'tcpPorts': [443], 'udpPorts': []}],
+            'users': {'root': 0, 'nobody': 65534, 'lfour': 1000, 'guestnet': 1100, 'clash-core': 982},
+            'protectedUsers': ['root', 'nobody', 'lfour', 'clash-core'],
+            'tunInterface': 'Mihomo', 'forbiddenInterfaces': ['lo', 'ens1', 'wlo1', 'Mihomo', 'tailscale0'],
+            'privateScopes': ['10.0.0.0/8', '192.168.0.0/16', 'fc00::/7'],
+            'sourceScopes': ['10.0.0.0/8', '192.168.0.0/16', 'fc00::/7'],
+            'unsafe4': ['0.0.0.0/8', '127.0.0.0/8', '169.254.169.254/32', '198.18.0.0/15'],
+            'unsafe6': ['::/96', '::1/128', 'ff00::/8'], 'reservedPorts': [53, 1056, 7897, 33332]}
+
+    def test_scoped_roles_cover_all_networks(self):
+        guest_policy.validate(self.policy())
+        for cidr in ('10.1.2.3/24', '203.0.113.10/32', '0.0.0.0/0', 'fc00::1/64', '::ffff:192.168.0.0/112'):
+            candidate = self.policy()
+            candidate['exceptions'][0]['cidr'] = cidr
+            with self.subTest(cidr=cidr), self.assertRaises(ValueError):
+                guest_policy.validate(candidate)
+
+    def test_sources_and_gateways_cannot_borrow_another_role(self):
+        mutations = [
+            lambda p: p['networks'][1].update(sourceCidrs=['192.168.122.0/24']),
+            lambda p: p['networks'][1].update(sourceCidrs=['192.168.240.1/24']),
+            lambda p: p['networks'][1].update(sourceCidrs=['203.0.113.0/24']),
+            lambda p: p['networks'][1].update(gateways=['192.168.122.1']),
+            lambda p: p['networks'][1].update(gateways=[]),
+            lambda p: p['networks'].pop(),
+            lambda p: p['interfaces'].remove('virbr0'),
+            lambda p: p.update(declaredInterfaces=['virb0']),
+            lambda p: p['exceptions'][0].update(interface='ens1'),
+            lambda p: p['exceptions'][0].update(tcpPorts=[]),
+            lambda p: p['exceptions'][0].update(tcpPorts=[0]),
+        ]
+        for change in mutations:
+            candidate = self.policy(); change(candidate)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                guest_policy.validate(candidate)
+
+    def test_socket_guests_require_a_distinct_nonprivileged_identity(self):
+        for name, uid in [('root', 0), ('lfour', 1000), ('nobody', 65534), ('clash-core', 982), ('missing', None)]:
+            candidate = self.policy(); candidate['socketUsers'] = [{'name': name, 'uid': uid}]
+            with self.subTest(name=name), self.assertRaises(ValueError): guest_policy.validate(candidate)
+        candidate = self.policy(); candidate['users']['alias'] = 1100
+        with self.assertRaises(ValueError): guest_policy.validate(candidate)
+        for values in ({'user': 'lfour'}, {'interface': 'lo'}, {'interface': 'Mihomo'},
+                       {'tcpPorts': [7897]}, {'tcpPorts': [53]}, {'cidr': '203.0.113.10/32'}):
+            candidate = self.policy(); candidate['socketExceptions'][0].update(values)
+            with self.subTest(values=values), self.assertRaises(ValueError): guest_policy.validate(candidate)
+
+
+    def test_delegated_identities_remain_owned_by_one_guest_account(self):
+        candidate = self.policy()
+        candidate['subUidRanges'] = {'guestnet': [{'startUid': 400000, 'count': 65536}],
+                                     'lfour': [{'startUid': 200000, 'count': 65536}]}
+        candidate['socketUsers'][0]['uidRanges'] = candidate['subUidRanges']['guestnet']
+        guest_policy.validate(candidate)
+        for other in ({'startUid': 400100, 'count': 65536}, {'startUid': 400000, 'count': 65536}):
+            bad = copy.deepcopy(candidate); bad['subUidRanges']['lfour'] = [other]
+            with self.subTest(other=other), self.assertRaises(ValueError): guest_policy.validate(bad)
+        bad = copy.deepcopy(candidate); bad['users']['service'] = 400010
+        with self.assertRaises(ValueError): guest_policy.validate(bad)
+        bad = copy.deepcopy(candidate); bad['socketUsers'][0]['uidRanges'] = [{'startUid': 500000, 'count': 65536}]
+        with self.assertRaises(ValueError): guest_policy.validate(bad)
 
 
 class HealthTests(unittest.TestCase):
@@ -949,6 +1027,13 @@ def policy_document():
 
 
 class RulesTests(unittest.TestCase):
+    def test_conntrack_protocol_echo_and_live_forms_are_equivalent(self):
+        def match(value):
+            return {"match": {"op": "==", "left": {"ct": {"key": "protocol"}}, "right": value}}
+        self.assertEqual(rules.normalize(match("tcp")), rules.normalize(match(6)))
+        self.assertEqual(rules.normalize(match("udp")), rules.normalize(match(17)))
+        self.assertNotEqual(rules.normalize(match("tcp")), rules.normalize(match(17)))
+
     def test_split_lease_tuple_keeps_interface_and_timeout_validation(self):
         definition = {'name': 'dns_split4', 'type': ['ifname', 'ipv4_addr'], 'flags': ['timeout'], 'timeout': 120000}
         element = {'elem': {'val': {'concat': ['wlo1', '10.1.2.53']}, 'timeout': 1000, 'expires': 500}}

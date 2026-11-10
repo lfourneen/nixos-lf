@@ -4,10 +4,12 @@ let
   m = config.my.machine;
   port = m.ports;
   gostUid = m.uids.gost;
+
   sources = lib.fileset.toSource {
     root = ./netsec;
     fileset = lib.fileset.unions [ ./netsec/patch_gost.py ./netsec/gost_http.go ./netsec/gost_http_test.go ];
   };
+
   gost = pkgs.gost.overrideAttrs (old: {
     doCheck = true;
     postConfigure = (old.postConfigure or "") + ''

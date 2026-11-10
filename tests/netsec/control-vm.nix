@@ -1,4 +1,4 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false }:
 
 let
   echFixture = pkgs.runCommand "ech-origin-fixture" { nativeBuildInputs = [ pkgs.go ]; } ''
@@ -11,13 +11,14 @@ let
 in
 
 pkgs.testers.runNixOSTest {
-  name = if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
       ../../system/config/machine.nix
       ../../system/config/hardening-options.nix
       ../../system/config/proxy-options.nix
+
       ({ config, lib, ... }: let
         profile = import ../../system/config/proxy-profile.nix { inherit config lib; };
       in profile // {
@@ -33,38 +34,45 @@ pkgs.testers.runNixOSTest {
           };
         };
       })
+
       ../../system/config/network.nix
       ../../system/config/dns-blocklist.nix
       ../../system/programs/systemd/proxy-mode.nix
       ../../system/programs/systemd/dns-upstream.nix
       ../../system/programs/systemd/gost-relay.nix
       ../../system/programs/clash/runtime.nix
-    ];
+    ] ++ lib.optional guests ./guest-config.nix;
     users.users.lfour = { isNormalUser = true; uid = 1000; };
     users.groups.dhcpcd = { };
     users.users.dhcpcd = { isSystemUser = true; group = "dhcpcd"; };
+
     programs.clash-verge = {
       enable = true;
       serviceMode = true;
       group = "clash-verge-control";
       package = clashPackage;
     };
+
     my.proxy.nodeProbeUrls = [ "http://node.fixture.example:8080/" ];
     my.proxy.tunProbeName = "tun.fixture.example";
     my.proxy.dnsEncryption = if strictDns then "strict" else "opportunistic";
     my.proxy.blockedDomains = [ "ads.fixture.example" "blocked.fixture.test" "metrics.home.arpa" ];
     my.proxy.blockedDomainExceptions = [ "ok.blocked.fixture.test" ];
+
     my.proxy.remoteTargetGrants = lib.optionals targetPolicy [{
       proxy = "Fixture"; cidr = "127.0.0.1/32";
       inlets = [ "SOCKS5" ]; network = "tcp"; ports = [ 18082 ];
     }];
+
     systemd.services.dns-upstream.environment = lib.mkIf strictDns {
       NETSEC_DOT_PRIME_ROUNDS = "0";
       NETSEC_PROBE_TIMEOUT = "0.5";
       NETSEC_PROBE_TRANSPORT_TIMEOUT = "0.5";
     };
+
     services.tailscale.enable = lib.mkForce false;
     my.hardening.allowPrivateEgress = !restricted;
+
     my.hardening.directEgress = lib.mkIf restricted {
       mode = "restricted";
       unboundDotInProxy = false;
@@ -76,6 +84,7 @@ pkgs.testers.runNixOSTest {
         tcpPorts = [ 8080 ];
       }];
     };
+
     services.avahi.enable = lib.mkForce false;
     networking.networkmanager.unmanaged = [ "interface-name:eth*" "interface-name:ens1" "interface-name:wlo1" ];
     networking.interfaces.ens1.useDHCP = lib.mkForce false;
@@ -92,6 +101,7 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-core".text = "${clashPackage.managedCore}/bin/mihomo";
     environment.etc."netsec-firefox-driver.py" = lib.mkIf (ech != null) { source = ./firefox_driver.py; };
     environment.etc."netsec-ech.py" = lib.mkIf (ech != null) { source = ./test_ech.py; };
+
     environment.etc."netsec-ech.json" = lib.mkIf (ech != null) {
       text = builtins.toJSON (lib.mapAttrs (_: firefox: {
         package = firefox;
@@ -99,12 +109,14 @@ pkgs.testers.runNixOSTest {
         guard = ../../home/programs/firefox/guard.py;
       }) ech);
     };
+
     environment.systemPackages = [
       (pkgs.python3.withPackages (p: [ p.pyyaml ]))
       pkgs.curl pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.nftables pkgs.util-linux
     ] ++ lib.optionals (ech != null) [ pkgs.nssTools ];
     virtualisation.memorySize = if ech != null then 3072 else 1024;
   };
+
   testScript = ''
     def wait_proxy():
         try:
@@ -120,6 +132,9 @@ pkgs.testers.runNixOSTest {
     machine.succeed("ip addr add 100.67.0.2/24 dev ens1; ip link set ens1 up; ip -n outside addr add 100.67.0.1/24 dev peer0; ip -n outside addr add 203.0.113.10/32 dev peer0; ip -n outside link set peer0 up; ip -n outside link set lo up; ip route add default via 100.67.0.1 dev ens1 metric 1")
     machine.succeed("ip -6 addr add 2001:db8:dead::2/64 dev ens1 nodad; ip -n outside -6 addr add 2001:db8:dead::1/64 dev peer0 nodad; ip -6 route add default via 2001:db8:dead::1 dev ens1 metric 1")
     machine.succeed("python3 /etc/netsec-integration.py prepare; python3 /etc/netsec-control.py prepare")
+    ${pkgs.lib.optionalString guests ''
+    machine.succeed("python3 /etc/netsec-guests.py prepare")
+    ''}
     ${pkgs.lib.optionalString targetPolicy ''
     machine.succeed("python3 /etc/netsec-target.py prepare; python3 /etc/netsec-control.py prepare")
     machine.succeed("systemd-run --unit=target-local python3 /etc/netsec-target.py server local 18081; systemd-run --unit=target-remote ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-target.py server remote 18081; systemd-run --unit=target-granted ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-target.py server granted 18082")
@@ -141,6 +156,15 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"systemd-run --unit=control-node ip netns exec outside {core} -d /run/netsec-node -f /run/netsec-node.json")
     machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18080")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
+    ${pkgs.lib.optionalString guests ''
+    machine.wait_for_unit("socket-guest-dns.service")
+    try:
+        machine.wait_until_succeeds("$(jq -r .listenerCheck /etc/netsec-guests.json) dns socket-guest-dns", timeout=60)
+        machine.succeed("python3 /etc/netsec-guests.py direct")
+    except Exception:
+        print(machine.execute("nft list table inet lf_filter; nft list table ip lf_nat; nft list table ip6 lf_nat; ss -lneut; cat /run/dns-upstream/state.json; journalctl -u dns-upstream -u unbound -u socket-guest-dns -u guest-dns-0 --no-pager -n 10"))
+        raise
+    ''}
     ${pkgs.lib.optionalString strictDns ''
     machine.wait_until_succeeds("jq -e '.mode == \"degraded-dot-only\" and .encryption_policy == \"strict\" and .window_until == 0' /run/dns-upstream/state.json", timeout=90)
     # A root override and a forged, long-lived request cannot mint public DNS
@@ -176,6 +200,11 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_file("/run/clash-verge-rev/service.sock")
     machine.succeed("python3 /etc/netsec-control.py start")
     wait_proxy()
+    ${pkgs.lib.optionalString guests ''
+    machine.succeed("python3 /etc/netsec-guests.py proxy")
+    machine.succeed("systemctl unmask --runtime proxy-mode.service; systemctl start proxy-mode.service")
+    wait_proxy()
+    ''}
     ${pkgs.lib.optionalString targetPolicy ''
     machine.succeed("python3 /etc/netsec-target.py check")
     machine.succeed("systemctl stop clash-verge.service")

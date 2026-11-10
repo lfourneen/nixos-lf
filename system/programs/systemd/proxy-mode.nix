@@ -7,14 +7,17 @@ let
   rules = pkgs.writeText "proxymode-rules.nft" config.my.proxy.proxyModeRules;
   blockedRules = pkgs.writeText "blockedmode-rules.nft" config.my.proxy.blockedModeRules;
   staticRules = pkgs.writeText "lf-static-rules.nft" config.networking.nftables.ruleset;
+
   verifyRequest = pkgs.writeShellScript "netsec-request" ''
     umask 022
     mkdir -p /run/netsec/requests
     ${pkgs.coreutils}/bin/mktemp /run/netsec/requests/request.XXXXXXXXXX >/dev/null
   '';
+
   rulesCheck = pkgs.writeShellScript "netsec-rules" ''
     exec ${pkgs.python3}/bin/python3 ${./netsec/rules.py} "$@"
   '';
+
   # Parse each complete mode with the same nft implementation in an isolated
   # userspace kernel. `-e` echoes the applied objects so the JSON carries the
   # rules (a bare `list ruleset` inside the same batch would not); unwrap turns
@@ -52,6 +55,7 @@ let
     ipv6 = config.networking.enableIPv6;
     uids = lib.unique [ 0 config.users.users.${m.desktopUser}.uid ];
   });
+
   tunCheck = pkgs.writeShellScript "proxy-tun-check" ''
     exec ${pkgs.python3}/bin/python3 ${./netsec/tun.py} ${tunSettings}
   '';
@@ -74,23 +78,36 @@ let
   mihomoDir = "/run/clash-verge-rev/core";
   mihomoSock = "${mihomoDir}/mihomo.sock";
   frontSock = "/run/user/${toString config.users.users.${config.my.machine.desktopUser}.uid}/clash-verge-rev/verge-mihomo.sock";
+
   listener = service: uids: protocol: address: port: {
     inherit uids protocol address port;
     cgroup = "/system.slice/${service}.service";
   };
+
   dnsListeners = service: uids: port:
     map (protocol: listener service uids protocol "127.0.0.1" port) [ "tcp" "udp" ];
+
   listenerSettings = pkgs.writeText "proxy-listeners.json" (builtins.toJSON {
     ss = "${pkgs.iproute2}/bin/ss";
     groups = {
       core-dns = dnsListeners "clash-verge" coreUids port.mihomoDns;
       core-mixed = [ (listener "clash-verge" coreUids "tcp" "127.0.0.1" port.mihomoMixed) ];
+
       core = [ (listener "clash-verge" coreUids "tcp" "127.0.0.1" port.mihomoMixed) ]
-        ++ dnsListeners "clash-verge" coreUids port.mihomoDns;
+        ++ dnsListeners "clash-verge" coreUids port.mihomoDns
+        ++ lib.optionals (config.my.proxy.transparentGuestInterfaces != [ ])
+          (map (protocol: listener "clash-verge" coreUids protocol "0.0.0.0" port.mihomoTproxy) [ "tcp" "udp" ]);
+
       dns = dnsListeners "dnsmasq" [ 0 config.users.users.dnsmasq.uid ] port.dnsmasq
         ++ dnsListeners "unbound" [ 0 config.users.users.unbound.uid ] port.unbound
         ++ lib.optionals config.networking.enableIPv6
           (map (protocol: listener "dnsmasq" [ 0 config.users.users.dnsmasq.uid ] protocol "::1" port.dnsmasq) [ "tcp" "udp" ]);
+
+      socket-guest-dns = lib.optionals (config.my.hardening.socketGuestUsers != [ ])
+        (dnsListeners "socket-guest-dns" [ config.users.users.dnsmasq.uid ] port.socketGuestDns
+          ++ lib.optionals config.networking.enableIPv6
+            (map (protocol: listener "socket-guest-dns" [ config.users.users.dnsmasq.uid ] protocol "::1" port.socketGuestDns) [ "tcp" "udp" ]));
+
       relay = [
         (listener "gost-relay" [ m.uids.gost ] "tcp" "127.0.0.1" port.gostHttp)
         (listener "gost-relay" [ m.uids.gost ] "tcp" "127.0.0.1" port.gostRedirect)
@@ -98,9 +115,11 @@ let
       ];
     };
   });
+
   listenerCheck = pkgs.writeShellScript "proxy-listeners" ''
     exec ${pkgs.python3}/bin/python3 ${./netsec/listeners.py} ${listenerSettings} "$@"
   '';
+
   healthConfig = {
     curl = "${pkgs.curl}/bin/curl";
     dig = "${pkgs.dnsutils}/bin/dig";
@@ -120,6 +139,7 @@ let
     require_tun = requireTun;
     fake_ip_net = config.my.proxy.fakeIpNet;
     tun_probe_name = tunProbeName;
+
     expected = {
       managed-policy = builtins.hashString "sha256" (builtins.toJSON config.my.proxy.managedProfile);
       routing-mark = m.mihomoMark;
@@ -129,8 +149,10 @@ let
       redir-port = 0;
       tproxy-port = if config.my.proxy.transparentGuestInterfaces == [ ] then 0 else port.mihomoTproxy;
       allow-lan = false;
+      bind-address = "*";
       ipv6 = config.networking.enableIPv6;
       log-level = "info";
+
       tun = { enable = requireTun; file-descriptor = 0; }
         // lib.optionalAttrs requireTun (config.my.proxy.tunRouting // {
         device = config.my.proxy.tunDev;
@@ -143,9 +165,11 @@ let
         dns-mode = "hijack";
         dns-hijack = lib.sort builtins.lessThan [ "any:53" "tcp://any:53" ];
         inet6-address = lib.optionals config.networking.enableIPv6 [ config.my.proxy.tunIpv6Address ];
+
         route-exclude-address = lib.sort builtins.lessThan (
           lib.optionals config.my.hardening.directEgress.privateRoutes (m.privateV4 ++ m.ulaV6 ++ m.linkLocalV6)
           ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6);
+
         route-address-set = [ ];
         route-exclude-address-set = [ ];
         route-address = [ ];
@@ -158,7 +182,9 @@ let
       });
     };
   };
+
   healthSettings = pkgs.writeText "proxy-health.json" (builtins.toJSON healthConfig);
+
   # Desktop consumers require the root supervisor's fresh readiness verdict,
   # then check live API invariants through their own forwarder. Snapshot files
   # and the internal controller remain private; only the supervisor verifies them.
@@ -918,6 +944,7 @@ in
     systemd.services.proxy-mode = {
       description = "Apply the proxy killswitch / redirect while Clash is on, blackholing a TUN-less or node-dead core";
       after = [ "nftables.service" ];
+
       # Never claim `proxy` behind a firewall that is not there: a failed
       # nftables.service propagates here.
       requires = [ "nftables.service" ];
@@ -932,14 +959,17 @@ in
         MemoryAccounting = true;
         RuntimeDirectory = "proxy-mode";
         RuntimeDirectoryMode = "0755";
+
         # Keep /run/proxy-mode across a restart: the `core-seen` marker must
         # survive so a core that crashes after a proxy-mode restart is still read
         # as a crash (block), not as a fresh boot (direct).
         RuntimeDirectoryPreserve = true;
+
         # /run is writable under ProtectSystem=strict. Do not list
         # /run/user/<uid>: that path does not exist at boot, and a
         # ReadWritePaths entry on a missing path fails the unit.
         ReadWritePaths = [ "/run/netsec" ];
+
         # The loop synchronizes before its first sleep; nftables has already
         # atomically installed the initial safe mode.
         ExecStart = modeScript;
@@ -1033,6 +1063,7 @@ in
         fi
       '';
     };
+
     systemd.timers.proxy-net-watch-recover = {
       description = "Check the proxy event .path every minute";
       wantedBy = [ "timers.target" ];
@@ -1088,6 +1119,7 @@ in
     # its own idempotent decision logic and stays the source of truth.
     systemd.services.proxy-net-wake = {
       description = "Wake the proxy supervisors on a Clash core state change";
+
       # A single Clash start emits several TUN/socket events, so this oneshot is
       # restarted 3-5x in ~1s; without this it hits the default StartLimit
       # (5/10s), goes failed, and the .path that feeds it goes

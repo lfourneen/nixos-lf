@@ -50,6 +50,12 @@ B 守卫在 output `-195`、透明重定向之前检查原始目标。即使旧 
 
 此处约束原生宿主 socket。核心通过 `localTargetCidrs` 和 `remoteTargetGrants` 单独授权[本地与远程内部目标](proxy_CN.md#域名目标)，原生受限授权不约束也不授予这些核心 socket 的权限。访客转发和入站授权仍独立。
 
+## 访客信任范围
+
+经宿主转发的访客使用 `guestNetworks` 与 `guestPrivateExceptions`；libvirt、Waydroid 及启用的热点默认限制私网转发。可信开发角色允许私网转发，但不改变宿主服务或公网模式策略。当前授权在通用 established 放行前约束双向流量。见[访客架构](network_CN.md#访客与容器)。
+
+`socketGuestUsers` 为独立宿主 socket 后端及其委派 UID 在 A/B/C 安装单独的原始目标守卫。它先于宿主兼容例外、TUN 与 NAT，因此桌面的宽泛 LAN 权限不能授权受限后端。私网使用 `socketGuestPrivateExceptions`；它是额外约束，不豁免单独启用的宿主受限策略。53 端口强制经过过滤的真实地址解析；loopback 代理、合成/已知转换目标及保留监听端口不可授权。逐账户 conntrack 身份在撤销授权和 C 中切断回包；撤销期间需要保持身份声明。普通 loopback IPC 与桌面所属后端仍保留宿主信任级别。
+
 ## 可选的时间服务器目标限制
 
 `timeServerCidrs=[]` 保持 UID/物理口/端口约束，兼容 NTS 服务器地址变化。填写规范 IPv4/IPv6 CIDR 后，会在 **A 和 B** 的透明代理之前限制 Chrony 原始 NTP/NTS-KE 目标。应按实际提供商端点填写，文档示例地址不能作为服务器。NTS-KE 可协商另一台 NTP 服务器，只固定密钥交换端点可能导致校时失败；参见 [Chrony server 选项](https://chrony-project.org/doc/4.8/chrony.conf.html)。地址变化时拒绝连接，不自动扩大白名单，也不退回明文时间协议。

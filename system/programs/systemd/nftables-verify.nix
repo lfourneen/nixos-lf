@@ -14,6 +14,7 @@ in
     wants = [ "nftables.service" "proxy-mode.service" ];
     wantedBy = [ "multi-user.target" ];
     unitConfig.StartLimitIntervalSec = 0;
+
     serviceConfig = {
       Type = "oneshot";
       TimeoutStartSec = "60s";
@@ -22,6 +23,7 @@ in
       RuntimeDirectoryMode = "0755";
       RuntimeDirectoryPreserve = true;
     };
+
     script = ''
       set -Eeuo pipefail
       PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.gnugrep pkgs.systemd pkgs.iproute2 pkgs.dnsutils pkgs.util-linux pkgs.jq ]}

@@ -33,9 +33,11 @@
 # lines and leave the merged file alone.
 let
   data = ../../local-data/dns-blocklist.txt.xz;
+
   # Diagnose an incomplete checkout or deployment before evaluation fails with
   # a bare "path does not exist". A complete clone includes the tracked input.
   dataExists = builtins.pathExists data;
+
   dataSrc =
     if dataExists then data
     else throw ''
@@ -57,6 +59,7 @@ let
 in
 {
   config.my.proxy.dnsBlocklistFile = names;
+
   # conf-dir is read as configuration, so the generated file is just a batch of
   # address= directives, the same form the hand-written list uses.
   config.services.dnsmasq.settings.conf-dir = "${rules}";

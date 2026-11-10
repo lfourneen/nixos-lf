@@ -33,11 +33,13 @@ let
       pkgs.python3
       pkgs.nodejs_24
     ];
+
     unpackPhase = ''
       runHook preUnpack
       tar -xzf "$src"
       runHook postUnpack
     '';
+
     installPhase = ''
       runHook preInstall
       python3 ${./extract-runtime.py} dsh-tui runtime.tar.gz
@@ -112,6 +114,7 @@ let
 in
 pkgs.buildFHSEnv {
   inherit pname version;
+
   # An FHS also covers native addons downloaded by plugins at runtime; merely
   # patching the release executable would leave those unusable on NixOS.
   targetPkgs =
@@ -134,11 +137,14 @@ pkgs.buildFHSEnv {
       openssl
       libsecret
     ];
+
   runScript = launcher;
   extraInstallCommands = ''
     ln -s dsh-tui "$out/bin/dst"
   '';
+
   passthru = { inherit runtime; };
+
   meta = {
     mainProgram = pname;
     description = "Terminal interface for DeepSeek Harness, repackaged from the portable release";

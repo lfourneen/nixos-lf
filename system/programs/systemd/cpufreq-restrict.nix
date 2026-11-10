@@ -12,6 +12,7 @@
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       Type = "oneshot";
+
       # Use a script file: a multi-line `bash -c '...'` inside ExecStart trips
       # systemd's quote parsing ("Unbalanced quoting").
       ExecStart = "${pkgs.writeShellScript "cpufreq-restrict" ''

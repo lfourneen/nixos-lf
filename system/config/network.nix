@@ -8,6 +8,7 @@ let
   hotspotIface = m.hotspot.interface;
   port = m.ports;
   join = lib.concatStringsSep ", ";
+  guestPolicy = import ./guest-policy.nix { inherit config lib; };
   egress = config.my.hardening.directEgress;
   restrictedEgress = egress.mode == "restricted";
   privateEgress = egress.privateRoutes;
@@ -46,24 +47,10 @@ let
     ${src} tcp dport 25565 accept                           # Minecraft
     # ${src} tcp dport 22 accept                            # SSH (ssh.nix)
   '';
-  guestHostServices = src:
-    lib.optionalString (config.my.hardening.guestTcpPorts != [])
-      ''${src} tcp dport { ${join config.my.hardening.guestTcpPorts} } accept
-      ''
-    + lib.optionalString (config.my.hardening.guestUdpPorts != [])
-      ''${src} udp dport { ${join config.my.hardening.guestUdpPorts} } accept
-      '';
-
-  # AP clients are only legitimate while the wireless interface *is* the AP: the
-  # source subnet is spoofable in client mode, so the accepts are scoped to the AP.
+  # The AP uses its own guest role; a Wi-Fi client remains an uplink.
   hotspotEnable = config.my.hardening.hotspot.enable;
-  hotspoSrc = ''iifname "${hotspotIface}" ip saddr ${m.hotspot.subnet}'';
-  hotspotDst = ''ip daddr ${m.hotspot.address}'';
-  # mDNS arrives as multicast, so only the host-service accepts add the group.
-  hotspotHostSrc = ''${hotspoSrc} ip daddr { ${m.hotspot.address}, 224.0.0.251 }'';
   tailnetTcp = lib.concatStringsSep ", " config.my.hardening.tailnetTcpPorts;
   tailnetUdp = lib.concatStringsSep ", " config.my.hardening.tailnetUdpPorts;
-  vmSrc = ''iifname "${m.vmBridge}" ip saddr ${m.vmSubnet}'';  # libvirt default net
   trustedLanSrc = ''iifname { "${wired}", "${wireless}" } ip saddr { ${join trustedLanCidrs} }'';
   trustedLanRules = lib.optionalString (trustedLanCidrs != []) (hostServices trustedLanSrc);
 
@@ -89,6 +76,7 @@ let
     v4 = if mode == "proxy" then lib.subtractLists vmTransparentProxyIfaces guestIfaces else guestIfaces;
   in ''
     flush chain inet lf_filter lf_guest_guard
+    ${lib.optionalString (mode == "proxy" && vmTransparentProxyIfaces != [ ]) ''add rule inet lf_filter lf_guest_guard iifname ${nftIfaces vmTransparentProxyIfaces} ip daddr ${fakeIpNet} meta l4proto { tcp, udp } meta mark set ${tproxyMark}''}
     ${lib.optionalString (v4 != [ ]) ''add rule inet lf_filter lf_guest_guard iifname ${nftIfaces v4} ip daddr != { 127.0.0.0/8, ${local4}, ${join multicast4} } counter drop''}
     add rule inet lf_filter lf_guest_guard iifname ${nftIfaces guestIfaces} ip6 daddr != { ::1, ${local6}, ${join m.multicastV6} } counter drop
   '';
@@ -144,24 +132,30 @@ let
     "meta skuid ${toString timeUid} ${uplink} ${destination} udp dport ${toString port.ntp} accept"
     "meta skuid ${toString timeUid} ${uplink} ${destination} tcp dport ${toString port.nts} accept"
   ]) timeDestinations;
+
   timeNatReturn = cidrs: lib.optionalString (egress.timeServerCidrs == [ ] || cidrs != [ ])
     ("meta skuid ${toString timeUid} "
       + lib.optionalString (cidrs != [ ])
         "${if lib.hasInfix ":" (lib.head cidrs) then "ip6" else "ip"} daddr { ${join cidrs} } "
       + "tcp dport ${toString port.nts} return");
+
   dnsSplitRules = [
     "meta skuid ${toString dnsmasqUid} meta oifname . ip daddr @dns_split4 meta l4proto { tcp, udp } th dport 53 accept"
     "meta skuid ${toString dnsmasqUid} meta oifname . ip6 daddr @dns_split6 meta l4proto { tcp, udp } th dport 53 accept"
   ];
+
   processDirectRules = [
     "meta skuid ${toString unboundUid} oifname { \"${wired}\", \"${wireless}\" } ip daddr ${dnsDotUpstreams} tcp dport ${toString port.dot} accept"
   ] ++ timeRules ''oifname { "${wired}", "${wireless}" }'' ++ dnsSplitRules;
+
   addRules = chain: rules: lib.concatMapStrings (rule:
     "add rule inet lf_filter ${chain} ${rule}\n") rules;
+
   dhcpRules = [
     ''meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept''
     ''meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept''
   ];
+
   hostDirectExceptions = lib.concatMap (entry:
     let
       family = if lib.hasInfix ":" entry.cidr then "ip6" else "ip";
@@ -170,6 +164,7 @@ let
         ''oifname "${entry.interface}" ${owner} ${family} daddr ${entry.cidr} ${protocol} dport { ${join (map toString ports)} } counter accept'';
     in rule "tcp" entry.tcpPorts ++ rule "udp" entry.udpPorts
   ) egress.exceptions;
+
   egressConfigCheck = pkgs.runCommand "direct-egress-config" {
     nativeBuildInputs = [ pkgs.python3 ];
   } ''
@@ -180,28 +175,28 @@ let
     })}
     touch "$out"
   '';
-  guestInfrastructure = [
-    { interface = m.vmBridge; address = m.vmAddress; subnet = m.vmSubnet; }
-    { interface = m.waydroidBridge; address = m.waydroidAddress; subnet = m.waydroidSubnet; }
-  ] ++ lib.optionals hotspotEnable [
-    { interface = hotspotIface; inherit (m.hotspot) address subnet; }
-  ];
-  restrictedGuestIfaces = [ m.vmBridge m.waydroidBridge ];
-  guestPrivateExceptions = lib.concatMapStrings (entry:
-    let family = if lib.hasInfix ":" entry.cidr then "ip6" else "ip";
-        rule = protocol: ports: lib.optionalString (ports != [ ]) ''
-          iifname "${entry.interface}" ${family} daddr ${entry.cidr} ${protocol} dport { ${join (map toString ports)} } return
-        '';
-    in rule "tcp" entry.tcpPorts + rule "udp" entry.udpPorts
-  ) config.my.hardening.guestPrivateExceptions;
+
+  restrictedGuestIfaces = guestIfaces;
+  guestConfigCheck = pkgs.runCommand "guest-network-config" {
+    nativeBuildInputs = [ pkgs.python3 ];
+  } ''
+    python3 ${../programs/systemd/netsec/guest_policy.py} ${pkgs.writeText "guest-network-policy.json" (builtins.toJSON guestPolicy.data)}
+    touch "$out"
+  '';
+
   # Replies to guests are identified by the bridge, the gateway source and the
   # DHCP/DNS service ports -- never by uid. A daemon that drops privileges keeps
   # the listening socket's creator uid but its accepted TCP sockets carry the
   # dropped uid, so a uid match would allow UDP DNS and drop TCP DNS.
-  guestReplyRules = lib.concatMap (g: [
-    ''oifname "${g.interface}" ip saddr ${g.address} ip daddr { ${g.subnet}, 255.255.255.255 } udp sport 67 udp dport 68 accept''
-    ''oifname "${g.interface}" ip saddr ${g.address} ip daddr ${g.subnet} meta l4proto { tcp, udp } th sport 53 accept''
-  ]) guestInfrastructure;
+  guestReplyRules = lib.concatMap (n:
+    lib.optionals (n.gateway4 != [ ] && n.source4 != [ ]) [
+      ''oifname "${n.interface}" ip saddr { ${join n.gateway4} } ip daddr { ${join n.source4}, 255.255.255.255 } udp sport 67 udp dport 68 accept''
+      ''oifname "${n.interface}" ip saddr { ${join n.gateway4} } ip daddr { ${join n.source4} } meta l4proto { tcp, udp } th sport 53 accept''
+    ] ++ lib.optionals (n.gateway6 != [ ] && n.source6 != [ ]) [
+      ''oifname "${n.interface}" ip6 saddr { ${join n.gateway6} } ip6 daddr { ${join n.source6} } meta l4proto { tcp, udp } th sport 53 accept''
+      ''oifname "${n.interface}" ip6 saddr { ${join n.gateway6}, fe80::/10 } ip6 hoplimit 255 meta l4proto icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept''
+    ]
+  ) guestPolicy.networks;
 
   # Exemptions stay static so DNS/NTP keep working in direct mode; the drops and
   # the redirect are loaded only while Clash runs (see proxy-mode.nix).
@@ -216,6 +211,7 @@ let
     ${lib.optionalString restrictedEgress ''
     add rule inet lf_filter lf_host_egress_guard ip daddr { ${local4}, ${join multicast4} } jump lf_host_direct
     add rule inet lf_filter lf_host_egress_guard ip6 daddr { ${local6}, ${join m.multicastV6} } jump lf_host_direct
+
     ${addRules "lf_host_direct" ([
       "${coreSocket} accept"
       ''meta skuid 0 oifname { "${wired}", "${wireless}" } meta l4proto udp socket mark ${tailscaleMark} meta mark ${tailscaleMark} accept''
@@ -339,6 +335,9 @@ let
     ${lib.optionalString config.services.tailscale.enable ''
     add rule inet lf_filter lf_tailnet_guard iifname "${config.services.tailscale.interfaceName}" counter drop
     ''}
+    ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
+    add rule inet lf_filter lf_tailnet_guard ct mark ${guestPolicy.socketMarks} ct direction reply counter drop
+    ''}
     flush set inet lf_filter dns_plaintext4
     ${guestGuard "blocked"}
     ${lib.optionalString vmTproxy "flush chain ip lf_mangle proxymode_tproxy"}
@@ -357,6 +356,8 @@ let
     # Local IPC (and the local resolver) keeps working.
     add rule inet lf_filter lf_blocked_guard ip daddr 127.0.0.0/8 accept
     add rule inet lf_filter lf_blocked_guard ip6 daddr ::1 accept
+    # Cut in-flight transparent guest replies before the marked core exception.
+    ${guestPolicy.blockedReplies}
     # The core keeps its egress so it can reach its nodes and recover.
     add rule inet lf_filter lf_blocked_guard ${coreSocket} accept
     # Root may reach the fake-ip network for the TUN self-test. Do not require
@@ -396,11 +397,14 @@ let
   vmTransparentProxyIfaces = config.my.proxy.transparentGuestInterfaces;
   vmTproxy = vmTransparentProxyIfaces != [ ];
   tproxyMark = "0x233";
+
   tproxyPrerouting = lib.concatMapStrings (i: ''
-    add rule ip lf_mangle proxymode_tproxy iifname "${i}" ip daddr != { ${local4}, 127.0.0.0/8, ${join multicast4} } meta l4proto { tcp, udp } tproxy to :${toString port.mihomoTproxy} meta mark set ${tproxyMark} accept
+    add rule ip lf_mangle proxymode_tproxy iifname "${i}" ip daddr != { ${local4}, 127.0.0.0/8, ${join multicast4} } meta l4proto { tcp, udp } counter tproxy to :${toString port.mihomoTproxy} meta mark set ${tproxyMark} accept
   '') vmTransparentProxyIfaces;
+
   tproxyInputAccept = lib.concatMapStrings (i: ''iifname "${i}" meta mark ${tproxyMark} accept
   '') vmTransparentProxyIfaces;
+
   nmDnsSettings = pkgs.writeText "nm-dns-policy.json" (builtins.toJSON {
     nmcli = "${pkgs.networkmanager}/bin/nmcli";
     resolvectl = "${pkgs.systemd}/bin/resolvectl";
@@ -409,6 +413,7 @@ let
     resolver = "127.0.0.1:${toString port.dnsmasq}";
     systemctl = "${pkgs.systemd}/bin/systemctl";
   });
+
   nmDnsPolicy = pkgs.writeShellScript "nm-dns-policy" ''
     exec ${pkgs.python3}/bin/python3 ${../programs/systemd/netsec/nm_dns.py} ${nmDnsSettings} "$1" "$2"
   '';
@@ -425,6 +430,7 @@ in
   imports = [
     ./network-hardening.nix
     ./network-time.nix
+    ./socket-guest-dns.nix
     ./tailscale-transport.nix
   ];
 
@@ -433,7 +439,8 @@ in
   users.users.dnsmasq.uid = m.uids.dnsmasq;
   users.users.dhcpcd.uid = m.uids.dhcpcd;
   my.hardening.directEgress.configCheck = egressConfigCheck;
-  system.checks = [ egressConfigCheck ];
+  my.hardening.guestConfigCheck = guestConfigCheck;
+  system.checks = [ egressConfigCheck guestConfigCheck ];
 
   # A null or shared uid makes an exemption match nothing or the wrong daemon;
   # uniqueness is what the evaluator can check.
@@ -769,7 +776,7 @@ in
         # from a fake address and get routed into the TUN, so refuse it here.
         # Deliberately not added to private-addresses.nix: the guard there
         # exempts private targets, and fake-IP must stay a proxied destination.
-        "private-address" = lib.unique (rebind.all ++ [ "198.18.0.0/15" ]);
+        "private-address" = lib.unique (rebind.all ++ [ "198.18.0.0/15" fakeIpNet ]);
       };
       "forward-zone" = [
         {
@@ -793,6 +800,7 @@ in
     ''}
     ${config.services.unbound.package}/bin/unbound-checkconf /etc/unbound/unbound.conf
   '';
+
   # This loopback high-port forwarder uses neither privileged binds nor
   # ip-transparent. Keep the upstream unit's remaining sandbox and notify type.
   systemd.services.unbound.serviceConfig = {
@@ -897,6 +905,10 @@ in
         }
         chain lf_local_dns_guard {
           type filter hook output priority -198; policy accept;
+          ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
+          oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.socketGuestDns} meta skuid != 0 counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.socketGuestDns} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
+          ''}
           # Only the gateway and root diagnostics may query internal upstreams.
           # Leave 1054 open: uplink :53 is redirected there with the caller UID.
           oifname "lo" meta l4proto { tcp, udp } th dport { ${toString port.mihomoDns}, ${toString port.unbound} } meta skuid != { 0, ${toString dnsmasqUid} } counter drop
@@ -905,32 +917,8 @@ in
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.dnsmasq} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.unbound} meta skuid != { 0, ${toString unboundUid} } counter drop
         }
-        # Evaluate before conntrack's generic input accept: removing an allowed
-        # host-service port must also revoke an already established guest flow.
-        chain lf_guest_host {
-          ct direction reply ct state established,related return
-          ${tproxyInputAccept}
-          iifname "${m.vmBridge}" udp sport 68 udp dport 67 accept
-          iifname "${m.vmBridge}" ip saddr ${m.vmSubnet} ip daddr ${m.vmAddress} meta l4proto { tcp, udp } th dport 53 accept
-          iifname "${m.waydroidBridge}" udp dport 67 accept
-          iifname "${m.waydroidBridge}" ip saddr ${m.waydroidSubnet} ip daddr ${m.waydroidAddress} meta l4proto { tcp, udp } th dport 53 accept
-          ${lib.optionalString config.my.hardening.guestHostServices (guestHostServices vmSrc)}
-          counter drop
-        }
-        ${lib.optionalString (!config.my.hardening.guestPrivateEgress) ''
-        chain lf_guest_private {
-          ct direction reply ct state established,related return
-          iifname "${m.vmBridge}" ip daddr ${m.vmAddress} return
-          iifname "${m.waydroidBridge}" ip daddr ${m.waydroidAddress} return
-          ${guestPrivateExceptions}
-          ip daddr { ${join rebindV4} } counter drop
-          ip6 daddr { ::, ::1, ${local6} } counter drop
-        }
-        chain lf_guest_private_guard {
-          type filter hook prerouting priority -199; policy accept;
-          iifname ${nftIfaces restrictedGuestIfaces} jump lf_guest_private
-        }
-        ''}
+        # Guest source, host and routed-reply checks precede generic accepts.
+        ${guestPolicy.nft}
         chain input {
           type filter hook input priority 0; policy drop;
 
@@ -954,19 +942,6 @@ in
           # OFFER/ACK sourced from 0.0.0.0 is not caught by it.
           iifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
           iifname { "${wired}", "${wireless}" } udp sport 547 udp dport 546 accept
-
-          # libvirt's own base-chain accepts cannot override our input drop.
-          iifname "${m.vmBridge}" udp sport 68 udp dport 67 accept
-          iifname "${m.vmBridge}" ip saddr ${m.vmSubnet} ip daddr ${m.vmAddress} udp dport 53 accept
-          iifname "${m.vmBridge}" ip saddr ${m.vmSubnet} ip daddr ${m.vmAddress} tcp dport 53 accept
-
-          # Waydroid bridge: its dnsmasq serves DHCP (67) and DNS (53) on the
-          # gateway. DHCP is sourced from 0.0.0.0, so it cannot be source-scoped
-          # (same as the hotspot); the DNS accepts are scoped to the container
-          # subnet and to the gateway address, mirroring the hotspot role test.
-          iifname "${m.waydroidBridge}" udp dport 67 accept
-          iifname "${m.waydroidBridge}" ip saddr ${m.waydroidSubnet} ip daddr ${m.waydroidAddress} udp dport 53 accept
-          iifname "${m.waydroidBridge}" ip saddr ${m.waydroidSubnet} ip daddr ${m.waydroidAddress} tcp dport 53 accept
 
           # Martian sources on the wired WAN. 100.64.0.0/10 is absent on purpose:
           # this uplink is CGNAT, so those are the ISP's own subscribers.
@@ -993,22 +968,8 @@ in
           ip protocol icmp icmp type { destination-unreachable, time-exceeded } accept
           ip protocol icmp icmp type echo-request limit rate 10/second accept
 
-          # Hotspot AP (opt-in); the destination role test is ${m.hotspot.address}.
-          ${lib.optionalString hotspotEnable ''
-          iifname "${hotspotIface}" udp sport 68 udp dport 67 accept
-          iifname "${hotspotIface}" ip saddr ${m.hotspot.subnet} ${hotspotDst} udp dport 53 accept
-          iifname "${hotspotIface}" ip saddr ${m.hotspot.subnet} ${hotspotDst} tcp dport 53 accept
-          ''}
-
-          # Own devices on the local hotspot AP (opt-in, same role test).
-          ${lib.optionalString hotspotEnable (hostServices hotspotHostSrc)}
-          ${lib.optionalString hotspotEnable ''iifname "${hotspotIface}" ip6 saddr ${join m.linkLocalV6} udp dport 5353 accept''}
-
           # Explicitly trusted LAN prefixes (empty by default).
           ${trustedLanRules}
-
-          # libvirt VMs -> host only.
-          ${lib.optionalString config.my.hardening.guestHostServices (guestHostServices vmSrc)}
 
           # Counted: dmesg is restricted, so this is the only view of what is refused.
           counter drop
@@ -1024,23 +985,12 @@ in
           ct state established,related accept
           ct state invalid drop
 
-          # Hotspot clients -> wired uplink only (opt-in).
-          ${lib.optionalString hotspotEnable ''
-          iifname "${hotspotIface}" oifname "${wired}" ip saddr ${m.hotspot.subnet} accept
-          oifname "${hotspotIface}" ip daddr ${m.hotspot.subnet} ct state established,related accept
-          ''}
-
-          # Libvirt VM egress -> real uplinks only (v4 source-pinned; the Mode-B
-          # guest refusal is per-family, so this accept is kept v4 too).
-          iifname "${m.vmBridge}" ip saddr ${m.vmSubnet} oifname { "${wired}", "${wireless}" } accept
-          oifname "${m.vmBridge}" ct state established,related accept
-
-          # Waydroid container egress -> real uplinks only, exactly like the
-          # libvirt VM. In Mode B the fragment above refuses public destinations
-          # first (TUN carries it, or it is dropped = fail-closed); this accept
-          # only lets portal/LAN/CGNAT through, in both modes.
-          iifname "${m.waydroidBridge}" ip saddr ${m.waydroidSubnet} oifname { "${wired}", "${wireless}" } accept
-          oifname "${m.waydroidBridge}" ct state established,related accept
+          # Each routed guest has an exact source subnet and allowed uplinks.
+          ${lib.concatMapStrings (n:
+            let uplinks = if n.interface == hotspotIface then [ wired ] else [ wired wireless ];
+            in lib.optionalString (n.source4 != [ ]) ''iifname "${n.interface}" ip saddr { ${join n.source4} } oifname ${nftIfaces uplinks} accept
+            '' + lib.optionalString (n.source6 != [ ]) ''iifname "${n.interface}" ip6 saddr { ${join n.source6} } ip6 daddr { ${local6} } oifname ${nftIfaces uplinks} accept
+            '') guestPolicy.networks}
 
           counter drop
         }
@@ -1149,6 +1099,12 @@ in
 
       # NAT
       table ip lf_nat {
+        ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
+        chain socket_guest_dns {
+          type nat hook output priority -190; policy accept;
+          meta skuid ${guestPolicy.socketOwners} meta l4proto { tcp, udp } th dport 53 redirect to :${toString port.socketGuestDns}
+        }
+        ''}
         # Force :53 out an uplink into dnsmasq: those destinations are the ones the
         # TUN excludes, so mihomo's dns-hijack never sees them. A redirect, not a
         # drop, so an in-range resolver still answers.
@@ -1173,6 +1129,12 @@ in
       # IPv6 twin of the redirect above: otherwise a ULA or link-local resolver is
       # reached in the clear. Same selector; ::1 and the tailnet are exempt.
       table ip6 lf_nat {
+        ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
+        chain socket_guest_dns {
+          type nat hook output priority -190; policy accept;
+          meta skuid ${guestPolicy.socketOwners} meta l4proto { tcp, udp } th dport 53 redirect to :${toString port.socketGuestDns}
+        }
+        ''}
         chain output {
           type nat hook output priority -100; policy accept;
 
@@ -1220,11 +1182,11 @@ in
       Type = "oneshot";
       RemainAfterExit = true;
       ExecStart = pkgs.writeShellScript "vm-tproxy-up" ''
-        ${pkgs.iproute2}/bin/ip rule add fwmark ${tproxyMark} lookup 100 2>/dev/null || true
+        ${pkgs.iproute2}/bin/ip rule add pref 100 fwmark ${tproxyMark} lookup 100 2>/dev/null || true
         ${pkgs.iproute2}/bin/ip route add local default dev lo table 100 2>/dev/null || true
       '';
       ExecStop = pkgs.writeShellScript "vm-tproxy-down" ''
-        ${pkgs.iproute2}/bin/ip rule del fwmark ${tproxyMark} lookup 100 2>/dev/null || true
+        ${pkgs.iproute2}/bin/ip rule del pref 100 fwmark ${tproxyMark} lookup 100 2>/dev/null || true
         ${pkgs.iproute2}/bin/ip route del local default dev lo table 100 2>/dev/null || true
       '';
     };
@@ -1283,7 +1245,12 @@ in
     "usbcore.autosuspend=-1"
   ];
 
-  boot.kernel.sysctl = {
+  boot.kernel.sysctl = lib.mkMerge [ (lib.mkIf (lib.any (n: n.source6 != [ ]) guestPolicy.networks) {
+    "net.ipv6.conf.all.forwarding" = 1;
+    # Keep uplink router discovery when declared ULA guests need forwarding.
+    "net.ipv6.conf.${wired}.accept_ra" = 2;
+    "net.ipv6.conf.${wireless}.accept_ra" = 2;
+  }) {
     # BBR + cake: the AQM keeps queue delay low on both the LAN device and the
     # TUN, instead of only pacing it like fq.
     "net.core.default_qdisc" = "cake";
@@ -1318,7 +1285,7 @@ in
 
     # Optmem
     "net.core.optmem_max" = 65536;
-  };
+  } ];
 
   environment.systemPackages = with pkgs; [
     bpftrace

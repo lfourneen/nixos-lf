@@ -75,6 +75,40 @@ for signature in [
 ''')
 replace(root / "config/config.go", "type RawConfig struct {",
         'type RawConfig struct {\n\tLFPrivateTargets map[string]any `yaml:"lf-private-targets" json:"lf-private-targets"`')
+# allow-lan=false keeps the ordinary inbounds on loopback. The TPROXY inbound
+# is different: it must accept packets addressed to the original destination,
+# so a 127.0.0.1 socket can never receive them. Honor an explicit "*" bind for
+# this listener only; mixed/DNS/controller stay loopback and the firewall still
+# decides which guests may reach the bridge address.
+replace(root / "listener/listener.go",
+        '\taddr := genAddr(bindAddress, port, allowLan)\n\n\tif tproxyListener != nil {',
+        '\taddr := genTProxyAddr(bindAddress, port, allowLan)\n\n\tif tproxyListener != nil {')
+replace(root / "listener/listener.go",
+        "func genAddr(host string, port int, allowLan bool) string {",
+        "func genTProxyAddr(host string, port int, allowLan bool) string {\n"
+        "\tif host == \"*\" {\n"
+        "\t\t// An IPv6 wildcard socket is not a reliable TPROXY target for\n"
+        "\t\t// IPv4 transit; bind the IPv4 wildcard explicitly.\n"
+        "\t\treturn fmt.Sprintf(\"0.0.0.0:%d\", port)\n"
+        "\t}\n"
+        "\treturn genAddr(host, port, allowLan)\n"
+        "}\n\n"
+        "func genAddr(host string, port int, allowLan bool) string {")
+# Bind a real IPv4 TPROXY socket for the IPv4 inlet; Go's generic "tcp"/
+# "udp" networks may otherwise turn 0.0.0.0 into an IPv6 dual-stack socket.
+replace(root / "listener/tproxy/tproxy.go",
+        "func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {",
+        "func lfNetwork(network, addr string) string {\n"
+        "\thost, _, err := net.SplitHostPort(addr)\n"
+        "\tif err == nil { if ip := net.ParseIP(host); ip != nil && ip.To4() != nil { return network + \"4\" } }\n"
+        "\treturn network\n}\n\n"
+        "func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {")
+replace(root / "listener/tproxy/tproxy.go",
+        '\tl, err := lc.Listen(context.Background(), "tcp", addr)',
+        '\tl, err := lc.Listen(context.Background(), lfNetwork("tcp", addr), addr)')
+replace(root / "listener/tproxy/udp.go",
+        '\tl, err := net.ListenPacket("udp", addr)',
+        '\tl, err := net.ListenPacket(lfNetwork("udp", addr), addr)')
 replace(root / "tunnel/tunnel.go", '"github.com/metacubex/mihomo/component/resolver"',
         '"github.com/metacubex/mihomo/component/resolver"\n\t"github.com/metacubex/mihomo/component/lfguard"')
 replace(root / "tunnel/tunnel.go", '\t\t\trawPc, err := retry(ctx,',

@@ -22,9 +22,11 @@ in
     StateDirectoryMode = "0700";
     RuntimeDirectoryPreserve = "yes";
     UMask = "0077";
+
     # Do not let the root helper's StateDirectory recursively take ownership
     # of the core's cache at each restart. tmpfiles creates this path at boot.
     ReadWritePaths = [ "/var/lib/clash-core" ];
+
     # No runtime ReadWritePaths: /run is writable under ProtectSystem=strict,
     # and naming /run/user/<uid> would fail the unit at boot before the user
     # session (and its runtime directory) exists.
@@ -36,6 +38,7 @@ in
       "CAP_SETGID"
       "CAP_SETPCAP"
       "CAP_CHOWN"
+
       # Reconcile core-owned runtime/state directories on subsequent starts.
       "CAP_FOWNER"
       "CAP_KILL"
@@ -43,13 +46,16 @@ in
       "CAP_NET_ADMIN"
       "CAP_NET_RAW"
     ];
+
     # setpriv needs setresuid/setgroups/chown/capset; the helper still cannot
     # mount, load modules, reboot or use raw I/O.
     SystemCallFilter = lib.mkForce [
       "~@aio @clock @cpu-emulation @debug @keyring @memlock @module @mount @obsolete @pkey @raw-io @reboot @sandbox @swap @timer"
     ];
   };
+
   systemd.tmpfiles.rules = [ "d /var/lib/clash-core 0750 clash-core clash-core -" ];
+
   # Keep the managed dual-stack TUN present even when the core starts on an
   # IPv4-only uplink. The helper's spawned core inherits this environment.
   systemd.services.clash-verge.environment = lib.optionalAttrs

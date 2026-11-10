@@ -27,7 +27,8 @@ def config_view(config):
     """Only invariant fields; never persist subscriptions, credentials or nodes."""
     view = {key: config.get(key) for key in (
         "mode", "routing-mark", "mixed-port", "port", "socks-port", "redir-port",
-        "tproxy-port", "allow-lan", "ipv6", "log-level", "managed-policy")}
+        "tproxy-port", "allow-lan", "bind-address", "ipv6", "log-level",
+        "managed-policy")}
     tun = config.get("tun") or {}
     view["tun"] = {key: tun.get(key) for key in (
         "enable", "device", "stack", "auto-route", "auto-redirect", "strict-route",
@@ -35,6 +36,10 @@ def config_view(config):
         "auto-redirect-input-mark", "auto-redirect-output-mark",
         "auto-redirect-iproute2-fallback-rule-index", "file-descriptor")}
     view["tun"]["stack"] = str(tun.get("stack", "")).lower()
+    # `auto-redirect` is a bool tagged `omitempty` in the core's JSON, so a
+    # disabled value disappears from the controller response instead of
+    # appearing as `false`. Absence is the disabled state for this field.
+    view["tun"]["auto-redirect"] = bool(tun.get("auto-redirect", False))
     for key in ("route-exclude-address", "inet6-address", "dns-hijack",
                 "route-address-set", "route-exclude-address-set", "route-address",
                 "include-interface", "exclude-interface", "include-uid", "exclude-uid",
@@ -52,8 +57,12 @@ def check_config(config, settings):
     for key, expected in settings["expected"].items():
         if key == "tun":
             for field, value in expected.items():
-                if view["tun"].get(field) != value:
-                    raise ProbeFailure("config", f"tun.{field} differs from managed configuration")
+                actual = view["tun"].get(field)
+                if actual != value:
+                    raise ProbeFailure(
+                        "config",
+                        f"tun.{field} differs from managed configuration (actual={actual!r}, expected={value!r})",
+                    )
         elif view.get(key) != expected:
             raise ProbeFailure("config", f"{key} differs from managed configuration")
     digest_path = settings.get("digest_file")

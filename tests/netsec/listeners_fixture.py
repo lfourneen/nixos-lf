@@ -15,6 +15,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('mode', choices=['serve', 'query', 'check'])
 parser.add_argument('protocol', nargs='?', default='both')
 parser.add_argument('--mixed', action='store_true')
+parser.add_argument('--tproxy', action='store_true')
 parser.add_argument('--uid', type=int)
 args = parser.parse_args()
 
@@ -29,10 +30,10 @@ def query(protocol, uid=None):
 
 
 if args.mode == 'serve':
-    def serve(protocol, port):
+    def serve(protocol, port, address='127.0.0.1'):
         stream = socket.socket(socket.AF_INET, socket.SOCK_STREAM if protocol == 'tcp' else socket.SOCK_DGRAM)
         stream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        stream.bind(('127.0.0.1', port))
+        stream.bind((address, port))
         if protocol == 'tcp':
             stream.listen()
         def loop():
@@ -52,6 +53,9 @@ if args.mode == 'serve':
         serve('udp', 1053)
     if args.mixed:
         serve('tcp', 7897)
+    if args.tproxy:
+        serve('tcp', 7896, '0.0.0.0')
+        serve('udp', 7896, '0.0.0.0')
     while True:
         time.sleep(1)
 elif args.mode == 'query':

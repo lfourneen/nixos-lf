@@ -5,6 +5,7 @@ let
   # Keep it read-only and fail normal system builds if the upstream contract
   # changes. Network changes and ephemeral peer ports do not change SO_MARK.
   bypassMark = 524288;
+
   transportCheck = pkgs.runCommand "tailscale-transport-contract" {
     nativeBuildInputs = [ pkgs.python3 ];
   } ''
@@ -23,6 +24,7 @@ in
       default = bypassMark;
       description = "Upstream LinuxBypassMarkNum; verified against the selected Tailscale source during system builds.";
     };
+
     transportCheck = lib.mkOption {
       type = lib.types.package;
       internal = true;

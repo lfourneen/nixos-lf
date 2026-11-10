@@ -20,6 +20,7 @@
   programs.wireshark = {
     enable = true;
     package = pkgs.unstable.wireshark;
+
     # No standing capture capability: the grant lets any process running as lfour
     # read the uplink and the TUN with no password prompt. Capture stays explicit:
     # `sudo dumpcap -i <iface> ...`.
@@ -31,7 +32,7 @@
   services.kmscon = {
     enable = true;
     fonts = [ { name = "Maple Mono NF CN"; package = pkgs.maple-mono.NF-CN; } ];
-    
+
     extraConfig = ''
       font-engine=pango
       font-size=12

@@ -31,10 +31,12 @@ in
     wants = [ "sysinit.target" "network-pre.target" ];
     after = [ "sysinit.target" ];
     before = [ "network-pre.target" "nftables.service" "NetworkManager.service" "dhcpcd.service" ];
+
     unitConfig = {
       DefaultDependencies = false;
       OnFailure = [ "netsec-alert@%n.service" ];
     };
+
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
@@ -49,20 +51,24 @@ in
         ${config.my.proxy.modeScript} --reload
         ''}
       '';
+
       TimeoutStartSec = "30s";
       ExecStartPost = "${pkgs.python3}/bin/python3 ${./netsec/alerts.py} clear network-firewall-bootstrap.service";
       # No ExecStop: stopping an owner must never tear down protection.
     };
   };
+
   systemd.services.nftables = {
     requires = [ "network-firewall-bootstrap.service" ];
     after = [ "network-firewall-bootstrap.service" ];
     restartTriggers = [ bootstrap ];
   };
+
   systemd.services.NetworkManager = {
     requires = [ "network-firewall-bootstrap.service" ];
     after = [ "network-firewall-bootstrap.service" ];
   };
+
   systemd.services.dhcpcd = {
     requires = [ "network-firewall-bootstrap.service" ];
     after = [ "network-firewall-bootstrap.service" ];

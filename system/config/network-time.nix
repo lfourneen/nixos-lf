@@ -17,6 +17,7 @@
       port 0
     '';
   };
+
   systemd.services.chronyd = {
     requires = [ "network-firewall-bootstrap.service" ];
     after = [ "network-firewall-bootstrap.service" ];

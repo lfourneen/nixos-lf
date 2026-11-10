@@ -6,12 +6,14 @@ let
     runtimeInputs = [ pkgs.python3 ];
     text = ''exec python3 ${./clash-verge-gui.py} "$@"'';
   };
+
   # Set the writable GUI preference without rebuilding the Rust application.
   guiDefaults = pkgs.writeShellApplication {
     name = "clash-verge-defaults";
     runtimeInputs = [ pkgs.yq-go pkgs.coreutils pkgs.procps ];
     text = builtins.readFile ./clash-verge-defaults.sh;
   };
+
   guiDefaultsCheck = pkgs.runCommand "proxy-gui-defaults" { } ''
     ${pkgs.nodejs}/bin/node ${../../../tests/netsec/test_gui_defaults.js} \
       ${guiDefaults}/bin/clash-verge-defaults ${pkgs.yq-go}/bin/yq \
@@ -23,6 +25,7 @@ let
   desktopUser = config.my.machine.desktopUser;
   desktopUid = config.users.users.${desktopUser}.uid;
   guiData = "${config.users.users.${desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev";
+
   stageSettings = pkgs.writeText "clash-stage-settings.json" (builtins.toJSON {
     gui_data = guiData;
     desktop_uid = desktopUid;
@@ -31,6 +34,7 @@ let
     data = "/var/lib/clash-core";
     setpriv = "${pkgs.util-linux}/bin/setpriv";
   });
+
   # Root launcher behind bin/verge-mihomo. It enforces the clash-on intent,
   # stages and validates the effective configuration, and drops the core to a
   # dedicated service identity before it opens a TUN or listener.
@@ -60,10 +64,12 @@ let
       };
     };
   };
+
   httpOnlyPolicy = (import ../../config/proxy-profile.nix {
     inherit lib;
     config = httpOnlyConfig;
   }).options.my.proxy.managedProfile.default;
+
   # Rebuild the core only when its source patches change.
   netsecDir = ../systemd/netsec;
   managedSources = lib.fileset.toSource {
@@ -90,6 +96,7 @@ let
       (netsecDir + "/dns_filter_test.go")
     ];
   };
+
   managedCore = pkgs.unstable.mihomo.overrideAttrs (old: {
     doCheck = true;
     checkPhase = ''
@@ -106,6 +113,7 @@ let
       go test -mod=vendor ./tunnel -run '^TestLFManaged' -count=1
       runHook postCheck
     '';
+
     postConfigure = (old.postConfigure or "") + ''
       chmod -R u+w vendor/github.com/metacubex/sing-tun
       ${pkgs.python3}/bin/python3 ${managedSources}/patch_mihomo.py .
@@ -148,9 +156,11 @@ in
       '';
       passthru = (old.passthru or { }) // { inherit managedCore guiDefaultsCheck stageSettings; };
     });
+
     serviceMode = true;
     group = "clash-verge-control";
   };
+
   assertions = [{
     assertion = toString config.programs.clash-verge.package.unwrapped
       == toString pkgs.unstable.clash-verge-rev.unwrapped;

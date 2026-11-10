@@ -49,15 +49,21 @@ The core's service cgroup, passive TCP/UDP listener identities, managed controll
 
 | Hook / priority | Purpose |
 |---|---|
+| Output `-202` | Restricted socket guest original-target/UID guard |
 | Output `-201` | Reject direct use of Gost's transparent inlet before NAT |
 | Prerouting `-201` | Apply guest public-destination restrictions before redirection |
-| Output `-199` | Limit dnsmasq upstream DNS to installed destination leases; strict mode cuts the core's external port 53 except MagicDNS |
-| Output `-198` | Reserve internal DNS ports and authenticate their replies |
+| Prerouting `-199` | Guest source, private-target and gateway-service checks |
+| Output `-199` | Track restricted socket guest accounts; limit dnsmasq upstream DNS to installed destination leases; strict mode cuts the core's external port 53 except MagicDNS |
+| Output `-198` | Reserve internal DNS ports, authenticate replies and recheck guest host-service replies |
 | Output `-197` | C guard, after conntrack (`-200`) and before auto-redirect (`-150`) |
 | Output `-196` | Restrict independent DNS-over-TLS/QUIC on port 853 |
 | Output `-195` | B optional private/multicast grants and optional Unbound DoT cut, before NAT/TUN |
 | Output `-194` | Optional Chrony original-target CIDR bounds in A/B |
-| Input `-1` | C drops decrypted tailnet packets before established-flow accepts |
+| Output NAT `-190`, filter `-90` | Force restricted socket guest DNS to 1056 and reject stale resolver associations |
+| Input `-2`, forward `-1` | Recheck restricted socket / routed guest replies against current grants |
+| Input `-1` | C cuts decrypted tailnet packets and tracked socket guest replies before established-flow accepts |
+
+NAT priorities order rule lookups within the kernel’s shared destination-NAT hook; the socket guest DNS filter at `-90` checks the actual rewritten target after that hook.
 
 In B, public host TCP is redirected, fake-IP traffic retains its core path, and other public uplink traffic is dropped after the explicit exceptions. These include marked core sockets, UID-scoped Unbound DoT and Chrony NTS/NTP, narrow DHCP, multicast and default private egress. Tailscale UDP requires UID 0, a physical uplink, and both socket `SO_MARK` and packet mark equal to the upstream Linux bypass mark (`0x80000`). Peer/STUN ports remain dynamic; unmarked root UDP has no blanket exception. This is a routing contract, not service authentication or isolation against root, which can set socket marks or change the firewall. The current LKL kernel supports `socket mark`, but not `socket cgroupv2`.
 
@@ -81,10 +87,23 @@ Tailscale accepts neither DNS, subnet routes nor an exit node automatically. Onl
 
 ## Guests and containers
 
-`my.proxy.guestInterfaces` defaults to `virbr0` and `waydroid0`; a dedicated AP interface joins only when hotspot policy is enabled. Wi-Fi client uplinks never become guest ingress. In B/C, public guest destinations are checked before NAT and both forwarding directions are constrained before established-flow accepts.
+[guest-policy.nix](../system/config/guest-policy.nix) distinguishes routed guest networks from backends that create host sockets. A private address does not establish trust.
 
-Guest public forwarding is refused by default in B/C. `transparentGuestInterfaces` explicitly selects an IPv4 TPROXY subset for healthy B; it defaults to empty. Public guest IPv6 remains refused. A shares the uplink directly. A hotspot setting installs the firewall role only; creating the separate AP interface, hostapd and DHCP remains explicit.
+| Class | Identity | Private destinations | Public destinations |
+|---|---|---|---|
+| Restricted bridge / hotspot (default) | Exact ingress interface and declared source CIDR | Explicit interface/CIDR/TCP or UDP port grants | A allows IPv4; B requires explicit IPv4 TPROXY selection; C refuses |
+| Trusted development bridge | Same interface/source checks; explicit `trust="trusted"` | Private routing allowed, with unsafe targets still refused | Same public policy as restricted bridges |
+| Restricted host-socket backend | Dedicated fixed UID and all its delegated subordinate UIDs | Explicit account/original-output-interface/CIDR/port grants | Host A/B/C policy; C cuts tracked replies too |
+| Desktop-owned passt / rootless Docker | Shared desktop UID | Host policy | Host policy |
 
-Guest DHCP/DNS gateway services are separate from the host loopback resolver. Default host access is limited to that infrastructure. Libvirt desktop-service access requires `guestHostServices` and explicit TCP/UDP lists; removing an allowance also cuts established guest-initiated connections. TUN input admits only tracked established/related flows.
+`my.proxy.guestInterfaces` defaults to `virbr0` and `waydroid0`; an enabled dedicated AP joins that list. `my.hardening.guestNetworks.<interface>` supplies its trust, disjoint canonical `sourceCidrs`, gateway addresses and host-service ports. Built-in roles receive their machine IPv4 subnet/gateway. IPv6 needs an explicit ULA source subnet; public guest IPv6 is refused in every mode. Wi-Fi client uplinks cannot become guest roles. Creating an AP, DHCP server or bridge remains separate from installing its firewall policy.
 
-Private guest forwarding defaults to allowed. `my.hardening.guestPrivateEgress=false` restricts libvirt/Waydroid using exact interface/CIDR/transport/port entries in `guestPrivateExceptions`; it does not change a separately enabled hotspot. LAN/CGNAT/ULA reachability is a compatibility choice, not evidence of trust. Passt and rootless containers that create host sockets follow the host path and need separate validation.
+Private forwarding defaults to restricted for all roles, including the hotspot. `guestPrivateExceptions` grants exact ingress interface, private destination CIDR and TCP/UDP ports. `trust="trusted"` permits private routing for a development network; it does not expose arbitrary host services or grant public B/C forwarding. The legacy `guestPrivateEgress=true` trusts only libvirt/Waydroid roles whose `trust` is unset; explicit per-interface choices take precedence.
+
+Gateway DHCP/DNS remains separate from the host loopback resolver. `hostTcpPorts` / `hostUdpPorts` expose services only on that role's declared gateway addresses; the legacy libvirt `guestHostServices` and port lists feed the same policy. Source checks run before redirection, host access is checked before established input accepts, and current grants constrain both directions of established routed connections and host-service replies. Revocation therefore also cuts unsolicited server pushes. Trusted and restricted peers need separate bridges: this policy identifies a network, and does not isolate same-bridge layer-2 traffic or authenticate individual peers.
+
+`transparentGuestInterfaces` defaults to empty and selects only explicit IPv4 TPROXY inlets in healthy B. Valid fake-IP mappings require that inlet; synthetic pools, selected metadata endpoints and known translation/transition ranges otherwise remain denied. C cuts already proxied guest replies while retaining core recovery. Private bridge grants remain independent of the public mode guard.
+
+Passt and rootless networking terminate guest packets into host sockets, so bridge rules cannot identify them. Use `my.hardening.socketGuestUsers` with a separate fixed nonprivileged account for an untrusted backend; the normal build rejects desktop/root/infrastructure identities, shared UIDs and overlapping delegated ranges. `socketGuestPrivateExceptions` grants that account an original output interface, private CIDR and destination ports. Loopback/proxy inlets, reserved proxy/DNS destination ports, fake-IP and known translation targets cannot be granted. TCP/UDP port 53 is forced to the [filtered real-address resolver](dns.md#restricted-socket-guest-dns), so B's synthetic addresses cannot hide a private final target from the UID guard. The rootless Docker launcher clears inherited explicit proxy variables for these accounts.
+
+Run each backend under its declared account after installing the policy. Stop existing backends before adding/changing restricted identities or UID mappings; reply tracking cannot retroactively identify an old unmarked socket. Removing a private grant while the identity remains declared cuts both directions of its tracked connections. Desktop-owned rootless Docker remains a trusted development environment because its sockets share the desktop UID. UID policy governs network egress; filesystem access, shared Unix sockets, inbound publishing and same-bridge peer isolation need their own controls. Grants match original host socket/routed destinations, not destinations inside an application tunnel. Root and the host `NET_ADMIN` core remain trusted. See [configuration examples](operations.md#configuration).

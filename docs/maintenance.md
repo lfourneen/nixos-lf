@@ -27,6 +27,7 @@ Go patchers run in `postConfigure`, after `buildGoModule` has populated `vendor/
 | Unbound / Chrony / networking | [network.nix](../system/config/network.nix), [network-time.nix](../system/config/network-time.nix), [systemd modules](../system/programs/systemd) | Declarative policy and repository-owned coordinators; no local Unbound/Chrony source patch |
 | Tailscale transport | [tailscale-transport.nix](../system/config/tailscale-transport.nix), [tailscale_contract.py](../system/programs/systemd/netsec/tailscale_contract.py) | Upstream socket-mark contract enforced by normal system builds; review mark/fallback/socket changes and run the real CLI VM on upgrades; no Tailscale source patch |
 | Direct egress | [hardening-options.nix](../system/config/hardening-options.nix), [network.nix](../system/config/network.nix), [egress_policy.py](../system/programs/systemd/netsec/egress_policy.py) | Actor/socket identity, pre-NAT grants, canonical CIDR validation, scoped time/DoT and shared root/GUI private exclusions; compare compatibility and restricted modes |
+| Guest trust | [guest-policy.nix](../system/config/guest-policy.nix), [guest_policy.py](../system/programs/systemd/netsec/guest_policy.py), [socket-guest-dns.nix](../system/config/socket-guest-dns.nix), [virtualisation.nix](../system/programs/virtualisation.nix) | Interface/source roles, canonical grants, primary/delegated UID ownership, pre-NAT real-address DNS, bidirectional revocation and rootless launcher |
 | Sunshine | [sunshine.nix](../system/programs/sunshine.nix) | Graphical-session Desktop service, local administration and no UPnP; retain CUDA, verify the exact package in the configured CUDA cache with local builds disabled |
 
 ## Mihomo
@@ -45,16 +46,19 @@ Managed mode uses `LF_MANAGED_PROXY_POLICY`; its absence deliberately retains up
 
 Managed fake-IP must forward HTTPS/SVCB records with their parameters intact while retaining address synthesis and the shared filter. Keep sniffing disabled in both Rule and uniform modes; cached profiles must inherit the root policy so an ECH public name cannot replace the requested target.
 
+The optional guest TPROXY listener has its own bind-address handling and IPv4 socket selection in `listener/listener.go` and `listener/tproxy`. Preserve loopback mixed/DNS/controller behavior with `allow-lan=false`, passive TPROXY ownership checks and real TCP/UDP guest tests when updating these paths.
+
 ## sing-tun inside Mihomo
 
 The target is `vendor/github.com/metacubex/sing-tun`, not an independently installed sing-tun package. A Mihomo update can change it even when no explicit sing-tun setting changes. Inspect Mihomo's `go.mod`, module replacement directives and generated vendor tree.
 
-The patch has **two independent parts**:
+The patch has **three independent parts**:
 
 1. `redirect_nftables_exprs.go`: a range ending at the maximum IPv4/IPv6 address has no valid successor. Omit its end marker instead of producing an inverted/empty nft interval. The patcher records a SagerNet reference; check the MetaCubeX fork's actual code before removing this part.
-2. `redirect_nftables_rules.go`: in managed non-mark auto-redirect mode, local OUTPUT TCP DNAT uses the TUN's own address instead of loopback. This preserves `SO_BINDTODEVICE(TUN)` sockets with `route_localnet=0`. The PREROUTING path and other redirect modes keep their upstream behavior.
+2. `redirect_nftables_rules.go`: in managed non-mark auto-redirect mode, local OUTPUT TCP DNAT uses the TUN's own address instead of loopback. This preserves `SO_BINDTODEVICE(TUN)` sockets with `route_localnet=0`. Other redirect modes retain their upstream behavior.
+3. `redirect_nftables_rules.go`: PREROUTING excludes packets marked `0x233` by the owned B-only guest TPROXY rules. Their transparent socket and original target must survive later auto-redirect lookup. The mark is a shared contract with `network.nix`; ordinary guests cannot transmit a host packet mark over the wire.
 
-Review both IP families, configured exclusions, hook conditions and redirect-port selection. The firewall's C self-test reply exceptions and the health probe depend on this path. Source matching/package compilation cannot verify kernel rerouting; include the control/network VMs for sing-tun upgrades.
+Review both IP families, configured exclusions, hook conditions, the guest mark and redirect-port selection. The guest mark lookup must precede TUN policy rules; the declared priority is 100. The firewall's C self-test reply exceptions and the health probe depend on this path. Source matching/package compilation cannot verify kernel rerouting; include the control/network VMs for sing-tun upgrades.
 
 ## Gost
 
@@ -107,6 +111,8 @@ Use the attributes below from the checkout. Nix builds normally use the local da
 | `proxy-dns-strict-rules` | Complete strict DNS firewall rules parsed in LKL |
 | `proxy-dns-config` | Syntax of generated default/strict DNS coordinator scripts |
 | `proxy-dns-strict-vm` | Real helper/core, shared DNS/proxy filtering, strict outage/override/lease and leftover-set refusal, private split permission and literal portal recovery |
+| `proxy-guest-config`, `proxy-guest-rules` | Production/dedicated-account configuration and rootless launcher syntax; complete mixed-role rules in LKL. Guest validation is also required by normal system builds |
+| `proxy-guest-vm` | Three real routed networks, DHCP/DNS, IPv4/ULA, spoofed sources, actual pasta/RootlessKit/subuid sockets, fake-IP refusal, stale DNS conntrack, bidirectional grant revocation and C with a live core |
 | `proxy-egress-config` | Canonical CIDRs and bounded grant/time scopes; also required by normal system builds |
 | `proxy-egress-vm` | Restricted counterpart of the Tailscale VM; scoped dual-stack private/multicast/DNS/DoT/NTS traffic, UID/interface/port denials, established grant revocation and C |
 | `proxy-egress-control-vm` | Restricted policy before real production TUN/NAT, including allowed/denied private destinations |

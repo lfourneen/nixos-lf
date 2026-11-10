@@ -8,6 +8,7 @@
       LAN/tailnet DNS requires an explicit listener, client ACL and answer route.
     '')
   ];
+
   # Input trust and direct-egress policy are separate. Restricted host egress
   # applies in B; C never inherits its exceptions, including tailnet replies.
   options.my.hardening = {
@@ -16,12 +17,14 @@
       default = true;
       description = "Compatibility mode: keep direct LAN/CGNAT/ULA access in B; false subjects it to proxy routing. Use directEgress.mode=restricted for explicit host direct-access authorization.";
     };
+
     directEgress = {
       mode = lib.mkOption {
         type = lib.types.enum [ "compatibility" "restricted" ];
         default = "compatibility";
         description = "B host private/multicast policy. Restricted drops unapproved native socket traffic before TUN/NAT; A and C keep their own policies.";
       };
+
       privateRoutes = lib.mkOption {
         type = lib.types.bool;
         internal = true;
@@ -30,12 +33,14 @@
           || config.my.hardening.directEgress.mode == "restricted";
         description = "Keep private destinations outside TUN/NAT when compatibility or the early restricted guard owns their authorization.";
       };
+
       configCheck = lib.mkOption {
         type = lib.types.package;
         internal = true;
         readOnly = true;
         description = "Canonical CIDR/scope validation required by normal system builds.";
       };
+
       exceptions = lib.mkOption {
         default = [ ];
         type = lib.types.listOf (lib.types.submodule {
@@ -44,46 +49,55 @@
               type = lib.types.strMatching "[a-zA-Z0-9_.:-]{1,15}";
               description = "Exact output interface; no wildcard.";
             };
+
             cidr = lib.mkOption {
               type = lib.types.strMatching "[a-fA-F0-9.:]+/[0-9]+";
               description = "Destination CIDR; grants apply only to private, link-local, multicast and limited-broadcast traffic.";
             };
+
             uids = lib.mkOption {
               type = lib.types.listOf (lib.types.ints.between 0 4294967294);
               description = "Explicit socket owner UIDs; an explicitly empty list permits every UID for this entry.";
             };
+
             tcpPorts = lib.mkOption { type = lib.types.listOf lib.types.port; default = [ ]; };
             udpPorts = lib.mkOption { type = lib.types.listOf lib.types.port; default = [ ]; };
           };
         });
         description = "Restricted B host direct grants by interface, socket UID, CIDR and destination TCP/UDP ports; revocation also cuts established host-initiated flows.";
       };
+
       unboundDotInProxy = lib.mkOption {
         type = lib.types.bool;
         default = true;
         description = "Permit Unbound's UID/uplink/fixed-IP TCP DoT exception in B. False drops its DoT before redirection; A retains recovery DoT and C blocks it.";
       };
+
       timeServerCidrs = lib.mkOption {
         type = lib.types.listOf (lib.types.strMatching "[a-fA-F0-9.:]+/[0-9]+");
         default = [ ];
         description = "Optional strict Chrony NTP/NTS-KE destination CIDRs in A/B. Empty keeps UID/uplink/port compatibility. Include both KE and negotiated NTP servers; address changes fail closed. C remains blocked.";
       };
+
       timeServerNames = lib.mkOption {
         type = lib.types.listOf (lib.types.strMatching "[a-zA-Z0-9.-]+");
         default = [ ];
         description = "Additional negotiated NTP hostnames to exclude from fake-IP when timeServerCidrs is selected. Configured NTS-KE names are included automatically; this does not grant additional CIDRs.";
       };
     };
+
     guestHostServices = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = "Explicitly enable the selected host-service ports for libvirt guests; DHCP/DNS remain separate.";
     };
+
     guestTcpPorts = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
       description = "Explicit desktop TCP services available to libvirt guests.";
     };
+
     guestUdpPorts = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -95,22 +109,80 @@
       default = true;
       description = "Route only the authenticated tailnet's MagicDNS suffix through its resolver; public DNS stays managed.";
     };
+
     guestPrivateEgress = lib.mkOption {
       type = lib.types.bool;
-      default = true;
-      description = "Keep guest LAN/CGNAT/ULA forwarding. Disable for untrusted guests and allow only guestPrivateExceptions.";
+      default = false;
+      description = "Legacy compatibility: trust libvirt/Waydroid private forwarding when guestNetworks.<interface>.trust is unset. Hotspots and additional interfaces stay restricted. Prefer explicit per-interface trust.";
     };
+
+    guestNetworks = lib.mkOption {
+      default = { };
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          trust = lib.mkOption {
+            type = lib.types.nullOr (lib.types.enum [ "restricted" "trusted" ]);
+            default = null;
+            description = "Unset means restricted, except the explicit legacy libvirt/Waydroid compatibility switch. Trust permits private routed destinations, never public B/C forwarding or arbitrary host services.";
+          };
+
+          sourceCidrs = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = "Canonical, disjoint guest source subnets. Built-in bridges receive their machine IPv4 subnet; IPv6 requires an explicit ULA subnet. These identify a network, not individual peers.";
+          };
+
+          gateways = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = "Host gateway addresses inside the declared source subnets; DNS and explicit host ports are bound to these destinations. This does not create an interface or server.";
+          };
+
+          hostTcpPorts = lib.mkOption { type = lib.types.listOf lib.types.port; default = [ ]; };
+          hostUdpPorts = lib.mkOption { type = lib.types.listOf lib.types.port; default = [ ]; };
+        };
+      });
+      description = "Routed guest trust by exact ingress interface, including an enabled hotspot. Host ports are separate from private forwarding. Use a separate bridge for each trust class; this does not isolate peers sharing a layer-2 segment.";
+    };
+
     guestPrivateExceptions = lib.mkOption {
       default = [ ];
       type = lib.types.listOf (lib.types.submodule {
         options = {
-          interface = lib.mkOption { type = lib.types.str; };
-          cidr = lib.mkOption { type = lib.types.str; };
+          interface = lib.mkOption { type = lib.types.strMatching "[a-zA-Z0-9_.-]{1,15}"; };
+          cidr = lib.mkOption { type = lib.types.strMatching "[a-fA-F0-9.:]+/[0-9]+"; };
           tcpPorts = lib.mkOption { type = lib.types.listOf lib.types.port; default = [ ]; };
           udpPorts = lib.mkOption { type = lib.types.listOf lib.types.port; default = [ ]; };
         };
       });
-      description = "Interface/CIDR/transport/port exceptions for restricted guest private forwarding; apply to established traffic too.";
+      description = "Canonical private destination CIDR and TCP/UDP port grants for a restricted guest interface. Current grants govern both directions of established routed flows; host services remain separate.";
+    };
+
+    socketGuestUsers = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Dedicated accounts with fixed UIDs 1000..65533 for restricted rootless/passt host-socket backends, including all delegated subuids. Desktop, root, infrastructure and shared/overlapping identities are refused. Public traffic follows host A/B/C; internal/loopback, fake-IP and known translation targets are denied before NAT, except explicit private grants and forced real-address DNS. Shared desktop-UID backends remain in the host trust class.";
+    };
+
+    socketGuestPrivateExceptions = lib.mkOption {
+      default = [ ];
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          user = lib.mkOption { type = lib.types.str; };
+          interface = lib.mkOption { type = lib.types.strMatching "[a-zA-Z0-9_.:-]{1,15}"; };
+          cidr = lib.mkOption { type = lib.types.strMatching "[a-fA-F0-9.:]+/[0-9]+"; };
+          tcpPorts = lib.mkOption { type = lib.types.listOf lib.types.port; default = [ ]; };
+          udpPorts = lib.mkOption { type = lib.types.listOf lib.types.port; default = [ ]; };
+        };
+      });
+      description = "Private host-socket destination grants for socketGuestUsers, by account, original output interface, canonical CIDR and destination ports. Proxy/resolver listener ports and unsafe targets cannot be granted. Revocation also cuts established sockets; C never inherits these grants.";
+    };
+
+    guestConfigCheck = lib.mkOption {
+      type = lib.types.package;
+      internal = true;
+      readOnly = true;
+      description = "Guest network/source/CIDR/port/identity validation required by normal system builds.";
     };
 
     hotspot.enable = lib.mkOption {
@@ -164,6 +236,24 @@
         `permanent` restores the hardware address. A literal MAC is also allowed.
         Individual profiles can override this default for MAC-based access rules.
       '';
+    };
+  };
+
+  config.my.hardening.guestNetworks = {
+    ${config.my.machine.vmBridge} = {
+      sourceCidrs = lib.mkDefault [ config.my.machine.vmSubnet ];
+      gateways = lib.mkDefault [ config.my.machine.vmAddress ];
+    };
+
+    ${config.my.machine.waydroidBridge} = {
+      sourceCidrs = lib.mkDefault [ config.my.machine.waydroidSubnet ];
+      gateways = lib.mkDefault [ config.my.machine.waydroidAddress ];
+    };
+
+  } // lib.optionalAttrs config.my.hardening.hotspot.enable {
+    ${config.my.machine.hotspot.interface} = {
+      sourceCidrs = lib.mkDefault [ config.my.machine.hotspot.subnet ];
+      gateways = lib.mkDefault [ config.my.machine.hotspot.address ];
     };
   };
 }

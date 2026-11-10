@@ -54,6 +54,22 @@ def patch(root):
     # address reaches the same wildcard redirect listener without that conflict.
     path = root / 'vendor/github.com/metacubex/sing-tun/redirect_nftables_rules.go'
     source = path.read_text()
+    # The repository's explicit IPv4 guest inlet already selected a transparent
+    # socket at prerouting/mangle. Never replace that socket with auto-redirect
+    # in the later NAT lookup. The mark is assigned by owned B-only nft rules;
+    # ordinary guests cannot set a host packet mark over the wire.
+    inlet_anchor = "\tif chain.Hooknum == nftables.ChainHookPrerouting {\n\t\tnft.AddRule(&nftables.Rule{\n\t\t\tTable: table,"
+    inlet_rule = "\tif chain.Hooknum == nftables.ChainHookPrerouting {\n" + """
+        nft.AddRule(&nftables.Rule{Table: table, Chain: chain, Exprs: []expr.Any{
+            &expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+            &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0x233)},
+            &expr.Counter{},
+            &expr.Verdict{Kind: expr.VerdictReturn},
+        }})
+""" + "\t\tnft.AddRule(&nftables.Rule{\n\t\t\tTable: table,"
+    if source.count(inlet_anchor) != 1:
+        raise SystemExit('sing-tun guest TPROXY exclusion anchor changed')
+    source = source.replace(inlet_anchor, inlet_rule, 1)
     anchor = ') error {\n\texprsRedirect := []expr.Any{'
     replacement = ''') error {
 	if chain.Hooknum == nftables.ChainHookOutput && !r.tunOptions.AutoRedirectMarkMode &&

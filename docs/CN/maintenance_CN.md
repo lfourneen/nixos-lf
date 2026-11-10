@@ -27,6 +27,7 @@ Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；
 | Unbound / Chrony / 网络 | [network.nix](../../system/config/network.nix)、[network-time.nix](../../system/config/network-time.nix)、[systemd 模块](../../system/programs/systemd) | 声明策略和仓库自有协调器；没有本地 Unbound/Chrony 源码补丁 |
 | Tailscale 传输 | [tailscale-transport.nix](../../system/config/tailscale-transport.nix)、[tailscale_contract.py](../../system/programs/systemd/netsec/tailscale_contract.py) | 正常系统构建强制检查上游 socket mark 约定；升级复核 mark/后备/socket 变化并跑真实 CLI VM；没有 Tailscale 源码补丁 |
 | 直连例外 | [hardening-options.nix](../../system/config/hardening-options.nix)、[network.nix](../../system/config/network.nix)、[egress_policy.py](../../system/programs/systemd/netsec/egress_policy.py) | 主体/socket 身份、NAT 前授权、规范 CIDR 校验、时间/DoT 范围及 root/GUI 共享私网排除；比较兼容和受限模式 |
+| 访客信任 | [guest-policy.nix](../../system/config/guest-policy.nix)、[guest_policy.py](../../system/programs/systemd/netsec/guest_policy.py)、[socket-guest-dns.nix](../../system/config/socket-guest-dns.nix)、[virtualisation.nix](../../system/programs/virtualisation.nix) | 接口/源角色、规范授权、主/委派 UID 归属、NAT 前真实地址 DNS、双向撤销及 rootless 启动器 |
 | Sunshine | [sunshine.nix](../../system/programs/sunshine.nix) | 随图形会话提供 Desktop，管理仅本机、关闭 UPnP；保留 CUDA，以禁止本地编译的方式验证所配置 CUDA 缓存中的精确包 |
 
 ## Mihomo
@@ -45,16 +46,19 @@ Root 策略来自 [proxy-profile.nix](../../system/config/proxy-profile.nix)，[
 
 受管 fake-IP 必须保留地址合成和共享过滤，同时完整转发 HTTPS/SVCB 参数。Rule 和统一代理均保持关闭嗅探，旧 profile 继承 root 策略，避免 ECH public name 替换请求目标。
 
+可选访客 TPROXY 入口在 `listener/listener.go` 与 `listener/tproxy` 中单独处理绑定及 IPv4 socket 选择。更新时保留 `allow-lan=false` 下 mixed/DNS/controller 的 loopback 行为、TPROXY 被动身份检查以及真实 TCP/UDP 访客测试。
+
 ## Mihomo 内的 sing-tun
 
 目标是 `vendor/github.com/metacubex/sing-tun`，不是独立安装的软件包；更新 Mihomo 可能同时改变它。检查 `go.mod`、replace 指令与实际 vendor 树。
 
-补丁包含两个独立部分：
+补丁包含三个独立部分：
 
 1. `redirect_nftables_exprs.go`：最大 IPv4/IPv6 地址没有有效后继，省略区间结束标记，避免倒置或空 nft interval。Patcher 记录 SagerNet 参考，移除前须比较 MetaCubeX fork 的实际代码。
-2. `redirect_nftables_rules.go`：受管非 mark auto-redirect 模式中，OUTPUT TCP DNAT 使用 TUN 自身地址代替 loopback，使 `SO_BINDTODEVICE(TUN)` 在 `route_localnet=0` 下正常。PREROUTING 及其它模式保留上游行为。
+2. `redirect_nftables_rules.go`：受管非 mark auto-redirect 模式中，OUTPUT TCP DNAT 使用 TUN 自身地址代替 loopback，使 `SO_BINDTODEVICE(TUN)` 在 `route_localnet=0` 下正常。其它模式保留上游行为。
+3. `redirect_nftables_rules.go`：PREROUTING 排除已由自有 B 模式访客 TPROXY 规则设置 `0x233` mark 的报文，保留选定透明 socket 与原始目标。该 mark 与 `network.nix` 共享，普通访客无法通过线上报文设置宿主 packet mark。
 
-核对双栈、排除网段、hook 条件和 redirect port；C 自测应答例外与健康探针依赖该路径。源码匹配和编译不能证明内核重选路，升级 sing-tun 时需包括控制/网络 VM。
+核对双栈、排除网段、hook 条件、访客 mark 和 redirect port；访客 mark 的查表规则优先级为 100，须早于 TUN 规则；C 自测应答例外与健康探针依赖该路径。源码匹配和编译不能证明内核重选路，升级 sing-tun 时需包括控制/网络 VM。
 
 ## Gost
 
@@ -107,6 +111,8 @@ Firefox 在打包层加入不可变 policy、AutoConfig、字体和 preflight。
 | `proxy-dns-strict-rules` | LKL 解析完整严格 DNS 防火墙规则 |
 | `proxy-dns-config` | 默认/严格 DNS 协调器生成脚本语法 |
 | `proxy-dns-strict-vm` | 真实 helper/核心、共享 DNS/代理过滤、严格故障/override/租约及残留集合拒绝、私网 split 权限与字面门户恢复 |
+| `proxy-guest-config`、`proxy-guest-rules` | 生产/独立账户配置与 rootless 启动器语法；LKL 中的完整混合角色规则。正常系统构建也要求访客校验通过 |
+| `proxy-guest-vm` | 三个真实转发网络、DHCP/DNS、IPv4/ULA、伪造源地址、实际 pasta/RootlessKit/subuid socket、fake-IP 拒绝、旧 DNS conntrack、双向撤销以及核心存活时的 C |
 | `proxy-egress-config` | 规范 CIDR 与授权/时间目标范围；接入正常系统构建 |
 | `proxy-egress-vm` | Tailscale VM 的受限策略版本；双栈私网/多播/DNS/DoT/NTS、UID/接口/端口拒绝、已有连接撤权与 C |
 | `proxy-egress-control-vm` | 真实生产 TUN/NAT 之前的受限策略，包含私网允许与拒绝 |

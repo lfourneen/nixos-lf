@@ -97,13 +97,35 @@ Restart/reload reinstalls the owned static policy plus the safety mode atomicall
 | [machine.nix](../system/config/machine.nix) | User, interfaces/match keys, UIDs, ports, mark, address ranges and upstream endpoints |
 | [proxy-options.nix](../system/config/proxy-options.nix) | TUN, route table 2022, fake-IP pool, probe URLs, boot intent, proxyOnly, dnsEncryption, shared domain filtering, localTargetCidrs, remoteTargetGrants, nat64Prefixes, guests, split DNS and freshness |
 | [proxy-profile.nix](../system/config/proxy-profile.nix) | Root-owned managed DNS/TUN/profile contract |
-| [hardening-options.nix](../system/config/hardening-options.nix) | Host/guest private access, explicit host-service ports, hotspot, tailnet and Wi-Fi MAC policy |
+| [hardening-options.nix](../system/config/hardening-options.nix) | Host/guest private access, per-interface guest trust/sources, dedicated socket guest accounts, host-service ports, hotspot, tailnet and Wi-Fi MAC policy |
 | [cvr-merge.nix](../home/config/cvr-merge.nix) | Matching Clash GUI Merge template and routing enhancement |
 | [firefox.nix](../home/programs/firefox/firefox.nix), [options.nix](../home/programs/firefox/options.nix) | Native browser, networkPath, privacy, policy, fonts and launcher |
 
 TUN defaults: `Mihomo`, table 2022, rule priority 9000, internal marks 8227/8228, fallback priority 32768, file descriptor 0. Parser, template and health share these values. `tunMode=false` selects HTTP-only/redir-host operation, dropping the requirement for a TUN. Fake-IP network is derived from `fakeIpRange`; avoid independent edits to consumers.
 
 For core access to a local/internal service, [target authorization](proxy.md#domain-targets) separates local DIRECT CIDRs from remote node grants. An internal suffix only permits a locally resolved private answer; it does not authorize node-side resolution or dialing. Remote grants use the actual leaf name and core inlet (Gost CONNECT arrives as `HTTPS`), transport and destination ports. Rebuild and deliberately import/restart the managed core after changing these options. A retains literal portal access; C remains blocked. Native [direct-egress grants](egress.md) are independent.
+
+For separate guest trust classes, select a development bridge explicitly and grant only the needed private service to other guests. A host-socket backend additionally needs its own fixed account; choose a free UID and nonoverlapping subordinate ranges:
+
+```nix
+my.hardening = {
+  guestNetworks.virbr0.trust = "trusted";
+  guestPrivateExceptions = [{
+    interface = "waydroid0"; cidr = "192.168.1.20/32";
+    tcpPorts = [ 443 ];
+  }];
+  socketGuestUsers = [ "guestnet" ];
+  socketGuestPrivateExceptions = [{
+    user = "guestnet"; interface = "ens1"; cidr = "192.168.1.20/32";
+    tcpPorts = [ 443 ];
+  }];
+};
+users.users.guestnet = { isNormalUser = true; uid = 1100; };
+```
+
+The example addresses are placeholders. Built-in bridge source/gateway defaults come from `my.machine`; extra `guestInterfaces` require their own canonical, disjoint `guestNetworks` source CIDRs. Add `hostTcpPorts` / `hostUdpPorts` on a role only when a service should be reachable at its declared gateways. IPv6 needs explicit ULA sources/gateways; public guest IPv6 stays refused. A hotspot remains restricted unless its own trust is explicitly changed.
+
+Install/reconcile the complete nft policy before starting pasta or rootless Docker under `guestnet`. The Docker user unit clears inherited explicit proxy variables for restricted accounts and uses the declared rootless package/settings. Stop existing backends before adding/changing identities or delegated UID mappings. To revoke private access for running backends, keep the identity declared, remove its grants and reload the firewall; both tracked directions are cut. Changing `socketGuestUsers` alone does not migrate desktop containers. These accounts use the separate real-address DNS path, which has no plaintext/split-DNS fallback. See [guest boundaries](network.md#guests-and-containers).
 
 For a Wi-Fi profile requiring the hardware MAC:
 

@@ -10,7 +10,7 @@
     # so order after gost-relay too; soft only, it must still run if it fails.
     after = [ "network-online.target" "dbus.service" "gost-relay.service" ]; 
     wants = [ "network-online.target" "gost-relay.service" ];
-    
+
     path = [ pkgs.flatpak pkgs.coreutils pkgs.curl ];
     # gost-relay is started before it listens, and mihomo finishes its own
     # start-up behind it, so one attempt at boot loses the race. Wait for the
@@ -28,9 +28,11 @@
       done
       exit 1
     '';
+
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
+
       # systemd service has no login-session env; without proxy, dl.flathub.org is
       # GFW-blocked (DNS poisoned) -> "Could not resolve hostname". Route via gost-relay.
       Environment = [

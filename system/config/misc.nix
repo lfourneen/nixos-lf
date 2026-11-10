@@ -5,7 +5,7 @@
   nix.settings = {
     auto-optimise-store = true;
     max-jobs = 16;
-    
+
     experimental-features = [ 
       "nix-command" 
       "flakes" 
@@ -56,8 +56,8 @@
 
   # Zram (but no hibernate)
   zramSwap.enable = true;
+
   # To enable hibernation, switch zram -> zswap (see partition.nix):
-  # zramSwap.enable = false;
   # boot.zswap.enable = true;
 
   # GC

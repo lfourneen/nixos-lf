@@ -11,6 +11,7 @@ let
       };
       profile = import ../../home/config/cvr-merge.nix { inherit lib osConfig; };
       directory = ".local/share/io.github.clash-verge-rev.clash-verge-rev/profiles";
+
     in assert lib.all (a: a.assertion) profile.assertions; {
       inherit name;
       merge = pkgs.writeText "${name}-Merge.yaml" profile.home.file."${directory}/Merge.yaml".text;
@@ -38,6 +39,7 @@ let
           osConfig.my.machine.ntsUpstreams ++ osConfig.my.hardening.directEgress.timeServerNames;
       };
     };
+
   manifest = pkgs.writeText "proxy-profile-tests.json" (builtins.toJSON (map render [
     { name = "default"; }
     { name = "uniform-proxy"; baseConfig = uniformProxyConfig; }

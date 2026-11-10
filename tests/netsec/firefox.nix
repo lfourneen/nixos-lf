@@ -4,6 +4,7 @@ let
   home = config.home-manager.users.${config.my.machine.desktopUser};
   compatHome = compatConfig.home-manager.users.${compatConfig.my.machine.desktopUser};
   firefox = home.programs.firefox.finalPackage;
+
   manifest = pkgs.writeText "firefox-test.json" (builtins.toJSON {
     package = firefox;
     driver = ./firefox_driver.py;

@@ -58,6 +58,9 @@ def is_protocol_field(left):
         meta = left.get("meta")
         if isinstance(meta, dict) and meta.get("key") == "l4proto":
             return True
+        ct = left.get("ct")
+        if isinstance(ct, dict) and ct.get("key") == "protocol":
+            return True
         payload = left.get("payload")
         if isinstance(payload, dict) and payload.get("field") == "protocol":
             return True

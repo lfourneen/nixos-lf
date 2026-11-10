@@ -9,6 +9,7 @@ let
   dhcpcdMatch = builtins.match ".* --config ([^ ]+).*" dhcpcdExec;
   # Disabled wired DHCP has no unit ExecStart (e.g. a static-address host).
   dhcpcdConfig = if dhcpcdMatch == null then "/dev/null" else builtins.head dhcpcdMatch;
+
   linkSettings = pkgs.writeText "dns-uplink.json" (builtins.toJSON {
     ip = "${pkgs.iproute2}/bin/ip";
     nmcli = "${pkgs.networkmanager}/bin/nmcli";
@@ -17,6 +18,7 @@ let
     dhcp_interfaces = dhcpIfaces;
     interfaces = [ m.wired.name m.wireless.name ];
   });
+
   policySettings = pkgs.writeText "dns-policy.json" (builtins.toJSON {
     nft = "${pkgs.nftables}/bin/nft";
     systemctl = "${pkgs.systemd}/bin/systemctl";
@@ -29,14 +31,17 @@ let
     runtime = "/run/dns-upstream";
     allow_plaintext = config.my.proxy.dnsEncryption != "strict";
   });
+
   # Plaintext resolvers used only inside the bounded Mode-A window, and only
   # when the link supplies none. Never Unbound upstreams, and a different
   # operator from the validated endpoints (asserted in network.nix).
   transportFallback = lib.concatStringsSep " " m.dotTransportFallback;
+
   # Upstreams the probe contacts directly (TLS) so a validator without a
   # verdict can be attributed to the network or to the validator.
   dotProbeUpstreams = lib.concatMapStringsSep " "
     (ip: "${ip}@${toString port.dot}#${m.dotAuthName}") m.dotUpstreams;
+
   resolvedSettings = pkgs.writeText "resolved-policy.json" (builtins.toJSON {
     ip = "${pkgs.iproute2}/bin/ip";
     resolvectl = "${pkgs.systemd}/bin/resolvectl";
@@ -75,6 +80,7 @@ in
       RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
     };
   };
+
   # Kernel timeout accounting can pause across suspend. Revoke before sleep,
   # prevent the broker regranting, then reconcile using CLOCK_BOOTTIME on wake.
   systemd.services.dns-policy-sleep = {
@@ -98,6 +104,7 @@ in
       CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
     };
   };
+
   systemd.services.dns-policy-resume = {
     description = "Recover DNS leases after resume or a failed sleep hook";
     after = [ "sleep.target" "dns-policy-sleep.service" "netsec-alert@dns-policy-sleep.service.service" ];
@@ -124,6 +131,7 @@ in
       ReadWritePaths = [ "/run/proxy-mode" "/run/netsec" ];
     };
   };
+
   systemd.services.dns-policy = {
     description = "Apply bounded DNS address leases under the policy lock";
     after = [ "nftables.service" ];
@@ -148,6 +156,7 @@ in
       ReadWritePaths = [ "/run/proxy-mode" "/run/netsec" ];
     };
   };
+
   systemd.services.dns-resolved-policy = {
     description = "Keep resolved on the managed DNS gateway";
     after = [ "systemd-resolved.service" ] ++ lib.optional config.services.tailscale.enable "tailscaled-set.service";
@@ -164,6 +173,7 @@ in
       RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
     };
   };
+
   # DNS upstream: mihomo DNS while clash runs, unbound DoT otherwise, with the DHCP
   # resolvers only inside the bounded windows below.
   systemd.services.dns-upstream = {
@@ -195,6 +205,7 @@ in
       RemoveIPC = true;
       CapabilityBoundingSet = "";
       RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
+
       # The verdict history outlives the boot on purpose: a failed generation is
       # rolled back from the boot menu, so the evidence must not be tmpfs-only.
       StateDirectory = "dns-upstream";

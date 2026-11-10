@@ -41,6 +41,7 @@
     };
 
     vmBridge = lib.mkOption { type = lib.types.str; default = "virbr0"; };
+
     # Waydroid's container bridge and its LXC subnet; the firewall treats it as a
     # guest exactly like the libvirt bridge.
     waydroidBridge = lib.mkOption { type = lib.types.str; default = "waydroid0"; };
@@ -70,6 +71,7 @@
       mihomoDns = lib.mkOption { type = lib.types.port; default = 1053; };
       dnsmasq = lib.mkOption { type = lib.types.port; default = 1054; };
       unbound = lib.mkOption { type = lib.types.port; default = 1055; };
+      socketGuestDns = lib.mkOption { type = lib.types.port; default = 1056; };
       gostHttp = lib.mkOption { type = lib.types.port; default = 33332; };
       gostRedirect = lib.mkOption { type = lib.types.port; default = 33333; };
       mihomoMixed = lib.mkOption { type = lib.types.port; default = 7897; };
@@ -83,26 +85,32 @@
     # reachable. This uplink is CGNAT, so 100.64/10 is one of them.
     privateV4 = lib.mkOption {
       type = lib.types.listOf lib.types.str;
+
       # 169.254/16 is link-local: APIPA adapters, mDNS and cloud metadata live
       # there and none of it may be tunnelled or proxied.
       default = [ "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" "100.64.0.0/10" "169.254.0.0/16" ];
     };
+
     multicastV4 = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "224.0.0.0/4" ];
     };
+
     # nft takes the bare address, the TUN exclusion list the host form.
     limitedBroadcastV4 = lib.mkOption { type = lib.types.str; default = "255.255.255.255"; };
+
     # Kept apart because the ruleset lists the link-local block first and the TUN
     # exclusion list the other way round.
     linkLocalV6 = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "fe80::/10" ];
     };
+
     ulaV6 = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "fc00::/7" ];
     };
+
     multicastV6 = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "ff00::/8" ];
@@ -113,6 +121,7 @@
       subnet = lib.mkOption { type = lib.types.str; default = "10.42.0.0/24"; };
       address = lib.mkOption { type = lib.types.str; default = "10.42.0.1"; };
     };
+
     vmSubnet = lib.mkOption { type = lib.types.str; default = "192.168.122.0/24"; };
     vmAddress = lib.mkOption { type = lib.types.str; default = "192.168.122.1"; };
     waydroidSubnet = lib.mkOption { type = lib.types.str; default = "192.168.240.0/24"; };
@@ -124,12 +133,15 @@
       default = [ "101.226.4.6" "218.30.118.6" "123.125.81.6" ];
       description = "Mode-A validating Unbound DoT endpoints; must return complete DNSSEC material.";
     };
+
     dotAuthName = lib.mkOption { type = lib.types.str; default = "dot.360.cn"; };
+
     mihomoDomesticDnsUpstreams = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "223.5.5.5" "223.6.6.6" ];
       description = "Mihomo's domestic/bootstrap resolvers, independent of Mode-A Unbound.";
     };
+
     dotTransportFallback = lib.mkOption {
       type = lib.types.nonEmptyListOf lib.types.str;
       default = [ "1.1.1.1" "1.0.0.1" ];
@@ -140,6 +152,7 @@
         is never silently replaced by itself in the clear.
       '';
     };
+
     ntsUpstreams = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "time.cloudflare.com" "nts.netnod.se" ];

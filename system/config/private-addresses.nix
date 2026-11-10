@@ -5,6 +5,7 @@ let
   ipv4 = lib.unique (m.privateV4 ++ [ "0.0.0.0/8" "127.0.0.0/8" "169.254.0.0/16"
     m.vmSubnet m.waydroidSubnet ] ++ lib.optional config.my.hardening.hotspot.enable m.hotspot.subnet);
   ipv6 = m.ulaV6 ++ m.linkLocalV6 ++ [ "::/128" "::1/128" ];
+
   mapped = map (cidr: let parts = lib.splitString "/" cidr;
     in "::ffff:${builtins.head parts}/${toString (96 + lib.toInt (builtins.elemAt parts 1))}") ipv4;
 

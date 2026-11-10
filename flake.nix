@@ -52,6 +52,22 @@
       strictDnsConfig = (self.nixosConfigurations.lfour.extendModules {
         modules = [ { my.proxy.dnsEncryption = "strict"; } ];
       }).config;
+      guestConfig = (self.nixosConfigurations.lfour.extendModules {
+        modules = [ {
+          users.users.guestnet = { isNormalUser = true; uid = 1100; };
+          my.hardening = {
+            hotspot.enable = true;
+            guestNetworks = {
+              virbr0.trust = "trusted";
+              waydroid0.sourceCidrs = [ "192.168.240.0/24" "fd42:240::/64" ];
+            };
+            socketGuestUsers = [ "guestnet" ];
+            guestPrivateExceptions = [{ interface = "ap0"; cidr = "10.0.0.1/32"; tcpPorts = [ 443 ]; }];
+            socketGuestPrivateExceptions = [{ user = "guestnet"; interface = "ens1"; cidr = "10.0.0.1/32"; tcpPorts = [ 443 ]; }];
+          };
+          my.proxy.transparentGuestInterfaces = [ "virbr0" ];
+        } ];
+      }).config;
     in {
       openidea-tools = self.nixosConfigurations.lfour.pkgs.openidea.tests.repair-tools;
       proxy-regressions = pkgs.runCommand "proxy-regressions" {
@@ -62,24 +78,39 @@
         python3 ${./tests/netsec/test_netsec.py}
         touch "$out"
       '';
+
       proxy-rules = self.nixosConfigurations.lfour.config.my.proxy.expectedRules;
       proxy-dns-strict-rules = strictDnsConfig.my.proxy.expectedRules;
+
       proxy-dns-config = pkgs.runCommand "dns-policy-config" { } ''
         ${pkgs.bash}/bin/bash -n ${self.nixosConfigurations.lfour.config.systemd.services.dns-upstream.serviceConfig.ExecStart}
         ${pkgs.bash}/bin/bash -n ${strictDnsConfig.systemd.services.dns-upstream.serviceConfig.ExecStart}
         touch "$out"
       '';
+
       proxy-egress-config = self.nixosConfigurations.lfour.config.my.hardening.directEgress.configCheck;
+      proxy-guest-config = pkgs.runCommand "guest-policy-config" { } ''
+        test -e ${self.nixosConfigurations.lfour.config.my.hardening.guestConfigCheck}
+        test -e ${guestConfig.my.hardening.guestConfigCheck}
+        ${pkgs.bash}/bin/bash -n ${guestConfig.systemd.user.services.docker.serviceConfig.ExecStart}
+        touch "$out"
+      '';
+
+      proxy-guest-rules = guestConfig.my.proxy.expectedRules;
+
       tailscale-transport = self.nixosConfigurations.lfour.config.my.hardening.tailscale.transportCheck;
+
       proxy-tailscale-vm = import ./tests/netsec/tailscale-vm.nix {
         inherit pkgs;
         tailscale = self.nixosConfigurations.lfour.config.services.tailscale.package;
       };
+
       proxy-egress-vm = import ./tests/netsec/tailscale-vm.nix {
         inherit pkgs;
         tailscale = self.nixosConfigurations.lfour.config.services.tailscale.package;
         restricted = true;
       };
+
       proxy-egress-rules = (self.nixosConfigurations.lfour.extendModules {
         modules = [ {
           my.hardening.allowPrivateEgress = false;
@@ -94,6 +125,7 @@
           };
         } ];
       }).config.my.proxy.expectedRules;
+
       browser-privacy = import ./tests/netsec/firefox.nix {
         inherit pkgs;
         config = self.nixosConfigurations.lfour.config;
@@ -105,6 +137,7 @@
           } ];
         }).config;
       };
+
       browser-ech-vm = import ./tests/netsec/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
@@ -115,12 +148,14 @@
           }).config.home-manager.users.lfour.programs.firefox.finalPackage;
         };
       };
+
       proxy-profile = import ./tests/netsec/profile.nix {
         inherit pkgs;
         config = self.nixosConfigurations.lfour.config;
         uniformProxyConfig = (self.nixosConfigurations.lfour.extendModules {
           modules = [ { my.proxy.proxyOnly = true; } ];
         }).config;
+
         restrictedConfig = (self.nixosConfigurations.lfour.extendModules {
           modules = [ {
             my.hardening.allowPrivateEgress = false;
@@ -131,34 +166,47 @@
             };
           } ];
         }).config;
+
         privateProxyConfig = (self.nixosConfigurations.lfour.extendModules {
           modules = [ { my.hardening.allowPrivateEgress = false; } ];
         }).config;
       };
+
       proxy-network-vm = import ./tests/netsec/vm.nix {
         inherit pkgs;
         core = self.nixosConfigurations.lfour.config.programs.clash-verge.package.managedCore;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
       };
+
       proxy-control-vm = import ./tests/netsec/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
       };
+
       proxy-target-vm = import ./tests/netsec/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
         targetPolicy = true;
       };
+
+      proxy-guest-vm = import ./tests/netsec/control-vm.nix {
+        inherit pkgs;
+        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        guests = true;
+      };
+
       proxy-dns-strict-vm = import ./tests/netsec/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
         strictDns = true;
       };
+
       proxy-egress-control-vm = import ./tests/netsec/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
         restricted = true;
       };
+
       proxy-control = pkgs.runCommand "proxy-control-regressions" {
         nativeBuildInputs = [ pkgs.python3 ];
       } ''
@@ -166,6 +214,7 @@
         python3 ${./tests/netsec/test_control.py} ${./system/programs/clash/clash-verge-stage.py}
         touch "$out"
       '';
+
       proxy-control-config = let
         c = self.nixosConfigurations.lfour.config;
         small = self.checks.${system}.proxy-control-vm.config.nodes.machine;
@@ -178,6 +227,7 @@
       assert broad.programs.clash-verge.package == c.programs.clash-verge.package;
       assert small.systemd.services.clash-verge.serviceConfig.CapabilityBoundingSet
         == c.systemd.services.clash-verge.serviceConfig.CapabilityBoundingSet;
+
       pkgs.runCommand "proxy-control-config" { nativeBuildInputs = [ pkgs.python3 ]; } ''
         python3 - ${c.my.proxy.listenerSettings} ${toString uid} <<'PY'
         import json
@@ -190,6 +240,7 @@
         PY
         touch "$out"
       '';
+
       proxy-core = self.nixosConfigurations.lfour.config.programs.clash-verge.package.managedCore;
       proxy-gost = self.nixosConfigurations.lfour.config.my.proxy.gostPackage;
       proxy-gui = self.nixosConfigurations.lfour.config.programs.clash-verge.package.guiDefaultsCheck;

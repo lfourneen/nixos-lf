@@ -13,6 +13,7 @@ in
     description = "Managed Clash core";
     home = "/var/lib/clash-core";
   };
+
   assertions = [{
     assertion = uid > 0 && config.users.users.clash-core.uid == uid
       && lib.count (u: u.uid == uid) (lib.attrValues config.users.users) == 1;

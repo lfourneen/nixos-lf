@@ -3,6 +3,7 @@
 pkgs.testers.runNixOSTest {
   name = if restricted then "restricted-direct-egress" else "tailscale-transport-policy";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
+
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
       ../../system/programs/clash/identity.nix
@@ -15,6 +16,7 @@ pkgs.testers.runNixOSTest {
       ../../system/programs/systemd/network-bootstrap.nix
       ../../system/programs/systemd/netsec-alert.nix
     ];
+
     users.users.lfour = { isNormalUser = true; uid = 1000; };
     users.groups.gost = { };
     users.users.gost = { isSystemUser = true; group = "gost"; uid = config.my.machine.uids.gost; };
@@ -22,6 +24,7 @@ pkgs.testers.runNixOSTest {
     users.users.dhcpcd = { isSystemUser = true; group = "dhcpcd"; };
     services.tailscale.package = lib.mkForce tailscale;
     my.hardening.allowPrivateEgress = !restricted;
+
     my.hardening.directEgress = lib.mkIf restricted {
       mode = "restricted";
       unboundDotInProxy = false;
@@ -33,9 +36,11 @@ pkgs.testers.runNixOSTest {
         { interface = "ens1"; cidr = "ff02::4242/128"; uids = [ 1000 ]; udpPorts = [ 53530 ]; }
       ];
     };
+
     services.avahi.enable = lib.mkForce false;
     networking.interfaces.ens1.useDHCP = lib.mkForce false;
     networking.networkmanager.unmanaged = [ "interface-name:eth*" "interface-name:ens1" "interface-name:wlo1" ];
+
     # Exercise the actual production fragments without a proxy core, live
     # tailnet, public control server, or mode supervisor repairing test changes.
     systemd.services = lib.genAttrs [ "proxy-mode" "tailscaled" "tailscaled-set"
@@ -44,6 +49,7 @@ pkgs.testers.runNixOSTest {
     environment.etc."tail-mode-c.nft".text = config.my.proxy.blockedModeRules;
     environment.etc."tail-fixture.py".source = ./tailscale_fixture.py;
     environment.etc."egress-fixture.py".source = ./egress_fixture.py;
+
     # Remove only host grants to test revocation; keep the production static
     # policy and restricted infrastructure identities exactly as configured.
     environment.etc."tail-revoked-b.nft".text = (import ../../system/config/network.nix {
@@ -52,6 +58,7 @@ pkgs.testers.runNixOSTest {
         directEgress = config.my.hardening.directEgress // { exceptions = [ ]; };
       }; }; };
     }).my.proxy.proxyModeRules;
+
     environment.etc."tail-expected".source = config.my.proxy.expectedRules;
     environment.etc."tail-rule-check".source = config.my.proxy.rulesCheck;
     environment.etc."tail-mode-script".source = config.my.proxy.modeScript;
@@ -59,6 +66,7 @@ pkgs.testers.runNixOSTest {
     virtualisation.vlans = [ 9 ];
     virtualisation.memorySize = 768;
   };
+
   testScript = ''
     import json
     restricted = ${if restricted then "True" else "False"}

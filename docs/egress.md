@@ -50,6 +50,12 @@ The guard sees original targets at output `-195`, before redirection. Restricted
 
 These grants govern native host sockets. The core separately authorizes [local and remote internal targets](proxy.md#domain-targets) using `localTargetCidrs` and `remoteTargetGrants`; restricted native grants do not constrain or authorize those core sockets. Guest forwarding and incoming authorization remain separate.
 
+## Guest trust scopes
+
+Routed guests use `guestNetworks` and `guestPrivateExceptions`; private forwarding is restricted by default for libvirt, Waydroid and an enabled hotspot. A trusted development role permits private forwarding without changing host-service or public-mode policy. Current grants apply before generic established accepts in both directions. See [guest architecture](network.md#guests-and-containers).
+
+`socketGuestUsers` applies a separate original-target guard in A/B/C to dedicated host-socket backends and their delegated UIDs. It precedes host compatibility exceptions, TUN and NAT, so broad desktop LAN permission does not authorize a restricted backend. Private grants use `socketGuestPrivateExceptions`; they are additional bounds, not an exemption from a separately restricted host policy. Port 53 has a forced filtered real-address path; loopback proxies, synthetic/known translation destinations and reserved listener ports cannot be granted. Per-account conntrack identities cut replies after grant revocation and in C. These identities must remain declared while revoking grants. Ordinary loopback IPC and desktop-owned backends retain the host trust class.
+
 ## Optional time destination pins
 
 `timeServerCidrs=[]` keeps changing NTS addresses usable under UID/uplink/port limits. Canonical IPv4/IPv6 CIDRs restrict Chrony's original NTP/NTS-KE targets in **A and B**. Populate them from actual provider endpoints; documentation addresses are not usable servers. NTS-KE can negotiate a different NTP server, so pinning only the key-exchange endpoint may break synchronization. Address changes fail closed, without automatic widening or plaintext fallback. See [Chrony's server options](https://chrony-project.org/doc/4.8/chrony.conf.html).

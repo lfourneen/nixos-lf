@@ -1,12 +1,33 @@
-{ pkgs, ... }:
+{ pkgs, config, lib, ... }:
 
+let
+  socketGuests = import ../config/guest-policy.nix { inherit config lib; };
+  rootless = config.virtualisation.docker.rootless;
+  daemonConfig = (pkgs.formats.json { }).generate "rootless-docker-daemon.json" rootless.daemon.settings;
+
+  rootlessLauncher = pkgs.writeShellScript "rootless-docker-launcher" ''
+    ${lib.optionalString (socketGuests.socketUids != [ ]) ''
+    case "$(${pkgs.coreutils}/bin/id -u)" in
+      ${lib.concatStringsSep "|" (map toString socketGuests.socketUids)})
+
+        # This identity uses native sockets plus forced real-address DNS. An
+        # inherited explicit host proxy would lose the backend's UID identity.
+        unset http_proxy https_proxy ftp_proxy all_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY
+        unset no_proxy NO_PROXY
+        ;;
+    esac
+    ''}
+    exec ${rootless.package}/bin/dockerd-rootless --config-file=${daemonConfig}
+  '';
+
+in
 {
   # KVM
   programs.virt-manager.enable = true;
   virtualisation = {
     waydroid.enable = true;
     spiceUSBRedirection.enable = true;
-    
+
     libvirtd = {
       enable = true;
 
@@ -17,14 +38,14 @@
         vhostUserPackages = [ pkgs.virtiofsd ];
       };
     };
-   
+
     # Enable Containerd
     containerd.enable = true;
 
     # Enable Docker
     docker = {
       package = pkgs.unstable.docker;
-      
+
       # Disable the system ROOT dockerd - rootless docker is the ONLY daemon now
       enable = false;
       storageDriver = "btrfs";
@@ -41,7 +62,7 @@
         ];
       };
     };
- 
+
     # Enable Podman
     #podman = {
       #enable = true;
@@ -51,12 +72,13 @@
   };
 
   systemd.user.services.docker.serviceConfig.TimeoutStopSec = "15s";
+  systemd.user.services.docker.serviceConfig.ExecStart = lib.mkForce (toString rootlessLauncher);
 
   environment.systemPackages = with pkgs; [
     # Docker container
     pkgs.unstable.docker-client 
     pkgs.unstable.docker-compose
-    
+
     # Podman Container
     pkgs.unstable.dive 
     #pkgs.unstable.podman 

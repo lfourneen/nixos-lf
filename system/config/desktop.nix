@@ -14,17 +14,17 @@ in
   environment.etc."xdg/mimeapps.list".text =
     "[Default Applications]\n"
     + lib.concatStrings (lib.mapAttrsToList (type: app: "${type}=${app}\n") defaultApplications);
-  
+
   # Desktop Evironment 
   services = {
     # Gnome
     gnome.gnome-keyring.enable = true;
-    
+
     desktopManager = {
       # GNOME 
       gnome.enable = true;
     };
-    
+
     displayManager = {
       defaultSession = "niri";
 
@@ -45,7 +45,6 @@ in
   xdg.portal = {
     enable = true;
     wlr.enable = true;
-
     extraPortals = [
       pkgs.xdg-desktop-portal
       pkgs.xdg-desktop-portal-gtk
@@ -71,6 +70,7 @@ in
 
   # Colord
   services.colord.enable = true;
+
   # Indusrial I/O
   hardware.sensor.iio.enable = true;
 
@@ -101,7 +101,7 @@ in
     gnomeExtensions.user-themes
     gnomeExtensions.wifi-qrcode
     gnomeExtensions.workspace-indicator
-    
+
     # Gnome windows themes
     pkgs.adwaita-icon-theme
     adwaita-qt

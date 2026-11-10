@@ -76,6 +76,12 @@ my.proxy.dnsEncryption = "strict";
 
 受管 fake-IP 模式保留地址记录的合成行为，同时让 HTTPS/SVCB 查询使用声明的解析器，保留服务参数；两者均先经过共享过滤。Firefox 如何使用这些记录、CONNECT 限制和可选原生路径见[浏览器手册](browser_CN.md#ech-发现与代理兼容)。
 
+## 受限 socket 访客 DNS
+
+`my.hardening.socketGuestUsers` 非空时，[socket-guest-dns.nix](../../system/config/socket-guest-dns.nix) 以 UID 985 在 loopback 1056 启动额外 dnsmasq。它复用不可变后缀过滤、增补及例外，但始终转交 Unbound 1055 并返回真实地址，不使用明文租约、split DNS 或原生 MagicDNS。DoT 不可用（包括 B 中 `unboundDotInProxy=false`）时，新鲜公网名称失败；符合条件的缓存和本地数据可能仍可用。
+
+声明的主 UID 和 subordinate UID 的 TCP/UDP 53 在核心 auto-redirect 前重定向至此。NAT 后检查拒绝仍指向旧解析器的 conntrack 关联，直接查询 1056 仍仅限 root。私网目标守卫拒绝直接使用 fake-IP/已知转换目标及宿主代理入口。独立 HTTPS/DoH 内容不受后缀过滤，但最终字面 socket 目标仍受账户策略约束。C 同时切断这些账户已跟踪的回包及公网出站。此路径属于[宿主 socket 访客授权](network_CN.md#访客与容器)，普通桌面解析器与桥接网关 DNS 仍有独立路径。
+
 ## 黑名单
 
 [dns-blocklist.nix](../../system/config/dns-blocklist.nix) 在构建时解压 Git 跟踪的[快照](../../local-data/dns-blocklist.txt.xz)，同一份不可变域名文件同时生成 dnsmasq 后缀 NXDOMAIN 规则并供核心加载内存过滤表。构建和运行时均不下载。
