@@ -90,6 +90,29 @@ sudo systemctl start nftables-verify.service
 
 Restart/reload reinstalls the owned static policy plus the safety mode atomically; proxy intent goes through C before health reopens B. Stopping nftables leaves its policy installed. `nftables-verify-repair.service` performs explicit repair and recheck; `nftables-recover` retries a failed nftables unit. Avoid flushing the global ruleset.
 
+## Legacy firewall migration
+
+Older generations used `inet filter`, `ip proxymode_nat` and `ip6 proxymode_nat`. Current startup, reload and repair leave these names intact because another service may now own them. A system already using only the [reserved tables](network.md#firewall-lifecycle) needs no migration.
+
+When upgrading a running system from those older names, inspect the existing tables and confirm that they belong to the old repository configuration:
+
+```sh
+sudo nft list table inet filter
+sudo nft list table ip proxymode_nat
+sudo nft list table ip6 proxymode_nat
+```
+
+After installing the current generation, explicitly migrate any remaining repository-owned legacy tables:
+
+```sh
+sudo proxy-control migrate-firewall
+sudo systemctl start nftables-verify.service
+```
+
+This root command deletes only those three historical family/name pairs, together with the normal replacement of current owned tables. It takes the operator and policy locks, and commits cleanup, static rules and the safety mode in one nft transaction. A rejected transaction preserves the prior rules and legacy tables. Missing legacy tables are harmless, so repeating the command is safe while those names remain reserved for migration.
+
+Proxy intent or a running core installs C first; the supervisor may reopen B after health checks. Direct intent with no core installs A. The command preserves intent and core authorization and leaves the core running. Check the current mode and verification JSON using the diagnostics above. Migration does not enable future cleanup: a later service can reuse a historical name without ordinary reloads deleting its table. If an existing historical name belongs to another service, keep it and resolve ownership before using the migration command.
+
 ## Configuration
 
 | Source | Settings |

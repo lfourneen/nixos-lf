@@ -80,6 +80,7 @@
       '';
 
       proxy-rules = self.nixosConfigurations.lfour.config.my.proxy.expectedRules;
+      proxy-firewall-vm = import ./tests/netsec/firewall-vm.nix { inherit pkgs; };
       proxy-dns-strict-rules = strictDnsConfig.my.proxy.expectedRules;
 
       proxy-dns-config = pkgs.runCommand "dns-policy-config" { } ''

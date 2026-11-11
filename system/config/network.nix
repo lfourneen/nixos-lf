@@ -872,13 +872,6 @@ in
       destroy table ip lf_proxymode_nat
       destroy table ip6 lf_proxymode_nat
 
-      # One-time cleanup of the pre-rename table names (ours only; a no-op once they
-      # are gone, including after any reboot). The shared `ip nat` / `ip6 nat` are
-      # deliberately not deleted, so libvirt/Docker/NM rules survive.
-      destroy table inet filter
-      destroy table ip proxymode_nat
-      destroy table ip6 proxymode_nat
-
       table inet lf_filter {
         # Only the elements of these three named sets are runtime leases.
         # Their type, flags, timeout ceiling and every referencing rule are verified.

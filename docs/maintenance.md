@@ -25,6 +25,7 @@ Go patchers run in `postConfigure`, after `buildGoModule` has populated `vendor/
 | dnsmasq | [network.nix](../system/config/network.nix), inline `src/forward.c` replacement | Return terminal strict-order UDP SERVFAIL/REFUSED, including DNSSEC EDE |
 | Firefox package | [firefox.nix](../home/programs/firefox/firefox.nix), [guard.py](../home/programs/firefox/guard.py), [sandbox.py](../home/programs/firefox/sandbox.py), [scope.c](../home/programs/firefox/scope.c) | Immutable policy/AutoConfig/fonts, preflight, outer namespaces, filtered bus, portal identity and Landlock/seccomp; no Gecko source patch |
 | Unbound / Chrony / networking | [network.nix](../system/config/network.nix), [network-time.nix](../system/config/network-time.nix), [systemd modules](../system/programs/systemd) | Declarative policy and repository-owned coordinators; no local Unbound/Chrony source patch |
+| Firewall lifecycle | [network.nix](../system/config/network.nix), [proxy-mode.nix](../system/programs/systemd/proxy-mode.nix), [network-bootstrap.nix](../system/programs/systemd/network-bootstrap.nix) | Exact table ownership, locked atomic replacement, failure retention and explicit historical migration |
 | Tailscale transport | [tailscale-transport.nix](../system/config/tailscale-transport.nix), [tailscale_contract.py](../system/programs/systemd/netsec/tailscale_contract.py) | Upstream socket-mark contract enforced by normal system builds; review mark/fallback/socket changes and run the real CLI VM on upgrades; no Tailscale source patch |
 | Direct egress | [hardening-options.nix](../system/config/hardening-options.nix), [network.nix](../system/config/network.nix), [egress_policy.py](../system/programs/systemd/netsec/egress_policy.py) | Actor/socket identity, pre-NAT grants, canonical CIDR validation, scoped time/DoT and shared root/GUI private exclusions; compare compatibility and restricted modes |
 | Guest trust | [guest-policy.nix](../system/config/guest-policy.nix), [guest_policy.py](../system/programs/systemd/netsec/guest_policy.py), [socket-guest-dns.nix](../system/config/socket-guest-dns.nix), [virtualisation.nix](../system/programs/virtualisation.nix) | Interface/source roles, canonical grants, primary/delegated UID ownership, pre-NAT real-address DNS, bidirectional revocation and rootless launcher |
@@ -90,6 +91,14 @@ Run `browser-sandbox-vm` for the real Wayland browser, system-CA TLS acceptance 
 
 On NVIDIA systems, also check the real Wayland compositor and PipeWire/Pulse backend using a fresh profile. Compare the same package and privacy policy with and without outer confinement: `about:support` should retain the expected hardware WebRender and DMA-BUF capabilities when NVIDIA access is selected. Confirm that the EGL platform configuration resolves inside the sandbox. A software-rendered VM does not validate physical GPU access. Hardware video decoding has separate driver and Gecko requirements; compare it with the unsandboxed baseline rather than assuming a compositor test proves decoding support.
 
+## Firewall ownership and loading
+
+The [firewall lifecycle](network.md#firewall-lifecycle) reserves exact table family/name pairs. Ordinary activation, reload, mode changes and drift repair must stay within that ownership boundary. Keep the historical delete list confined to `proxy-control migrate-firewall`; a name alone cannot establish whether a live table still belongs to an older generation. The [migration procedure](operations.md#legacy-firewall-migration) requires that ownership decision before deletion.
+
+Preserve the shared policy lock and the single transaction containing static rules plus the safety fragment. The explicit migration adds its cleanup to that same transaction without leaving persistent cleanup state. A rejected nft transaction must retain the previous policy, and first-load failure must retain the independent bootstrap baseline. Stopping the nftables unit must leave protection installed. Proxy intent must pass through C before a health proof permits B, including when the core remains alive during reload or migration.
+
+For changes to nftables, systemd loading or coordination, run `proxy-firewall-vm`, the relevant complete-rule variants, `proxy-control-vm` and `proxy-network-vm`. The dedicated VM checks A/C table ownership, external sets and ordered rules, failed transactions, lock contention and later reuse of historical names. The control VM checks the real helper/core, preservation of its TUN table, C enforcement and B recovery; the broad VM retains first-load and drift-recovery coverage.
+
 ## Upgrade workflow
 
 1. Identify the supplying flake input and update the intended input in the checkout. Review the lock diff and the Nixpkgs package expression, upstream source and vendored dependency changes. Preserve a working system generation.
@@ -110,6 +119,7 @@ Use the attributes below from the checkout. Nix builds normally use the local da
 | `proxy-regressions` | Health/state/rules/DNS leases, budget and supervisor regressions |
 | `proxy-profile`, `proxy-gui` | Generated profile variants, policy/template agreement, GUI defaults and process wrapper |
 | `proxy-rules`, `proxy-egress-rules` | Complete compatibility/restricted mode rules parsed by the build-time LKL nft environment |
+| `proxy-firewall-vm` | A/C ownership, external-table preservation, rejected-load rollback, migration locks, idempotence and historical-name reuse |
 | `proxy-dns-strict-rules` | Complete strict DNS firewall rules parsed in LKL |
 | `proxy-dns-config` | Syntax of generated default/strict DNS coordinator scripts |
 | `proxy-dns-strict-vm` | Real helper/core, shared DNS/proxy filtering, strict outage/override/lease and leftover-set refusal, private split permission and literal portal recovery |
@@ -127,7 +137,7 @@ Use the attributes below from the checkout. Nix builds normally use the local da
 | `browser-privacy` | Final native browser policy/locks and offline launch behavior |
 | `browser-sandbox-vm` | Real Wayland Firefox, system-root TLS and invalid-certificate rejection, parent isolation, audio, portal grants, link reuse, generation/restart and fail-closed proxy lifecycle |
 | `browser-ech-vm` | Confined real Firefox/helper/core, native HTTPS discovery, ECH versus GREASE, key/no-ECH retry, untrusted rejection, certificate errors, cover-name target preservation and A/C behavior |
-| `proxy-control-vm` | Real production helper/launcher, process capabilities, authorization, DNS and TUN/C recovery |
+| `proxy-control-vm` | Real production helper/launcher, process capabilities, authorization, DNS, migration with a live TUN core and C-to-B recovery |
 | `proxy-network-vm` | Broad kernel fault injection: modes, DNS, leases, sleep, guests, TPROXY and recovery |
 
 For example, build related packages and quick checks in one invocation:

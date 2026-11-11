@@ -49,6 +49,20 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 
 [network.nix](../../system/config/network.nix) 定义静态策略及 B/C 片段。[proxy-mode.nix](../../system/programs/systemd/proxy-mode.nix) 在共享锁下以一次 `nft -f` 事务安装静态规则和安全模式，只替换本仓库拥有的表，保留 Mihomo 等服务的表。
 
+本仓库管理以下精确的表 family/name 组合：
+
+| 表 | 职责 |
+|---|---|
+| `inet lf_filter` | 宿主、访客和 DNS 过滤，包含随模式变化的链 |
+| `ip lf_nat`、`ip6 lf_nat` | 受管 DNS 重定向；IPv4 另提供已声明访客网络的地址伪装 |
+| `ip lf_proxymode_nat`、`ip6 lf_proxymode_nat` | B 的 TCP 重定向 |
+| `ip lf_mangle` | 可选 IPv4 访客 TPROXY |
+| `inet lf_bootstrap` | 早期入站/转发基线，由成功的完整加载移除 |
+
+启动、重载和漂移修复使用同一范围。共享 iptables-nft 表（如 `ip nat`、`ip6 nat`、`ip mangle` 和 `ip`/`ip6 filter`）以及 `inet mihomo` 等服务原生表均不在其中。外部服务应使用独立表；插入本仓库自有表的规则会受到整体替换和漂移修复管理。
+
+日常操作保留历史名称 `inet filter`、`ip proxymode_nat` 和 `ip6 proxymode_nat`。显式[旧版防火墙迁移](operations_CN.md#旧版防火墙迁移)在同一持锁事务中删除这些旧表并安装完整替代策略，不会为后续加载启用自动清理。nft 事务被拒绝时，已有表和规则保持不变。
+
 | Hook / priority | 用途 |
 |---|---|
 | Output `-202` | 受限 socket 访客的原始目标/UID 守卫 |

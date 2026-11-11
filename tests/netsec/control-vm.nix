@@ -8,8 +8,8 @@ let
     mkdir -p "$out/bin"
     go build -trimpath -o "$out/bin/ech-fixture" ${./ech_server.go}
   '';
-in
 
+in
 pkgs.testers.runNixOSTest {
   name = if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
@@ -89,6 +89,7 @@ pkgs.testers.runNixOSTest {
     services.avahi.enable = lib.mkForce false;
     networking.networkmanager.unmanaged = [ "interface-name:eth*" "interface-name:ens1" "interface-name:wlo1" ];
     networking.interfaces.ens1.useDHCP = lib.mkForce false;
+
     # No external network is used by this test. Keep daemon startup independent
     # of a real DHCP lease and use one local peer for every DNS/HTTP/SOCKS flow.
     systemd.services.dhcpcd.enable = lib.mkForce false;
@@ -271,6 +272,16 @@ pkgs.testers.runNixOSTest {
     # Force a guarded recovery; the DNS/TUN probe and response sockets are now
     # owned by the actual service UID, never an independently tested setpriv.
     machine.succeed("${clashPackage.managedCore}/bin/mihomo -v; systemctl reload nftables.service")
+    wait_proxy()
+
+    # Explicit historical cleanup uses that same guarded transaction. Observe C
+    # before health may reopen B, while the actual core and its TUN table survive.
+    machine.succeed("systemctl stop proxy-mode.service; nft -s -j list table inet mihomo >/tmp/mihomo-before.json; nft add table inet filter; nft add table ip proxymode_nat; nft add table ip6 proxymode_nat; proxy-control migrate-firewall")
+    machine.succeed("jq -e '.mode == \"blocked\"' /run/proxy-mode/state.json; nft list chain inet lf_filter lf_blocked_guard | grep -q drop; nft -s -j list table inet mihomo >/tmp/mihomo-after.json; cmp /tmp/mihomo-before.json /tmp/mihomo-after.json; python3 /etc/netsec-control.py check")
+    for family, name in [("inet", "filter"), ("ip", "proxymode_nat"), ("ip6", "proxymode_nat")]:
+        machine.fail(f"nft list table {family} {name}")
+    machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:7897 -fsS --max-time 2 http://a.ok.blocked.fixture.test:8080/")
+    machine.succeed("systemctl start proxy-mode.service")
     wait_proxy()
 
     machine.succeed("systemctl restart clash-verge.service")

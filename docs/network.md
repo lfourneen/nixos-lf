@@ -47,6 +47,20 @@ The core's service cgroup, passive TCP/UDP listener identities, managed controll
 
 [network.nix](../system/config/network.nix) defines the static policy and the B/C fragments. [proxy-mode.nix](../system/programs/systemd/proxy-mode.nix) installs the static rules plus a safety fragment in one scoped `nft -f` transaction under a shared lock. Only repository-owned tables are replaced; Mihomo and other services retain their own tables.
 
+The loader owns these exact table family/name pairs:
+
+| Table | Responsibility |
+|---|---|
+| `inet lf_filter` | Host, guest and DNS filtering, including mode-dependent chains |
+| `ip lf_nat`, `ip6 lf_nat` | Managed DNS redirection; IPv4 also supplies declared guest masquerading |
+| `ip lf_proxymode_nat`, `ip6 lf_proxymode_nat` | Mode-B TCP redirection |
+| `ip lf_mangle` | Optional IPv4 guest TPROXY |
+| `inet lf_bootstrap` | Early ingress/forwarding baseline, removed by a successful complete load |
+
+Startup, reload and drift repair use this same scope. Shared iptables-nft tables such as `ip nat`, `ip6 nat`, `ip mangle` and `ip`/`ip6 filter`, plus native service tables such as `inet mihomo`, remain outside it. External services should use separate tables; rules inserted into a repository-owned table are subject to replacement and drift repair.
+
+Historical names `inet filter`, `ip proxymode_nat` and `ip6 proxymode_nat` are left untouched during ordinary operation. The explicit [legacy migration](operations.md#legacy-firewall-migration) combines their deletion with the complete replacement policy in the same locked transaction. It leaves no automatic cleanup enabled for later loads. A rejected nft transaction retains the existing tables and rules.
+
 | Hook / priority | Purpose |
 |---|---|
 | Output `-202` | Restricted socket guest original-target/UID guard |

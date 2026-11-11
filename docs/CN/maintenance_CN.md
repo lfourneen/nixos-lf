@@ -25,6 +25,7 @@ Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；
 | dnsmasq | [network.nix](../../system/config/network.nix) 内联替换 `src/forward.c` | 返回 strict-order 终端 UDP SERVFAIL/REFUSED，保留 DNSSEC EDE |
 | Firefox 包 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[guard.py](../../home/programs/firefox/guard.py)、[sandbox.py](../../home/programs/firefox/sandbox.py)、[scope.c](../../home/programs/firefox/scope.c) | 不可变 policy/AutoConfig/字体、预检、外层命名空间、过滤总线、门户身份及 Landlock/seccomp；无 Gecko 源码 patch |
 | Unbound / Chrony / 网络 | [network.nix](../../system/config/network.nix)、[network-time.nix](../../system/config/network-time.nix)、[systemd 模块](../../system/programs/systemd) | 声明策略和仓库自有协调器；没有本地 Unbound/Chrony 源码补丁 |
+| 防火墙生命周期 | [network.nix](../../system/config/network.nix)、[proxy-mode.nix](../../system/programs/systemd/proxy-mode.nix)、[network-bootstrap.nix](../../system/programs/systemd/network-bootstrap.nix) | 精确表归属、持锁原子替换、失败保留和显式历史迁移 |
 | Tailscale 传输 | [tailscale-transport.nix](../../system/config/tailscale-transport.nix)、[tailscale_contract.py](../../system/programs/systemd/netsec/tailscale_contract.py) | 正常系统构建强制检查上游 socket mark 约定；升级复核 mark/后备/socket 变化并跑真实 CLI VM；没有 Tailscale 源码补丁 |
 | 直连例外 | [hardening-options.nix](../../system/config/hardening-options.nix)、[network.nix](../../system/config/network.nix)、[egress_policy.py](../../system/programs/systemd/netsec/egress_policy.py) | 主体/socket 身份、NAT 前授权、规范 CIDR 校验、时间/DoT 范围及 root/GUI 共享私网排除；比较兼容和受限模式 |
 | 访客信任 | [guest-policy.nix](../../system/config/guest-policy.nix)、[guest_policy.py](../../system/programs/systemd/netsec/guest_policy.py)、[socket-guest-dns.nix](../../system/config/socket-guest-dns.nix)、[virtualisation.nix](../../system/programs/virtualisation.nix) | 接口/源角色、规范授权、主/委派 UID 归属、NAT 前真实地址 DNS、双向撤销及 rootless 启动器 |
@@ -90,6 +91,14 @@ Firefox 在打包层加入不可变 policy、AutoConfig、字体、preflight 和
 
 NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWire/Pulse 后端。在相同软件包与隐私策略下对照隔离内外的 `about:support`，选择 NVIDIA 权限时应保留预期的硬件 WebRender 与 DMA-BUF 能力，并确认沙箱内 EGL 平台配置可解析。软件渲染 VM 无法验证物理 GPU 权限。硬件视频解码另有驱动及 Gecko 要求，需与无外层隔离的基线比较，不能由合成器测试推断解码可用。
 
+## 防火墙归属与加载
+
+[防火墙生命周期](network_CN.md#防火墙生命周期)保留精确的表 family/name 组合。日常激活、重载、模式切换和漂移修复均应遵循该归属边界。历史删除列表仅供 `proxy-control migrate-firewall` 使用；不能只凭名称认定运行中的表仍归旧 generation 所有。[迁移操作](operations_CN.md#旧版防火墙迁移)要求在删除前明确归属。
+
+保留共享 policy 锁，以及静态规则和安全模式片段的单次事务。显式迁移将清理追加到同一事务，不留下持久清理状态。nft 拒绝事务时须保留原策略，首次完整加载失败须保留独立 bootstrap 基线；停止 nftables unit 也须保留保护。代理意图在健康证明允许 B 前必须经过 C，包括重载或迁移时核心仍存活的情况。
+
+修改 nftables、systemd 加载或协调逻辑时，运行 `proxy-firewall-vm`、相关完整规则变体、`proxy-control-vm` 和 `proxy-network-vm`。专用 VM 检查 A/C 表归属、外部集合与有序规则、失败事务、锁竞争及之后的历史名称复用。控制 VM 检查真实 helper/核心、TUN 表保留、C 阻断与 B 恢复；完整网络 VM 保留首次加载和漂移恢复覆盖。
+
 ## 升级流程
 
 1. 确认所属 flake input，在仓库更新目标 input，比较 lock、Nixpkgs 包表达式、源码和 vendor 变化，保留可用 generation。
@@ -110,6 +119,7 @@ NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWi
 | `proxy-regressions` | 健康、状态、规则、DNS 租约、预算及监督器 |
 | `proxy-profile`、`proxy-gui` | 生成配置变体、策略/模板一致、GUI 默认与进程 wrapper |
 | `proxy-rules`、`proxy-egress-rules` | 构建期 LKL nft 解析完整兼容/受限模式规则 |
+| `proxy-firewall-vm` | A/C 表归属、外部表保留、加载被拒绝时的回滚、迁移锁、幂等及历史名称复用 |
 | `proxy-dns-strict-rules` | LKL 解析完整严格 DNS 防火墙规则 |
 | `proxy-dns-config` | 默认/严格 DNS 协调器生成脚本语法 |
 | `proxy-dns-strict-vm` | 真实 helper/核心、共享 DNS/代理过滤、严格故障/override/租约及残留集合拒绝、私网 split 权限与字面门户恢复 |
@@ -127,7 +137,7 @@ NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWi
 | `browser-privacy` | 最终原生浏览器 policy lock 与离线启动 |
 | `browser-sandbox-vm` | 真实 Wayland Firefox、系统根 TLS 与无效证书拒绝、父进程隔离、音频、门户授权、链接复用、代次/重启及总线代理故障阻断 |
 | `browser-ech-vm` | 真实 Firefox/helper/核心、原生 HTTPS 发现、ECH 与 GREASE、密钥/无 ECH 重试、不可信拒绝、证书错误、掩护名不改目标及 A/C 行为 |
-| `proxy-control-vm` | 真实生产 helper/launcher、能力、授权、DNS、TUN/C 恢复 |
+| `proxy-control-vm` | 真实生产 helper/launcher、能力、授权、DNS、TUN 核心存活时的迁移及 C→B 恢复 |
 | `proxy-network-vm` | 广泛内核故障注入：模式、DNS、租约、休眠、访客、TPROXY 和恢复 |
 
 例如将相关包与快速检查合并构建：

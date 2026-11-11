@@ -8,6 +8,14 @@ let
   blockedRules = pkgs.writeText "blockedmode-rules.nft" config.my.proxy.blockedModeRules;
   staticRules = pkgs.writeText "lf-static-rules.nft" config.networking.nftables.ruleset;
 
+  # These unnamespaced names belonged to older generations, but can now belong
+  # to other software. Only an explicit operator migration may delete them.
+  legacyRules = pkgs.writeText "lf-legacy-firewall-migration.nft" ''
+    destroy table inet filter
+    destroy table ip proxymode_nat
+    destroy table ip6 proxymode_nat
+  '';
+
   verifyRequest = pkgs.writeShellScript "netsec-request" ''
     umask 022
     mkdir -p /run/netsec/requests
@@ -233,6 +241,7 @@ let
     INTENT=/run/proxy-mode/intent
     VERSION=/run/proxy-mode/version
     STATIC_RULES=${staticRules}
+    LEGACY_RULES=${legacyRules}
 
     TUNDEV=${config.my.proxy.tunDev}
     REQUIRE_TUN=${if requireTun then "1" else "0"}
@@ -415,12 +424,20 @@ NFT_OFF
     # Caller holds the policy lock: never recursively run --reload here.
     load_complete() {
       local target="$1" transaction=/run/proxy-mode/reload.$$.nft rc=0
-      $CAT "$STATIC_RULES" > "$transaction" || return 1
+      local -a sources=("$STATIC_RULES")
       case "$target" in
-        blocked) $CAT "$B_RULES" >> "$transaction" || return 1 ;;
-        proxy) $CAT "$RULES" >> "$transaction" || return 1 ;;
+        blocked) sources+=("$B_RULES") ;;
+        proxy) sources+=("$RULES") ;;
       esac
-      $NFT -f "$transaction" || rc=$?
+      # Never persist migration intent: later reloads/repairs must not remove a
+      # foreign table that happens to reuse an old name. Cleanup and replacement
+      # policy commit together, so rejection retains both the old and owned rules.
+      if [ "''${2:-}" = migrate-legacy ]; then sources+=("$LEGACY_RULES"); fi
+      if $CAT "''${sources[@]}" > "$transaction"; then
+        $NFT -f "$transaction" || rc=$?
+      else
+        rc=$?
+      fi
       rm -f "$transaction"
       forget_snapshot
       [ "$rc" = 0 ] && matches "$target"
@@ -740,10 +757,12 @@ NFT_OFF
     }
 
     case "''${1:-}" in
-      --reload)
+      --reload|--migrate-legacy)
         lock_state
         mode=$(safety_mode); reason=reload
-        if ! load_complete "$mode"; then
+        migration=""
+        if [ "$1" = --migrate-legacy ]; then migration=migrate-legacy; fi
+        if ! load_complete "$mode" "$migration"; then
           unlock_state
           exit 1
         fi
@@ -817,13 +836,16 @@ NFT_OFF
     runtimeInputs = [ pkgs.coreutils pkgs.systemd pkgs.jq pkgs.util-linux pkgs.python3 ];
     text = ''
       case "''${1:-}" in
-        on|off)
-          if [ "$EUID" != 0 ]; then echo 'Use sudo proxy-control on|off' >&2; exit 1; fi
+        on|off|migrate-firewall)
+          if [ "$EUID" != 0 ]; then echo 'Use sudo proxy-control on|off|migrate-firewall' >&2; exit 1; fi
           # Serialize the whole operation, including service start/stop. This is
           # separate from the short policy commit lock used by the loop.
           mkdir -p /run/proxy-mode
           exec 8>/run/proxy-mode/operator.lock
           flock -x -w 30 8
+          if [ "$1" = migrate-firewall ]; then
+            exec ${modeScript} --migrate-legacy
+          fi
           if [ "$1" = on ]; then
             # An explicit operator action authorizes the configuration the GUI
             # currently holds. The window is single-use: the first core start
@@ -885,7 +907,7 @@ NFT_OFF
           cat /run/proxy-mode/reason /run/dns-upstream/reason 2>/dev/null || true
           exit 1
           ;;
-        *) echo 'Usage: proxy-control on|off|wait proxy|wait direct' >&2; exit 2 ;;
+        *) echo 'Usage: proxy-control on|off|migrate-firewall|status [proxy|direct]|wait [proxy|direct]' >&2; exit 2 ;;
       esac
     '';
   };

@@ -90,6 +90,29 @@ sudo systemctl start nftables-verify.service
 
 Restart/reload 原子重装所属静态策略和安全模式；代理意图先回 C，再由健康门恢复 B。Stop 保留已加载规则。`nftables-verify-repair.service` 显式修复并复验，`nftables-recover` 重试失败的 nftables unit。不要清空全局 ruleset。
 
+## 旧版防火墙迁移
+
+旧 generation 使用过 `inet filter`、`ip proxymode_nat` 和 `ip6 proxymode_nat`。当前启动、重载和修复保留这些名称，因为它们可能已由其它服务使用。已经只使用[保留表](network_CN.md#防火墙生命周期)的系统无需迁移。
+
+从这些旧名称对应的 generation 在线升级时，先查看已有表，确认归属旧版仓库配置：
+
+```sh
+sudo nft list table inet filter
+sudo nft list table ip proxymode_nat
+sudo nft list table ip6 proxymode_nat
+```
+
+安装当前 generation 后，显式迁移仍由旧配置拥有的历史表：
+
+```sh
+sudo proxy-control migrate-firewall
+sudo systemctl start nftables-verify.service
+```
+
+此 root 命令仅删除上述三个历史 family/name 组合，同时正常替换当前自有表。它取得 operator 和 policy 锁，以一次 nft 事务提交清理、静态规则和安全模式。事务被拒绝时保留原规则和历史表。历史表不存在不影响执行，因此在这些名称仍专供迁移的情况下可以重复运行。
+
+代理意图或核心仍在运行时先安装 C，再由监督器通过健康检查恢复 B；直连意图且没有核心时安装 A。命令保留意图、核心授权及运行中的核心。使用上文的诊断方式检查当前模式和验证 JSON。迁移不会启用后续自动清理，其它服务以后复用历史名称也不会被日常重载删除。若现有历史名称归属其它服务，应保留该表并先解决归属，再使用迁移命令。
+
 ## 配置入口
 
 | 来源 | 设置 |
