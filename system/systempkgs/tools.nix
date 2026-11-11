@@ -65,23 +65,11 @@
     # Editors
     neovim
     openidea
-    vim
-
-    # Reverse engineering
-    apktool
-    binwalk
-    mitmproxy
-    python3Packages.pwntools
-    rizin
-    sigrok-cli
-    unstable.ghidra
-    wabt
 
     # MCP
     context7-mcp
     mcp-nixos
     mcp-server-fetch
-    # pkgs.unstable.pdf-mcp
     pkgs.unstable.open-websearch
     pybibget
     python3Packages.arxiv2bib
