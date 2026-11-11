@@ -23,6 +23,10 @@
 
 这些监听均在本机。大小写环境变量、GSettings 和 Flatpak 覆盖将应用指向 `127.0.0.1:33332`。Gost 在 B 中把两种入口转给 `127.0.0.1:7897`，A 中直通，C 或未知状态下关闭监听。客户端显式连接透明入口 `33333` 会在 NAT 前被拒绝；该入口只供重定向流量使用。
 
+`user.slice` 通过 `SocketBindDeny` 保留固定代理和本地 DNS 端口，覆盖 TCP/UDP 与 IPv4/IPv6。桌面会话和用户管理器继承此限制，其它开发端口仍可使用。`ip_local_reserved_ports` 将这些端口排除在自动分配范围外，覆盖 `bind(0)` 和客户端隐式绑定。Loopback 代理应答要求 socket UID 匹配服务身份：Gost 端口允许 root/Gost，核心端口允许 root/clash-core。就绪检查使用监听地址、UID 和 cgroup。
+
+端口保留依赖 systemd 的 cgroup `bind4`/`bind6` hook 及内核 cgroup-BPF 支持，作用范围是 `user.slice` 中的进程；不可信系统服务需要在所属 slice 配置同等限制。Root 和受管服务身份属于信任边界。应答 UID 检查确认响应 socket 的身份，绑定限制阻止数据交给未授权的 UDP 监听者。机制见 [systemd 绑定策略](https://www.freedesktop.org/software/systemd/man/260/systemd.resource-control.html#SocketBindAllow=bind-rule)。
+
 Mihomo 为出站 socket 设置 `6666`（`0x1a0a`）mark；核心例外同时要求 socket 与 packet mark，并核对 socket UID 为 root 或 `clash-core`。默认 `my.proxy.proxyOnly=false` 时 Rule 可选 DIRECT；可选的[统一代理策略](proxy_CN.md#路由策略)在核心内拒绝应用 DIRECT。核心以外的私网和基础设施路径仍由各自规则控制。
 
 [DNS](dns_CN.md) 是并行链路：resolved → dnsmasq → Mihomo 或 Unbound。[Firefox](browser_CN.md) 默认使用相同的 Gost HTTP 入口；可选透明路径使用原生 DNS 和宿主 socket，受本套 TUN/防火墙约束，支持 HTTPS-RR/ECH 发现。父进程及其后代运行于[外层文件系统与桌面接口沙箱](browser_CN.md#外层沙箱)，保留桌面 UID 和本套宿主网络策略。
@@ -70,14 +74,14 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 | Prerouting `-201` | 重定向前限制访客公网目的地 |
 | Prerouting `-199` | 访客源地址、私网目标和网关服务检查 |
 | Output `-199` | 跟踪受限 socket 访客账户；将 dnsmasq 上游 DNS 限定到目的地租约；严格模式阻断核心外部 53，仅保留 MagicDNS |
-| Output `-198` | 保留内部 DNS 端口、检查应答身份并复核访客宿主服务回包 |
+| Output `-198` | 保留内部 DNS 端口、检查 DNS/代理应答身份、跟踪普通应用连接并复核访客宿主服务回包 |
 | Output `-197` | C guard，位于 conntrack（`-200`）之后、auto-redirect（`-150`）之前 |
 | Output `-196` | 限制独立使用 853 端口的 DoT/DoQ |
 | Output `-195` | B 可选私网/多播授权与 Unbound DoT 关闭，位于 NAT/TUN 前 |
 | Output `-194` | A/B 可选 Chrony 原始目标 CIDR 限制 |
 | Output NAT `-190`、filter `-90` | 将受限 socket 访客 DNS 强制送至 1056，并拒绝旧解析器关联 |
 | Input `-2`、forward `-1` | 按当前授权复核受限 socket / 转发访客回包 |
-| Input `-1` | C 在 established 放行前切断已解密 tailnet 数据及已跟踪 socket 访客回包 |
+| Input `-1` | C 在 established 放行前切断已解密 tailnet 数据及已跟踪宿主/访客应用回包 |
 
 NAT 优先级排列内核共享 destination-NAT hook 中的规则查找顺序；socket 访客 DNS 的 `-90` filter 在该 hook 之后检查实际改写后的目标。
 
@@ -88,6 +92,10 @@ B 重定向宿主公网 TCP，fake-IP 保留核心路径，其余公网出站在
 [直连例外清单](egress_CN.md)逐项记录主体、目标、端口和模式。可选受限 B 按接口/UID/CIDR/端口授权，在 TUN/NAT 前切断撤权后的已有宿主主动连接。Unbound 即使在 A 也只能使用声明的 DoT 目标，B 的此项例外可关闭；Chrony 可在 A/B 固定目标 CIDR。默认保留 LAN 与 NTS 地址变化兼容性。
 
 C 的早期 output guard 在核心重定向前阻断应用，保留 loopback IPC、核心 mark、root 到代理/DNS 端口和 fake-IP 53/80/443 的恢复访问、窄 DHCP 与 hop-limit 255 的 NDP。非 root 到核心/Gost 应用端口的 TCP/UDP 被阻断。自测应答例外限定为预期 loopback 源，或 root/core 的 conntrack DNAT reply 且原目的地为 fake-IP HTTP。访客 DHCP/DNS 应答按网桥、网关源地址和端口识别，不依赖守护进程 UID。Unbound 和普通 tailnet 流量不能外出，包括已有远控连接；B 的授权不提供 C 远控例外。另有入站守卫在 established 放行前丢弃已解密 tailnet 数据，包括切换时仍在到达的数据包。
+
+C 阻断已跟踪、由宿主应用发起的 TCP/UDP 连接回包，覆盖原生 TUN、fake-IP 和显式 SOCKS UDP。优先级为 `-198` 的 output hook 为尚无标记的普通应用连接设置 conntrack mark `0x4c460001`。受限访客使用独立标记；root、核心和 Gost 的传输连接不在标记范围内。C 的 input 守卫丢弃已标记的网络及固定代理入口回包。接收侧阻断使存活的 SOCKS UDP 关联可以随 B 恢复接收。
+
+接收方向的约束依赖这些 conntrack 标记，其它防火墙所有者须保留其含义。Socket 队列内的数据不在此约束范围内。C 仍保留 loopback IPC、本地 DNS、root/核心恢复和链路维护流量。
 
 [network-bootstrap.nix](../../system/programs/systemd/network-bootstrap.nix) 在 NetworkManager/dhcpcd 前安装入站和转发基线；首次完整装载失败仍保留它。静态漂移触发完整修复：直连意图回到 A，代理意图先回 C，再检查健康。失败报告 `unenforced`。
 

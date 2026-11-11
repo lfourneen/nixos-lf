@@ -1,6 +1,7 @@
 { pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false }:
 
 let
+  dataplane = !(restricted || strictDns || targetPolicy || guests || uniformProxy || ech != null);
   echFixture = pkgs.runCommand "ech-origin-fixture" { nativeBuildInputs = [ pkgs.go ]; } ''
     export GOCACHE="$TMPDIR/go-cache"
     export GO111MODULE=off
@@ -44,6 +45,8 @@ pkgs.testers.runNixOSTest {
     ] ++ lib.optional guests ./guest-config.nix
       ++ lib.optional (ech != null) ./firefox-desktop.nix;
     users.users.lfour = { isNormalUser = true; uid = 1000; };
+    users.groups.impostor = { };
+    users.users.impostor = { isSystemUser = true; uid = 1001; group = "impostor"; };
     users.groups.dhcpcd = { };
     users.users.dhcpcd = { isSystemUser = true; group = "dhcpcd"; };
 
@@ -99,6 +102,7 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-tail.py".source = ./tailscale_fixture.py;
     environment.etc."netsec-integration-policy.json".text = builtins.toJSON config.my.proxy.managedProfile;
     environment.etc."netsec-control.py".source = ./control_fixture.py;
+    environment.etc."netsec-dataplane.py".source = ./dataplane_fixture.py;
     environment.etc."netsec-target.py" = lib.mkIf targetPolicy { source = ./target_fixture.py; };
     environment.etc."netsec-launcher".text = "${clashPackage}/bin/verge-mihomo";
     environment.etc."netsec-core".text = "${clashPackage.managedCore}/bin/mihomo";
@@ -205,11 +209,95 @@ pkgs.testers.runNixOSTest {
     machine.succeed("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:8080/ >/dev/null")
     ''}
 
+    ${pkgs.lib.optionalString dataplane ''
+    with subtest("reserved listener ports and pre-handshake identity enforcement"):
+        # Hold observers still: the dataplane must protect clients independently
+        # of whether the next polling round has noticed a wrong listener.
+        machine.succeed("systemctl stop proxy-mode.service gost-relay.service")
+        machine.succeed("systemd-run --wait --pipe --slice=user.slice --uid=1000 python3 /etc/netsec-dataplane.py bind")
+        port_range = machine.succeed("sysctl -n net.ipv4.ip_local_port_range").strip()
+        reserved = machine.succeed("sysctl -n net.ipv4.ip_local_reserved_ports").strip()
+        machine.succeed("sysctl -w 'net.ipv4.ip_local_port_range=33332 33333' net.ipv4.ip_local_reserved_ports=")
+        machine.succeed("systemd-run --wait --pipe --slice=user.slice --uid=1000 python3 /etc/netsec-dataplane.py autobind allowed")
+        machine.succeed(f"sysctl -w net.ipv4.ip_local_reserved_ports={reserved}")
+        machine.succeed("systemd-run --wait --pipe --slice=user.slice --uid=1000 python3 /etc/netsec-dataplane.py autobind denied")
+        machine.succeed(f"sysctl -w 'net.ipv4.ip_local_port_range={port_range}'")
+        machine.succeed("systemd-run --wait --pipe --slice=user.slice --uid=1000 python3 /etc/netsec-dataplane.py autobind normal")
+        # An untrusted system service deliberately outside user.slice still
+        # cannot answer managed proxy endpoints through the UID reply guard.
+        machine.succeed("nft -s list chain inet lf_filter lf_local_proxy_guard >/tmp/proxy-guard.nft; nft flush chain inet lf_filter lf_local_proxy_guard")
+        machine.succeed("systemd-run --unit=port-impostor --uid=1001 python3 /etc/netsec-dataplane.py impostor")
+        machine.wait_for_file("/tmp/impostor-ready", timeout=10)
+        machine.succeed("setpriv --reuid=1000 --clear-groups python3 /etc/netsec-dataplane.py exchange 127.0.0.1 33332 tcp; test -s /tmp/impostor-received")
+        machine.succeed("nft -f /tmp/proxy-guard.nft; rm /tmp/impostor-received")
+        # A VM-only redirect exercises the transparent reply before reverse NAT.
+        machine.succeed("nft add table inet test_redirect; nft 'add chain inet test_redirect output { type nat hook output priority -100; policy accept; }'; nft 'add rule inet test_redirect output oifname lo meta l4proto { tcp, udp } th dport 18092 redirect to :33333'")
+        for address in ("127.0.0.1", "::1"):
+            for port in (33332, 7897, 7896, 18092):
+                for protocol in ("tcp", "udp"):
+                    machine.fail(f"setpriv --reuid=1000 --clear-groups python3 /etc/netsec-dataplane.py exchange {address} {port} {protocol}")
+        machine.succeed("test ! -e /tmp/impostor-received; systemctl stop port-impostor; nft delete table inet test_redirect; systemctl start gost-relay.service proxy-mode.service")
+    ''}
+
     machine.succeed("python3 /etc/netsec-control.py refuse")
     machine.succeed("proxy-control on")
     machine.wait_for_file("/run/clash-verge-rev/service.sock")
     machine.succeed("python3 /etc/netsec-control.py start")
     wait_proxy()
+    ${pkgs.lib.optionalString dataplane ''
+    with subtest("existing native TUN and SOCKS UDP receive paths are revoked in C"):
+        import json
+        machine.succeed("ip -n outside -6 addr add 2001:db8:ffff::10/128 dev peer0 nodad; systemd-run --unit=receive-push ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-dataplane.py push")
+        machine.wait_until_succeeds("ip netns exec outside ss -4uln | grep -q :18090; ip netns exec outside ss -6uln | grep -q :18090", timeout=10)
+        fake = machine.succeed("dig +short @127.0.0.1 -p 1053 node.fixture.example A").strip()
+        assert fake.startswith("198.18."), fake
+        streams = [("native4", "203.0.113.10", "no"), ("fake4", fake, "no"),
+                   ("native6", "2001:db8:ffff::10", "no"),
+                   ("socks4", "203.0.113.10", "yes"), ("socks6", "2001:db8:ffff::10", "yes")]
+        for label, address, socks in streams:
+            machine.succeed(f"systemd-run --unit=receive-{label} --uid=1000 python3 /etc/netsec-dataplane.py receive {label} {address} {socks}")
+            machine.wait_until_succeeds(f"test -f /tmp/receive-{label}.json && test $(jq -r .count /tmp/receive-{label}.json) -ge 5", timeout=20)
+        def counts():
+            return {label: json.loads(machine.succeed(f"cat /tmp/receive-{label}.json"))["count"] for label, _, _ in streams}
+        # Only the health HTTP target fails. The real proxy node and its UDP
+        # paths remain alive; the coordinator must enter C on its own.
+        machine.succeed("systemctl stop control-http-8080.service")
+        machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = blocked", timeout=90)
+        machine.succeed("systemctl stop proxy-mode.service; sleep 1")
+        before = counts()
+        machine.sleep(3)
+        assert counts() == before, (before, counts())
+        machine.succeed("systemd-run --unit=local-ipc --uid=1000 python3 -m http.server 18093 --bind 127.0.0.1")
+        machine.wait_until_succeeds("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 2 http://127.0.0.1:18093/ >/dev/null", timeout=10)
+        machine.succeed("curl --noproxy \"\" -x http://127.0.0.1:7897 -fsS --max-time 3 http://node.fixture.example/ >/dev/null; systemctl stop local-ipc.service")
+        # Reproduce the previous output-only boundary in this isolated VM by
+        # removing just the new app-reply rules, leaving all C output cuts.
+        for chain in ("lf_tailnet_guard", "lf_blocked_guard"):
+            machine.succeed(f"nft -s list chain inet lf_filter {chain} >/tmp/{chain}.nft")
+            rules = json.loads(machine.succeed(f"nft -a -j list chain inet lf_filter {chain}"))["nftables"]
+            for entry in rules:
+                rule = entry.get("rule", {})
+                if any(e.get("match", {}).get("right") in (0x4c460001, "0x4c460001") for e in rule.get("expr", [])):
+                    machine.succeed(f"nft delete rule inet lf_filter {chain} handle {rule['handle']}")
+        machine.sleep(3)
+        legacy = counts()
+        assert all(legacy[label] > before[label] for label, _, _ in streams), (before, legacy)
+        print("output-only C kept receiving application UDP:", before, legacy)
+        for chain in ("lf_tailnet_guard", "lf_blocked_guard"):
+            machine.succeed(f"nft flush chain inet lf_filter {chain}; nft -f /tmp/{chain}.nft")
+        machine.sleep(1)
+        before = counts()
+        machine.sleep(3)
+        assert counts() == before, (before, counts())
+        # Local IPC and automatic root/core health recovery are preserved.
+        machine.succeed("systemd-run --unit=control-http-8080 ip netns exec outside ${pkgs.python3}/bin/python3 -m http.server 8080 --bind 0.0.0.0; systemctl start proxy-mode.service")
+        wait_proxy()
+        machine.sleep(2)
+        assert all(counts()[label] > before[label] for label, _, _ in streams), (before, counts())
+        for label, _, _ in streams:
+            machine.succeed(f"systemctl stop receive-{label}.service")
+        machine.succeed("systemctl stop receive-push.service; ip -n outside -6 addr del 2001:db8:ffff::10/128 dev peer0")
+    ''}
     ${pkgs.lib.optionalString uniformProxy ''
     machine.fail("curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 3 http://application-direct.fixture.example:8080/")
     machine.succeed("curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 5 http://node.fixture.example:8080/ >/dev/null")

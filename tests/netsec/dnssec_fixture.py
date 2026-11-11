@@ -1,6 +1,7 @@
 """VM-only authoritative answers from a zone signed by the real ldns tools."""
 
 import socketserver
+import ssl
 import struct
 import sys
 import threading
@@ -24,6 +25,15 @@ def answer(packet):
         data = zone.get_rdataset(question.name, question.rdtype)
         if data is None:
             response.set_rcode(dns.rcode.NXDOMAIN)
+            # Real ldns signatures over the SOA and complete NSEC chain. Unbound
+            # validates and caches these, then synthesizes unseen NXDOMAINs.
+            for owner, node in zone.nodes.items():
+                for dataset in node.rdatasets:
+                    if dataset.rdtype in (dns.rdatatype.SOA, dns.rdatatype.NSEC) or (
+                        dataset.rdtype == dns.rdatatype.RRSIG and
+                        dataset.covers in (dns.rdatatype.SOA, dns.rdatatype.NSEC)
+                    ):
+                        response.authority.append(dns.rrset.from_rdata_list(owner, dataset.ttl, list(dataset)))
             continue
         response.answer.append(dns.rrset.from_rdata_list(question.name, data.ttl, list(data)))
         signature = zone.get_rdataset(question.name, dns.rdatatype.RRSIG, question.rdtype)
@@ -58,6 +68,24 @@ class TCP(socketserver.BaseRequestHandler):
             result = answer(packet)
             self.request.sendall(struct.pack("!H", len(result)) + result)
 
+
+if len(sys.argv) > 2:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(sys.argv[2], sys.argv[3])
+    class TLS(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+        def get_request(self):
+            connection, address = super().get_request()
+            connection.settimeout(5)
+            try:
+                return context.wrap_socket(connection, server_side=True), address
+            except Exception:
+                connection.close()
+                raise
+    with TLS(("127.0.0.2", 853), TCP) as server:
+        server.serve_forever()
+    raise SystemExit
 
 with socketserver.ThreadingTCPServer(("127.0.0.1", 15356), TCP) as tcp:
     tcp.daemon_threads = True

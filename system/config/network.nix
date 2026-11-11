@@ -96,6 +96,13 @@ let
   # Root is an explicit administrative actor (also used by isolated fixtures),
   # not a blanket UID exemption. Other UIDs and packet-only marks cannot borrow
   # the core transport. This does not isolate a NET_ADMIN-capable core or root.
+  # Conntrack ownership for ordinary host-initiated flows; distinct from guest
+  # identities (0x47500000 + UID) and from routing/socket marks.
+  appConnmark = "0x4c460001";
+  reservedListenerPorts = map toString [
+    port.mihomoMixed port.mihomoDns port.mihomoTproxy
+    port.gostHttp port.gostRedirect port.dnsmasq port.unbound port.socketGuestDns
+  ];
   coreSocket = "meta skuid { 0, ${toString m.uids.clashCore} } socket mark ${coreMark} meta mark ${coreMark}";
 
   # Tailscale's LinuxBypassMarkNum (tsconst/linuxfw.go), also used by its
@@ -338,6 +345,12 @@ let
     ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
     add rule inet lf_filter lf_tailnet_guard ct mark ${guestPolicy.socketMarks} ct direction reply counter drop
     ''}
+    # Application replies are revoked with the same transaction as output.
+    # Root/core/relay-originated transport stays unmarked for recovery probes.
+    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply iifname != "lo" counter drop
+    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply ct original ip daddr != 127.0.0.0/8 counter drop
+    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply ct original ip6 daddr != ::1 counter drop
+    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply meta l4proto { tcp, udp } ct original proto-dst { ${toString port.mihomoMixed}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
     flush set inet lf_filter dns_plaintext4
     ${guestGuard "blocked"}
     ${lib.optionalString vmTproxy "flush chain ip lf_mangle proxymode_tproxy"}
@@ -621,6 +634,12 @@ in
     });
   '';
 
+  # Desktop sessions and user managers inherit cgroup bind4/bind6 enforcement.
+  # Reserving both protocols also prevents an old UDP association delivering its
+  # next datagram to an occupier after the real listener exits. System services
+  # retain their own identities; the output reply guard is a second boundary.
+  systemd.slices.user.sliceConfig.SocketBindDeny = reservedListenerPorts;
+
   # Uppercase proxy vars for tools that ignore the lowercase *_proxy ones
   environment.sessionVariables = {
     HTTP_PROXY = "http://127.0.0.1:${toString port.gostHttp}/";
@@ -763,9 +782,9 @@ in
         log-servfail = true;
         # While the DoT upstream is unreachable, answer from cache with data
         # that already passed validation instead of failing the query outright.
-        # The liveness probe asks for a fresh random name, so it can never be
-        # answered from this path, and a bounded ceiling keeps stale answers
-        # from outliving the outage by much.
+        # Local validation may use this cache or synthesize NSEC denials. An
+        # independent TLS/DNS probe establishes reachability; a bounded ceiling
+        # limits how long clients can receive stale validated data.
         serve-expired = true;
         serve-expired-ttl = 900;
         serve-expired-reply-ttl = 30;
@@ -911,6 +930,19 @@ in
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.mihomoDns} meta skuid != { 0, ${toString m.uids.clashCore} } counter drop
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.dnsmasq} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.unbound} meta skuid != { 0, ${toString unboundUid} } counter drop
+        }
+        # A local high-port occupier may bind, but cannot complete a client
+        # exchange before the supervisor's next UID/cgroup observation. Apply
+        # before reverse NAT changes a transparent reply's source port.
+        chain lf_local_proxy_guard {
+          type filter hook output priority -198; policy accept;
+          oifname "lo" meta l4proto { tcp, udp } th sport { ${toString port.gostHttp}, ${toString port.gostRedirect} } meta skuid != { 0, ${toString m.uids.gost} } counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport { ${toString port.mihomoMixed}, ${toString port.mihomoTproxy} } meta skuid != { 0, ${toString m.uids.clashCore} } counter drop
+        }
+        chain lf_app_track {
+          # After conntrack and guest identity assignment, before any DNAT.
+          type filter hook output priority -198; policy accept;
+          meta skuid != { 0, ${toString m.uids.clashCore}, ${toString m.uids.gost} } ct direction original ct mark 0 meta l4proto { tcp, udp } ct mark set ${appConnmark}
         }
         # Guest source, host and routed-reply checks precede generic accepts.
         ${guestPolicy.nft}
@@ -1246,6 +1278,10 @@ in
     "net.ipv6.conf.${wired}.accept_ra" = 2;
     "net.ipv6.conf.${wireless}.accept_ra" = 2;
   }) {
+    # bind(0) and implicit connect/send allocation do not name a port at the
+    # cgroup bind hook. Keep reserved listeners out of both families' allocator.
+    "net.ipv4.ip_local_reserved_ports" = lib.concatStringsSep "," reservedListenerPorts;
+
     # BBR + cake: the AQM keeps queue delay low on both the LAN device and the
     # TUN, instead of only pacing it like fq.
     "net.core.default_qdisc" = "cake";

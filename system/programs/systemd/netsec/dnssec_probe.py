@@ -1,11 +1,7 @@
-"""Separate encrypted-transport health from a DNSSEC verdict.
+"""Report local DNSSEC validation and independent encrypted-path reachability.
 
-Unbound answers SERVFAIL locally when it cannot reach its DoT upstream, so a
-local-only probe cannot tell "the validator rejected a signature" from "the
-encrypted path is down".  The local query therefore gets its own verdict and,
-when that verdict is inconclusive, a direct TLS/DNS query to the configured
-upstreams names the layer that actually failed.  A failed probe must never
-claim a signature error, and it must never claim health either.
+An authenticated answer can come from positive, expired or aggressive NSEC
+cache. It never substitutes for a new TLS/DNS exchange with an upstream.
 """
 
 import json
@@ -92,9 +88,17 @@ def classify(data, identifier):
     return result
 
 
-def receive(stream, size):
+def remaining(deadline):
+    value = deadline - time.monotonic()
+    if value <= 0:
+        raise socket.timeout('DNS exchange deadline')
+    return value
+
+
+def receive(stream, size, deadline):
     data = b""
     while len(data) < size:
+        stream.settimeout(remaining(deadline))
         part = stream.recv(size - len(data))
         if not part:
             raise OSError("closed DNS connection")
@@ -103,7 +107,7 @@ def receive(stream, size):
 
 
 def fresh_name():
-    """A name no cache can answer: the root NSEC denial must be validated live."""
+    """Avoid an exact positive-cache hit; NSEC may still synthesize a denial."""
     return "probe-" + secrets.token_hex(8) + "."
 
 
@@ -126,11 +130,10 @@ def probe(port, name=".", rrtype=48, timeout=DEFAULT_TIMEOUT):
             stream.send(packet)
             response = stream.recv(65535)
         if len(response) >= 4 and response[2] & 2:
-            remaining = max(0.01, deadline - time.monotonic())
-            with socket.create_connection(("127.0.0.1", port), timeout=remaining) as stream:
-                stream.settimeout(remaining)
+            with socket.create_connection(("127.0.0.1", port), timeout=remaining(deadline)) as stream:
+                stream.settimeout(remaining(deadline))
                 stream.sendall(struct.pack("!H", len(packet)) + packet)
-                response = receive(stream, struct.unpack("!H", receive(stream, 2))[0])
+                response = receive(stream, struct.unpack("!H", receive(stream, 2, deadline))[0], deadline)
         return classify(response, identifier)
     except socket.timeout:
         return {"status": "indeterminate", "rcode": None, "ede": [], "authenticated": False,
@@ -157,17 +160,19 @@ def query_upstream(text, timeout=DEFAULT_TRANSPORT_TIMEOUT, name=".", rrtype=48)
     packet = struct.pack("!6H", identifier, 0x100, 1, 0, 0, 1) + encode_name(name) \
         + struct.pack("!HH", rrtype, 1)
     packet += b"\0" + struct.pack("!HHIH", 41, 1232, 0x8000, 0)
+    deadline = time.monotonic() + timeout
     context = ssl.create_default_context()
     if not authname:
         # Without a declared TLS name there is nothing to verify against; the
         # reachability answer is still useful, the identity is not claimed.
         context.check_hostname = False
     try:
-        with socket.create_connection((host, port), timeout=timeout) as raw:
+        with socket.create_connection((host, port), timeout=remaining(deadline)) as raw:
+            raw.settimeout(remaining(deadline))
             with context.wrap_socket(raw, server_hostname=authname or None) as stream:
-                stream.settimeout(timeout)
+                stream.settimeout(remaining(deadline))
                 stream.sendall(struct.pack("!H", len(packet)) + packet)
-                response = receive(stream, struct.unpack("!H", receive(stream, 2))[0])
+                response = receive(stream, struct.unpack("!H", receive(stream, 2, deadline))[0], deadline)
         answer = classify(response, identifier)
     except socket.timeout:
         return {"upstream": text, "status": "unavailable", "detail": "tls-timeout"}
@@ -178,14 +183,14 @@ def query_upstream(text, timeout=DEFAULT_TRANSPORT_TIMEOUT, name=".", rrtype=48)
     except (OSError, ValueError, struct.error, UnicodeError) as error:
         return {"upstream": text, "status": "unavailable", "detail": type(error).__name__}
     # Reaching a validating upstream is proof of transport, not of a signature.
-    if answer["status"] in ("secure", "indeterminate") and answer["answers"]:
+    if answer["status"] in ("secure", "indeterminate") and answer["rcode"] in (0, 3):
         return {"upstream": text, "status": "reachable", "detail": answer["detail"],
                 "rcode": answer["rcode"], "ede": answer["ede"], "signed": answer["signed"]}
     return {"upstream": text, "status": answer["status"], "detail": answer["detail"],
             "rcode": answer["rcode"], "ede": answer["ede"], "signed": answer["signed"]}
 
 
-def probe_transport(upstreams, timeout=DEFAULT_TRANSPORT_TIMEOUT):
+def probe_transport(upstreams, timeout=DEFAULT_TRANSPORT_TIMEOUT, *, name=".", rrtype=48):
     """Aggregate the encrypted upstreams: usable if any answers with records.
 
     A cold TLS handshake to a distant resolver can take seconds, so the
@@ -196,7 +201,7 @@ def probe_transport(upstreams, timeout=DEFAULT_TRANSPORT_TIMEOUT):
     """
     results = []
     for text in upstreams:
-        value = query_upstream(text, timeout)
+        value = query_upstream(text, timeout, name=name, rrtype=rrtype)
         results.append(value)
         if value["status"] == "reachable":
             break
@@ -211,7 +216,7 @@ def probe_transport(upstreams, timeout=DEFAULT_TRANSPORT_TIMEOUT):
 
 
 def verdict(local, transport=None):
-    """Attribute an inconclusive local verdict to the layer that failed."""
+    """Health requires both validation and a separately observed live transport."""
     result = dict(local)
     result.setdefault("authenticated", False)
     result.setdefault("answers", 0)
@@ -222,10 +227,11 @@ def verdict(local, transport=None):
                        "signed": bool(local.get("signed", False))}
     if transport is not None:
         result["transport"] = transport
-    if transport is None or local["status"] in ("secure", "validation-error", "unavailable"):
+    result["scope"] = "validation-only" if transport is None else "validation-and-transport"
+    if transport is None or local["status"] == "validation-error":
         return result
-    # The local validator produced no verdict. Ask the encrypted path directly:
-    # a working transport points at the validator, a broken one at the network.
+    # Keep local failure visible even with working TLS. Conversely, a cached
+    # secure answer cannot turn a broken transport into an overall success.
     if transport["status"] == "reachable":
         return result
     if transport["status"] == "validation-error":
@@ -245,13 +251,13 @@ def main(argv):
     rrtype = int(os.environ.get("NETSEC_DNSSEC_PROBE_TYPE", "48" if override else "1"))
     local = probe(port, name=name, rrtype=rrtype, timeout=timeout)
     transport = None
-    # The transport stage is only meaningful for the production probe and only
-    # when the local verdict is inconclusive.
+    # A fixture name changes only the query, never the transport requirement.
     upstreams = os.environ.get("NETSEC_DOT_PROBE_UPSTREAMS", "").split()
-    if upstreams and not override and local["status"] == "indeterminate":
+    if upstreams:
         transport = probe_transport(
             upstreams, float(os.environ.get("NETSEC_PROBE_TRANSPORT_TIMEOUT",
-                                           DEFAULT_TRANSPORT_TIMEOUT)))
+                                           DEFAULT_TRANSPORT_TIMEOUT)),
+            name=name, rrtype=rrtype)
     result = verdict(local, transport)
     result["probe_name"] = name
     print(json.dumps(result))

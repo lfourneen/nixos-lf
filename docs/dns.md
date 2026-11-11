@@ -34,7 +34,9 @@ Unbound uses 360 DoT endpoints `101.226.4.6`, `218.30.118.6` and `123.125.81.6`,
 
 Upstream private/CGNAT, guest, loopback, unspecified, link-local and ULA answers are filtered, including IPv4-mapped forms. Explicit local data and narrowly declared private domains remain usable. Validated cached data can be served for up to 900 seconds during upstream failure, with a reply TTL of 30 seconds. Split DNS and plaintext fallback bypass this Unbound path.
 
-[dnssec_probe.py](../system/programs/systemd/netsec/dnssec_probe.py) separates local validation from transport diagnosis. A fresh random root name requires an authenticated denial rather than a cached repeated answer; an independent TLS query checks whether the encrypted upstream answers and supplies signature material. Cold anchor priming is deferred only while transport works. Verdicts, RCODE, EDE and failure categories appear in `/run/dns-upstream/state.json` and persistent `/var/lib/dns-upstream/history.log`.
+[dnssec_probe.py](../system/programs/systemd/netsec/dnssec_probe.py) reports local validation and encrypted transport separately. Each health round queries a fresh root name locally **and** opens a new authenticated TLS/DNS exchange with the configured upstreams. Positive, expired and aggressive NSEC caches can answer locally, including authenticated denials for names never queried before; an AD bit alone does not establish connectivity. Overall `secure` requires local validation plus reachable transport. A validation error remains a validation error, while a cached secure answer with failed transport reports `unavailable`. Each endpoint exchange has a five-second total deadline, including handshake and framed reads; the local query has eight seconds. The first usable endpoint ends the transport stage.
+
+`dnssec_probe.local` and `dnssec_probe.transport` preserve both observations in `/run/dns-upstream/state.json` and `/var/lib/dns-upstream/history.log`. A manual invocation without configured transport endpoints is explicitly labelled `scope=validation-only`; the production coordinator always supplies them. Cold anchor priming is deferred only while transport works.
 
 When the encrypted path cannot supply a usable verdict, A may open a bounded plaintext window using the original DHCP4 resolvers, or `1.1.1.1`/`1.0.0.1` when none were supplied. These are a separate recovery path, not Unbound upstreams.
 
@@ -44,13 +46,17 @@ This recovery behavior belongs to the default `my.proxy.dnsEncryption="opportuni
 |---|---|
 | Lease | At most 120 seconds per renewal, constrained by remaining allowance |
 | Session allowance | 1800 seconds; plaintext spends one second per second |
-| Replenishment | Only a validated encrypted path earns one second per second; recovery does not reset the pool |
+| Replenishment | Consecutive successful validation-and-transport rounds in the same coordinator/policy/session earn at most one second per second; recovery does not reset the pool |
 | Session identity | Boot ID + interface index + Wi-Fi ActiveConnection where applicable |
 | Carrier / DHCP changes | Do not mint a fresh allowance; service restarts retain accounting |
 | Optional boot deadline | `my.proxy.plaintextBootBudgetSeconds`, default `null` |
 | Explicit override | Root-owned `/run/dns-upstream/force-plaintext`, active until removed or rebooted |
 
 The override can outlast the allowance, but is still billed and renewed through bounded leases. Removing it does not restore spent time. In C, earlier output policy cuts external DNS regardless of fallback selection.
+
+[dns_budget.py](../system/programs/systemd/netsec/dns_budget.py) maintains the session ledger under `/run/dns-upstream/budgets/`. A lease requires an atomic record of the balance, settlement time and possible lease deadline. Charges equal the overlap between the unsettled time interval and the lease, including intervals spanning expiry or a coordinator restart. A failed or uncertain policy application retains the recorded deadline until revocation is confirmed. Invalid ledgers prevent renewal.
+
+Replenishment requires two successful rounds within 90 seconds in the same coordinator, policy and network-session epoch. Restart, failed reconciliation, unobserved gaps and suspend do not earn time; boot-time and awake-time deltas distinguish sleep. An optional boot deadline also bounds credit. `/run` makes the allowance boot-scoped; persistent history is diagnostic, not the budget ledger.
 
 [dns_policy.py](../system/programs/systemd/netsec/dns_policy.py) is the privileged kernel-lease broker. Timed nft sets permit only the dnsmasq UID and exact upstream destinations. A stalled or dead coordinator cannot keep a lease past expiry. Sleep and connection changes revoke permissions before renewal.
 

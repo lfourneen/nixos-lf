@@ -37,8 +37,8 @@ let
   # operator from the validated endpoints (asserted in network.nix).
   transportFallback = lib.concatStringsSep " " m.dotTransportFallback;
 
-  # Upstreams the probe contacts directly (TLS) so a validator without a
-  # verdict can be attributed to the network or to the validator.
+  # Every health round independently contacts these TLS upstreams. Cached
+  # authenticated answers prove validation, never current reachability.
   dotProbeUpstreams = lib.concatMapStringsSep " "
     (ip: "${ip}@${toString port.dot}#${m.dotAuthName}") m.dotUpstreams;
 
@@ -234,9 +234,10 @@ in
         history_lines=400
         dot_state=not-probed
         dot_result='{"status":"not-probed","rcode":null,"ede":[],"detail":"not-probed"}'
-        window_until=0; last_tick=0; boot_until=0
+        window_until=0; boot_until=0
+        budget_epoch=$(cat /proc/sys/kernel/random/uuid)
         no_resolver_logged=0
-        PL_TTL=120; PL_TOTAL=1800; budget_left=1800
+        PL_TOTAL=1800; budget_left=1800
         ready_sent=0
         policy_version=-1
         split='{"entries":[],"context":null}'
@@ -257,80 +258,41 @@ in
           read -r uptime _ < /proc/uptime
           printf '%s\n' "''${uptime%%.*}"
         }
-        save_budget() {
-          # Before the first lease there is no identity to bill against; the
-          # pending pass must not create a nameless budget file.
-          [ -n "$ident" ] || return 0
-          atomic_write "$runtime/budgets/$ident" "$budget_left $window_until"
+        budget() {
+          [ -n "$last_ident" ] || return 0
+          local result
+          local -a args=()
+          [ "$boot_until" = 0 ] || args+=(--boot-until "$boot_until")
+          result=$(${pkgs.python3}/bin/python3 ${./netsec/dns_budget.py} "$runtime" "$last_ident" "$@" "''${args[@]}") || return 1
+          read -r budget_left window_until <<< "$result"
         }
         load_budget() {
-          budget_left=$PL_TOTAL; window_until=0; last_tick=$(now_mono)
-          if [ -r "$runtime/budgets/$ident" ]; then
-            read -r b w < "$runtime/budgets/$ident" || true
-            if [[ "$b $w" =~ ^[0-9]+\ [0-9]+$ ]]; then
-              budget_left=$b; window_until=$w
-              [ "$budget_left" -le "$PL_TOTAL" ] || budget_left=$PL_TOTAL
-            fi
+          ${lib.optionalString (config.my.proxy.plaintextBootBudgetSeconds != null) ''
+          if [ -r "$runtime/boot-budget" ]; then
+            read -r boot_until < "$runtime/boot-budget"
+            [[ "$boot_until" =~ ^[0-9]+$ ]] || return 1
           fi
-          [ "$allow_plaintext" = 1 ] || window_until=0
-        }
-        account_budget() {
-          # Supplementary model instead of a refund one: plaintext costs 1:1
-          # while a window is open and is only earned back 1:1 while the
-          # encrypted path is validated. "Block, then briefly allow" therefore
-          # cannot refill the pool, while a genuinely flaky link keeps a small
-          # allowance instead of ending in a manual recovery.
-          local now elapsed active=0
-          now=$(now_mono)
-          # A fresh process (or a first pass) has no previous tick to bill
-          # against; charging "since boot" would spend the whole pool at once.
-          [ "$last_tick" -ne 0 ] || last_tick=$now
-          elapsed=$((now - last_tick)); last_tick=$now
-          [ "$elapsed" -ge 0 ] || elapsed=0
-          if [ "$allow_plaintext" = 1 ] && { [ -e "$runtime/force-plaintext" ] || [ "$now" -lt "$window_until" ]; }; then active=1; fi
-          if [ "$active" = 1 ]; then
-            budget_left=$((budget_left - elapsed))
-            [ "$budget_left" -ge 0 ] || budget_left=0
-            [ "$budget_left" -gt 0 ] || window_until=0
-          elif [ "$dot_state" = secure ]; then
-            ${lib.optionalString (config.my.proxy.plaintextBootBudgetSeconds != null) ''
-            if [ -r "$runtime/boot-budget" ]; then read -r boot_until < "$runtime/boot-budget" || boot_until=0; fi
-            if [ "$boot_until" = 0 ] || [ "$now" -lt "$boot_until" ]; then
-            ''}
-            budget_left=$((budget_left + elapsed))
-            [ "$budget_left" -le "$PL_TOTAL" ] || budget_left=$PL_TOTAL
-            ${lib.optionalString (config.my.proxy.plaintextBootBudgetSeconds != null) ''
-            fi
-            ''}
-          fi
-          save_budget
+          ''}
+          budget view
         }
         open_window() {
-          [ "$allow_plaintext" = 1 ] || { window_until=0; save_budget; return 1; }
-          now=$(now_mono)
-          if [ "$budget_left" -le 0 ]; then window_until=0; save_budget; return 1; fi
-          window_until=$((now + PL_TTL))
-          # The window can never outlive the pool: a short remaining allowance
-          # caps the deadline, and refilling is what extends it again.
-          [ $((window_until - now)) -le "$budget_left" ] || window_until=$((now + budget_left))
+          [ "$allow_plaintext" = 1 ] || { window_until=0; return 1; }
           ${lib.optionalString (config.my.proxy.plaintextBootBudgetSeconds != null) ''
           if [ -r "$runtime/boot-budget" ]; then
             read -r boot_until < "$runtime/boot-budget"
           else
-            boot_until=$((now + ${toString config.my.proxy.plaintextBootBudgetSeconds}))
+            boot_until=$(($(now_mono) + ${toString config.my.proxy.plaintextBootBudgetSeconds}))
             atomic_write "$runtime/boot-budget" "$boot_until"
           fi
           [[ "$boot_until" =~ ^[0-9]+$ ]] || return 1
-          [ "$window_until" -le "$boot_until" ] || window_until=$boot_until
           ''}
-          save_budget
         }
         dot_ok() {
           local probe_exit=0
           # The probe separates the local validator verdict from the encrypted
           # transport, so a slow or unreachable DoT upstream can never masquerade
-          # as a signature error. The direct stage is bounded by two 5s TLS
-          # attempts on top of the 8s local query.
+          # as a signature error. Each TLS exchange has a 5s total deadline,
+          # in addition to the 8s local query; the first usable upstream wins.
           dot_result=$(NETSEC_DOT_PROBE_UPSTREAMS=${lib.escapeShellArg dotProbeUpstreams} \
             ${pkgs.python3}/bin/python3 ${./netsec/dnssec_probe.py} ${toString port.unbound}) || probe_exit=$?
           # A failed helper must not break state publication or look secure.
@@ -399,6 +361,21 @@ in
             if [[ "$target" == *plaintext ]]; then target=degraded-dot-only; fi
           fi
           apply_reason=""
+          until=0
+          if [[ "$target" == *plaintext ]]; then
+            # Journal before publishing a request or reloading the forwarder.
+            # Failed/ambiguous applies retain the entire possible lease.
+            if [ -e "$runtime/force-plaintext" ]; then
+              budget grant --override || return 1
+            else
+              budget grant || return 1
+            fi
+            until=$window_until
+            if [ "$until" -le "$(now_mono)" ]; then
+              target=degraded-dot-only; until=0; window_until=0
+              state_reason='mode-a: plaintext allowance exhausted; encrypted resolver only'
+            fi
+          fi
           new_conf='server=127.0.0.1#${toString port.unbound}'
           if [ "$target" = proxy ]; then
             new_conf='server=127.0.0.1#${toString port.mihomoDns}'
@@ -416,7 +393,7 @@ in
           # publish a plaintext resolver list after A has ended.
           if [[ "$target" == *plaintext ]] \
              && { [ "$(jq -r '.mode // "unknown"' /run/proxy-mode/state.json 2>/dev/null)" != direct ] || $CLASH_ON; }; then
-            target=blocked
+            target=blocked; until=0
             state_reason='proxy transition: encrypted resolver only'
             new_conf='server=127.0.0.1#${toString port.unbound}'
           fi
@@ -435,9 +412,11 @@ in
             resolvectl flush-caches || true
           fi
           now=$(now_mono)
-          until=0
-          [[ "$target" != *plaintext ]] || until=$window_until
-          if [[ "$target" == *plaintext ]] && [ -e "$runtime/force-plaintext" ]; then until=$((now + 120)); fi
+          if [ "$until" != 0 ] && [ "$until" -le "$now" ]; then
+            state_reason='mode-a: plaintext allowance expired during apply'
+            apply_state degraded-dot-only
+            return $?
+          fi
           jq -n --argjson version "$policy_version" --argjson now "$now" --argjson until "$until" \
             --arg servers "$servers" --argjson split "$split" \
             '{policy_version:$version,monotonic_seconds:$now,plaintext_until:$until,
@@ -456,6 +435,11 @@ in
             esac
             [ "$target" != proxy ] || notify=1
           fi
+          if [ "$until" = 0 ] && [ -n "$last_ident" ]; then
+            local -a observation=()
+            if [ "$target" = dot ] && [ "$dot_state" = secure ]; then observation+=(--secure); fi
+            budget observe --epoch "$budget_epoch:$policy_version" "''${observation[@]}" || return 1
+          fi
           current="$target"
           last_success=$(now_mono)
           publish_dns
@@ -469,9 +453,11 @@ in
         systemd-notify --ready
         ready_sent=1
         while true; do
-          # Bill the interval that just elapsed against the pool before this
-          # round's verdict changes what the pool means.
-          account_budget
+          # Settle journaled leases even after expiry or coordinator restart.
+          if ! budget view; then
+            echo "dns-upstream: invalid budget journal; refusing renewal" >&2
+            exit 1
+          fi
           woken=0
           timeout 15 systemctl start dns-resolved-policy.service || true
           split_ok=1
@@ -515,8 +501,8 @@ in
             # encrypted path failing is never an unqualified blackout.
             [ -n "$servers" ] || servers=${lib.escapeShellArg transportFallback}
             if [ "$ident" != "$last_ident" ]; then
-              last_ident="$ident"; dot_fails=0; dot_grace_rounds=0; ever_secure=0
-              load_budget
+              last_ident="$ident"; budget_epoch=$(cat /proc/sys/kernel/random/uuid); dot_fails=0; dot_grace_rounds=0; ever_secure=0
+              load_budget || exit 1
             fi
             if dot_ok; then
               dot_grace_rounds=0; dot_fails=0; no_resolver_logged=0; ever_secure=1
@@ -525,7 +511,7 @@ in
               # The deadline is dropped on recovery, the pool is not: it
               # refills at 1:1 below, so a flapping upstream keeps its
               # accumulated allowance instead of regaining a full one.
-              if [ "$window_until" != 0 ]; then window_until=0; save_budget; fi
+              window_until=0
             elif [ "$ever_secure" = 0 ] && [ "$dot_state" = indeterminate ] \
                  && [ "$dot_grace_rounds" -lt "$prime_rounds" ]; then
               # A cold validator has to prime its trust anchor before its first
@@ -539,11 +525,11 @@ in
               new_status=degraded-dot-only
               state_reason='mode-a: encrypted resolver only; no plaintext upstream'
               if [ "$allow_plaintext" = 0 ]; then
-                window_until=0; save_budget
+                window_until=0
                 state_reason="mode-a: strict encryption; plaintext recovery disabled ($dot_state)"
               elif [ -n "$servers" ]; then
                 no_resolver_logged=0
-                [ "$dot_fails" != 1 ] || open_window
+                [ "$dot_fails" != 1 ] || open_window || exit 1
                 now=$(now_mono)
                 if [ -e "$runtime/force-plaintext" ]; then
                   new_status=degraded-plaintext
@@ -556,7 +542,7 @@ in
                   # encrypted upstream must not end in a manual recovery, and the
                   # budget still caps the total plaintext time per session.
                   conn=$(nmcli -t networking connectivity 2>/dev/null || true)
-                  open_window
+                  open_window || exit 1
                   if [ "$conn" = portal ] || [ "$conn" = limited ]; then
                     new_status=portal-plaintext
                     state_reason="mode-a: bounded portal plaintext window ($dot_state)"
@@ -584,6 +570,7 @@ in
           if ! apply_state "$new_status"; then
             # Keep last_conf unchanged so the next pass must retry. Do not claim
             # that a desired server list is already the active resolver state.
+            budget interrupt || exit 1
             current=pending
             state_reason="DNS apply failed: $apply_reason; retrying"
             publish_dns

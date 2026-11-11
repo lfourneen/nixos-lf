@@ -35,6 +35,7 @@ events, dns_sleep = (module(name) for name in ("events", "dns_sleep"))
 listeners = module('listeners')
 tun = module('tun')
 dnssec_probe = module('dnssec_probe')
+dns_budget = module('dns_budget')
 egress_policy = module('egress_policy')
 guest_policy = module('guest_policy')
 SOURCE = (MODULES / "proxy-mode.nix").read_text()
@@ -400,6 +401,70 @@ class HealthTests(unittest.TestCase):
             self.assertEqual(seen, ["http://first"])
 
 
+class DnsBudgetTests(unittest.TestCase):
+    def test_expired_window_is_charged_once_including_restart(self):
+        state = dns_budget.initial(100)
+        state.update(until=120)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session'
+            path.write_text(json.dumps(state))
+            state = dns_budget.load(path, 130)
+        dns_budget.change(state, 'view', 130)
+        self.assertEqual(state['balance'], 1780)
+        dns_budget.change(state, 'view', 150)
+        self.assertEqual(state['balance'], 1780)
+
+    def test_small_balance_cannot_renew_after_unobserved_expiry(self):
+        for balance in (1, 7, 10):
+            state = dns_budget.initial(100)
+            state['balance'] = balance
+            self.assertEqual(dns_budget.change(state, 'grant', 100), 100 + balance)
+            self.assertEqual(dns_budget.change(state, 'grant', 100 + balance), 100 + balance)
+            self.assertEqual(state['balance'], 0)
+            self.assertEqual(dns_budget.change(state, 'grant', 140), 140)
+            self.assertEqual(state['balance'], 0)
+
+    def test_ambiguous_apply_keeps_lease_and_revocation_settles_before_truncating(self):
+        state = dns_budget.initial(100)
+        dns_budget.change(state, 'grant', 100)
+        dns_budget.change(state, 'interrupt', 110)
+        self.assertEqual(state['until'], 220)
+        dns_budget.change(state, 'observe', 130)
+        dns_budget.change(state, 'view', 300)
+        self.assertEqual(state['balance'], 1770)
+
+    def test_credit_requires_adjacent_healthy_rounds_same_process_policy_and_awake_time(self):
+        for epoch, now, awake, expected in [('one', 120, 120, 120),
+                                           ('restart', 120, 120, 100),
+                                           ('one', 220, 220, 100),
+                                           ('one', 120, 101, 100)]:
+            with self.subTest(epoch=epoch, now=now, awake=awake):
+                state = dns_budget.initial(100)
+                state['balance'] = 100
+                dns_budget.change(state, 'observe', 100, secure=True, epoch='one', awake=100)
+                dns_budget.change(state, 'observe', now, secure=True, epoch=epoch, awake=awake)
+                self.assertEqual(state['balance'], expected)
+        dns_budget.change(state, 'interrupt', now)
+        dns_budget.change(state, 'observe', now + 10, secure=True, epoch=epoch, awake=awake + 10)
+        self.assertEqual(state['balance'], expected)
+
+    def test_boot_ceiling_override_and_invalid_journal(self):
+        state = dns_budget.initial(100)
+        self.assertEqual(dns_budget.change(state, 'grant', 100, boot_until=103), 103)
+        self.assertEqual(dns_budget.change(state, 'grant', 110, boot_until=103), 110)
+        self.assertEqual(state['balance'], 1797)
+        self.assertEqual(dns_budget.change(state, 'grant', 110, override=True, boot_until=103), 230)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session'
+            path.write_text('600 0\n')
+            self.assertEqual(dns_budget.load(path, 110)['balance'], 480)
+            path.write_text('{broken')
+            with self.assertRaises(ValueError): dns_budget.load(path, 110)
+            path.write_text(json.dumps(dict(state, balance=1801)))
+            with self.assertRaises(ValueError): dns_budget.load(path, 110)
+        with self.assertRaises(ValueError): dns_budget.change(state, 'view', 99)
+
+
 class DnssecProbeTests(unittest.TestCase):
     def response(self, flags=0x8020, codes=(), answers=1, signed=False):
         question = b'\0' + struct.pack('!HH', 48, 1)
@@ -424,8 +489,8 @@ class DnssecProbeTests(unittest.TestCase):
         self.assertEqual(dnssec_probe.classify(self.response(0x8002, [0]), 42)['status'], 'indeterminate')
 
     def test_validated_denial_of_existence_is_health(self):
-        # A fresh random name can only be answered by a live, validating chain:
-        # the root's NSEC denial is proof, and it is never cached.
+        # AD proves validation, including cached NSEC; it says nothing about
+        # whether the encrypted upstream is reachable in this round.
         result = dnssec_probe.classify(self.response(0x8023, answers=0), 42)
         self.assertEqual(result['status'], 'secure')
         self.assertEqual(result['detail'], 'authenticated-nonexistence')
@@ -475,6 +540,30 @@ class DnssecProbeTests(unittest.TestCase):
             local, {'status': 'validation-error', 'detail': 'dnssec-ede'})['status'],
             'validation-error')
         self.assertEqual(dnssec_probe.verdict(local)['status'], 'indeterminate')
+
+    def test_cached_secure_denial_still_requires_independent_transport(self):
+        local = dnssec_probe.classify(self.response(0x8023, answers=0), 42)
+        for override in ('', 'z.signed.fixture.example.'):
+            with self.subTest(override=override), patch.dict(os.environ, {
+                    'NETSEC_DNSSEC_PROBE_NAME': override,
+                    'NETSEC_DOT_PROBE_UPSTREAMS': '127.0.0.2@853#dot.fixture.test'}), \
+                    patch.object(dnssec_probe, 'probe', return_value=local), \
+                    patch.object(dnssec_probe, 'probe_transport', return_value={
+                        'status': 'unavailable', 'detail': 'tls-timeout'}) as transport, \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(dnssec_probe.main(['probe', '1055']), 2)
+                transport.assert_called_once()
+                result = json.loads(output.getvalue())
+                self.assertEqual(result['local']['status'], 'secure')
+                self.assertEqual(result['transport']['status'], 'unavailable')
+        self.assertEqual(dnssec_probe.verdict(local, {'status': 'reachable'})['status'], 'secure')
+
+    def test_stream_receive_has_one_deadline_not_one_timeout_per_byte(self):
+        stream = unittest.mock.Mock()
+        stream.recv.return_value = b'x'
+        with patch.object(dnssec_probe.time, 'monotonic', side_effect=[0, 0.9, 1.1]):
+            with self.assertRaises(socket.timeout): dnssec_probe.receive(stream, 4, 1)
+        self.assertEqual(stream.recv.call_count, 2)
 
     def test_transport_stage_aggregates_upstreams(self):
         answer = {'status': 'secure', 'detail': 'authenticated', 'rcode': 0, 'ede': [], 'answers': 4}

@@ -2,6 +2,12 @@
 
 let
   signedZone = import ./signed-zone.nix { inherit pkgs; };
+  tlsFixture = pkgs.runCommand "dns-test-tls-identity" { nativeBuildInputs = [ pkgs.openssl ]; } ''
+    mkdir -p "$out"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 36500 \
+      -subj /CN=dot.fixture.test -addext subjectAltName=DNS:dot.fixture.test \
+      -keyout "$out/key.pem" -out "$out/cert.pem"
+  '';
   dnsPython = pkgs.python3.withPackages (p: [ p.dnspython ]);
 
 in
@@ -55,6 +61,9 @@ pkgs.testers.runNixOSTest {
     my.proxy.tunProbeName = "tun.fixture.example";
     services.tailscale.enable = lib.mkForce false;
     services.avahi.enable = lib.mkForce false;
+    my.machine.dotUpstreams = [ "127.0.0.2" ];
+    my.machine.dotAuthName = "dot.fixture.test";
+    security.pki.certificateFiles = [ "${tlsFixture}/cert.pem" ];
     my.machine.ntsUpstreams = [ "nts.fixture.test" ];
     networking.extraHosts = "203.0.113.10 nts.fixture.test";
 
@@ -95,7 +104,8 @@ pkgs.testers.runNixOSTest {
 
       {
         name = "signed.fixture.example.";
-        forward-addr = [ "127.0.0.1@15356" ];
+        forward-addr = [ "127.0.0.2@853#dot.fixture.test" ];
+        forward-tls-upstream = true;
         forward-first = false;
       }
     ];
@@ -107,7 +117,7 @@ pkgs.testers.runNixOSTest {
 
     systemd.services.netsec-dnssec-fixture = {
       wantedBy = [ "multi-user.target" ];
-      serviceConfig.ExecStart = "${dnsPython}/bin/python3 ${./dnssec_fixture.py} ${signedZone}/zone";
+      serviceConfig.ExecStart = "${dnsPython}/bin/python3 ${./dnssec_fixture.py} ${signedZone}/zone ${tlsFixture}/cert.pem ${tlsFixture}/key.pem";
     };
 
     systemd.services.dns-upstream.environment.NETSEC_DNSSEC_PROBE_NAME = "signed.fixture.example.";
@@ -429,6 +439,25 @@ pkgs.testers.runNixOSTest {
         for checking in ("", "+cdflag"):
             response = machine.succeed(f"dig {transport} {checking} +time=2 +tries=1 @127.0.0.1 -p 1054 bogus.signed.fixture.example A")
             assert "status: SERVFAIL" in response, response
+    with subtest("authenticated NSEC cache is not encrypted transport health"):
+        machine.succeed("systemctl start dns-upstream.service")
+        machine.wait_until_succeeds("jq -e '.mode == \"dot\" and .dnssec_probe.transport.status == \"reachable\"' /run/dns-upstream/state.json", timeout=30)
+        # With the optional boot ceiling disabled, a retained runtime file must
+        # not impose a hidden deadline when the coordinator restarts.
+        machine.succeed("systemctl stop dns-upstream.service; python3 /etc/netsec-dns.py budget 500; printf '1\\n' >/run/dns-upstream/boot-budget")
+        machine.succeed("dig +dnssec +adflag @127.0.0.1 -p 1055 z-first.signed.fixture.example A | grep -q 'status: NXDOMAIN'")
+        machine.succeed("systemctl stop netsec-dnssec-fixture.service")
+        # This new name has never been queried. Only cached NSEC can prove AD
+        # now; the real upstream is stopped, including all persistent TLS sockets.
+        cached = machine.succeed("dig +dnssec +adflag +time=2 +tries=1 @127.0.0.1 -p 1055 z-second.signed.fixture.example A")
+        assert "status: NXDOMAIN" in cached and " ad" in cached, cached
+        machine.succeed("NETSEC_DNSSEC_PROBE_NAME=z-third.signed.fixture.example. NETSEC_DNSSEC_PROBE_TYPE=1 NETSEC_DOT_PROBE_UPSTREAMS='127.0.0.2@853#dot.fixture.test' python3 /etc/netsec-dnssec-probe.py 1055 >/tmp/nsec-outage.json && exit 1 || test $? = 2; jq -e '.local.status == \"secure\" and .transport.status == \"unavailable\" and .status == \"unavailable\"' /tmp/nsec-outage.json")
+        machine.succeed("mkdir -p /run/systemd/system/dns-upstream.service.d; printf '[Service]\\nEnvironment=NETSEC_DNSSEC_PROBE_NAME=z-fifth.signed.fixture.example.\\nEnvironment=NETSEC_DNSSEC_PROBE_TYPE=1\\n' >/run/systemd/system/dns-upstream.service.d/nsec.conf; systemctl daemon-reload; systemctl start dns-upstream.service")
+        machine.wait_until_succeeds("jq -e '.mode == \"bootstrap-plaintext\" and .dnssec_probe.local.status == \"secure\" and .dnssec_probe.transport.status == \"unavailable\" and .budget_remaining <= 500' /run/dns-upstream/state.json", timeout=30)
+        outage_pool = int(machine.succeed("jq -r .budget_remaining /run/dns-upstream/state.json"))
+        machine.wait_until_succeeds(f"jq -e '.dnssec_status == \"unavailable\" and .budget_remaining < {outage_pool - 2}' /run/dns-upstream/state.json", timeout=30)
+        machine.succeed("systemctl stop dns-upstream.service; rm /run/systemd/system/dns-upstream.service.d/nsec.conf; systemctl daemon-reload; systemctl start netsec-dnssec-fixture.service")
+        machine.wait_until_succeeds("NETSEC_DNSSEC_PROBE_NAME=z-fourth.signed.fixture.example. NETSEC_DNSSEC_PROBE_TYPE=1 NETSEC_DOT_PROBE_UPSTREAMS='127.0.0.2@853#dot.fixture.test' python3 /etc/netsec-dnssec-probe.py 1055 | jq -e '.local.status == \"secure\" and .transport.status == \"reachable\" and .status == \"secure\"'", timeout=30)
     # Root diagnostics may reach this fixture; Unbound must now use a declared
     # upstream even in A, so its UID alone cannot reach an arbitrary DoT IP.
     # Other applications cannot step outside the resolver policy over 853. The
@@ -467,6 +496,14 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("jq -e '.mode == \"bootstrap-plaintext\" and .budget_remaining > 0 and .budget_remaining < 1800' /run/dns-upstream/state.json", timeout=45)
     flap_pool = int(machine.succeed("jq -r .budget_remaining /run/dns-upstream/state.json"))
     assert 0 < flap_pool < 1800, flap_pool
+    with subtest("expired leases remain billed after coordinator restart"):
+        machine.succeed("systemctl stop dns-upstream.service; nft flush set inet lf_filter dns_plaintext4; python3 /etc/netsec-dns.py budget 15; systemctl start dns-upstream.service")
+        machine.wait_until_succeeds("jq -e '.mode == \"bootstrap-plaintext\" and .budget_remaining <= 15 and .budget_remaining > 0' /run/dns-upstream/state.json", timeout=20)
+        machine.succeed("systemctl stop dns-upstream.service")
+        machine.sleep(17)
+        machine.succeed("systemctl start dns-upstream.service")
+        machine.wait_until_succeeds("jq -e '.mode == \"degraded-dot-only\" and .budget_remaining == 0 and .window_until == 0' /run/dns-upstream/state.json", timeout=30)
+        machine.succeed("nft -j list set inet lf_filter dns_plaintext4 | jq -e '[.nftables[].set.elem // [] | length] | all(. == 0)'")
     machine.succeed("rm /run/systemd/system/dns-upstream.service.d/dnssec-test.conf; systemctl daemon-reload; systemctl stop dns-upstream.service")
     # A slow/unreachable local validator is unknown, not a signature verdict. It
     # must revoke old grants without locking the host out of DNS.

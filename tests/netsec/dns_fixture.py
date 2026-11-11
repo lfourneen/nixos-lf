@@ -9,7 +9,7 @@ import struct
 import time
 
 parser = argparse.ArgumentParser()
-parser.add_argument("mode", choices=["server", "query", "lease"])
+parser.add_argument("mode", choices=["server", "query", "lease", "budget"])
 parser.add_argument("host")
 parser.add_argument("port", nargs="?", type=int, default=53)
 parser.add_argument("--uid", type=int)
@@ -19,7 +19,14 @@ parser.add_argument('--rebind', action='store_true')
 parser.add_argument('--ech-config')
 args = parser.parse_args()
 
-if args.mode == "lease":
+if args.mode == "budget":
+    runtime = Path('/run/dns-upstream')
+    state = json.loads((runtime / 'state.json').read_text())
+    (runtime / 'budgets' / state['session']).write_text(json.dumps({
+        'balance': int(args.host), 'tick': int(time.clock_gettime(time.CLOCK_BOOTTIME)),
+        'until': 0, 'healthy': None,
+    }))
+elif args.mode == "lease":
     state = json.loads(Path("/run/proxy-mode/state.json").read_text())
     now = time.clock_gettime(time.CLOCK_BOOTTIME)
     Path("/run/dns-upstream/policy.json").write_text(json.dumps({

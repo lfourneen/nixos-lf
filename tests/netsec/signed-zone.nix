@@ -4,8 +4,8 @@ pkgs.runCommand "netsec-signed-fixture" { nativeBuildInputs = [ pkgs.ldns.exampl
   mkdir -p "$out"
   cat > zone <<'EOF'
   $ORIGIN signed.fixture.example.
-  $TTL 60
-  @ IN SOA ns.signed.fixture.example. hostmaster.signed.fixture.example. ( 1 60 60 3600 60 )
+  $TTL 600
+  @ IN SOA ns.signed.fixture.example. hostmaster.signed.fixture.example. ( 1 60 60 3600 600 )
   @ IN NS ns.signed.fixture.example.
   ns IN A 127.0.0.1
   valid IN A 203.0.113.42

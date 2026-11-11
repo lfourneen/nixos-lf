@@ -34,7 +34,9 @@ Unbound 使用 360 DoT：`101.226.4.6`、`218.30.118.6`、`123.125.81.6`，认�
 
 上游私网/CGNAT、访客网段、loopback、未指定、链路本地和 ULA 答案受到过滤，包含 IPv4-mapped 形式；明确本地数据和窄 private-domain 仍可用。上游故障期间可在 900 秒内服务已验证缓存，应答 TTL 为 30 秒。Split DNS 和明文回退不经过 Unbound。
 
-[dnssec_probe.py](../../system/programs/systemd/netsec/dnssec_probe.py) 分离本地验证与传输诊断：根下全新随机名字要求认证否定证明，避免重复缓存答案；独立 TLS 查询确认加密上游能否回答及提供签名材料。只有传输正常时才推迟冷启动信任锚 priming 判定。结果、RCODE、EDE 和故障类别写入 `/run/dns-upstream/state.json` 及持久化的 `/var/lib/dns-upstream/history.log`。
+[dnssec_probe.py](../../system/programs/systemd/netsec/dnssec_probe.py) 分别报告本地验证和加密传输。每轮健康检查既向本地查询根下随机新名字，也向配置的上游新建经过证书认证的 TLS/DNS 连接。正缓存、过期缓存及 aggressive NSEC 缓存都可能给出本地答案，甚至为从未查询过的名字合成认证否定证明；单凭 AD 标志不能判断网络连通。整体 `secure` 必须同时满足本地验证成功和传输可用。验证错误保留独立分类；本地缓存验证成功但传输失败时，整体为 `unavailable`。每个上游交互共用五秒截止，覆盖握手和完整响应读取；本地查询限八秒，首个可用上游结束传输阶段。
+
+`/run/dns-upstream/state.json` 与 `/var/lib/dns-upstream/history.log` 的 `dnssec_probe.local`、`dnssec_probe.transport` 保留两层观测。手工调用未指定传输端点时明确标为 `scope=validation-only`；生产协调器始终传入端点。只有传输正常时才推迟冷启动信任锚 priming 判定。
 
 加密路径无法提供可用判定时，A 可用原始 DHCP4 DNS 打开有界明文窗口；没有 DHCP DNS 时使用 `1.1.1.1`/`1.0.0.1`。这条恢复路径与 Unbound 上游分开。
 
@@ -44,13 +46,17 @@ Unbound 使用 360 DoT：`101.226.4.6`、`218.30.118.6`、`123.125.81.6`，认�
 |---|---|
 | 租约 | 每次续租最多 120 秒，受剩余额度限制 |
 | 会话额度 | 1800 秒；明文每使用一秒扣一秒 |
-| 恢复额度 | 仅验证成功的加密路径每秒补一秒；恢复不重置额度 |
+| 恢复额度 | 同一协调器、策略及网络会话下，连续验证与传输均成功的轮次最多每秒补一秒；恢复不重置额度 |
 | 会话身份 | boot ID + ifindex，Wi-Fi 另加 ActiveConnection |
 | Carrier / DHCP 变化 | 不产生新额度；服务重启保留记账 |
 | 可选开机截止 | `my.proxy.plaintextBootBudgetSeconds`，默认 `null` |
 | 显式 override | root 的 `/run/dns-upstream/force-plaintext`，删除或重启前有效 |
 
 Override 可以超过额度，但仍记账并受单次租约续期约束；删除不会恢复已花费时间。C 的更早出站规则始终切断外部 DNS，不受回退选择影响。
+
+[dns_budget.py](../../system/programs/systemd/netsec/dns_budget.py) 在 `/run/dns-upstream/budgets/` 维护会话账本。租约发放以余额、结算时刻和可能生效的截止时间原子落盘为前提。扣费取未结算时间与租约区间的交集，覆盖跨租约到期和协调器重启的时间。策略应用失败或结果不明时保留账本中的截止时间，确认撤权才截短。账本无效时禁止续租。
+
+补充额度要求同一协调器、策略和网络会话内的两次成功观测相隔不超过 90 秒。重启、应用失败、长期未观测和睡眠都不赚取额度；启动时钟与清醒时钟的差值用于识别睡眠。可选启动截止也约束补充额度。账本位于 `/run`，只覆盖本次启动；持久历史用于诊断，不作为余额账本。
 
 [dns_policy.py](../../system/programs/systemd/netsec/dns_policy.py) 是特权内核租约 broker，通过带超时的 nft set 仅允许 dnsmasq UID 到精确上游。协调器停止或卡死不能延长过期租约；休眠和连接变化先撤销权限，再决定续租。
 

@@ -23,6 +23,10 @@ Proxy-aware applications    Public TCP without proxy settings    TUN / fake-IP
 
 The listeners are local. Environment variables (both cases), GSettings and Flatpak overrides point proxy-aware applications at `127.0.0.1:33332`. Gost forwards both inlets to `127.0.0.1:7897` in B, passes traffic directly in A and closes its listeners in C or unknown state. Explicit client connections to the transparent port `33333` are rejected before NAT; only redirected flows should enter it.
 
+`user.slice` reserves the fixed proxy and local DNS ports through `SocketBindDeny`, covering TCP/UDP and IPv4/IPv6. Desktop sessions and user managers inherit this restriction; other development ports remain available. `ip_local_reserved_ports` excludes these ports from automatic allocation, including `bind(0)` and implicit client binds. Loopback proxy replies require the expected socket UID: root/Gost for Gost ports and root/clash-core for core ports. Readiness checks use the listener address, UID and cgroup.
+
+Port reservation uses systemd's cgroup `bind4`/`bind6` hooks and requires kernel cgroup-BPF support. Its scope is processes in `user.slice`; untrusted system services need equivalent restrictions in their own slices. Root and managed service identities are trusted. Reply-UID checks authenticate the responding socket, while bind restrictions prevent delivery to an unauthorized UDP listener. See [systemd's bind policy](https://www.freedesktop.org/software/systemd/man/260/systemd.resource-control.html#SocketBindAllow=bind-rule).
+
 Mihomo marks its outbound sockets with `6666` (`0x1a0a`); the exception requires both socket and packet marks plus socket UID root or `clash-core`. Rule routing can choose DIRECT under the default `my.proxy.proxyOnly=false`. The optional [uniform proxy policy](proxy.md#routing-policy) refuses application DIRECT inside the core. Private-network and infrastructure paths outside the core have their own firewall rules. Inside the core, literal and resolved private targets have separate [local DIRECT and remote-leaf authorization](proxy.md#domain-targets); a subscription rule selecting a node does not grant access to that node’s internal network.
 
 [DNS](dns.md) runs alongside this path: resolved → dnsmasq → Mihomo or Unbound. [Firefox](browser.md) defaults to the same Gost HTTP inlet; its optional transparent path uses native DNS and host sockets under this TUN/firewall policy, allowing HTTPS-RR/ECH discovery. Its parent and descendants run in an [outer filesystem and desktop-interface sandbox](browser.md#outer-sandbox), retaining the desktop UID and this host network policy.
@@ -68,14 +72,14 @@ Historical names `inet filter`, `ip proxymode_nat` and `ip6 proxymode_nat` are l
 | Prerouting `-201` | Apply guest public-destination restrictions before redirection |
 | Prerouting `-199` | Guest source, private-target and gateway-service checks |
 | Output `-199` | Track restricted socket guest accounts; limit dnsmasq upstream DNS to installed destination leases; strict mode cuts the core's external port 53 except MagicDNS |
-| Output `-198` | Reserve internal DNS ports, authenticate replies and recheck guest host-service replies |
+| Output `-198` | Reserve internal DNS ports, authenticate DNS/proxy replies, track ordinary application connections and recheck guest host-service replies |
 | Output `-197` | C guard, after conntrack (`-200`) and before auto-redirect (`-150`) |
 | Output `-196` | Restrict independent DNS-over-TLS/QUIC on port 853 |
 | Output `-195` | B optional private/multicast grants and optional Unbound DoT cut, before NAT/TUN |
 | Output `-194` | Optional Chrony original-target CIDR bounds in A/B |
 | Output NAT `-190`, filter `-90` | Force restricted socket guest DNS to 1056 and reject stale resolver associations |
 | Input `-2`, forward `-1` | Recheck restricted socket / routed guest replies against current grants |
-| Input `-1` | C cuts decrypted tailnet packets and tracked socket guest replies before established-flow accepts |
+| Input `-1` | C cuts decrypted tailnet packets and tracked host/guest application replies before established-flow accepts |
 
 NAT priorities order rule lookups within the kernel’s shared destination-NAT hook; the socket guest DNS filter at `-90` checks the actual rewritten target after that hook.
 
@@ -86,6 +90,10 @@ In B, public host TCP is redirected, fake-IP traffic retains its core path, and 
 The [direct-egress ledger](egress.md) records every actor, target, port and mode. Optional restricted B grants use interface/UID/CIDR/ports and cut revoked established host-initiated flows before TUN/NAT. Unbound is limited to configured DoT targets even in A; its B exception can be disabled. Chrony can pin destination CIDRs in A/B. Defaults preserve LAN and changing NTS addresses.
 
 In C, an early output guard blocks application traffic before the core can redirect it. It preserves loopback IPC, marked core sockets, root recovery through proxy/DNS ports and fake-IP ports 53/80/443, narrow DHCP and hop-limit-255 NDP. Non-root access to the core/Gost application ports is blocked for TCP and UDP. Self-test reply exceptions require the expected loopback source or root/core conntrack DNAT reply to an original fake-IP HTTP destination. Guest DHCP/DNS replies are bound to bridge, gateway source and port rather than daemon UID. Unbound and ordinary tailnet traffic lose external egress, including established remote-desktop flows; B grants provide no C remote-control exception. A separate input guard drops decrypted tailnet packets before established-flow accepts, including packets already in flight.
+
+C blocks replies to tracked host-initiated application TCP/UDP flows, covering native TUN, fake-IP and explicit SOCKS UDP. The output hook at priority `-198` assigns conntrack mark `0x4c460001` to unmarked ordinary application connections. Restricted guests use separate marks; root, core and Gost transport connections are excluded. The C input guard drops marked network and fixed proxy-inlet replies. Enforcement at the receiving side allows a live SOCKS UDP association to resume when B is restored.
+
+Receive enforcement depends on these conntrack marks; other firewall owners must preserve them. Socket-queued data is outside this enforcement boundary. Loopback IPC, local DNS, root/core recovery and link maintenance remain available in C.
 
 [network-bootstrap.nix](../system/programs/systemd/network-bootstrap.nix) installs ingress/forwarding protection before NetworkManager or dhcpcd. A failed first full load retains that baseline. Static drift triggers a complete repair into A for direct intent or C for proxy intent, followed by health evaluation. A failed repair reports `unenforced`.
 

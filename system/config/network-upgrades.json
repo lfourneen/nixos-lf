@@ -230,6 +230,7 @@
         "chrony"
       ],
       "checks": [
+        "proxy-regressions",
         "proxy-dns-config",
         "proxy-dns-strict-rules",
         "proxy-dns-strict-vm",
@@ -239,12 +240,14 @@
       "entrypoints": [
         "dnsmasq src/forward.c: strict-order terminal retry and sent-to index",
         "Unbound systemd notify packaging, anchor/validation/TLS settings",
-        "Chrony NTS-KE and negotiated NTP endpoints; DNS broker leases"
+        "Chrony NTS-KE and negotiated NTP endpoints; DNS broker leases",
+        "netsec/dns_budget.py and dnssec_probe.py: boot-scoped accounting and independent TLS/DNS health"
       ],
       "invariants": [
         "Terminal UDP SERVFAIL/REFUSED and DNSSEC EDE reach clients even for duplicate upstream addresses.",
         "DNSSEC, filtering and encryption remain separate; strict public DNS cannot use an override, forged lease or leftover set.",
-        "Unbound notify support and persistent trust anchors remain; NTS keeps authentication/certificate time checks and no plaintext fallback."
+        "Unbound notify support and persistent trust anchors remain; NTS keeps authentication/certificate time checks and no plaintext fallback.",
+        "Expired or ambiguous leases remain charged across coordinator restart; only adjacent validated/live rounds replenish. Cached NSEC never substitutes for a fresh TLS exchange."
       ]
     },
     "firefox": {
@@ -315,7 +318,8 @@
       "invariants": [
         "Owned static/safety policy commits once under the shared lock; foreign tables survive and rejected transactions retain the previous policy.",
         "Bootstrap protects first-load failures; proxy intent passes through C before health permits B.",
-        "Ordered expressions, canonical JSON and expiring DNS leases remain verifiable; stopping owners leaves protection installed."
+        "Ordered expressions, canonical JSON and expiring DNS leases remain verifiable; stopping owners leaves protection installed.",
+        "Desktop cgroup bind restrictions, automatic-port reservations and proxy reply UIDs protect managed listeners. Tracked ordinary application replies stop in C while root/core recovery and guest ownership marks survive."
       ]
     },
     "link-identity": {
