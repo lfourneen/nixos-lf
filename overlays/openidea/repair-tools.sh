@@ -1,5 +1,12 @@
 # Runs inside OpenIDEA's FHS environment, which supplies /lib64 and runtime libs.
-app_data="${XDG_DATA_HOME:-$HOME/.local/share}/ai.l0ng.openidea"
+# Upstream rejects relative overrides. Leave that error to the IDE without
+# touching a directory relative to the launcher's working directory first.
+if [[ -z "${1:-}" && -n "${OPENIDEA_LOCAL_DATA_DIR:-}" && "$OPENIDEA_LOCAL_DATA_DIR" != /* ]]; then
+  exit 0
+fi
+
+# Since 0.1.41, tools and logs follow this override, with XDG as the fallback.
+app_data="${OPENIDEA_LOCAL_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}}/ai.l0ng.openidea"
 tools_dir="${1:-$app_data/tools}"
 log_file="${2:-$app_data/logs/nix-tools.log}"
 
