@@ -25,6 +25,7 @@ in
       Environment = {
         HTTP_PROXY = "${gostHttp}";
         HTTPS_PROXY = "${gostHttp}";
+
         # Lowercase twins: Electron/Chromium and some Go/Rust tooling read only
         # these. ALL_PROXY is deliberately absent - clients that treat it as a
         # SOCKS URL break on an http:// value. NO_PROXY matches the host list.
@@ -82,49 +83,48 @@ in
       "org.telegram.desktop"
 
       # Development tools
-      "cc.arduino.IDE2"
+      #"cc.arduino.IDE2"
       "cn.lceda.LCEDAPro"
-      "com.jetbrains.CLion"
-      "com.jetbrains.PyCharm-Professional"
+      #"com.jetbrains.CLion"
+      #"com.jetbrains.PyCharm-Professional"
       "com.st.STM32CubeMX"
-      "io.qt.Designer"
-      "io.qt.Linguist"
-      "io.qt.QtCreator"
-      "io.qt.qdbusviewer"
-      "org.kicad.KiCad"
+      #"io.qt.Designer"
+      #"io.qt.Linguist"
+      #"io.qt.QtCreator"
+      #"io.qt.qdbusviewer"
+      #"org.kicad.KiCad"
 
       # Games & entertainment
-      "com.ranfdev.DistroShelf"
-      "com.usebottles.bottles"
+      #"com.ranfdev.DistroShelf"
+      #"com.usebottles.bottles"
       "com.vysp3r.ProtonPlus"
       "moe.kopuz.kopuz"
       "net.lutris.Lutris"
       "org.prismlauncher.PrismLauncher"
-      "io.github.screwys.Rufin"
+      #"io.github.screwys.Rufin"
       "com.spotify.Client"
 
       # Multimedia & creativity
-      "com.obsproject.Studio"
-      "org.blender.Blender"
-      "org.freecad.FreeCAD"
-      "org.gimp.GIMP"
-      "org.inkscape.Inkscape"
-      "org.kde.kdenlive"
-      "org.kde.krita"
-      "org.shotcut.Shotcut"
+      #"com.obsproject.Studio"
+      #"org.blender.Blender"
+      #"org.freecad.FreeCAD"
+      #"org.gimp.GIMP"
+      #"org.inkscape.Inkscape"
+      #"org.kde.kdenlive"
+      #"org.kde.krita"
+      #"org.shotcut.Shotcut"
 
       # Office & productivity
       "cn.wps.wps_365"
-      "com.jgraph.drawio.desktop"
-      "md.obsidian.Obsidian"
-      "org.onlyoffice.desktopeditors"
-      "org.texstudio.TeXstudio"
+      #"com.jgraph.drawio.desktop"
+      #"md.obsidian.Obsidian"
+      #"org.onlyoffice.desktopeditors"
+      #"org.texstudio.TeXstudio"
 
       # Utilities & system tools
       "com.github.tchx84.Flatseal"
-      "org.bleachbit.BleachBit"
       "org.octave.Octave"
-      "org.videolan.VLC"
+      #"org.videolan.VLC"
     ];
   };
 
