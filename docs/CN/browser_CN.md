@@ -98,7 +98,7 @@ NSS 选择配置、构造 ClientHelloInner/Outer、验证证书并处理已认�
 
 `browser-ech-vm` 在外层沙箱中运行所选生产 Firefox 包及真实 helper/核心，配合本地 DNS、临时 CA、ECH 服务端及另一个地址上的掩护名陷阱。它区分已接受 ECH、普通 TLS/GREASE、密钥重试、认证后不带 ECH 重试、不可信拒绝和证书失败，检查掩护 SNI 不改变拨号目标，并保留 A 门户/C 启动检查；只使用全新 profile，不连接个人浏览器。
 
-浏览器或核心变更后，与 `browser-sandbox-vm`、`browser-privacy`、`proxy-core`、`proxy-profile` 一同运行。浏览器升级可能改变 CONNECT 门、原生解析和重试处理，核心升级可能改变 fake-IP 下的服务记录处理；同步维护[维护手册](maintenance_CN.md)与所选版本的路径说明。
+浏览器或核心变更后，将 `browser-ech-vm`、`browser-ech-uniform-vm` 与 `browser-sandbox-vm`、`browser-privacy`、`proxy-core`、`proxy-profile` 一同运行。两种路由策略都检查真实锁定偏好与两条浏览器网络路径。浏览器升级可能改变 CONNECT 门、原生解析和重试处理，核心升级可能改变 fake-IP 下的服务记录处理；使用[按组件触发的复核门](maintenance_CN.md#按组件触发复核)，并同步所选版本的路径说明。
 
 ## 隐私设置
 

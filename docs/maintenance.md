@@ -101,6 +101,33 @@ For changes to nftables, systemd loading or coordination, run `proxy-firewall-vm
 
 ## Upgrade workflow
 
+### Component review gate
+
+[network-upgrades.json](../system/config/network-upgrades.json) groups the maintained entrypoints, invariants and regression checks by component. [network-upgrades.nix](../system/config/network-upgrades.nix) fingerprints the selected package sources, available vendored dependency hashes and primary Nixpkgs package recipes. Normal system builds require these inputs to match the reviewed baseline. A same-version source or recipe change still requires review; a Mihomo change also selects its vendored sing-tun and SOCKS components.
+
+Generate the current input inventory and inspect a plan from the checkout:
+
+```sh
+nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources \
+  > /tmp/network-upgrade-selected.json
+python3 system/programs/systemd/netsec/upgrades.py plan \
+  system/config/network-upgrades.json /tmp/network-upgrade-selected.json \
+  > /tmp/network-upgrade-plan.json
+```
+
+The plan lists changed components, source entrypoints, invariants and checks. Add component names such as `mihomo sing-tun socks`, `gost`, `clash`, `dns`, `firefox`, `tailscale` or `firewall` to request a plan for local customization changes or unchanged inputs. Execute the selected checks with:
+
+```sh
+jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json \
+  | xargs -r nix build --no-link
+```
+
+Review the upstream and packaging diffs and complete the component checks before changing its baseline entries. Then run `proxy-upgrade-review` and build the candidate system. The plan tool never updates the baseline. Its schema requires each component's minimum source and regression coverage, and the flake checks that the named checks exist.
+
+This gate establishes input identity, not semantic correctness. Exact patch anchors, package tests and real kernel/browser tests remain necessary. The recipe fingerprint covers the primary package expression, not the full transitive build closure; review the lock diff for other relevant changes, including the deployed kernel and graphics stack. Keep the component inventory current when adding a patch, dependency or entrypoint.
+
+### Review and validation sequence
+
 1. Identify the supplying flake input and update the intended input in the checkout. Review the lock diff and the Nixpkgs package expression, upstream source and vendored dependency changes. Preserve a working system generation.
 2. Compare every affected insertion point above. Rebase local behavior or retire a redundant fix while retaining meaningful regression coverage. Keep exact-match failures; update filesets and build phases when files move.
 3. Update root policy, Merge template, health/controller expectations, listener identities and VM fixtures together where their contract changes. Production identities/packages must remain those exercised by the small control VM.
@@ -116,6 +143,7 @@ Use the attributes below from the checkout. Nix builds normally use the local da
 | Check (`checks.x86_64-linux.*`) | Scope |
 |---|---|
 | `proxy-control` | Temporary-file snapshot authorization, expiry, restart, hostile inputs and permissions |
+| `proxy-upgrade-review` | Selected source/dependency/recipe baselines, component coverage, check-name validation and review-gate regressions; the input gate also runs in normal system builds |
 | `proxy-regressions` | Health/state/rules/DNS leases, budget and supervisor regressions |
 | `proxy-profile`, `proxy-gui` | Generated profile variants, policy/template agreement, GUI defaults and process wrapper |
 | `proxy-rules`, `proxy-egress-rules` | Complete compatibility/restricted mode rules parsed by the build-time LKL nft environment |
@@ -137,7 +165,9 @@ Use the attributes below from the checkout. Nix builds normally use the local da
 | `browser-privacy` | Final native browser policy/locks and offline launch behavior |
 | `browser-sandbox-vm` | Real Wayland Firefox, system-root TLS and invalid-certificate rejection, parent isolation, audio, portal grants, link reuse, generation/restart and fail-closed proxy lifecycle |
 | `browser-ech-vm` | Confined real Firefox/helper/core, native HTTPS discovery, ECH versus GREASE, key/no-ECH retry, untrusted rejection, certificate errors, cover-name target preservation and A/C behavior |
+| `browser-ech-uniform-vm` | The same real browser paths and policy consumption with `proxyOnly=true` |
 | `proxy-control-vm` | Real production helper/launcher, process capabilities, authorization, DNS, migration with a live TUN core and C-to-B recovery |
+| `proxy-uniform-vm` | Production helper/core under uniform proxy policy: fresh TCP/UDP DIRECT refusal, dual-stack UDP, native IPv6 TUN and recovery |
 | `proxy-network-vm` | Broad kernel fault injection: modes, DNS, leases, sleep, guests, TPROXY and recovery |
 
 For example, build related packages and quick checks in one invocation:

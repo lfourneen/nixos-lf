@@ -63,6 +63,8 @@ my.proxy.proxyOnly = false; # 默认保留订阅 Rule 分流。
 
 部署 Nix generation 并导入/重启受管核心后生效，会增加包括国内流量在内的订阅消耗。`bootMode`、A 的门户访问、root UDP、组播及核心外宿主私网路径独立控制。
 
+`proxy-control-vm` 保留默认 Rule 覆盖，`proxy-uniform-vm` 使用生产 helper/核心和 `proxyOnly=true`，检查全新 TCP/UDP 的 DIRECT 拒绝与真实双栈路径。UDP 在 association 内固定叶子，因此 DIRECT 拒绝测试使用新 association；复用远程叶子仍属于代理路径。浏览器检查同样覆盖两种路由策略。修改上游源码或补丁前，参照[按组件升级的复核流程](maintenance_CN.md#按组件触发复核)。
+
 ## 域名目标
 
 受管核心在 Rule 和统一代理模式均禁用嗅探，使用显式目标和 fake-IP 映射作为域名路由身份；ECH 掩护 SNI 不能替代拨号目标，字面 IP 使用 IP 规则。Parser 也将旧 GUI 配置规范到这一策略，见[浏览器 ECH 发现](browser_CN.md#ech-发现与代理兼容)。

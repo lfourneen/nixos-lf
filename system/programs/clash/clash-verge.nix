@@ -154,7 +154,10 @@ in
           --run "${guiProcess}/bin/clash-verge-gui-prepare \"$out/bin/clash-verge\" || exit 1" \
           --run ${lib.escapeShellArg ''${guiDefaults}/bin/clash-verge-defaults ${lib.escapeShellArg config.my.proxy.delayTestUrl} || echo "Clash Verge: could not set the default delay-test URL" >&2''}
       '';
-      passthru = (old.passthru or { }) // { inherit managedCore guiDefaultsCheck stageSettings; };
+      passthru = (old.passthru or { }) // {
+        inherit managedCore guiDefaultsCheck stageSettings;
+        managedService = patchedService;
+      };
     });
 
     serviceMode = true;

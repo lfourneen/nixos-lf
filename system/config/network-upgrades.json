@@ -1,0 +1,316 @@
+{
+  "schema": 1,
+  "sources": {
+    "bubblewrap": {
+      "version": "0.12.0",
+      "source": "sha256-VnhJ5bej3/GTHcU8+AkyR7f3J0KKDuoc94SFxo4grhk=",
+      "dependencies": null,
+      "recipe": "92bd0bece01982b66186414684e3a580df26facabceedbd517bea0610550b51e"
+    },
+    "chrony": {
+      "version": "4.8",
+      "source": "sha256-M+qOsqTa6qUG6Pyv1dbYkCftby8GCWRcbxSbVg0wFwY=",
+      "dependencies": null,
+      "recipe": "92d91c07f9885805804c647b9b1a77c81f6eba3c393d1ee811f53aa9964b8a4e"
+    },
+    "dbusProxy": {
+      "version": "0.1.9",
+      "source": "sha256-VFDdpYbsO7PKcJ0xHoRUh4g/qjsJz1YmCNfoT0MR3O0=",
+      "dependencies": null,
+      "recipe": "019a9451c5e4765e4e3f5fa9492c80c41a7ce6758ccd9ec6fa8099103a75d1dd"
+    },
+    "dnsmasq": {
+      "version": "2.93",
+      "source": "sha256-DADU5cl8gwbl+5MrNIs0JpycKaDn3w6OgpWLQHCSvBk=",
+      "dependencies": null,
+      "recipe": "aeca5c0793629f3936f980896ce2a6e01502005160e05e895879061891f3d86d"
+    },
+    "firefox": {
+      "version": "159.0.1",
+      "source": "e7375c0c18361b22fa1d2e6fd5f6a4ff20b22e7090a64bf32d7ef79edb0a649983439b8e6e80106fe51bb96699bdd3096c921fe198d1b460193a66d6d8f227a4",
+      "dependencies": null,
+      "recipe": "1fbfe6998b7af7a45328acfc31915ab0bd04ab0bda14464b06d4847177bb152d"
+    },
+    "gost": {
+      "version": "3.3.2",
+      "source": "sha256-5B2uMhbrgSsSq1AJJPs2P5huwe6NTPMVyjgIA2cxOVE=",
+      "dependencies": "sha256-bydm+h0DY/e3hHPrZVMV9mdAOXyTRKZodps7tJ6yAIw=",
+      "recipe": "62b8b3914ffc52df924145f5d7040bc0d80ae5978598b542a5cbddf5866b6ff8"
+    },
+    "gui": {
+      "version": "2.5.2",
+      "source": "sha256-5Txjuzq91D+FfBHaXenES4eprIdIKHUFMOKtrHSdbw4=",
+      "dependencies": null,
+      "recipe": "69f919965aeb170f101ea8b0580a3d83dc088a4d34764ab7bb9e42cc4461f666"
+    },
+    "helper": {
+      "version": "2.3.3",
+      "source": "sha256-/kr0C+4bhal7DqKudtZvhPYUyn6xbxQw57g6ieJV64w=",
+      "dependencies": null,
+      "recipe": "69f919965aeb170f101ea8b0580a3d83dc088a4d34764ab7bb9e42cc4461f666"
+    },
+    "mihomo": {
+      "version": "1.19.33",
+      "source": "sha256-O2OJ0WFt0T32yOIT1El+ACJWVm2oAJOjU1JTDXb2IEo=",
+      "dependencies": "sha256-wPkqyp2iuA762qID2FK3xWOMU5ZNxAle8saCmZzpeSI=",
+      "recipe": "7db25ad77ded9dbc8f3e5ae0d12a04af261a8dd5da404fa872150966fe0787bd"
+    },
+    "networkmanager": {
+      "version": "1.56.0",
+      "source": "sha256-WaMtOFzB564m5DeYxvEtB/9hmKvQQewGILOgjPwCHMw=",
+      "dependencies": null,
+      "recipe": "8e938a6ce7e55c9a9d51caacebf09bb579d8765cb287c704f658edee25679611"
+    },
+    "nftables": {
+      "version": "1.1.6",
+      "source": "sha256-NykxvahVazEGNqL5AgrccQ+bq2b0fv4M6Qv/gArCUww=",
+      "dependencies": null,
+      "recipe": "1e00286be11e10462717220bf8632f9b29b452dffc394094dbf7ec56969de3b4"
+    },
+    "seccomp": {
+      "version": "2.6.1",
+      "source": "sha256-UB9mxmciXVN5G5fh18+Fq3ZMKX0EiB9g849FHEsO4b4=",
+      "dependencies": null,
+      "recipe": "d88036a861ce8e5e2c4c6d634e4d89222de39ec5a966399fdccbda207d609625"
+    },
+    "systemd": {
+      "version": "260.5",
+      "source": "sha256-QLQad4pKkaf99k+ABOaooKi5TSX0iHH9XtMn/fy1rfE=",
+      "dependencies": null,
+      "recipe": "fbc3938beb4106418ebe7e3899b4d27fe6b0d435e07b1b79da8427d6d096286b"
+    },
+    "tailscale": {
+      "version": "1.104.5",
+      "source": "sha256-aq4pBe75wNRFDEa3kSDa/pBLsZws5mOUOjHDUycpmXM=",
+      "dependencies": "sha256-RvaouD88naVNOPJBVcqMaAn+ovjXI4g83ShCdRiR5/Q=",
+      "recipe": "5dd895927c91e2646b92d99037aba814a60bfe5f8a502ff6f65af4ae338cd7f9"
+    },
+    "unbound": {
+      "version": "1.26.2",
+      "source": "sha256-2CcDPUwzBRjRFzkXVinc7N956Cieb5QSS3BqDfFGgz0=",
+      "dependencies": null,
+      "recipe": "f24c6e487749d3f5895b34ab5faf00dcdea7d12f6456fa29629ee6632a0b6119"
+    }
+  },
+  "components": {
+    "mihomo": {
+      "sources": [
+        "mihomo"
+      ],
+      "checks": [
+        "proxy-core",
+        "proxy-profile",
+        "proxy-regressions",
+        "proxy-control-config",
+        "proxy-control-vm",
+        "proxy-uniform-vm",
+        "proxy-target-vm",
+        "proxy-guest-vm",
+        "proxy-dns-strict-vm",
+        "proxy-network-vm",
+        "browser-ech-vm",
+        "browser-ech-uniform-vm"
+      ],
+      "entrypoints": [
+        "config/config.go: ParseRawConfig, RawConfig/RawTun schema and controller General",
+        "hub/route: router middleware and PATCH decode/validate/apply",
+        "dns: middleware before hosts/cache/fake-IP, Resolver.ExchangeContext and DNS dial metadata",
+        "adapter/adapter.go: actual selected TCP/UDP leaf; adapter/outbound/direct.go",
+        "tunnel/tunnel.go and tunnel/connection.go: target pinning and reused UDP provenance",
+        "listener/tproxy: IPv4 inlet ownership and socket family",
+        "component/geodata: parser-time download paths and Global route logs"
+      ],
+      "invariants": [
+        "Root profile, Merge template and live controller/health invariants agree; duplicate/noncanonical PATCH and unlisted writes fail closed.",
+        "Shared suffix filtering precedes resolution and application dials; real addresses are pinned through remote leaves.",
+        "proxyOnly refuses application DIRECT/COMPATIBLE, including renamed/nested leaves and rule-routed DNS; explicit bootstrap remains scoped.",
+        "UDP mappings retain the actual leaf and target, and recheck current inlet/port/grants on cached writes.",
+        "Rule routing retains authorized domestic DIRECT; uniform routing and both real browser paths retain their distinct behavior."
+      ]
+    },
+    "sing-tun": {
+      "sources": [
+        "mihomo"
+      ],
+      "checks": [
+        "proxy-core",
+        "proxy-rules",
+        "proxy-guest-rules",
+        "proxy-control-vm",
+        "proxy-uniform-vm",
+        "proxy-guest-vm",
+        "proxy-network-vm"
+      ],
+      "entrypoints": [
+        "Mihomo go.mod/go.sum and vendor/github.com/metacubex/sing-tun",
+        "redirect_nftables_exprs.go: interval endpoint successor",
+        "redirect_nftables_rules.go: OUTPUT DNAT and PREROUTING guest mark"
+      ],
+      "invariants": [
+        "Maximum IPv4/IPv6 ranges omit an invalid successor rather than wrap.",
+        "Managed non-mark OUTPUT DNAT reaches the TUN local address with route_localnet=0 and SO_BINDTODEVICE.",
+        "Guest mark 0x233 and priority 100 retain the transparent socket before TUN rules; other modes retain upstream behavior.",
+        "Real unmarked IPv4/IPv6 TUN paths and C recovery work with the production core."
+      ]
+    },
+    "socks": {
+      "sources": [
+        "mihomo"
+      ],
+      "checks": [
+        "proxy-core",
+        "proxy-target-vm",
+        "proxy-uniform-vm",
+        "proxy-network-vm"
+      ],
+      "entrypoints": [
+        "adapter/inbound/util.go: domain length arithmetic",
+        "transport/socks5: address framing and malformed input"
+      ],
+      "invariants": [
+        "Convert domain length to integer before offsets; preserve 255-byte names, FQDN handling and port decoding.",
+        "Malformed/truncated addresses fail without panic; keep boundary tests when retiring an upstreamed fix."
+      ]
+    },
+    "gost": {
+      "sources": [
+        "gost"
+      ],
+      "checks": [
+        "proxy-gost",
+        "proxy-control-vm",
+        "proxy-uniform-vm",
+        "proxy-network-vm",
+        "browser-ech-vm"
+      ],
+      "entrypoints": [
+        "go.mod/go.sum and vendor/github.com/go-gost/x/handler/http/handler.go",
+        "lfReadRequest integration and buffered tunnel reader",
+        "gost-relay supervisor listener identity and single-owner lifecycle"
+      ],
+      "invariants": [
+        "Only valid numeric bare IPv6 CONNECT receives compatibility normalization; Go HTTP framing remains authoritative.",
+        "Bracketed targets and immediately buffered tunnel payloads work; invalid ports/framing fail.",
+        "A passthrough, B chaining and C closure retain process reaping and resource bounds."
+      ]
+    },
+    "clash": {
+      "sources": [
+        "helper",
+        "gui"
+      ],
+      "checks": [
+        "proxy-control",
+        "proxy-control-config",
+        "proxy-gui",
+        "proxy-profile",
+        "proxy-control-vm"
+      ],
+      "entrypoints": [
+        "helper src/core/manager.rs, logger.rs and reconcile.rs",
+        "Nixpkgs GUI/helper packaging and inherited patches",
+        "Installed GUI/public core wrapper, stage snapshot and service runtime"
+      ],
+      "invariants": [
+        "Root spawn uses only the root-owned packaged launcher; caller log/socket/PID paths never drive privileged file/process operations.",
+        "Snapshot authorization covers YAML/assets, is single-use/boot-scoped and survives ordinary helper restart with correct permissions.",
+        "GUI binary remains upstream; actual core runs as the fixed UID with only NET_ADMIN and NET_RAW."
+      ]
+    },
+    "dns": {
+      "sources": [
+        "dnsmasq",
+        "unbound",
+        "chrony"
+      ],
+      "checks": [
+        "proxy-dns-config",
+        "proxy-dns-strict-rules",
+        "proxy-dns-strict-vm",
+        "proxy-egress-control-vm",
+        "proxy-network-vm"
+      ],
+      "entrypoints": [
+        "dnsmasq src/forward.c: strict-order terminal retry and sent-to index",
+        "Unbound systemd notify packaging, anchor/validation/TLS settings",
+        "Chrony NTS-KE and negotiated NTP endpoints; DNS broker leases"
+      ],
+      "invariants": [
+        "Terminal UDP SERVFAIL/REFUSED and DNSSEC EDE reach clients even for duplicate upstream addresses.",
+        "DNSSEC, filtering and encryption remain separate; strict public DNS cannot use an override, forged lease or leftover set.",
+        "Unbound notify support and persistent trust anchors remain; NTS keeps authentication/certificate time checks and no plaintext fallback."
+      ]
+    },
+    "firefox": {
+      "sources": [
+        "firefox",
+        "bubblewrap",
+        "dbusProxy",
+        "seccomp"
+      ],
+      "checks": [
+        "browser-privacy",
+        "browser-sandbox-vm",
+        "browser-ech-vm",
+        "browser-ech-uniform-vm",
+        "proxy-profile"
+      ],
+      "entrypoints": [
+        "Nixpkgs Firefox wrapper/final package, policy and AutoConfig consumers",
+        "Gecko nsHttpChannel CONNECT/HTTPS-RR gate and PlatformDNSUnix type-65 API",
+        "NSS ECH/certificate/retry behavior and p11-kit system CA path",
+        "bubblewrap, xdg-dbus-proxy, Landlock/seccomp, portal identity/document grants"
+      ],
+      "invariants": [
+        "Real packaged Firefox consumes locked DNS/proxy/privacy preferences in both Rule and uniform proxy generations.",
+        "Default CONNECT and native transparent discovery have distinct ECH behavior; GREASE is not acceptance, and invalid certificates stay rejected.",
+        "Parent confinement fails closed while preserving system CA trust, profile identity, portal grants and declared graphics/audio access.",
+        "Hardware GPU behavior requires deployed-session verification beyond software-rendered VMs."
+      ]
+    },
+    "tailscale": {
+      "sources": [
+        "tailscale"
+      ],
+      "checks": [
+        "tailscale-transport",
+        "proxy-rules",
+        "proxy-egress-rules",
+        "proxy-tailscale-vm",
+        "proxy-egress-vm"
+      ],
+      "entrypoints": [
+        "LinuxBypassMarkNum and Linux socket control",
+        "magicsock/STUN marking and SO_BINDTODEVICE fallback"
+      ],
+      "invariants": [
+        "UID, socket mark and packet mark all match the reviewed upstream contract; fallback never opens arbitrary root UDP.",
+        "Actual selected CLI supports isolated dual-stack STUN; C cuts transport and decrypted tailnet input."
+      ]
+    },
+    "firewall": {
+      "sources": [
+        "nftables",
+        "networkmanager",
+        "systemd"
+      ],
+      "checks": [
+        "proxy-rules",
+        "proxy-egress-rules",
+        "proxy-guest-rules",
+        "proxy-firewall-vm",
+        "proxy-control-vm",
+        "proxy-network-vm"
+      ],
+      "entrypoints": [
+        "nft transaction parsing, socket/conntrack expressions and JSON output",
+        "systemd start/reload/stop and NetworkManager dispatcher/resolver coordination"
+      ],
+      "invariants": [
+        "Owned static/safety policy commits once under the shared lock; foreign tables survive and rejected transactions retain the previous policy.",
+        "Bootstrap protects first-load failures; proxy intent passes through C before health permits B.",
+        "Ordered expressions, canonical JSON and expiring DNS leases remain verifiable; stopping owners leaves protection installed."
+      ]
+    }
+  }
+}

@@ -96,7 +96,7 @@ An explicit HTTP proxy can see CONNECT targets, including when another client su
 
 `browser-ech-vm` runs the selected production Firefox packages inside the outer sandbox with the real helper/core with a local DNS fixture, temporary CA, ECH server and a different address for the cover name. It distinguishes accepted ECH from ordinary TLS/GREASE, key retry, authenticated retry without ECH, untrusted rejection and certificate failure. It checks that cover SNI does not retarget the connection and retains A portal/C launch checks. It uses fresh profiles and never attaches to a personal browser.
 
-Run it alongside `browser-sandbox-vm`, `browser-privacy`, `proxy-core` and `proxy-profile` after browser or core changes. Browser upgrades can change the CONNECT gate, native resolver behavior and retry handling; core upgrades can change fake-IP service-record handling. Keep the [maintenance guide](maintenance.md) and these path descriptions aligned with the selected versions.
+Run `browser-ech-vm` and `browser-ech-uniform-vm` alongside `browser-sandbox-vm`, `browser-privacy`, `proxy-core` and `proxy-profile` after browser or core changes. Both routing policies exercise actual locked preferences and both browser network paths. Browser upgrades can change the CONNECT gate, native resolver behavior and retry handling; core upgrades can change fake-IP service-record handling. Use the [component review gate](maintenance.md#component-review-gate) and keep these path descriptions aligned with the selected versions.
 
 ## Privacy settings
 

@@ -1,4 +1,4 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false }:
 
 let
   echFixture = pkgs.runCommand "ech-origin-fixture" { nativeBuildInputs = [ pkgs.go ]; } ''
@@ -11,7 +11,7 @@ let
 
 in
 pkgs.testers.runNixOSTest {
-  name = if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
@@ -57,6 +57,7 @@ pkgs.testers.runNixOSTest {
     my.proxy.nodeProbeUrls = [ "http://node.fixture.example:8080/" ];
     my.proxy.tunProbeName = "tun.fixture.example";
     my.proxy.dnsEncryption = if strictDns then "strict" else "opportunistic";
+    my.proxy.proxyOnly = uniformProxy;
     my.proxy.blockedDomains = [ "ads.fixture.example" "blocked.fixture.test" "metrics.home.arpa" ];
     my.proxy.blockedDomainExceptions = [ "ok.blocked.fixture.test" ];
 
@@ -157,6 +158,10 @@ pkgs.testers.runNixOSTest {
     machine.succeed("systemd-run --unit=control-dns ${pkgs.lib.optionalString (ech != null) "--property=StandardOutput=append:/run/netsec-ech/dns.log"} ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-dns.py server 15354 --dns-answer 203.0.113.10 ${pkgs.lib.optionalString (ech != null) "--ech-config /run/netsec-ech/dns.json"}")
     for port in (80, 8080):
         machine.succeed(f"systemd-run --unit=control-http-{port} ip netns exec outside ${pkgs.python3}/bin/python3 -m http.server {port} --bind 0.0.0.0")
+    ${pkgs.lib.optionalString uniformProxy ''
+    machine.succeed("systemd-run --unit=uniform-http6 ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-integration.py http6; systemd-run --unit=uniform-udp ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-dns.py server 15353")
+    machine.wait_until_succeeds("ip netns exec outside ss -uln | grep -q :15353", timeout=20)
+    ''}
     core = machine.succeed("cat /etc/netsec-core").strip()
     machine.succeed(f"systemd-run --unit=control-node ip netns exec outside {core} -d /run/netsec-node -f /run/netsec-node.json")
     machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18080")
@@ -205,6 +210,11 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_file("/run/clash-verge-rev/service.sock")
     machine.succeed("python3 /etc/netsec-control.py start")
     wait_proxy()
+    ${pkgs.lib.optionalString uniformProxy ''
+    machine.fail("curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 3 http://application-direct.fixture.example:8080/")
+    machine.succeed("curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 5 http://node.fixture.example:8080/ >/dev/null")
+    machine.succeed("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 5 http://[2001:db8:dead::1]:8080/ >/dev/null && python3 /etc/netsec-integration.py uniform-udp-direct && python3 /etc/netsec-integration.py uniform-udp")
+    ''}
     ${pkgs.lib.optionalString guests ''
     machine.succeed("python3 /etc/netsec-guests.py proxy")
     machine.succeed("systemctl unmask --runtime proxy-mode.service; systemctl start proxy-mode.service")

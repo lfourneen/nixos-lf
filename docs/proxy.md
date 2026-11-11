@@ -63,6 +63,8 @@ With `true`, the generated profile routes application destinations reaching the 
 
 Deploy the generation and import/restart the managed core for this policy to take effect. It increases subscription traffic, including domestic traffic. `bootMode`, A's portal access, root UDP, multicast and private host paths outside the core are independent choices.
 
+`proxy-control-vm` retains default Rule coverage; `proxy-uniform-vm` exercises the production helper/core with `proxyOnly=true`, including fresh TCP/UDP DIRECT refusal and real dual-stack paths. UDP selects a leaf per association, so a DIRECT-refusal test starts a new association; a reused remote leaf remains a proxy path. Browser checks also include both routing policies. See the [component upgrade workflow](maintenance.md#component-review-gate) before changing upstream sources or patches.
+
 ## Domain targets
 
 Managed sniffing is disabled in both Rule and uniform proxy modes. Explicit target names and fake-IP mappings remain the routing identity; an ECH cover SNI cannot replace the dial target. Literal-IP traffic uses IP rules. The parser also normalizes cached GUI profiles to this policy. See [browser ECH discovery](browser.md#ech-discovery-and-proxy-compatibility).

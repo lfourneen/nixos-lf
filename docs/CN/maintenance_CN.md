@@ -101,6 +101,33 @@ NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWi
 
 ## 升级流程
 
+### 按组件触发复核
+
+[network-upgrades.json](../../system/config/network-upgrades.json) 按组件记录维护入口、不变量和回归检查。[network-upgrades.nix](../../system/config/network-upgrades.nix) 对实际选定包的源码、可用的 vendored 依赖摘要及主要 Nixpkgs 打包文件生成指纹。正常系统构建要求这些输入匹配已复核基线；即使版本号未变，源码或 recipe 改变仍须复核。Mihomo 变化也会选中其 vendored sing-tun 和 SOCKS 组件。
+
+在仓库中生成当前输入清单并查看计划：
+
+```sh
+nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources \
+  > /tmp/network-upgrade-selected.json
+python3 system/programs/systemd/netsec/upgrades.py plan \
+  system/config/network-upgrades.json /tmp/network-upgrade-selected.json \
+  > /tmp/network-upgrade-plan.json
+```
+
+计划列出变化的组件、源码入口、不变量和检查。可在命令末尾添加 `mihomo sing-tun socks`、`gost`、`clash`、`dns`、`firefox`、`tailscale` 或 `firewall`，为本地定制变更或未变化的输入显式选择组件。执行选定检查：
+
+```sh
+jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json \
+  | xargs -r nix build --no-link
+```
+
+先复核上游与打包差异并完成组件检查，再修改对应基线条目，随后运行 `proxy-upgrade-review` 并构建候选系统。计划工具不会更新基线。Schema 要求各组件保留最小源码与回归覆盖，flake 也检查所列检查是否存在。
+
+该门确认输入身份，不证明语义正确。精确补丁锚点、软件包测试及真实内核/浏览器测试仍不可缺少。Recipe 指纹只覆盖主要软件包表达式，不覆盖完整传递构建闭包；仍需复核 lock 差异中的相关变化，包括部署内核和图形栈。增加补丁、依赖或入口时同步更新组件清单。
+
+### 复核与验证顺序
+
 1. 确认所属 flake input，在仓库更新目标 input，比较 lock、Nixpkgs 包表达式、源码和 vendor 变化，保留可用 generation。
 2. 比较上述全部受影响入口，重定位本地行为或在保留回归覆盖后移除冗余修复；保持精确锚点，文件移动时更新 fileset/构建阶段。
 3. 约定变化时同步 root policy、Merge、health/controller、监听身份和 VM fixture；小控制 VM 继续使用生产身份和包。
@@ -116,6 +143,7 @@ NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWi
 | 检查 | 范围 |
 |---|---|
 | `proxy-control` | 临时文件验证快照授权、过期、重启、恶意输入和权限 |
+| `proxy-upgrade-review` | 所选源码/依赖/recipe 基线、组件覆盖、检查名称及复核门回归；输入复核门也接入正常系统构建 |
 | `proxy-regressions` | 健康、状态、规则、DNS 租约、预算及监督器 |
 | `proxy-profile`、`proxy-gui` | 生成配置变体、策略/模板一致、GUI 默认与进程 wrapper |
 | `proxy-rules`、`proxy-egress-rules` | 构建期 LKL nft 解析完整兼容/受限模式规则 |
@@ -137,7 +165,9 @@ NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWi
 | `browser-privacy` | 最终原生浏览器 policy lock 与离线启动 |
 | `browser-sandbox-vm` | 真实 Wayland Firefox、系统根 TLS 与无效证书拒绝、父进程隔离、音频、门户授权、链接复用、代次/重启及总线代理故障阻断 |
 | `browser-ech-vm` | 真实 Firefox/helper/核心、原生 HTTPS 发现、ECH 与 GREASE、密钥/无 ECH 重试、不可信拒绝、证书错误、掩护名不改目标及 A/C 行为 |
+| `browser-ech-uniform-vm` | 在 `proxyOnly=true` 下验证相同真实浏览器路径及策略消费 |
 | `proxy-control-vm` | 真实生产 helper/launcher、能力、授权、DNS、TUN 核心存活时的迁移及 C→B 恢复 |
+| `proxy-uniform-vm` | 统一代理下的生产 helper/核心：全新 TCP/UDP 的 DIRECT 拒绝、双栈 UDP、原生 IPv6 TUN 和恢复 |
 | `proxy-network-vm` | 广泛内核故障注入：模式、DNS、租约、休眠、访客、TPROXY 和恢复 |
 
 例如将相关包与快速检查合并构建：

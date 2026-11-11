@@ -25,6 +25,10 @@ def prepare():
                           'strategy': 'consistent-hashing', 'proxies': ['Fixture']}],
         'rules': ['DOMAIN,tun.fixture.example,DIRECT', 'DOMAIN,allowed.home.arpa,DIRECT', 'MATCH,Choice'],
     })
+    if policy['lf-private-targets']['proxy-only']:
+        # Deliberately retain one bounded DIRECT rule to exercise the actual
+        # adapter refusal; health and ordinary application targets use Choice.
+        profile['rules'] = ['DOMAIN,application-direct.fixture.example,DIRECT', 'MATCH,Choice']
     profile['tun']['auto-detect-interface'] = True
     # Boot an older generated profile without relying on GUI regeneration.
     for key in ('iproute2-rule-index', 'auto-redirect-input-mark',
@@ -78,7 +82,7 @@ def connect_test():
     print('Gost bracketed and legacy IPv6 CONNECT carried real HTTP responses')
 
 
-def guarded_udp(local_allowed=True):
+def guarded_udp(local_allowed=True, uniform=False, direct_only=False):
     def receive(stream, length):
         result = b''
         while len(result) < length:
@@ -105,9 +109,20 @@ def guarded_udp(local_allowed=True):
             if not local_allowed:
                 cases += [('allowed.home.arpa', False), ('127.0.0.1', False), ('::1', False),
                           ('169.254.169.254', False)]
-            for name, allowed in [*cases, (live, True)]:
+            if uniform:
+                live = 'node.fixture.example'
+                cases = [(live, True), ('2001:db8:dead::1', True)]
+                if direct_only:
+                    # UDP selects a leaf per association. A new association is
+                    # needed to exercise DIRECT; a reused remote leaf remains a
+                    # valid uniform-proxy path even for a later same-IP name.
+                    cases = [('application-direct.fixture.example', False)]
+                    live = None
+            for name, allowed in cases + ([(live, True)] if live else []):
                 payload = b'netsec-fixture'
-                packet = b'\0\0\0\x03' + bytes([len(name)]) + name.encode() + struct.pack('!H', 15353) + payload
+                target = (b'\x04' + socket.inet_pton(socket.AF_INET6, name) if ':' in name else
+                          b'\x03' + bytes([len(name)]) + name.encode())
+                packet = b'\0\0\0' + target + struct.pack('!H', 15353) + payload
                 stream.sendto(packet, (address, port))
                 try:
                     response = stream.recv(65535)
@@ -120,4 +135,7 @@ def guarded_udp(local_allowed=True):
 
 if __name__ == '__main__':
     {'prepare': prepare, 'check-node-log': check_node_log, 'http6': http6,
-     'connect-test': connect_test, 'guarded-udp': guarded_udp, 'guarded-udp-remote': lambda: guarded_udp(False)}[sys.argv[1]]()
+     'connect-test': connect_test, 'guarded-udp': guarded_udp,
+     'guarded-udp-remote': lambda: guarded_udp(False),
+     'uniform-udp': lambda: guarded_udp(False, uniform=True),
+     'uniform-udp-direct': lambda: guarded_udp(False, uniform=True, direct_only=True)}[sys.argv[1]]()

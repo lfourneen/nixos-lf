@@ -52,6 +52,9 @@
       strictDnsConfig = (self.nixosConfigurations.lfour.extendModules {
         modules = [ { my.proxy.dnsEncryption = "strict"; } ];
       }).config;
+      uniformProxyConfig = (self.nixosConfigurations.lfour.extendModules {
+        modules = [ { my.proxy.proxyOnly = true; } ];
+      }).config;
       guestConfig = (self.nixosConfigurations.lfour.extendModules {
         modules = [ {
           users.users.guestnet = { isNormalUser = true; uid = 1100; };
@@ -76,6 +79,17 @@
         export NETSEC_MODULES=${./system/programs/systemd}
         export PYTHONDONTWRITEBYTECODE=1
         python3 ${./tests/netsec/test_netsec.py}
+        touch "$out"
+      '';
+
+      proxy-upgrade-review = let
+        review = builtins.fromJSON (builtins.readFile ./system/config/network-upgrades.json);
+        required = pkgs.lib.unique (pkgs.lib.concatMap (entry: entry.checks) (builtins.attrValues review.components));
+      in assert pkgs.lib.all (name: builtins.hasAttr name self.checks.${system}) required;
+      pkgs.runCommand "proxy-upgrade-review" { } ''
+        test -e ${self.nixosConfigurations.lfour.config.my.proxy.upgradeCheck}
+        ${pkgs.python3}/bin/python3 ${./tests/netsec/test_upgrades.py} \
+          ${./system/programs/systemd/netsec/upgrades.py} ${./system/config/network-upgrades.json}
         touch "$out"
       '';
 
@@ -155,12 +169,25 @@
         };
       };
 
+      browser-ech-uniform-vm = import ./tests/netsec/control-vm.nix {
+        inherit pkgs;
+        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        uniformProxy = true;
+        ech = {
+          http-proxy = uniformProxyConfig.home-manager.users.lfour.programs.firefox.finalPackage;
+          transparent = (self.nixosConfigurations.lfour.extendModules {
+            modules = [ {
+              my.proxy.proxyOnly = true;
+              home-manager.users.lfour.my.firefox.networkPath = "transparent";
+            } ];
+          }).config.home-manager.users.lfour.programs.firefox.finalPackage;
+        };
+      };
+
       proxy-profile = import ./tests/netsec/profile.nix {
         inherit pkgs;
         config = self.nixosConfigurations.lfour.config;
-        uniformProxyConfig = (self.nixosConfigurations.lfour.extendModules {
-          modules = [ { my.proxy.proxyOnly = true; } ];
-        }).config;
+        inherit uniformProxyConfig;
 
         restrictedConfig = (self.nixosConfigurations.lfour.extendModules {
           modules = [ {
@@ -187,6 +214,12 @@
       proxy-control-vm = import ./tests/netsec/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+      };
+
+      proxy-uniform-vm = import ./tests/netsec/control-vm.nix {
+        inherit pkgs;
+        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        uniformProxy = true;
       };
 
       proxy-target-vm = import ./tests/netsec/control-vm.nix {
