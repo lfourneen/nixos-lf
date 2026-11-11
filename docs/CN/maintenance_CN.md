@@ -25,6 +25,7 @@ Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；
 | dnsmasq | [network.nix](../../system/config/network.nix) 内联替换 `src/forward.c` | 返回 strict-order 终端 UDP SERVFAIL/REFUSED，保留 DNSSEC EDE |
 | Firefox 包 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[guard.py](../../home/programs/firefox/guard.py)、[sandbox.py](../../home/programs/firefox/sandbox.py)、[scope.c](../../home/programs/firefox/scope.c) | 不可变 policy/AutoConfig/字体、预检、外层命名空间、过滤总线、门户身份及 Landlock/seccomp；无 Gecko 源码 patch |
 | Unbound / Chrony / 网络 | [network.nix](../../system/config/network.nix)、[network-time.nix](../../system/config/network-time.nix)、[systemd 模块](../../system/programs/systemd) | 声明策略和仓库自有协调器；没有本地 Unbound/Chrony 源码补丁 |
+| 链路身份 | [link-identity.nix](../../system/config/link-identity.nix)、[link_identity.py](../../system/programs/systemd/netsec/link_identity.py)、[partition.nix](../../system/hardware/partition.nix) | 协调 profile 身份、私有迁移/恢复、原生有线生命周期与 DHCPv6 共存；无上游源码 patch |
 | 防火墙生命周期 | [network.nix](../../system/config/network.nix)、[proxy-mode.nix](../../system/programs/systemd/proxy-mode.nix)、[network-bootstrap.nix](../../system/programs/systemd/network-bootstrap.nix) | 精确表归属、持锁原子替换、失败保留和显式历史迁移 |
 | Tailscale 传输 | [tailscale-transport.nix](../../system/config/tailscale-transport.nix)、[tailscale_contract.py](../../system/programs/systemd/netsec/tailscale_contract.py) | 正常系统构建强制检查上游 socket mark 约定；升级复核 mark/后备/socket 变化并跑真实 CLI VM；没有 Tailscale 源码补丁 |
 | 直连例外 | [hardening-options.nix](../../system/config/hardening-options.nix)、[network.nix](../../system/config/network.nix)、[egress_policy.py](../../system/programs/systemd/netsec/egress_policy.py) | 主体/socket 身份、NAT 前授权、规范 CIDR 校验、时间/DoT 范围及 root/GUI 共享私网排除；比较兼容和受限模式 |
@@ -99,6 +100,12 @@ NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWi
 
 修改 nftables、systemd 加载或协调逻辑时，运行 `proxy-firewall-vm`、相关完整规则变体、`proxy-control-vm` 和 `proxy-network-vm`。专用 VM 检查 A/C 表归属、外部集合与有序规则、失败事务、锁竞争及之后的历史名称复用。控制 VM 检查真实 helper/核心、TUN 表保留、C 阻断与 B 恢复；完整网络 VM 保留首次加载和漂移恢复覆盖。
 
+## 链路身份
+
+[link-identity.nix](../../system/config/link-identity.nix) 和 [link_identity.py](../../system/programs/systemd/netsec/link_identity.py) 使用上游 NetworkManager/systemd/dhcpcd 接口，没有源码补丁。升级时核对实际 nmcli 属性名及枚举格式、两个主机名开关、stable-id 替换量、DHCP 标识和 IPv6 地址生成。保留仅含身份字段的备份白名单、私有状态、断开/自动连接守卫及拒绝覆盖手工修改的行为；重建不自动应用 profile 目标。
+
+扩展 dhcpcd 单接口命令、PID 文件和 reload 时，保留上游生成配置与服务加固。其 DHCPv6 socket 必须能与 NetworkManager 的 Wi-Fi 客户端共存。一起运行 `network-identity-config`、`network-identity-vm`、`proxy-control-vm` 和 `proxy-network-vm`；身份 VM 对每次激活都要求新报文，包括 MAC 不变的连接。持久化准备和重新授权见[链路身份指南](identity_CN.md)。
+
 ## 升级流程
 
 ### 按组件触发复核
@@ -115,7 +122,7 @@ python3 system/programs/systemd/netsec/upgrades.py plan \
   > /tmp/network-upgrade-plan.json
 ```
 
-计划列出变化的组件、源码入口、不变量和检查。可在命令末尾添加 `mihomo sing-tun socks`、`gost`、`clash`、`dns`、`firefox`、`tailscale` 或 `firewall`，为本地定制变更或未变化的输入显式选择组件。执行选定检查：
+计划列出变化的组件、源码入口、不变量和检查。可在命令末尾添加 `mihomo sing-tun socks`、`gost`、`clash`、`dns`、`firefox`、`tailscale`、`firewall` 或 `link-identity`，为本地定制变更或未变化的输入显式选择组件。执行选定检查：
 
 ```sh
 jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json \
@@ -144,6 +151,8 @@ jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json 
 |---|---|
 | `proxy-control` | 临时文件验证快照授权、过期、重启、恶意输入和权限 |
 | `proxy-upgrade-review` | 所选源码/依赖/recipe 基线、组件覆盖、检查名称及复核门回归；输入复核门也接入正常系统构建 |
+| `network-identity-config` | 身份迁移边界、实际 nmcli 解析/主机名恢复、有线变体、服务范围及持久化；正常系统构建也校验目标 |
+| `network-identity-vm` | 真实有线/Wi-Fi DHCPv6 共存、新双栈身份报文、UUID/epoch/随机轮换、稳定/固定/硬件行为、profile 优先级、恢复及宿主密钥保留 |
 | `proxy-regressions` | 健康、状态、规则、DNS 租约、预算及监督器 |
 | `proxy-profile`、`proxy-gui` | 生成配置变体、策略/模板一致、GUI 默认与进程 wrapper |
 | `proxy-rules`、`proxy-egress-rules` | 构建期 LKL nft 解析完整兼容/受限模式规则 |

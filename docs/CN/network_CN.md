@@ -95,7 +95,9 @@ C 的早期 output guard 在核心重定向前阻断应用，保留 loopback IPC
 
 ## 上行与本地服务
 
-有线 `ens1` 由 dhcpcd 管理，NetworkManager 按名称和 MAC 排除它。Wi-Fi `wlo1` 由 NetworkManager 管理，以 PCI 路径稳定匹配。扫描使用随机 MAC，连接默认 `stable-ssid`；持久化的 NetworkManager 状态和 machine-id 使同一 SSID 的身份跨根回滚保持稳定。连接 profile 可覆盖[默认 MAC 策略](operations_CN.md#配置入口)。
+有线 `ens1` 由 dhcpcd 管理，NetworkManager 按名称和硬件 MAC 排除它。接口名按永久 MAC 匹配，独立于克隆后的线上地址。dhcpcd 使用原生单接口模式，将 DHCPv6 监听绑定到有线链路本地地址，使 Wi-Fi DHCPv6 可以同时工作。
+
+Wi-Fi `wlo1` 由 NetworkManager 管理，以 PCI 路径稳定匹配。扫描使用随机 MAC，连接默认 `stable-ssid`；持久化的 NetworkManager 状态和 machine-id 使这一 MAC 身份跨根回滚保持稳定。Profile 显式设置优先于 MAC 默认值。[链路身份](identity_CN.md)介绍按 profile 协调 MAC/DHCP/IPv6 迁移、有线替代策略、持久状态及重新授权。
 
 Tailscale 不自动接受 DNS、子网路由或出口节点；只有已认证 tailnet 的 MagicDNS 后缀获得条件 DNS 路由。宿主入站默认仅 Sunshine 串流 TCP 47984/47989/48010 和 UDP 47998/47999/48000/48002/48010。Sunshine 随图形会话启动，管理界面仅本机可用，关闭 UPnP，见[远程桌面操作](operations_CN.md#远程桌面)。Avahi 仅在 loopback、tailnet 及显式启用的 AP 上发布；外网 Wi-Fi 客户端不发布。本配置没有导入 sshd 模块，防火墙允许端口也不会自行创建 SSH 监听。
 

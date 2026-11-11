@@ -1,4 +1,4 @@
-{pkgs, ...}:
+{pkgs, lib, config, ...}:
 
 {
   # File system
@@ -28,6 +28,7 @@
       "/var/lib/hermes"
       "/var/lib/lastlog"
       "/var/lib/NetworkManager"
+      { directory = "/var/lib/network-identity"; mode = "0700"; }
       "/var/lib/nixos"
       "/var/lib/power-profiles-daemon"
       "/var/lib/systemd/backlight"
@@ -37,7 +38,7 @@
       "/var/lib/unbound"
       "/var/lib/upower"
       "/var/log"
-    ];
+    ] ++ lib.optional config.my.hardening.wired.persistDhcpIdentity "/var/lib/dhcpcd";
 
     files = [
       "/etc/machine-id"

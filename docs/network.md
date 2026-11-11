@@ -93,7 +93,9 @@ Stopping `nftables.service` leaves the rules installed. Restart or reload reconc
 
 ## Uplinks and local services
 
-Wired `ens1` uses dhcpcd and is excluded from NetworkManager by name and MAC. Wi-Fi `wlo1` uses NetworkManager, with a stable PCI-path match. Scans randomize their MAC; connections default to `stable-ssid`. Persisted NetworkManager state and machine ID keep each SSID's identity across root rollback. Profiles can override [the MAC default](operations.md#configuration).
+Wired `ens1` uses dhcpcd and is excluded from NetworkManager by name and hardware MAC. Its name is matched by permanent MAC, independently of a cloned on-link address. dhcpcd runs in native single-interface mode, binding its DHCPv6 listener to the wired link-local address so Wi-Fi DHCPv6 can operate concurrently.
+
+Wi-Fi `wlo1` uses NetworkManager, with a stable PCI-path match. Scans randomize their MAC; connections default to `stable-ssid`. Persisted NetworkManager state and machine ID retain that MAC identity across root rollback. Explicit profile settings override the MAC default. [Link identity](identity.md) explains coordinated per-profile MAC/DHCP/IPv6 migration, wired alternatives, persistent state and reauthorization.
 
 Tailscale accepts neither DNS, subnet routes nor an exit node automatically. Only the authenticated tailnet's MagicDNS suffix receives conditional resolver routing. Host input defaults to Sunshine streaming TCP 47984/47989/48010 and UDP 47998/47999/48000/48002/48010. Sunshine starts with the graphical session; its administration UI stays local and UPnP is disabled. See [remote desktop operation](operations.md#remote-desktop). Avahi advertises on loopback and tailnet, plus an explicitly enabled AP; a Wi-Fi client on a foreign network does not advertise. This configuration does not import the sshd module. A firewall allowance alone does not create an SSH listener.
 

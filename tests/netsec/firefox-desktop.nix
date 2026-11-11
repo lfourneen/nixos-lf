@@ -10,7 +10,9 @@ let
     UseIn=test;
     EOF
   '';
-in {
+
+in
+{
   users.users.lfour.linger = true;
   services.dbus.enable = true;
   security.polkit.enable = true;

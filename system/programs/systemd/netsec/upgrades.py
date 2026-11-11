@@ -25,6 +25,7 @@ REQUIRED = {
     'firefox': {'browser-privacy', 'browser-sandbox-vm', 'browser-ech-vm', 'browser-ech-uniform-vm'},
     'tailscale': {'tailscale-transport', 'proxy-tailscale-vm', 'proxy-egress-vm'},
     'firewall': {'proxy-rules', 'proxy-egress-rules', 'proxy-firewall-vm', 'proxy-network-vm'},
+    'link-identity': {'network-identity-config', 'network-identity-vm', 'proxy-control-vm', 'proxy-network-vm'},
 }
 SOURCE_GROUPS = {
     'mihomo': {'mihomo'}, 'sing-tun': {'mihomo'}, 'socks': {'mihomo'},
@@ -32,6 +33,7 @@ SOURCE_GROUPS = {
     'dns': {'dnsmasq', 'unbound', 'chrony'},
     'firefox': {'firefox', 'bubblewrap', 'dbusProxy', 'seccomp'},
     'tailscale': {'tailscale'}, 'firewall': {'nftables', 'networkmanager', 'systemd'},
+    'link-identity': {'networkmanager', 'systemd', 'dhcpcd'},
 }
 FIELDS = {'version', 'source', 'dependencies', 'recipe'}
 

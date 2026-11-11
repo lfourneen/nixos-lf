@@ -25,6 +25,7 @@ Go patchers run in `postConfigure`, after `buildGoModule` has populated `vendor/
 | dnsmasq | [network.nix](../system/config/network.nix), inline `src/forward.c` replacement | Return terminal strict-order UDP SERVFAIL/REFUSED, including DNSSEC EDE |
 | Firefox package | [firefox.nix](../home/programs/firefox/firefox.nix), [guard.py](../home/programs/firefox/guard.py), [sandbox.py](../home/programs/firefox/sandbox.py), [scope.c](../home/programs/firefox/scope.c) | Immutable policy/AutoConfig/fonts, preflight, outer namespaces, filtered bus, portal identity and Landlock/seccomp; no Gecko source patch |
 | Unbound / Chrony / networking | [network.nix](../system/config/network.nix), [network-time.nix](../system/config/network-time.nix), [systemd modules](../system/programs/systemd) | Declarative policy and repository-owned coordinators; no local Unbound/Chrony source patch |
+| Link identity | [link-identity.nix](../system/config/link-identity.nix), [link_identity.py](../system/programs/systemd/netsec/link_identity.py), [partition.nix](../system/hardware/partition.nix) | Coordinated profile identities, private migration/restore, native wired lifecycle and DHCPv6 coexistence; no upstream source patch |
 | Firewall lifecycle | [network.nix](../system/config/network.nix), [proxy-mode.nix](../system/programs/systemd/proxy-mode.nix), [network-bootstrap.nix](../system/programs/systemd/network-bootstrap.nix) | Exact table ownership, locked atomic replacement, failure retention and explicit historical migration |
 | Tailscale transport | [tailscale-transport.nix](../system/config/tailscale-transport.nix), [tailscale_contract.py](../system/programs/systemd/netsec/tailscale_contract.py) | Upstream socket-mark contract enforced by normal system builds; review mark/fallback/socket changes and run the real CLI VM on upgrades; no Tailscale source patch |
 | Direct egress | [hardening-options.nix](../system/config/hardening-options.nix), [network.nix](../system/config/network.nix), [egress_policy.py](../system/programs/systemd/netsec/egress_policy.py) | Actor/socket identity, pre-NAT grants, canonical CIDR validation, scoped time/DoT and shared root/GUI private exclusions; compare compatibility and restricted modes |
@@ -99,6 +100,12 @@ Preserve the shared policy lock and the single transaction containing static rul
 
 For changes to nftables, systemd loading or coordination, run `proxy-firewall-vm`, the relevant complete-rule variants, `proxy-control-vm` and `proxy-network-vm`. The dedicated VM checks A/C table ownership, external sets and ordered rules, failed transactions, lock contention and later reuse of historical names. The control VM checks the real helper/core, preservation of its TUN table, C enforcement and B recovery; the broad VM retains first-load and drift-recovery coverage.
 
+## Link identity
+
+[link-identity.nix](../system/config/link-identity.nix) and [link_identity.py](../system/programs/systemd/netsec/link_identity.py) use upstream NetworkManager/systemd/dhcpcd APIs without source patches. Review actual nmcli property names and enum formatting, both hostname switches, stable-id substitutions, DHCP identifiers and IPv6 address generation. Preserve the identity-only backup whitelist, private state, inactive/autoconnect guards and refusal to overwrite manual edits; rebuilds do not apply profile targets automatically.
+
+Retain the upstream generated dhcpcd configuration and service hardening when extending its single-interface command, PID file and reload. Its DHCPv6 socket must coexist with NetworkManager's Wi-Fi client. Run `network-identity-config`, `network-identity-vm`, `proxy-control-vm` and `proxy-network-vm` together; the identity VM requires fresh exchanges for each activation, including unchanged MACs. The [identity guide](identity.md) covers persistence preparation and reauthorization.
+
 ## Upgrade workflow
 
 ### Component review gate
@@ -115,7 +122,7 @@ python3 system/programs/systemd/netsec/upgrades.py plan \
   > /tmp/network-upgrade-plan.json
 ```
 
-The plan lists changed components, source entrypoints, invariants and checks. Add component names such as `mihomo sing-tun socks`, `gost`, `clash`, `dns`, `firefox`, `tailscale` or `firewall` to request a plan for local customization changes or unchanged inputs. Execute the selected checks with:
+The plan lists changed components, source entrypoints, invariants and checks. Add component names such as `mihomo sing-tun socks`, `gost`, `clash`, `dns`, `firefox`, `tailscale`, `firewall` or `link-identity` to request a plan for local customization changes or unchanged inputs. Execute the selected checks with:
 
 ```sh
 jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json \
@@ -144,6 +151,8 @@ Use the attributes below from the checkout. Nix builds normally use the local da
 |---|---|
 | `proxy-control` | Temporary-file snapshot authorization, expiry, restart, hostile inputs and permissions |
 | `proxy-upgrade-review` | Selected source/dependency/recipe baselines, component coverage, check-name validation and review-gate regressions; the input gate also runs in normal system builds |
+| `network-identity-config` | Identity migration boundaries, actual nmcli parsing/hostname restoration, wired variants, service scope and persistence; target validation also runs in normal system builds |
+| `network-identity-vm` | Real wired/Wi-Fi DHCPv6 coexistence, fresh dual-stack identities, UUID/epoch/random rotation, stable/fixed/permanent behavior, profile precedence, restore and retained host keys |
 | `proxy-regressions` | Health/state/rules/DNS leases, budget and supervisor regressions |
 | `proxy-profile`, `proxy-gui` | Generated profile variants, policy/template agreement, GUI defaults and process wrapper |
 | `proxy-rules`, `proxy-egress-rules` | Complete compatibility/restricted mode rules parsed by the build-time LKL nft environment |

@@ -90,6 +90,12 @@
       "source": "sha256-2CcDPUwzBRjRFzkXVinc7N956Cieb5QSS3BqDfFGgz0=",
       "dependencies": null,
       "recipe": "f24c6e487749d3f5895b34ab5faf00dcdea7d12f6456fa29629ee6632a0b6119"
+    },
+    "dhcpcd": {
+      "version": "10.3.1",
+      "source": "sha256-L2rR6/qMHWVth2GR3VAoBZmhA6lmCLddbi0VvEG5r70=",
+      "dependencies": null,
+      "recipe": "ca67411a01099742bc280e214e9929beb05a8744f0265c167ec20927eac13a41"
     }
   },
   "components": {
@@ -310,6 +316,32 @@
         "Owned static/safety policy commits once under the shared lock; foreign tables survive and rejected transactions retain the previous policy.",
         "Bootstrap protects first-load failures; proxy intent passes through C before health permits B.",
         "Ordered expressions, canonical JSON and expiring DNS leases remain verifiable; stopping owners leaves protection installed."
+      ]
+    },
+    "link-identity": {
+      "sources": [
+        "networkmanager",
+        "systemd",
+        "dhcpcd"
+      ],
+      "checks": [
+        "network-identity-config",
+        "network-identity-vm",
+        "proxy-control-vm",
+        "proxy-network-vm"
+      ],
+      "entrypoints": [
+        "NetworkManager connection stable-id, cloned MAC, DHCP client-id/DUID/IAID and RFC7217 address generation",
+        "nmcli atomic settings update, persistent keyfile state and identity-only backup/restore",
+        "systemd.link permanent hardware matching and dhcpcd randomise_hwaddr/anonymous lifecycle",
+        "dhcpcd single-interface launch, PID/reload paths and DHCPv6 link-local socket binding"
+      ],
+      "invariants": [
+        "Defaults preserve stable-ssid Wi-Fi and hardware wired MAC; explicit profile fields override global defaults.",
+        "Per-profile stable/random/fixed choices coordinate link, DHCP and IPv6 identities; host secret_key and machine-id remain intact.",
+        "Migration requires inactive, non-autoconnecting client profiles, writes one identity-only update, retains a private backup and refuses restore over manual edits.",
+        "Wired randomization uses the native DHCP anonymity lifecycle; permanent NIC identification and DNS/firewall ownership remain unchanged.",
+        "The non-root wired dhcpcd and NetworkManager Wi-Fi clients can simultaneously acquire DHCPv6 leases without a wildcard UDP 546 bind conflict."
       ]
     }
   }

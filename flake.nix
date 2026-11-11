@@ -55,6 +55,18 @@
       uniformProxyConfig = (self.nixosConfigurations.lfour.extendModules {
         modules = [ { my.proxy.proxyOnly = true; } ];
       }).config;
+      identityConfig = (self.nixosConfigurations.lfour.extendModules {
+        modules = [ {
+          my.hardening.wired.clonedMacAddress = "random";
+          my.hardening.wifi.identities = {
+            "11111111-1111-4111-8111-111111111111" = { mode = "stable"; };
+            "22222222-2222-4222-8222-222222222222" = { mode = "stable"; };
+            "33333333-3333-4333-8333-333333333333" = { mode = "random"; };
+            "44444444-4444-4444-8444-444444444444" = { mode = "fixed"; address = "02:11:22:33:44:55"; };
+            "55555555-5555-4555-8555-555555555555" = { mode = "permanent"; };
+          };
+        } ];
+      }).config;
       guestConfig = (self.nixosConfigurations.lfour.extendModules {
         modules = [ {
           users.users.guestnet = { isNormalUser = true; uid = 1100; };
@@ -94,6 +106,17 @@
       '';
 
       proxy-rules = self.nixosConfigurations.lfour.config.my.proxy.expectedRules;
+      network-identity-config = import ./tests/netsec/identity-config.nix {
+        inherit pkgs identityConfig;
+        config = self.nixosConfigurations.lfour.config;
+        fixedConfig = (self.nixosConfigurations.lfour.extendModules {
+          modules = [ {
+            my.hardening.wired.clonedMacAddress = "02:11:22:33:44:55";
+            my.hardening.wired.persistDhcpIdentity = true;
+          } ];
+        }).config;
+      };
+      network-identity-vm = import ./tests/netsec/identity-vm.nix { inherit pkgs; };
       proxy-firewall-vm = import ./tests/netsec/firewall-vm.nix { inherit pkgs; };
       proxy-dns-strict-rules = strictDnsConfig.my.proxy.expectedRules;
 

@@ -7,6 +7,7 @@ This system combines physical uplinks, local DNS, a managed proxy core, guest ne
 | Guide | Contents |
 |---|---|
 | [Network architecture](network.md) | Traffic paths, A/B/C modes, firewall, uplinks, guests and Tailscale |
+| [Link identity](identity.md) | MAC defaults, per-profile identities, coordinated DHCP/IPv6 migration, wired policy and persisted state |
 | [Direct egress](egress.md) | Exception ledger, optional restricted B grants, time-server pins and C blocking |
 | [DNS](dns.md) | Resolver responsibilities, shared domain filter, DNSSEC, optional strict encryption, recovery and split DNS |
 | [Proxy core and permissions](proxy.md) | Configuration authorization, service identities, controller API and routing policy |

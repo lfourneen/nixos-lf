@@ -27,6 +27,7 @@ let
     bubblewrap = pkgs.bubblewrap;
     dbusProxy = pkgs.xdg-dbus-proxy;
     seccomp = pkgs.libseccomp;
+    dhcpcd = pkgs.dhcpcd;
   };
   selected = pkgs.writeText "network-upgrade-selected.json" (builtins.toJSON sources);
   check = pkgs.runCommand "network-upgrade-review" { } ''

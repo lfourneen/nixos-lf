@@ -24,9 +24,13 @@
       name = lib.mkOption {
         type = lib.types.str;
         default = "ens1";
-        description = "Wired uplink; pinned by MAC because PCIe bus numbers can shift.";
+        description = "Wired uplink; pinned by permanent MAC because PCIe bus numbers can shift. Independent of the configured link address.";
       };
-      mac = lib.mkOption { type = lib.types.str; default = "fc:5c:ee:c5:db:de"; };
+      mac = lib.mkOption {
+        type = lib.types.str;
+        default = "fc:5c:ee:c5:db:de";
+        description = "Hardware permanent MAC used only to identify the NIC; wired.clonedMacAddress controls its on-link address.";
+      };
       driver = lib.mkOption { type = lib.types.str; default = "r8169"; };
     };
 

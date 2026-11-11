@@ -150,15 +150,7 @@ The example addresses are placeholders. Built-in bridge source/gateway defaults 
 
 Install/reconcile the complete nft policy before starting pasta or rootless Docker under `guestnet`. The Docker user unit clears inherited explicit proxy variables for restricted accounts and uses the declared rootless package/settings. Stop existing backends before adding/changing identities or delegated UID mappings. To revoke private access for running backends, keep the identity declared, remove its grants and reload the firewall; both tracked directions are cut. Changing `socketGuestUsers` alone does not migrate desktop containers. These accounts use the separate real-address DNS path, which has no plaintext/split-DNS fallback. See [guest boundaries](network.md#guests-and-containers).
 
-For a Wi-Fi profile requiring the hardware MAC:
-
-```sh
-nmcli connection modify uuid <UUID> 802-11-wireless.cloned-mac-address permanent
-# Restore the declared default on the next activation:
-nmcli connection modify uuid <UUID> 802-11-wireless.cloned-mac-address ""
-```
-
-`preserve` retains the current MAC; it does not restore the hardware address. An explicit profile setting takes precedence over `my.hardening.wifi.clonedMacAddress`. Networks sharing an SSID share the default stable identity.
+Wi-Fi profiles explicitly setting a cloned MAC override `my.hardening.wifi.clonedMacAddress`; otherwise the default `stable-ssid` retains the same MAC for the same SSID. `permanent` selects the hardware address, while `preserve` keeps the current address. For coordinated changes, declare `my.hardening.wifi.identities`, inspect `network-identity plan UUID`, then disable autoconnect and disconnect before `apply` or `restore`. See [Link identity](identity.md) for the complete procedure, wired policies and DHCP state preparation.
 
 ## Offline recovery
 

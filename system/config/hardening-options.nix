@@ -237,6 +237,45 @@
         Individual profiles can override this default for MAC-based access rules.
       '';
     };
+
+    wifi.identities = lib.mkOption {
+      default = { };
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          mode = lib.mkOption {
+            type = lib.types.enum [ "stable" "random" "permanent" "fixed" ];
+            default = "stable";
+          };
+          address = lib.mkOption {
+            type = lib.types.nullOr (lib.types.strMatching "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}");
+            default = null;
+          };
+          epoch = lib.mkOption {
+            type = lib.types.strMatching "[a-zA-Z0-9_.-]{1,64}";
+            default = "1";
+            description = "Per-profile identity revision. Changing it rotates derived stable MAC/DHCP/IPv6 identities without deleting the host NetworkManager key or machine-id.";
+          };
+        };
+      });
+      description = "Wi-Fi identity migration targets keyed by canonical profile UUID. network-identity plan/apply/restore manages only identity properties; apply requires a disconnected profile with autoconnect disabled. No automatic reconnect or profile rewriting on rebuild.";
+    };
+
+    wired = {
+      clonedMacAddress = lib.mkOption {
+        type = lib.types.either (lib.types.enum [ "permanent" "random" ])
+          (lib.types.strMatching "([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}");
+        default = "permanent";
+        description = "Primary dhcpcd uplink MAC policy. Permanent preserves hardware at boot; random uses dhcpcd randomise_hwaddr on link activation/carrier loss; a literal is fixed by the .link file. Non-permanent policies also enable DHCP anonymity and current-MAC SLAAC. Apply wired policy changes with a prepared reboot, not a live MAC edit.";
+      };
+      persistDhcpIdentity = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Persist /var/lib/dhcpcd across root rollback. Before first enabling, stop dhcpcd and copy its current state to /persist/var/lib/dhcpcd; an empty first bind would otherwise hide the existing DUID/leases. Anonymous mode ignores the retained DUID.";
+      };
+    };
+
+    linkIdentitySettings = lib.mkOption { type = lib.types.path; internal = true; readOnly = true; };
+    linkIdentityCheck = lib.mkOption { type = lib.types.package; internal = true; readOnly = true; };
   };
 
   config.my.hardening.guestNetworks = {

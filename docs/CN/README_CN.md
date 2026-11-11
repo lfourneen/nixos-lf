@@ -7,6 +7,7 @@
 | 手册 | 内容 |
 |---|---|
 | [网络架构](network_CN.md) | 流量路径、A/B/C 模式、防火墙、上行、访客与 Tailscale |
+| [链路身份](identity_CN.md) | MAC 默认值、按 profile 身份、DHCP/IPv6 协同迁移、有线策略与持久状态 |
 | [直连例外](egress_CN.md) | 例外清单、可选受限 B 授权、时间服务器目标限制与 C 阻断 |
 | [DNS](dns_CN.md) | 各路径责任、共享域名过滤、DNSSEC、可选严格加密、恢复与分流 DNS |
 | [代理核心与权限](proxy_CN.md) | 配置授权、服务身份、控制 API 与路由策略 |

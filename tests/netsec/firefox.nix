@@ -16,8 +16,10 @@ let
     policies = home.programs.firefox.policies;
     relayPort = config.my.machine.ports.gostHttp;
     desktop = home.xdg.dataFile."applications/firefox.desktop".source;
+
     aliases = map (id: home.xdg.dataFile."applications/${id}.desktop".source)
       [ "app.zen_browser.zen" "com.google.Chrome" ];
+      
     # System-level defaults; values are single strings, the runtime test expects lists.
     mime = builtins.mapAttrs (_: app: [ app ]) (import ../../system/config/mimeapps.nix);
     flatpaks = config.services.flatpak.packages;

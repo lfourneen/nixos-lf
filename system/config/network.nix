@@ -429,6 +429,7 @@ in
 {
   imports = [
     ./network-hardening.nix
+    ./link-identity.nix
     ./network-time.nix
     ./socket-guest-dns.nix
     ./tailscale-transport.nix
@@ -510,12 +511,13 @@ in
   my.proxy.blockedModeRules = blockedModeRules;
 
   # Pin NIC names so they survive kernel naming changes. Wired matches by
-  # hardware MAC only: Path can change if PCIe bus numbers shift.
+  # permanent hardware MAC: the on-link address may be cloned and PCI paths
+  # can change if bus numbers shift.
   systemd.network.links."10-wired-${wired}" = {
     linkConfig.Name = wired;
 
     matchConfig = {
-      MACAddress = m.wired.mac;
+      PermanentMACAddress = m.wired.mac;
       Driver = m.wired.driver;
     };
   };

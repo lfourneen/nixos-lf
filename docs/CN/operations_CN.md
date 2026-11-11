@@ -148,15 +148,7 @@ users.users.guestnet = { isNormalUser = true; uid = 1100; };
 
 先安装/协调完整 nft 策略，再以 `guestnet` 运行 pasta 或 rootless Docker。Docker 用户单元会为受限账户清除继承的显式代理环境变量，并使用声明的 rootless 包与设置。新增/更改身份或委派 UID 映射前停止旧后端。为运行中的后端撤销私网访问时，保持身份声明、移除授权并重载防火墙，已跟踪连接的双向流量都会切断。仅设置 `socketGuestUsers` 不会迁移桌面容器。这些账户使用单独的真实地址 DNS 路径，没有明文/split DNS 后备。见[访客边界](network_CN.md#访客与容器)。
 
-需要硬件 MAC 的 Wi-Fi profile 可设置：
-
-```sh
-nmcli connection modify uuid <UUID> 802-11-wireless.cloned-mac-address permanent
-# 下次激活时恢复声明默认：
-nmcli connection modify uuid <UUID> 802-11-wireless.cloned-mac-address ""
-```
-
-`preserve` 保持当前 MAC，不恢复硬件地址。Profile 显式值优先于 `my.hardening.wifi.clonedMacAddress`；相同 SSID 的网络共用默认稳定身份。
+Wi-Fi profile 显式的克隆 MAC 优先于 `my.hardening.wifi.clonedMacAddress`；否则默认 `stable-ssid` 为相同 SSID 保留相同 MAC。`permanent` 选择硬件地址，`preserve` 保持当前地址。需要协调身份变化时，声明 `my.hardening.wifi.identities`，查看 `network-identity plan UUID`，关闭自动连接并断开后再执行 `apply` 或 `restore`。完整步骤、有线策略和 DHCP 状态准备见[链路身份](identity_CN.md)。
 
 核心内部服务访问由[目标授权](proxy_CN.md#域名目标)单独管理：`localTargetCidrs` 限定本地 DIRECT，`remoteTargetGrants` 按实际叶节点、核心入口、协议和端口授权远程内部地址，`nat64Prefixes` 声明已知翻译前缀。内部后缀只允许本地解析私网答案，不授权节点代解析或拨号。Gost CONNECT 在核心中是 `HTTPS`；修改后需重建并有意导入/重启核心。A 字面门户、C 阻断与原生直连授权各自保持独立。
 
