@@ -6,7 +6,37 @@ let
     mkdir -p "$out"
     openssl req -x509 -newkey rsa:2048 -nodes -days 36500 \
       -subj /CN=dot.fixture.test -addext subjectAltName=DNS:dot.fixture.test \
+      -addext keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign \
       -keyout "$out/key.pem" -out "$out/cert.pem"
+    openssl req -new -newkey rsa:2048 -nodes -keyout "$out/leaf-key.pem" -subj /CN=dot.fixture.test -out request.pem
+    touch index
+    echo 01 > serial
+    cat > ca.cnf <<'EOF'
+    [ca]
+    default_ca = fixture
+    [fixture]
+    database = index
+    serial = serial
+    new_certs_dir = .
+    default_md = sha256
+    default_days = 30
+    unique_subject = no
+    policy = subject
+    x509_extensions = server
+    [subject]
+    commonName = supplied
+    [server]
+    subjectAltName = DNS:dot.fixture.test
+    basicConstraints = CA:FALSE
+    extendedKeyUsage = serverAuth
+    EOF
+    openssl ca -batch -notext -config ca.cnf -cert "$out/cert.pem" -keyfile "$out/key.pem" \
+      -in request.pem -startdate 20000101000000Z -enddate 20010101000000Z -out "$out/expired.pem"
+    openssl ca -batch -notext -config ca.cnf -cert "$out/cert.pem" -keyfile "$out/key.pem" \
+      -in request.pem -startdate 20360101000000Z -enddate 20370101000000Z -out "$out/future.pem"
+    openssl ca -batch -notext -config ca.cnf -cert "$out/cert.pem" -keyfile "$out/key.pem" \
+      -in request.pem -startdate 20200101000000Z -enddate 20370101000000Z -out "$out/valid.pem"
+    openssl verify -x509_strict -purpose sslserver -CAfile "$out/cert.pem" "$out/valid.pem"
   '';
   dnsPython = pkgs.python3.withPackages (p: [ p.dnspython ]);
 
@@ -439,6 +469,19 @@ pkgs.testers.runNixOSTest {
         for checking in ("", "+cdflag"):
             response = machine.succeed(f"dig {transport} {checking} +time=2 +tries=1 @127.0.0.1 -p 1054 bogus.signed.fixture.example A")
             assert "status: SERVFAIL" in response, response
+    with subtest("certificate validity and an IPv6-only transport endpoint"):
+        # Cached validation stays valid; each new TLS exchange must enforce its
+        # own certificate dates. The host and guest clocks are never changed.
+        for certificate in ("expired", "future"):
+            machine.succeed(f"mkdir -p /run/systemd/system/netsec-dnssec-fixture.service.d; printf '[Service]\\nEnvironment=NETSEC_TLS_TEST_CERT=${tlsFixture}/{certificate}.pem\\nEnvironment=NETSEC_TLS_TEST_KEY=${tlsFixture}/leaf-key.pem\\n' >/run/systemd/system/netsec-dnssec-fixture.service.d/certificate.conf; systemctl daemon-reload; systemctl restart netsec-dnssec-fixture.service")
+            machine.wait_until_succeeds("ss -lnt | grep -q 127.0.0.2:853", timeout=10)
+            machine.succeed("NETSEC_DNSSEC_PROBE_NAME=valid.signed.fixture.example. NETSEC_DNSSEC_PROBE_TYPE=1 NETSEC_DOT_PROBE_UPSTREAMS='127.0.0.2@853#dot.fixture.test' python3 /etc/netsec-dnssec-probe.py 1055 >/tmp/certificate-verdict.json && exit 1 || test $? = 2; jq -e '.local.status == \"secure\" and .transport.status == \"unavailable\" and .transport.detail == \"tls-certificate\"' /tmp/certificate-verdict.json || { cat /tmp/certificate-verdict.json; exit 1; }")
+        machine.succeed("sed -i 's/expired.pem/valid.pem/g;s/future.pem/valid.pem/g' /run/systemd/system/netsec-dnssec-fixture.service.d/certificate.conf; systemctl daemon-reload; systemctl restart netsec-dnssec-fixture.service")
+        machine.wait_until_succeeds("ss -lnt | grep -q 127.0.0.2:853", timeout=10)
+        machine.succeed("NETSEC_DNSSEC_PROBE_NAME=valid.signed.fixture.example. NETSEC_DNSSEC_PROBE_TYPE=1 NETSEC_DOT_PROBE_UPSTREAMS='127.0.0.2@853#dot.fixture.test' python3 /etc/netsec-dnssec-probe.py 1055 | jq -e '.transport.status == \"reachable\"'")
+        machine.succeed("rm /run/systemd/system/netsec-dnssec-fixture.service.d/certificate.conf; systemctl daemon-reload; systemctl restart netsec-dnssec-fixture.service")
+        machine.wait_until_succeeds("ss -lnt | grep -q 127.0.0.2:853", timeout=10)
+        machine.succeed("NETSEC_DNSSEC_PROBE_NAME=valid.signed.fixture.example. NETSEC_DNSSEC_PROBE_TYPE=1 NETSEC_DOT_PROBE_UPSTREAMS='::1@853#dot.fixture.test' python3 /etc/netsec-dnssec-probe.py 1055 | jq -e '.local.status == \"secure\" and .transport.status == \"reachable\"'")
     with subtest("authenticated NSEC cache is not encrypted transport health"):
         machine.succeed("systemctl start dns-upstream.service")
         machine.wait_until_succeeds("jq -e '.mode == \"dot\" and .dnssec_probe.transport.status == \"reachable\"' /run/dns-upstream/state.json", timeout=30)
@@ -446,7 +489,23 @@ pkgs.testers.runNixOSTest {
         # not impose a hidden deadline when the coordinator restarts.
         machine.succeed("systemctl stop dns-upstream.service; python3 /etc/netsec-dns.py budget 500; printf '1\\n' >/run/dns-upstream/boot-budget")
         machine.succeed("dig +dnssec +adflag @127.0.0.1 -p 1055 z-first.signed.fixture.example A | grep -q 'status: NXDOMAIN'")
+        machine.succeed("dig +dnssec +adflag @127.0.0.1 -p 1055 short.signed.fixture.example A | grep -q 203.0.113.43")
         machine.succeed("systemctl stop netsec-dnssec-fixture.service")
+        machine.sleep(2)
+        # Drop the upstream SYN instead of receiving an immediate refusal, so
+        # this measures the stale-answer wait ceiling under a real timeout.
+        machine.succeed("nft add table inet stale_timeout; nft 'add chain inet stale_timeout output { type filter hook output priority -202; policy accept; }'; nft add rule inet stale_timeout output ip daddr 127.0.0.2 tcp dport 853 drop")
+        import time, json, shlex
+        stale_latencies = []
+        for _ in range(6):
+            started = time.monotonic()
+            response = machine.succeed("dig +dnssec +adflag +time=2 +tries=1 @127.0.0.1 -p 1055 short.signed.fixture.example A")
+            stale_latencies.append(time.monotonic() - started)
+            assert "203.0.113.43" in response and " ad" in response, response
+        assert max(stale_latencies) < 1.5, stale_latencies
+        machine.succeed("printf %s " + shlex.quote(json.dumps(stale_latencies)) + " >/tmp/dns-stale-baseline.json")
+        machine.copy_from_vm("/tmp/dns-stale-baseline.json")
+        machine.succeed("nft delete table inet stale_timeout")
         # This new name has never been queried. Only cached NSEC can prove AD
         # now; the real upstream is stopped, including all persistent TLS sockets.
         cached = machine.succeed("dig +dnssec +adflag +time=2 +tries=1 @127.0.0.1 -p 1055 z-second.signed.fixture.example A")

@@ -126,7 +126,9 @@ let
   #
   # A literal uid cannot be checked by the evaluator and would silently stop
   # matching the daemon; the pins live in the module body.
-  dnsDotUpstreams = "{ ${join m.dotUpstreams} }";
+  dotRules = lib.concatMap (endpoint: [
+    "meta skuid ${toString unboundUid} ${if lib.hasInfix ":" endpoint.address then "ip6" else "ip"} daddr ${endpoint.address} tcp dport ${toString port.dot} accept"
+  ]) m.dotEndpoints;
   unboundUid = config.users.users.unbound.uid;
   dnsmasqUid = config.users.users.dnsmasq.uid;
   timeUid = config.users.users.chrony.uid;
@@ -151,9 +153,7 @@ let
     "meta skuid ${toString dnsmasqUid} meta oifname . ip6 daddr @dns_split6 meta l4proto { tcp, udp } th dport 53 accept"
   ];
 
-  processDirectRules = [
-    "meta skuid ${toString unboundUid} oifname { \"${wired}\", \"${wireless}\" } ip daddr ${dnsDotUpstreams} tcp dport ${toString port.dot} accept"
-  ] ++ timeRules ''oifname { "${wired}", "${wireless}" }'' ++ dnsSplitRules;
+  processDirectRules = map (rule: ''oifname { "${wired}", "${wireless}" } ${rule}'') dotRules ++ timeRules ''oifname { "${wired}", "${wireless}" }'' ++ dnsSplitRules;
 
   addRules = chain: rules: lib.concatMapStrings (rule:
     "add rule inet lf_filter ${chain} ${rule}\n") rules;
@@ -419,6 +419,7 @@ let
   '') vmTransparentProxyIfaces;
 
   nmDnsSettings = pkgs.writeText "nm-dns-policy.json" (builtins.toJSON {
+    state = "/var/lib/netsec-dns-profiles";
     nmcli = "${pkgs.networkmanager}/bin/nmcli";
     resolvectl = "${pkgs.systemd}/bin/resolvectl";
     interface = wireless;
@@ -483,7 +484,7 @@ in
       assertion = lib.all (ip: builtins.match
         "(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}"
         ip != null) m.dotTransportFallback
-        && lib.all (ip: !builtins.elem ip m.dotUpstreams) m.dotTransportFallback;
+        && lib.all (ip: !builtins.elem ip (map (endpoint: endpoint.address) m.dotEndpoints)) m.dotTransportFallback;
       message = "Mode-A plaintext fallback requires IPv4 literals that are not the validated DoT upstreams.";
     }
     {
@@ -788,6 +789,7 @@ in
         serve-expired = true;
         serve-expired-ttl = 900;
         serve-expired-reply-ttl = 30;
+        serve-expired-client-timeout = config.my.proxy.dnsStaleWaitMilliseconds;
         # Additional-section records that were not validated stay out of cache.
         val-clean-additional = true;
         # Only upstream answers are filtered; explicit local-data/private-domain
@@ -802,7 +804,7 @@ in
       "forward-zone" = [
         {
           name = ".";
-          "forward-addr" = map (ip: "${ip}@${toString port.dot}#${m.dotAuthName}") m.dotUpstreams;
+          "forward-addr" = map (endpoint: "${endpoint.address}@${toString port.dot}#${endpoint.authName}") m.dotEndpoints;
         }
       ];
     };
@@ -1076,7 +1078,7 @@ in
         # DoH shares 443 and stays addressable (see docs/dns.md).
         chain lf_dns_egress_guard {
           type filter hook output priority -196; policy accept;
-          meta skuid ${toString unboundUid} ip daddr ${dnsDotUpstreams} tcp dport ${toString port.dot} accept
+          ${lib.concatStringsSep "\n" dotRules}
           ${coreSocket} meta l4proto { tcp, udp } th dport ${toString port.dot} accept
           meta skuid != 0 meta l4proto { tcp, udp } th dport ${toString port.dot} counter drop
         }
@@ -1319,6 +1321,9 @@ in
   } ];
 
   environment.systemPackages = with pkgs; [
+    (writeShellScriptBin "proxy-dns-profile" ''
+      exec ${pkgs.python3}/bin/python3 ${../programs/systemd/netsec/nm_dns.py} ${nmDnsSettings} "$@"
+    '')
     bpftrace
     traceroute
   ];

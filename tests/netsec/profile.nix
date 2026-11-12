@@ -30,6 +30,7 @@ let
         routing = proxy.tunRouting;
         delayUrl = proxy.delayTestUrl;
         targets = osConfig.my.proxy.managedProfile.lf-private-targets;
+        insecureExceptions = proxy.insecureProxyExceptions;
         proxyOnly = proxy.proxyOnly;
         routeExclude = osConfig.my.proxy.managedProfile."tun.route-exclude-address" or [ ];
         fakeIpFilter = osConfig.my.proxy.managedDns.fake-ip-filter;
@@ -42,6 +43,7 @@ let
 
   manifest = pkgs.writeText "proxy-profile-tests.json" (builtins.toJSON (map render [
     { name = "default"; }
+    { name = "tls-exception"; overrides = { insecureProxyExceptions = [ "allowed-insecure" ]; }; }
     { name = "uniform-proxy"; baseConfig = uniformProxyConfig; }
     { name = "restricted-host"; baseConfig = restrictedConfig; }
     { name = "legacy-private-proxy"; baseConfig = privateProxyConfig; }

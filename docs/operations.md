@@ -9,6 +9,9 @@ Use the Nushell commands `clash-on` and `clash-off`. They record privileged inte
 `sudo proxy-control on` and `sudo proxy-control off` are the underlying system controls. `on` opens the single-use configuration-import window and starts the helper; the GUI still needs to supply/start the core. `off` clears authorization and stops the helper. The desktop commands also handle GUI processes. Starting only `clash-verge` in A does not authorize a core.
 
 ```sh
+proxy-control preflight
+proxy-policy
+proxy-control status auto --check
 proxy-control status proxy
 proxy-control wait proxy
 proxy-control status direct
@@ -16,7 +19,7 @@ firefox --check
 proxy-inspect
 ```
 
-`status` returns readiness JSON; `wait` waits for the requested mode's shared readiness conditions. `proxy-status` in Nushell combines mode, DNS, relay, verifier, alarms and a live probe. `egress-audit` supplies additional active diagnostics. `proxy-inspect` only reads state, service resources and link/queue/offload statistics; it sends no probe traffic.
+`status auto` follows operator intent; `--check` returns a failing exit code when the JSON is not ready. The JSON includes phase, reason, DNS allowance and next action. `wait` reports progress every ten seconds. `proxy-status` displays an English panel with mode, egress policy, DNS, verification age, relay, alarms and the last preparation result. It reads the shared contract; `--plain` selects log-friendly text and `--json` returns structured data. `--no-color` and `NO_COLOR` disable color. `egress-audit` supplies additional active diagnostics. `proxy-inspect` only reads state, service resources and link/queue/offload statistics; it sends no probe traffic.
 
 ## Remote desktop
 
@@ -24,7 +27,7 @@ Sunshine is enabled and starts with `graphical-session.target`, exposing the cur
 
 The web UI accepts only local clients; it is not a default tailnet firewall allowance. UPnP is disabled. Streaming uses the explicit tailnet TCP/UDP port lists in [hardening-options.nix](../system/config/hardening-options.nix). Configure phone-to-computer grants in the Tailscale admin console separately; that policy is not stored in this repository. A and healthy B allow remote desktop; C cuts the session, including existing UDP flows and decrypted tailnet input. Use `clash-off` locally when direct A is intended.
 
-[sunshine.nix](../system/programs/sunshine.nix) retains the global CUDA build variant. The locked 2026.914.233613 CUDA package is available from the already configured `https://cache.nixos-cuda.org`. A substituter must provide the exact derivation selected by the lock and package options; adding a CUDA cache does not guarantee every CUDA package/version. Before upgrades, verify downloading the selected package with `nix build --max-jobs 0 --no-link .#nixosConfigurations.lfour.config.services.sunshine.package`; this refuses local compilation. Credentials and pairing state remain in the user's Sunshine directory; the Desktop entry and safety settings are declarative. Hardware capture/encoding and phone streaming require validation in the deployed graphical session.
+[sunshine.nix](../system/programs/sunshine.nix) selects the CUDA build variant. The configured `https://cache.nixos-cuda.org` substituter supplies binaries matching the derivation selected by the lock and package options. Check cache availability with `nix build --max-jobs 0 --no-link .#nixosConfigurations.lfour.config.services.sunshine.package`; this command disables local compilation. Credentials and pairing state reside in the user's Sunshine directory; the Desktop entry and service settings are declarative. Check hardware capture/encoding and phone streaming in the deployed graphical session.
 
 ```sh
 systemctl --user status sunshine.service
@@ -36,6 +39,10 @@ sudo tailscale ping <phone-tailnet-name-or-IP>
 For the optional restricted B policy, Unbound DoT switch and time destination pins, see [Direct egress](egress.md). Restricted B retains negotiated Sunshine media; C always cuts remote control.
 
 On Tailscale upgrades, run `tailscale-transport`, `proxy-rules`, `proxy-egress-rules`, `proxy-tailscale-vm` and `proxy-egress-vm`. The source contract check is also required by normal system builds. `0x80000` is Tailscale's upstream Linux socket mark, stable across network changes but reviewed on upgrades. If the mark is unavailable or bind-to-device is forced, B does not reopen all-root UDP: diagnose marking/permissions and use intentional A if needed.
+
+`proxy-policy` shows native UID/interface/CIDR grants together with core DIRECT ranges, remote target grants and subscription trust. These are independent permission planes. A restricted native policy combined with broad core DIRECT ranges still allows clients reaching that local proxy inlet to use those core ranges. For host application LAN restriction, review both `directEgress.mode="restricted"` and `localTargetCidrs=[]`, then declare the required grants. Dedicated guest accounts retain their separate boundary.
+
+`proxy-inspect` reports command-failure categories and exit codes without exposing arbitrary service stderr.
 
 ## State and diagnosis
 
@@ -90,11 +97,11 @@ sudo systemctl start nftables-verify.service
 
 Restart/reload reinstalls the owned static policy plus the safety mode atomically; proxy intent goes through C before health reopens B. Stopping nftables leaves its policy installed. `nftables-verify-repair.service` performs explicit repair and recheck; `nftables-recover` retries a failed nftables unit. Avoid flushing the global ruleset.
 
-## Legacy firewall migration
+## Firewall table migration
 
-Older generations used `inet filter`, `ip proxymode_nat` and `ip6 proxymode_nat`. Current startup, reload and repair leave these names intact because another service may now own them. A system already using only the [reserved tables](network.md#firewall-lifecycle) needs no migration.
+`proxy-control migrate-firewall` explicitly removes `inet filter`, `ip proxymode_nat` and `ip6 proxymode_nat` while installing the [reserved tables](network.md#firewall-lifecycle). Ordinary startup, reload and repair leave these three names untouched. Run migration only after confirming that the tables belong to this configuration.
 
-When upgrading a running system from those older names, inspect the existing tables and confirm that they belong to the old repository configuration:
+Inspect each migration target and confirm its owner:
 
 ```sh
 sudo nft list table inet filter
@@ -102,16 +109,16 @@ sudo nft list table ip proxymode_nat
 sudo nft list table ip6 proxymode_nat
 ```
 
-After installing the current generation, explicitly migrate any remaining repository-owned legacy tables:
+With ownership confirmed, run the migration and verify the installed policy:
 
 ```sh
 sudo proxy-control migrate-firewall
 sudo systemctl start nftables-verify.service
 ```
 
-This root command deletes only those three historical family/name pairs, together with the normal replacement of current owned tables. It takes the operator and policy locks, and commits cleanup, static rules and the safety mode in one nft transaction. A rejected transaction preserves the prior rules and legacy tables. Missing legacy tables are harmless, so repeating the command is safe while those names remain reserved for migration.
+The root command holds the operator and policy locks and commits the three deletions, static rules and safety mode in one nft transaction. A rejected transaction preserves the installed rules and migration targets. Missing targets are accepted, so repeated execution is supported while those names remain assigned to this configuration.
 
-Proxy intent or a running core installs C first; the supervisor may reopen B after health checks. Direct intent with no core installs A. The command preserves intent and core authorization and leaves the core running. Check the current mode and verification JSON using the diagnostics above. Migration does not enable future cleanup: a later service can reuse a historical name without ordinary reloads deleting its table. If an existing historical name belongs to another service, keep it and resolve ownership before using the migration command.
+Proxy intent or a running core installs C first; the supervisor opens B after health checks pass. Direct intent with no core installs A. Migration preserves intent, authorization and the running core. Use the diagnostics above to check mode and verification JSON. Cleanup occurs only during this command. Tables owned by other services stay under their owners' control.
 
 ## Configuration
 

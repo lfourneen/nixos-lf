@@ -41,7 +41,7 @@ my.hardening.wifi.identities = {
 
 迁移工具为 DHCPv4 client-id/IAID、DHCPv6 DUID/IAID 和稳定 IPv6 地址生成设置共同的 `connection.stable-id` 种子。随机模式加入 NetworkManager 的每次激活随机替换量。同时优先使用临时 IPv6 地址，禁用 DHCP 主机名发送，并清空既有 hostname/FQDN 和 vendor-class 值。相关语义见 [stable-id 替换量](https://networkmanager.dev/docs/api/latest/settings-connection.html)和 [DHCPv4 设置](https://networkmanager.dev/docs/api/latest/settings-ipv4.html)。
 
-不同 profile UUID 可为同名 SSID 的网络提供不同身份；SSID 相同时应主动选择目标 profile。提高 `epoch` 并显式应用目标，可轮换派生标识；固定和硬件模式仍保留其指定 MAC。服务发现、认证凭据和账户活动仍可能关联不同连接。
+不同 profile UUID 可为同名 SSID 的网络提供不同身份；SSID 相同时应主动选择目标 profile。提高 `epoch` 并显式应用目标，可轮换派生标识；固定和硬件模式仍保留其指定 MAC。服务发现、认证凭据和账户会话保留各自的标识。
 
 ## 应用与恢复
 
@@ -69,7 +69,7 @@ sudo network-identity restore "$profile_uuid"
 sudo nmcli connection up uuid "$profile_uuid"
 ```
 
-恢复写回保存的属性，同时保留 NetworkManager 租约状态；默认基于 lease 的 DUID 因而可能沿用最近租约。恢复后应核对租约和授权。迁移后若手动修改过身份字段，restore 会拒绝覆盖。移除 Nix 目标后仍可使用备份。Profile 独立于系统 generation 持久保存，因此应在回滚到不含工具的 generation 前完成恢复。保留 `/var/lib/NetworkManager/secret_key` 和 `/etc/machine-id`；删除它们会影响所选网络之外的身份。
+恢复写回保存的属性，同时保留 NetworkManager 租约状态；lease 模式继续从保留的租约状态选择 DUID。恢复后应核对租约和授权。迁移后若手动修改过身份字段，restore 会拒绝覆盖。移除 Nix 目标后仍可使用备份。Profile 独立于系统 generation 持久保存，因此应在回滚到不含工具的 generation 前完成恢复。保留 `/var/lib/NetworkManager/secret_key` 和 `/etc/machine-id`；删除它们会影响所选网络之外的身份。
 
 ## 有线策略
 
@@ -97,6 +97,6 @@ my.hardening.wired.persistDhcpIdentity = true;
 
 首次启用前，先构建候选配置，停止 dhcpcd，将当前 `/var/lib/dhcpcd` 目录连同所有权和权限复制到 `/persist/var/lib/dhcpcd`，再启动新 generation。首次绑定空目录会遮蔽原有 DUID 和租约；若目标已存在，应检查并协调，避免覆盖更新的状态。匿名模式忽略保留的 DUID。保持 false 则沿用既有持久化布局。
 
-重连后检查实际 MAC、IPv4/IPv6 获取和门户授权，再检查[网络就绪状态](operations_CN.md#状态与定位)。地址变化不会删除网络已经保存的记录。C 仍阻断应用出站；有意进行门户恢复时使用既有[离线恢复流程](operations_CN.md#离线恢复)。
+重连后检查实际 MAC、IPv4/IPv6 获取和门户授权，再检查[网络就绪状态](operations_CN.md#状态与定位)。C 仍阻断应用出站；有意进行门户恢复时使用既有[离线恢复流程](operations_CN.md#离线恢复)。
 
 `network-identity-config` 检查默认值、有线变体、持久化和实际选定的 nmcli 解析器。`network-identity-vm` 使用真实 dhcpcd、NetworkManager 与模拟无线电，观察每次激活的新双栈 DHCP 交换，验证轮换、profile 优先级和恢复。NetworkManager、systemd、dhcpcd 升级会选择[维护流程](maintenance_CN.md#按组件触发复核)中的 `link-identity` 组件。

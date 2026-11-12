@@ -79,7 +79,7 @@ install -d -m 0755 -o root -g root /run/proxy-mode
 install -d -m 0750 -o @clashCore@ -g @clashCore@ "$core_dir" "$data_dir"
 setpriv --reuid=@clashCore@ --regid=@clashCore@ --clear-groups \
   --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \
-  sh -c 'umask 077; touch "$1/cache.db"' sh "$data_dir"
+  sh -c 'umask 077; mkdir -p "$1/proxies"; touch "$1/cache.db"' sh "$data_dir"
 @python@ @stageTool@ stage @stageSettings@ "$real" "$config"
 
 if [ -d "/run/user/@desktopUid@" ]; then

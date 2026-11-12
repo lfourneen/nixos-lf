@@ -125,12 +125,18 @@ in
     # lives in the safe-delete skill.
     def --wrapped rm [...args: string] { ^trash-put ...$args }
 
+    # Run an external command and return its exit status without returning from
+    # the caller first. Nushell raises on a failed external, so the bare
+    # `cmd; if $env.LAST_EXIT_CODE != 0` pattern never reaches its branch.
+    def run-status [body: closure]: nothing -> int {
+      try { do $body; 0 } catch { $env.LAST_EXIT_CODE? | default 1 }
+    }
+
     # Update config
     def update [--flake: string = "/etc/nixos#lfour"] {
       print $"(ansi yellow_bold)Rebuilding system with nh...(ansi reset)"
-      sudo nh os switch --ask --bypass-root-check $flake -- --verbose
-      let exit_code = ($env.LAST_EXIT_CODE | into string)
-      if $exit_code == "0" {
+      let exit_code = (run-status { ^sudo nh os switch --ask --bypass-root-check $flake -- --verbose })
+      if $exit_code == 0 {
         print $"(ansi green_bold)System updated successfully ✓(ansi reset)"
       } else {
         print $"(ansi red_bold)Update failed [exit code: ($exit_code)] ✗(ansi reset)"
@@ -140,22 +146,20 @@ in
     # Upgrade system
     def upgrade [--flake: string = "/etc/nixos#lfour"] {
       print $"(ansi yellow_bold)Starting system upgrade...(ansi reset)"
-      
+
       let flake_dir = ($flake | split row "#" | get 0)
       print $"(ansi yellow)Updating flake inputs in ($flake_dir)...(ansi reset)"
-      sudo nix flake update --flake $flake_dir
-      let update_exit = ($env.LAST_EXIT_CODE | into string)
-      
-      if $update_exit != "0" {
+      let update_exit = (run-status { ^sudo nix flake update --flake $flake_dir })
+
+      if $update_exit != 0 {
         print $"(ansi red_bold)Flake update failed [exit code: ($update_exit)] ✗(ansi reset)"
         return
       }
-      
+
       print $"(ansi yellow)Rebuilding system with nh...(ansi reset)"
-      sudo nh os switch --ask --bypass-root-check $flake -- --verbose
-      let switch_exit = ($env.LAST_EXIT_CODE | into string)
-      
-      if $switch_exit == "0" {
+      let switch_exit = (run-status { ^sudo nh os switch --ask --bypass-root-check $flake -- --verbose })
+
+      if $switch_exit == 0 {
         print $"(ansi green_bold)Upgrade completed successfully ✓(ansi reset)"
       } else {
         print $"(ansi red_bold)Upgrade failed [exit code: ($switch_exit)] ✗(ansi reset)"
@@ -165,9 +169,8 @@ in
     # Update flake
     def flake [--dir: string = "/etc/nixos"] {
       print $"(ansi yellow)Updating flake in ($dir)...(ansi reset)"
-      sudo nix flake update --flake $dir
-      let exit_code = ($env.LAST_EXIT_CODE | into string)
-      if $exit_code == "0" {
+      let exit_code = (run-status { ^sudo nix flake update --flake $dir })
+      if $exit_code == 0 {
         print $"(ansi green_bold)Flake updated successfully ✓(ansi reset)"
       } else {
         print $"(ansi red_bold)Flake update failed [exit code: ($exit_code)] ✗(ansi reset)"
@@ -193,7 +196,7 @@ in
       $env.http_proxy = "http://127.0.0.1:${gostHttp}"
       $env.https_proxy = "http://127.0.0.1:${gostHttp}"
     }
-    
+
     # Clear the proxy environment variables
     def --env proxy-off [] {
       hide-env http_proxy
@@ -202,39 +205,12 @@ in
       # proxy-off is symmetric.
       hide-env all_proxy
       hide-env --ignore-errors HTTP_PROXY HTTPS_PROXY ALL_PROXY
-      print $"(ansi yellow)Proxy disabled.(ansi reset)"
+      print $"(ansi yellow)Shell proxy variables cleared; host A/B/C mode is unchanged.(ansi reset)"
     }
 
-    # Proxied vs fail-open (direct) egress state.
-    # The status files are written only on a flip, so gost can be dead while
-    # they still say "proxy": require file + listener + a real 204 probe.
-    def proxy-status [] {
-      let read = {|p|
-        try { open --raw $p | str trim } catch { "unknown" }
-      }
-      let g = (do $read "/run/gost-relay/status")
-      let d = (do $read "/run/dns-upstream/status")
-      let state = (try { open /run/proxy-mode/state.json } catch { {mode: unknown, reason: unknown, version: -1} })
-      let p = $state.mode
-      let why = $state.reason
-      let verification = (try { open /run/netsec/state.json } catch { {result: unknown, version: -2} })
-      let verified = $verification.result
-      let alarm = ("/run/netsec/failed" | path exists)
-      # ${gostHttp} = gost's HTTP listener (the port every proxy-aware consumer uses).
-      let listener = (try {
-        ss -H -tln | lines | any {|l| $l | str contains "127.0.0.1:${gostHttp}" }
-      } catch { false })
-      # One real request through gost; 204 is the only success.
-      let probe = (try {
-        curl -s -o /dev/null -m 2 -x http://127.0.0.1:${gostHttp} -w '%{http_code}' https://www.gstatic.com/generate_204 | str trim
-      } catch { "000" })
-      # Green only when the enforcement mode itself is `proxy`: a healthy-looking
-      # gost with mode `blocked`/`unenforced` must not read as OK.
-      let coherent = (try { proxy-control status proxy | from json | get ready } catch { false })
-      let ok = ($coherent and $listener and ($probe == "204"))
-      let color = if $ok { "green" } else { "red" }
-      let r = (if ($why | is-empty) { "-" } else { $why })
-      print $"(ansi $color)mode: ($p) ($r)(ansi reset)  egress: ($g)  DNS: ($d)  verify: ($verified)  alarm: ($alarm)  listener: (if $listener { 'up' } else { 'down' })  probe: ($probe)"
+    # The shared readiness contract follows the configured intent.
+    def --wrapped proxy-status [...args: string] {
+      ^proxy-status ...$args
     }
 
     # True while the Clash Verge GUI runs in the user session. The root
@@ -256,8 +232,8 @@ in
         print $"(ansi red_bold)Failed to stop the Clash GUI ✗(ansi reset)"
         return
       }
-      sudo proxy-control off
-      if $env.LAST_EXIT_CODE != 0 {
+      let core = (run-status { ^sudo proxy-control off })
+      if $core != 0 {
         print $"(ansi red_bold)Failed to stop the core ✗(ansi reset)"
         return
       }
@@ -271,9 +247,10 @@ in
     # Start the Clash core again (service + GUI) -> Mode B.
     def clash-on [] {
       print $"(ansi yellow_bold)Starting the Clash Verge service and GUI...(ansi reset)"
-      sudo proxy-control on
-      if $env.LAST_EXIT_CODE != 0 {
-        print $"(ansi red_bold)Core start failed; protection remains active.(ansi reset)"
+      let core = (run-status { ^sudo proxy-control on })
+      if $core != 0 {
+        print $"(ansi red_bold)Proxy preparation or startup failed. See the status below.(ansi reset)"
+        proxy-status
         # A first run has no runtime profile yet: the launcher refuses before
         # the GUI has written one. Open the GUI so it can materialize the
         # profile, then let the operator rerun clash-on.

@@ -31,7 +31,7 @@ Mihomo 为出站 socket 设置 `6666`（`0x1a0a`）mark；核心例外同时要�
 
 [DNS](dns_CN.md) 是并行链路：resolved → dnsmasq → Mihomo 或 Unbound。[Firefox](browser_CN.md) 默认使用相同的 Gost HTTP 入口；可选透明路径使用原生 DNS 和宿主 socket，受本套 TUN/防火墙约束，支持 HTTPS-RR/ECH 发现。父进程及其后代运行于[外层文件系统与桌面接口沙箱](browser_CN.md#外层沙箱)，保留桌面 UID 和本套宿主网络策略。
 
-核心内的字面或解析后私网目标按[本地 DIRECT 与远程叶节点](proxy_CN.md#域名目标)分别授权；订阅规则选中节点不等于获准访问该节点的内部网络。
+核心内的字面或解析后私网目标按[本地 DIRECT 与远程叶节点](proxy_CN.md#域名目标)分别授权；订阅规则负责选择节点，节点侧内部目标由目标授权规则控制。
 
 ## 模式与执行
 
@@ -39,15 +39,15 @@ Mihomo 为出站 socket 设置 `6666`（`0x1a0a`）mark；核心例外同时要�
 |---|---|---|---|
 | A / `direct` | 默认直连策略下冷启动，或显式 `clash-off` | 直连 | 本地验证的 Unbound DoT，必要时有界明文恢复 |
 | B / `proxy` | 代理意图、已授权核心、所需 TUN 选路和健康证明均成立 | 代理、明确例外或丢弃 | Mihomo fake-IP |
-| C / `blocked` | 已请求代理但未就绪、崩溃或不健康 | 除恢复与链路基础设施外阻断 | Unbound；外部 DoT 被切断，缓存答案可能仍可用 |
+| C / `blocked` | 已请求代理但未就绪、崩溃或不健康 | 除恢复与链路基础设施外阻断 | Unbound；外部 DoT 被切断，符合缓存条件的答案继续返回 |
 
 `proxy-mode` 遵循 root 写入的单次开机意图。`clash-on` 后关闭 GUI、停止核心或崩溃均保持 C；需要 A 时使用 `clash-off`。只启动 GUI 无法授权 A → B。可选 `my.proxy.bootMode="proxy"` 在物理网络启动前安装 C，等待 B；默认是 `"direct"`。
 
 DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明文恢复及运行时 override，保留已批准 split DNS 和 MagicDNS；默认 `"opportunistic"` 保留门户恢复。两种策略都让 dnsmasq 和核心共享域名过滤数据，覆盖代理目标检查，见 [DNS 各路径的责任](dns_CN.md#各路径的责任)。
 
-`unenforced` 表示预期内核策略无法确认或修复，是错误状态。它不表示已经得到阻断保护；使用共用就绪检查的应用会拒绝该状态。
+`unenforced` 表示预期内核策略无法确认或修复，是错误状态。使用共用就绪检查的应用会拒绝该状态。
 
-健康判断检查核心 cgroup、TCP/UDP 监听身份、受管 API、TUN 设备与路由，以及 root/桌面 UID 未打标 IPv6 的实际选路。HTTP 探针须经当前选中代理叶子完成，且日志匹配源端口；另向 fake-IP 发真实 HTTP 请求证明透明 TCP 路径。默认共享截止为 12 秒。明确的配置、路由或 TUN 失败立即阻断；观测不可用需连续两轮，间隔至少两秒。它证明抽样的 TCP 路径，不能概括全部 UDP、IPv6 或应用目的地。
+健康判断检查核心 cgroup、TCP/UDP 监听身份、受管 API、TUN 设备与路由，以及 root/桌面 UID 未打标 IPv6 的实际选路。HTTP 探针须经当前选中代理叶子完成，且日志匹配源端口；另向 fake-IP 发真实 HTTP 请求证明透明 TCP 路径。默认共享截止为 12 秒。明确的配置、路由或 TUN 失败立即阻断；观测不可用需连续两轮，间隔至少两秒。健康判定汇总这些 TCP 探测及监听、路由和策略观测。
 
 ## 防火墙生命周期
 
@@ -65,7 +65,7 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 
 启动、重载和漂移修复使用同一范围。共享 iptables-nft 表（如 `ip nat`、`ip6 nat`、`ip mangle` 和 `ip`/`ip6 filter`）以及 `inet mihomo` 等服务原生表均不在其中。外部服务应使用独立表；插入本仓库自有表的规则会受到整体替换和漂移修复管理。
 
-日常操作保留历史名称 `inet filter`、`ip proxymode_nat` 和 `ip6 proxymode_nat`。显式[旧版防火墙迁移](operations_CN.md#旧版防火墙迁移)在同一持锁事务中删除这些旧表并安装完整替代策略，不会为后续加载启用自动清理。nft 事务被拒绝时，已有表和规则保持不变。
+日常操作保留 `inet filter`、`ip proxymode_nat` 和 `ip6 proxymode_nat`。显式[表迁移](operations_CN.md#防火墙表迁移)在同一持锁事务中删除目标表并安装完整策略，清理范围限定在该命令内。事务被拒绝时保留已安装的表和规则。
 
 | Hook / priority | 用途 |
 |---|---|
@@ -85,7 +85,7 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 
 NAT 优先级排列内核共享 destination-NAT hook 中的规则查找顺序；socket 访客 DNS 的 `-90` filter 在该 hook 之后检查实际改写后的目标。
 
-B 重定向宿主公网 TCP，fake-IP 保留核心路径，其余公网出站在明确例外后丢弃。例外包括核心 mark、按 UID 限定的 Unbound DoT 与 Chrony NTS/NTP、窄 DHCP、组播和默认私网访问。Tailscale UDP 例外要求 UID 0、物理上行口，且 socket 的 `SO_MARK` 与 packet mark 都等于上游 Linux bypass mark（`0x80000`）。保留动态 peer/STUN 端口，不再整体放行未打标 root UDP。这是路由约定，不是服务身份认证或针对 root 的隔离；root 仍能设置 socket mark 或修改防火墙。当前 LKL 内核支持 `socket mark`，不支持 `socket cgroupv2`。
+B 重定向宿主公网 TCP，fake-IP 保留核心路径，其余公网出站在明确例外后丢弃。例外包括核心 mark、按 UID 限定的 Unbound DoT 与 Chrony NTS/NTP、窄 DHCP、组播和默认私网访问。Tailscale UDP 例外要求 UID 0、物理上行口，且 socket 的 `SO_MARK` 与 packet mark 都等于上游 Linux bypass mark（`0x80000`）。保留动态 peer/STUN 端口，未打标 root UDP 按普通规则处理。Root 和受管核心是可信网络管理主体，具有设置 socket mark 和修改防火墙的权限。当前 LKL 内核支持 `socket mark`，不支持 `socket cgroupv2`。
 
 [tailscale-transport.nix](../../system/config/tailscale-transport.nix) 将该 mark 作为上游常量，而非可自行分配的配置。正常系统构建会核对所选 Tailscale 源码的常量及已审查的 magicsock/STUN 打标路径。切换网络不会改变常量；升级时须通过该检查与 `proxy-tailscale-vm`，后者用所选真实 CLI 和隔离的双栈 STUN peer 验证。退回 `SO_BINDTODEVICE` 不会静默重新放行未打标 root UDP。
 
@@ -113,7 +113,7 @@ Tailscale 不自动接受 DNS、子网路由或出口节点；只有已认证 ta
 
 ## 访客与容器
 
-[guest-policy.nix](../../system/config/guest-policy.nix) 区分经宿主转发的访客网络与创建宿主 socket 的后端。私网地址本身不构成信任依据。
+[guest-policy.nix](../../system/config/guest-policy.nix) 区分经宿主转发的访客网络与创建宿主 socket 的后端。信任范围由声明的入口接口、源 CIDR 和专用后端 UID 确定。
 
 | 类别 | 身份依据 | 私网目标 | 公网目标 |
 |---|---|---|---|

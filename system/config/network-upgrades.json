@@ -115,7 +115,8 @@
         "proxy-dns-strict-vm",
         "proxy-network-vm",
         "browser-ech-vm",
-        "browser-ech-uniform-vm"
+        "browser-ech-uniform-vm",
+        "proxy-validation-tools"
       ],
       "entrypoints": [
         "config/config.go: ParseRawConfig, RawConfig/RawTun schema and controller General",
@@ -131,7 +132,8 @@
         "Shared suffix filtering precedes resolution and application dials; real addresses are pinned through remote leaves.",
         "proxyOnly refuses application DIRECT/COMPATIBLE, including renamed/nested leaves and rule-routed DNS; explicit bootstrap remains scoped.",
         "UDP mappings retain the actual leaf and target, and recheck current inlet/port/grants on cached writes.",
-        "Rule routing retains authorized domestic DIRECT; uniform routing and both real browser paths retain their distinct behavior."
+        "Rule routing retains authorized domestic DIRECT; uniform routing and both real browser paths retain their distinct behavior.",
+        "TCP retries only fully validated pinned candidates at the actual selected leaf, under one deadline; UDP retains its association target. Mutable node sources and certificate exceptions require explicit policy."
       ]
     },
     "sing-tun": {
@@ -210,7 +212,9 @@
         "proxy-control-config",
         "proxy-gui",
         "proxy-profile",
-        "proxy-control-vm"
+        "proxy-control-vm",
+        "proxy-validation-tools",
+        "proxy-regressions"
       ],
       "entrypoints": [
         "helper src/core/manager.rs, logger.rs and reconcile.rs",
@@ -220,7 +224,8 @@
       "invariants": [
         "Root spawn uses only the root-owned packaged launcher; caller log/socket/PID paths never drive privileged file/process operations.",
         "Snapshot authorization covers YAML/assets, is single-use/boot-scoped and survives ordinary helper restart with correct permissions.",
-        "GUI binary remains upstream; actual core runs as the fixed UID with only NET_ADMIN and NET_RAW."
+        "GUI binary remains upstream; actual core runs as the fixed UID with only NET_ADMIN and NET_RAW.",
+        "Read-only preflight precedes proxy intent changes. Fast checks reuse full snapshot hashes only while protected identity and ctime metadata match, with periodic full verification."
       ]
     },
     "dns": {
@@ -235,7 +240,8 @@
         "proxy-dns-strict-rules",
         "proxy-dns-strict-vm",
         "proxy-egress-control-vm",
-        "proxy-network-vm"
+        "proxy-network-vm",
+        "proxy-validation-tools"
       ],
       "entrypoints": [
         "dnsmasq src/forward.c: strict-order terminal retry and sent-to index",
@@ -247,7 +253,8 @@
         "Terminal UDP SERVFAIL/REFUSED and DNSSEC EDE reach clients even for duplicate upstream addresses.",
         "DNSSEC, filtering and encryption remain separate; strict public DNS cannot use an override, forged lease or leftover set.",
         "Unbound notify support and persistent trust anchors remain; NTS keeps authentication/certificate time checks and no plaintext fallback.",
-        "Expired or ambiguous leases remain charged across coordinator restart; only adjacent validated/live rounds replenish. Cached NSEC never substitutes for a fresh TLS exchange."
+        "Expired or ambiguous leases remain charged across coordinator restart; only adjacent validated/live rounds replenish. Cached NSEC never substitutes for a fresh TLS exchange.",
+        "DNS profile edits preserve only whitelisted DNS fields in a private persistent backup; restoration refuses manual conflicts. Dual-stack DoT endpoints bind addresses and certificate names consistently."
       ]
     },
     "firefox": {
@@ -309,7 +316,10 @@
         "proxy-guest-rules",
         "proxy-firewall-vm",
         "proxy-control-vm",
-        "proxy-network-vm"
+        "proxy-network-vm",
+        "proxy-validation-tools",
+        "proxy-regressions",
+        "proxy-guest-vm"
       ],
       "entrypoints": [
         "nft transaction parsing, socket/conntrack expressions and JSON output",

@@ -121,6 +121,30 @@ in
     description = "Known RFC 6052 translation prefixes (/32, /40, /48, /56, /64 or /96). Embedded non-public IPv4 is refused, including literal targets. Declare network-specific prefixes explicitly; arbitrary unknown translators cannot be detected.";
   };
 
+  options.my.proxy.subscriptionTrust = lib.mkOption {
+    type = lib.types.enum [ "fixed" "source" ];
+    default = "source";
+    description = "Fixed refuses proxy providers so node contents belong to the authorized snapshot. Source trusts provider refreshes; certificate checks still apply to each parsed node.";
+  };
+
+  options.my.proxy.insecureProxyExceptions = lib.mkOption {
+    type = lib.types.listOf lib.types.nonEmptyStr;
+    default = [ ];
+    description = "Explicit leaf names allowed to disable TLS certificate validation, including provider nodes.";
+  };
+
+  options.my.proxy.allowDynamicRemoteGrants = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Allow remoteTargetGrants with mutable proxy providers; the provider may replace a same-named leaf.";
+  };
+
+  options.my.proxy.dnsStaleWaitMilliseconds = lib.mkOption {
+    type = lib.types.ints.between 0 1800;
+    default = 300;
+    description = "Unbound wait for fresh upstream data before serving eligible validated stale cache.";
+  };
+
   options.my.proxy.gostPackage = lib.mkOption {
     type = lib.types.package;
     internal = true;
@@ -270,6 +294,12 @@ in
   # answer, so it must not be caught by the Merge template's fake-ip-filter; the
   # home side asserts that at build time (a filtered name would break the TUN
   # layer of the health gate and lock the host in Mode C).
+  options.my.proxy.tunProbeNames = lib.mkOption {
+    type = lib.types.nonEmptyListOf (lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]");
+    default = lib.unique [ config.my.proxy.tunProbeName "cp.cloudflare.com" ];
+    description = "Independent TUN DNS/HTTP probe candidates under the shared health deadline.";
+  };
+
   options.my.proxy.tunProbeName = lib.mkOption {
     type = lib.types.str;
     default = "www.baidu.com";

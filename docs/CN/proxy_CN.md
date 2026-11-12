@@ -16,11 +16,13 @@
 
 Helper 保留身份切换、目录所有权和子进程管理所需权限，仅允许打包的 root 所有启动器作为可执行文件。受管日志固定在 `/var/lib/clash-verge-service/logs` 并固定轮转；客户端 IPC 路径不驱动 root chmod/unlink 或启动恢复。Systemd 管理子进程清理。Helper 私有状态与 `/var/lib/clash-core` 的可写缓存分开。
 
-这些约束减少桌面可控制的 root 操作。核心仍有宿主 `NET_ADMIN`，不能视为与宿主网络隔离。同桌面 UID 程序可以调用允许的 GUI/API；helper 上游 IPC 协议不能代替执行路径和文件操作限制。
+Helper 在特权边界执行固定路径和文件操作约束。核心持有宿主 `NET_ADMIN`，属于可信网络管理层；同桌面 UID 程序可以调用允许的 GUI/API。
 
 显式启用的 IPv4 访客 TPROXY 入口绑定 `0.0.0.0:7896`；普通 mixed/DNS/controller 端点在 `allow-lan=false` 下仍仅本机。打包监听器单独处理该绑定并选择 IPv4 socket，进入 B 前检查 TCP/UDP 的 UID 与服务 cgroup；访客接口/源地址授权仍由防火墙负责。核心后续 auto-redirect 保留自有访客 mark 对应的透明 socket。见[访客网络](network_CN.md#访客与容器)。
 
 ## 配置授权
+
+`proxy-control preflight` 检查桌面配置、必需资源和受管解析约束，不改变网络意图。`clash-on` 以预检成功为导入前提；缺失输入可在明确选择的 A 中准备，预检失败保留当前模式。
 
 `clash-on` 写入代理意图，进入 C 并开始新导入会话：清除旧授权，打开**一次性 300 秒**窗口。GUI 提供生效配置，打包启动器在共享授权锁下导入后再启动核心。失败也消费窗口，修正输入后需重新 `clash-on`。
 
@@ -30,7 +32,7 @@ Helper 保留身份切换、目录所有权和子进程管理所需权限，仅�
 
 普通重启要求 GUI YAML 匹配且快照摘要完整，复用已授权数据库；GUI 更新数据库不会替换该授权。导入新 YAML/geodata 需要再次 `clash-on`。受管 geodata 下载禁用，缺失或损坏数据库也不能自动替换。快照跨 helper 重启保留，健康检查复核摘要；`clash-off` 清除单次开机授权并请求直连。
 
-导入授权的是该会话选中的输入，不能使已失陷桌面账户变得可信。授权前应确认订阅和配置来源。
+每次导入授权该会话选中的 YAML 和资源；桌面账户及其选择的订阅、配置来源构成输入信任边界。
 
 ## 受管 profile 与控制 API
 
@@ -50,6 +52,18 @@ Helper 保留身份切换、目录所有权和子进程管理所需权限，仅�
 
 Root 策略同时指定共享域名过滤文件、附加名单与例外。核心在 hosts/缓存/fake-IP 前检查 DNS，在 TCP/UDP 拨号前检查应用目标，使 HTTP/SOCKS 代解析使用与系统 DNS 相同的名单。内部引导解析查询也经过过滤，但其传输与目标验证范围独立；split DNS、原生 MagicDNS 和字面 IP 边界见 [DNS](dns_CN.md)。
 
+## 订阅信任
+
+`my.proxy.subscriptionTrust="source"` 将 proxy provider 视为可信的可更新来源；`"fixed"` 禁止 provider，使内联节点内容纳入授权 YAML 快照。`proxy-control preflight` 显示内联节点数、provider 数、来源主机和申请的证书例外数量，不输出订阅 URL 或凭据。
+
+全局 merge 脚本过滤内联节点中启用 `skip-cert-verify` 的节点，并移除分组中的对应引用。`my.proxy.insecureProxyExceptions` 点名的节点保留；没有 provider 成员的分组被清空时，配置生成终止。核心在 per-profile 扩展和 provider override 处理后应用同一份例外名单。
+
+证书例外按叶节点名称匹配，provider 用同名节点替换服务器时沿用该例外。可变 provider 与 `remoteTargetGrants` 并用还需 `allowDynamicRemoteGrants=true`。固定模式将内联节点内容绑定到每次授权导入。
+
+预检检查生成的配置、资源和受管解析器，单独报告证书策略拒绝并记录脱敏的准备结果。Provider 内容由核心在加载和刷新时校验。快照中的 root 所有 `proxies/` 链接指向可写的 `/var/lib/clash-core/proxies/`，HTTP provider 默认使用此目录，显式 provider 路径也须位于相对 `proxies/` 目录内。HTTP provider 优先读取缓存，缓存被拒绝后尝试远端；刷新被拒绝时保留上次接受的节点和缓存。初始化失败期间保留声明的 fallback payload；更新间隔为正数的 provider 自动重试。
+
+快照快速检查比较文件身份、权限、大小及 ctime/mtime 与完整验证记录。授权变化、元数据变化或 60 秒间隔触发完整 SHA-256 校验，启动和导入始终执行完整校验，无法观察启动身份的沙箱也执行完整校验。快照文件及验证记录仅由受信任 root 写入。
+
 ## 路由策略
 
 ```nix
@@ -57,7 +71,7 @@ my.proxy.proxyOnly = false; # 默认保留订阅 Rule 分流。
 # my.proxy.proxyOnly = true; # 使用订阅最终代理 MATCH。
 ```
 
-默认保留国内 DIRECT，并前置已知探针/下载域代理规则。未列出的 IP 回显资源仍可能命中 DIRECT，看到真实出口。健康检查只证明其配置的样本路径。
+默认保留国内 DIRECT，并为配置的探针/下载域前置代理规则；其它目标按订阅规则选路。健康探测使用配置的样本目标。
 
 `true` 将进入核心的应用流量统一交给订阅最终代理 MATCH，要求存在可用代理兜底，覆盖地理/进程分流及 profile REJECT。核心同时拒绝应用 DIRECT/COMPATIBLE TCP/UDP，包括组内 direct 叶子和改名适配器。按规则路由的 DNS 也受约束；显式引导/端点解析和 `#DIRECT` MagicDNS 仍豁免。
 
@@ -70,6 +84,10 @@ my.proxy.proxyOnly = false; # 默认保留订阅 Rule 分流。
 受管核心在 Rule 和统一代理模式均禁用嗅探，使用显式目标和 fake-IP 映射作为域名路由身份；ECH 掩护 SNI 不能替代拨号目标，字面 IP 使用 IP 规则。Parser 也将旧 GUI 配置规范到这一策略，见[浏览器 ECH 发现](browser_CN.md#ech-发现与代理兼容)。
 
 [target_guard.go](../../system/programs/systemd/netsec/target_guard.go) 在 TCP/UDP 出站前校验应用目标。公网域名必须在核心本地解析得到非空、全部为公网的答案；解析错误允许重试一次。选定 IP 同时固定用于 DIRECT 和远程代理拨号，不交给节点再次解析。`privateTargetDomains` 中的内部后缀及已认证 MagicDNS 后缀可以得到私网答案，但仍需本地解析、固定地址和出口授权；后缀本身不建立解析路由，也不能绕过共享域名过滤。
+
+TCP 在实际选定的叶节点交错尝试已验证的 IPv4/IPv6 候选，最多八个，单次上限两秒、总截止六秒。每个候选均需通过该叶节点的出站授权；节点只接收固定 IP，不执行目标域名解析。UDP 为关联固定单一目标。
+
+核心在拨号返回错误时尝试下一候选；拨号成功后交付连接，应用数据沿该连接传输。乐观确认或单向代理协议以隧道建立为拨号成功点，目标地址回退在该成功点结束。
 
 ### 本地与远程授权
 
@@ -102,13 +120,13 @@ my.proxy.remoteTargetGrants = [{
 
 ### 地址类别与模式
 
-IPv4-mapped 地址在授权前规范为 IPv4。不可授权的元数据清单包括 `169.254.169.254`、`169.254.170.2`、`100.100.100.200` 和 `fd00:ec2::254`；带 zone 的 IPv6 字面地址被拒绝。保留/过渡地址清单是针对性的，不代表覆盖整个 IANA 特殊用途表或所有供应商的元数据服务。
+IPv4-mapped 地址在授权前规范为 IPv4。不可授权的元数据清单包括 `169.254.169.254`、`169.254.170.2`、`100.100.100.200` 和 `fd00:ec2::254`；带 zone 的 IPv6 字面地址被拒绝。
 
-始终识别知名前缀 `64:ff9b::/96`；`nat64Prefixes` 可声明其它 [RFC 6052](https://www.rfc-editor.org/rfc/rfc6052.html) 翻译前缀，长度限 32、40、48、56、64、96，重叠时采用更精确前缀。内嵌公网 IPv4 可用，私网、元数据和合成目标拒绝连接。本地用途 `64:ff9b:1::/48` 只有显式声明为翻译前缀后才按内嵌地址处理。仅凭地址不能识别未知翻译或网关行为。
+始终识别知名前缀 `64:ff9b::/96`；`nat64Prefixes` 可声明其它 [RFC 6052](https://www.rfc-editor.org/rfc/rfc6052.html) 翻译前缀，长度限 32、40、48、56、64、96，重叠时采用更精确前缀。内嵌公网 IPv4 可用，私网、元数据和合成目标拒绝连接。本地用途 `64:ff9b:1::/48` 只有显式声明为翻译前缀后才按内嵌地址处理。
 
 fake-IP 池只表示路由身份，不能成为实际出站目标。必须先通过有效映射恢复域名，再执行过滤、解析和授权。缺失映射、真实 DNS 答案携带合成目标均被拒绝，自定义地址池也受检查。
 
-这些规则约束到达核心的应用流量，通常处于 B。A 的 Gost/原生 socket 按 A 防火墙策略保留字面 HTTP 门户；C 在核心之前阻断普通应用，本地和远程授权都不能重新放行。显式内部引导、代理端点传输及 `#DIRECT` MagicDNS 保留受信基础设施范围，按规则 DNS 不继承该豁免。原生 LAN 和访客转发有独立策略；root、持有 `NET_ADMIN` 的核心及已授权基础设施仍受信任，因此不能宣称通用内部网络隔离。
+这些规则约束到达核心的应用流量，通常处于 B。A 的 Gost/原生 socket 按 A 防火墙策略保留字面 HTTP 门户；C 在核心之前阻断普通应用，本地和远程授权都不能重新放行。显式内部引导、代理端点传输及 `#DIRECT` MagicDNS 保留受信基础设施范围，按规则 DNS 不继承该豁免。原生 LAN 和访客转发有独立策略；Root、持有 `NET_ADMIN` 的核心及已授权基础设施属于可信网络管理层。
 
 ## Gost 生命周期
 

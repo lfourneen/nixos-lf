@@ -41,7 +41,7 @@ my.hardening.wifi.identities = {
 
 The migration tool sets a common `connection.stable-id` seed for DHCPv4 client-id/IAID, DHCPv6 DUID/IAID and stable IPv6 address generation. Random mode adds NetworkManager's per-activation random substitution. It also prefers temporary IPv6 addresses and disables DHCP hostname transmission, clearing saved hostname/FQDN and vendor-class values. These relationships use NetworkManager's [stable-id substitutions](https://networkmanager.dev/docs/api/latest/settings-connection.html) and [DHCPv4 settings](https://networkmanager.dev/docs/api/latest/settings-ipv4.html).
 
-Separate profile UUIDs can give separate identities to networks sharing an SSID; select the intended profile explicitly when SSIDs overlap. Increment `epoch` and explicitly apply the target to rotate derived identifiers. Fixed and permanent modes retain their selected MAC while their derived DHCP/IPv6 identifiers change. Service discovery, authentication credentials and account activity can still associate connections.
+Separate profile UUIDs can give separate identities to networks sharing an SSID; select the intended profile explicitly when SSIDs overlap. Increment `epoch` and explicitly apply the target to rotate derived identifiers. Fixed and permanent modes retain their selected MAC while their derived DHCP/IPv6 identifiers change. Service discovery, authentication credentials and account sessions retain their own identifiers.
 
 ## Apply and restore
 
@@ -69,7 +69,7 @@ sudo network-identity restore "$profile_uuid"
 sudo nmcli connection up uuid "$profile_uuid"
 ```
 
-Restore reinstates saved properties and retains NetworkManager lease state; the default lease-based DUID can therefore follow its most recent lease. Check leases and authorization after restoring. Restore refuses to overwrite identity fields edited after migration. The backup remains usable after removing the Nix target. Saved profiles persist independently of system generations: restore before rolling back to a generation without the tool. Keep `/var/lib/NetworkManager/secret_key` and `/etc/machine-id`; deleting either changes identity beyond the selected network.
+Restore reinstates saved properties and retains NetworkManager lease state; lease-based DUID selection continues to use that lease state. Check leases and authorization after restoring. Restore refuses to overwrite identity fields edited after migration. The backup remains usable after removing the Nix target. Saved profiles persist independently of system generations: restore before rolling back to a generation without the tool. Keep `/var/lib/NetworkManager/secret_key` and `/etc/machine-id`; deleting either changes identity beyond the selected network.
 
 ## Wired policy
 
@@ -97,6 +97,6 @@ my.hardening.wired.persistDhcpIdentity = true;
 
 Before first enabling this option, build the candidate, stop dhcpcd and copy its current `/var/lib/dhcpcd` directory, including ownership and permissions, to `/persist/var/lib/dhcpcd`. Prepare this before booting the new generation: an empty first bind would hide the existing DUID and leases. If the destination already exists, inspect and reconcile it without overwriting newer state. Anonymous mode ignores the retained DUID. Leaving the option false retains the existing persistence layout.
 
-After reconnecting, check the actual MAC, IPv4/IPv6 acquisition and portal authorization, then [network readiness](operations.md#state-and-diagnosis). A changed address does not erase records already held by the network. C still blocks application egress; intentional portal recovery uses the existing [offline recovery procedure](operations.md#offline-recovery).
+After reconnecting, check the actual MAC, IPv4/IPv6 acquisition and portal authorization, then [network readiness](operations.md#state-and-diagnosis). C still blocks application egress; intentional portal recovery uses the existing [offline recovery procedure](operations.md#offline-recovery).
 
 `network-identity-config` checks defaults, wired variants, persistence and the actual selected nmcli parser. `network-identity-vm` uses real dhcpcd, NetworkManager and simulated Wi-Fi radios to observe fresh dual-stack DHCP exchanges, identity rotation, profile precedence and restore. NetworkManager, systemd and dhcpcd upgrades select the `link-identity` component in the [maintenance workflow](maintenance.md#component-review-gate).

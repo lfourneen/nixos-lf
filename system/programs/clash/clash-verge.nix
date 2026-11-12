@@ -33,6 +33,10 @@ let
     state = "/run/proxy-mode";
     data = "/var/lib/clash-core";
     setpriv = "${pkgs.util-linux}/bin/setpriv";
+    yq = "${pkgs.yq-go}/bin/yq";
+    snapshot_tool = "${./clash-verge-stage.py}";
+    managed_core = "${managedCore}/bin/mihomo";
+    managed_policy = pkgs.writeText "mihomo-preflight-policy.json" (builtins.toJSON config.my.proxy.managedProfile);
   });
 
   # Root launcher behind bin/verge-mihomo. It enforces the clash-on intent,
@@ -88,6 +92,7 @@ let
       (netsecDir + "/policy_middleware_test.go")
       (netsecDir + "/managed_direct_test.go")
       (netsecDir + "/managed_target_test.go")
+      (netsecDir + "/managed_provider_test.go")
       (netsecDir + "/managed_dns_test.go")
       (netsecDir + "/managed_udp_test.go")
       (netsecDir + "/target_guard.go")
@@ -107,7 +112,7 @@ let
       go test -mod=vendor ./config ./hub/route -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/inbound ./transport/socks5 -count=1
       go test -mod=vendor ./component/lfguard -count=1
-      go test -mod=vendor ./adapter -run '^TestLFManaged' -count=1
+      go test -mod=vendor ./adapter ./adapter/provider -run '^TestLFManaged' -count=1
       go test -mod=vendor ./dns -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/outbound -run '^TestLFManagedDirect' -count=1
       go test -mod=vendor ./tunnel -run '^TestLFManaged' -count=1

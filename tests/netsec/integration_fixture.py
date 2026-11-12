@@ -19,6 +19,11 @@ def prepare():
         target[parts[-1]] = value
     profile.update({
         'log-level': 'info', 'mode': 'rule',
+        'hosts': {
+            'fallback.fixture.example': ['203.0.113.11', '203.0.113.10'],
+            'fallback6.fixture.example': ['203.0.113.11', '2001:db8:ffff::10'],
+            'fallback-mixed.fixture.example': ['203.0.113.10', '100.67.0.1'],
+        },
         'proxies': [{'name': 'Fixture', 'type': 'socks5', 'server': '100.67.0.1',
                      'port': 18080, 'udp': True}],
         'proxy-groups': [{'name': 'Choice', 'type': 'load-balance',

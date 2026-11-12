@@ -9,8 +9,10 @@ import (
 	"net/netip"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	C "github.com/metacubex/mihomo/constant"
 )
@@ -25,22 +27,25 @@ type targetGrant struct {
 }
 
 type policy struct {
-	ProxyOnly          bool          `json:"proxy-only"`
-	Prefixes           []string      `json:"prefixes"`
-	AllowedDomains     []string      `json:"allowed-domains"`
-	MagicDNSSuffixFile string        `json:"magic-dns-suffix-file"`
-	BlockedDomainsFile string        `json:"blocked-domains-file"`
-	BlockedDomains     []string      `json:"blocked-domains"`
-	BlockExceptions    []string      `json:"blocked-domain-exceptions"`
-	LocalTargetCIDRs   []string      `json:"local-target-cidrs"`
-	RemoteTargetGrants []targetGrant `json:"remote-target-grants"`
-	NAT64Prefixes      []string      `json:"nat64-prefixes"`
-	FakeIPPrefix       string        `json:"fake-ip-prefix"`
-	local              []netip.Prefix
-	nat64              []netip.Prefix
-	fake               netip.Prefix
-	parsed             []netip.Prefix
-	blockedNames       map[string]bool
+	SubscriptionTrust        string        `json:"subscription-trust"`
+	InsecureProxyExceptions  []string      `json:"insecure-proxy-exceptions"`
+	AllowDynamicRemoteGrants bool          `json:"allow-dynamic-remote-grants"`
+	ProxyOnly                bool          `json:"proxy-only"`
+	Prefixes                 []string      `json:"prefixes"`
+	AllowedDomains           []string      `json:"allowed-domains"`
+	MagicDNSSuffixFile       string        `json:"magic-dns-suffix-file"`
+	BlockedDomainsFile       string        `json:"blocked-domains-file"`
+	BlockedDomains           []string      `json:"blocked-domains"`
+	BlockExceptions          []string      `json:"blocked-domain-exceptions"`
+	LocalTargetCIDRs         []string      `json:"local-target-cidrs"`
+	RemoteTargetGrants       []targetGrant `json:"remote-target-grants"`
+	NAT64Prefixes            []string      `json:"nat64-prefixes"`
+	FakeIPPrefix             string        `json:"fake-ip-prefix"`
+	local                    []netip.Prefix
+	nat64                    []netip.Prefix
+	fake                     netip.Prefix
+	parsed                   []netip.Prefix
+	blockedNames             map[string]bool
 }
 
 var current atomic.Pointer[policy]
@@ -467,13 +472,133 @@ func Protect(ctx context.Context, original, dial *C.Metadata,
 			return nil, fmt.Errorf("managed target guard: private DNS answer")
 		}
 	}
-	result.DstIP = ips[0].Unmap()
+	// Validate the entire answer set before bounding or reordering candidates.
+	// Alternate families while preserving resolver order within each family.
+	var v4, v6 []netip.Addr
+	seen := map[netip.Addr]bool{}
 	for _, ip := range ips {
-		if ip.Unmap().Is4() {
-			result.DstIP = ip.Unmap()
-			break
+		ip = ip.Unmap()
+		if seen[ip] {
+			continue
 		}
+		seen[ip] = true
+		if ip.Is4() {
+			v4 = append(v4, ip)
+		} else {
+			v6 = append(v6, ip)
+		}
+	}
+	var candidates []netip.Addr
+	for len(v4) > 0 || len(v6) > 0 {
+		if len(v4) > 0 {
+			candidates = append(candidates, v4[0])
+			v4 = v4[1:]
+		}
+		if len(v6) > 0 {
+			candidates = append(candidates, v6[0])
+			v6 = v6[1:]
+		}
+	}
+	result.DstIP = candidates[0]
+	if original.NetWork == C.TCP {
+		if len(candidates) > 8 {
+			candidates = candidates[:8]
+		}
+		result.LFCandidates = candidates
 	}
 	result.Host = ""
 	return result, nil
+}
+
+// DialTCP retries only validated literal targets at the actual selected leaf.
+// No payload has been delivered until a dial succeeds; UDP stays single-target.
+func DialTCP(ctx context.Context, metadata *C.Metadata,
+	dial func(context.Context, *C.Metadata) (C.Conn, error)) (C.Conn, error) {
+	if len(metadata.LFCandidates) == 0 {
+		return dial(ctx, metadata)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	var last error
+	for _, ip := range metadata.LFCandidates {
+		target := metadata.Clone()
+		target.LFCandidates = nil
+		target.Host, target.DstIP = "", ip
+		attempt, done := context.WithTimeout(ctx, 2*time.Second)
+		conn, err := dial(attempt, target)
+		done()
+		if err == nil {
+			metadata.DstIP = ip
+			return conn, nil
+		}
+		if conn != nil {
+			conn.Close()
+		}
+		last = err
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, fmt.Errorf("validated destination candidates unavailable: %w", last)
+}
+
+// Called for inline nodes and provider refreshes by the real adapter parser.
+func CheckProxy(mapping map[string]any) error {
+	p := current.Load()
+	if p == nil {
+		return nil
+	}
+	name, _ := mapping["name"].(string)
+	for _, allowed := range p.InsecureProxyExceptions {
+		if name == allowed {
+			return nil
+		}
+	}
+	var inspect func(any) bool
+	inspect = func(value any) bool {
+		switch object := value.(type) {
+		case map[string]any:
+			for key, value := range object {
+				if strings.EqualFold(strings.ReplaceAll(key, "_", "-"), "skip-cert-verify") {
+					// Match the upstream decoder's weak Boolean forms, and
+					// refuse unknown representations rather than guessing.
+					switch flag := value.(type) {
+					case bool:
+						if flag {
+							return true
+						}
+					case string:
+						parsed, err := strconv.ParseBool(flag)
+						if err != nil || parsed {
+							return true
+						}
+					case int:
+						if flag != 0 {
+							return true
+						}
+					case float64:
+						if flag != 0 {
+							return true
+						}
+					default:
+						return true
+					}
+				}
+				if inspect(value) {
+					return true
+				}
+			}
+		case []any:
+			for _, value := range object {
+				if inspect(value) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if inspect(mapping) {
+		return fmt.Errorf("managed proxy requires an explicit certificate-validation exception")
+	}
+	return nil
 }

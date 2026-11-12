@@ -11,9 +11,28 @@ import time
 def command(argv):
     try:
         result = subprocess.run(argv, text=True, capture_output=True, timeout=5, check=False)
-        return {"available": result.returncode == 0, "output": result.stdout.strip()}
-    except (OSError, subprocess.TimeoutExpired):
-        return {"available": False, "output": ""}
+        error = None
+        if result.returncode:
+            detail = result.stderr[:4096].lower()
+            if any(token in detail for token in ('permission denied', 'operation not permitted', 'access denied', 'not authorized')):
+                error = 'permission-denied'
+            elif any(token in detail for token in ('no such', 'does not exist', 'cannot find device')):
+                error = 'not-found'
+            elif any(token in detail for token in ('failed to connect', 'connection refused', 'not running')):
+                error = 'service-unavailable'
+            else:
+                error = 'command-failed'
+        return {"available": result.returncode == 0, "output": result.stdout.strip(),
+                "returncode": result.returncode,
+                # Diagnostics are fixed local commands. Avoid returning arbitrary
+                # stderr which may contain unrelated service configuration.
+                "error": error}
+    except subprocess.TimeoutExpired:
+        return {"available": False, "output": "", "returncode": None, "error": "timeout"}
+    except OSError as error:
+        return {"available": False, "output": "", "returncode": None,
+                "error": "permission-denied" if isinstance(error, PermissionError) else
+                         "command-missing" if isinstance(error, FileNotFoundError) else "os-error"}
 
 
 def read_json(path):
@@ -27,8 +46,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("settings")
     parser.add_argument("--sample-seconds", type=int, choices=range(1, 61))
+    parser.add_argument("--policy-only", action="store_true")
     args = parser.parse_args()
     settings = read_json(args.settings)
+    if args.policy_only:
+        print(json.dumps(settings['policy'], ensure_ascii=False, indent=2))
+        return
     service_args = [settings["systemctl"], "show", "clash-verge.service", "gost-relay.service",
                     "proxy-mode.service", "dns-upstream.service", "-p", "Id", "-p", "CPUUsageNSec",
                     "-p", "MemoryCurrent", "-p", "NRestarts"]

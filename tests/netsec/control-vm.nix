@@ -41,6 +41,7 @@ pkgs.testers.runNixOSTest {
       ../../system/programs/systemd/proxy-mode.nix
       ../../system/programs/systemd/dns-upstream.nix
       ../../system/programs/systemd/gost-relay.nix
+      ../../system/programs/systemd/network-observe.nix
       ../../system/programs/clash/runtime.nix
     ] ++ lib.optional guests ./guest-config.nix
       ++ lib.optional (ech != null) ./firefox-desktop.nix;
@@ -103,6 +104,7 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-integration-policy.json".text = builtins.toJSON config.my.proxy.managedProfile;
     environment.etc."netsec-control.py".source = ./control_fixture.py;
     environment.etc."netsec-dataplane.py".source = ./dataplane_fixture.py;
+    environment.etc."network-benchmark.py".source = ../../scripts/network-benchmark.py;
     environment.etc."netsec-target.py" = lib.mkIf targetPolicy { source = ./target_fixture.py; };
     environment.etc."netsec-launcher".text = "${clashPackage}/bin/verge-mihomo";
     environment.etc."netsec-core".text = "${clashPackage.managedCore}/bin/mihomo";
@@ -239,12 +241,67 @@ pkgs.testers.runNixOSTest {
         machine.succeed("test ! -e /tmp/impostor-received; systemctl stop port-impostor; nft delete table inet test_redirect; systemctl start gost-relay.service proxy-mode.service")
     ''}
 
+    ${pkgs.lib.optionalString dataplane ''
+    with subtest("read-only preflight and controlled direct baseline"):
+        machine.succeed("python3 /etc/netsec-control.py preflight-rejection")
+        machine.succeed("mv /home/lfour/.local/share/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml /tmp/preflight-profile.yaml")
+        machine.fail("proxy-control preflight")
+        machine.succeed("test $(jq -r .mode /run/proxy-mode/state.json) = direct; mv /tmp/preflight-profile.yaml /home/lfour/.local/share/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml")
+        machine.succeed("proxy-control preflight | jq -e .ready; systemd-run --unit=benchmark-origin ip netns exec outside ${pkgs.python3}/bin/python3 /etc/network-benchmark.py serve --bind 0.0.0.0")
+        machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18094")
+        machine.succeed("setpriv --reuid=1000 --clear-groups python3 /etc/network-benchmark.py measure --url http://203.0.113.10:18094 --samples 10 >/tmp/baseline-direct.json")
+        machine.copy_from_vm("/tmp/baseline-direct.json")
+    ''}
+    ${pkgs.lib.optionalString dataplane ''
+    machine.succeed("python3 /etc/netsec-control.py provider-setup && systemd-run --unit=provider-origin ip netns exec outside ${pkgs.python3}/bin/python3 -m http.server 18095 --bind 100.67.0.1 --directory /tmp/netsec-provider")
+    machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18095")
+    ''}
     machine.succeed("python3 /etc/netsec-control.py refuse")
-    machine.succeed("proxy-control on")
+    machine.succeed("proxy-control on || { cat /run/proxy-mode/preflight.log; exit 1; }")
     machine.wait_for_file("/run/clash-verge-rev/service.sock")
     machine.succeed("python3 /etc/netsec-control.py start")
     wait_proxy()
+    machine.succeed("setpriv --reuid=1000 --clear-groups proxy-status --json | jq -e '(.ready | type) == \"boolean\" and .mode == \"proxy\"'")
+    machine.succeed("setpriv --reuid=1000 --clear-groups proxy-status --no-color | grep -q 'Network status'")
     ${pkgs.lib.optionalString dataplane ''
+    with subtest("provider cache writes and rejected refresh preserve working inline routing"):
+        machine.succeed("python3 /etc/netsec-control.py provider-cache-boundary")
+        machine.wait_until_succeeds("python3 /etc/netsec-control.py provider-check")
+        machine.succeed("python3 /etc/netsec-control.py provider-reject-refresh")
+        machine.succeed("python3 /etc/netsec-control.py provider-check")
+        machine.succeed("proxy-control status auto | jq -e '.mode == \"proxy\"'")
+        machine.succeed("python3 /etc/netsec-control.py provider-good")
+    ''}
+    ${pkgs.lib.optionalString dataplane ''
+    with subtest("controlled native and explicit proxy baselines"):
+        machine.succeed("setpriv --reuid=1000 --clear-groups python3 /etc/network-benchmark.py measure --url http://203.0.113.10:18094 --samples 10 >/tmp/baseline-tun.json")
+        machine.succeed("setpriv --reuid=1000 --clear-groups python3 /etc/network-benchmark.py measure --url http://203.0.113.10:18094 --proxy http://127.0.0.1:33332 --samples 10 >/tmp/baseline-http-proxy.json")
+        machine.copy_from_vm("/tmp/baseline-tun.json")
+        machine.copy_from_vm("/tmp/baseline-http-proxy.json")
+        machine.succeed("python3 /etc/network-benchmark.py snapshot --tool ${../../system/programs/clash/clash-verge-stage.py} >/tmp/baseline-snapshot.json")
+        machine.copy_from_vm("/tmp/baseline-snapshot.json")
+        machine.succeed("proxy-inspect --sample-seconds 5 >/tmp/baseline-services.json")
+        machine.copy_from_vm("/tmp/baseline-services.json")
+    with subtest("validated TCP candidates survive an unreachable first address"):
+        import json, time
+        machine.succeed("ip -n outside addr add 203.0.113.11/32 dev peer0; ip -n outside -6 addr add 2001:db8:ffff::10/128 dev peer0 nodad")
+        machine.succeed("systemd-run --unit=benchmark-origin6 ip netns exec outside ${pkgs.python3}/bin/python3 /etc/network-benchmark.py serve --bind 2001:db8:ffff::10")
+        machine.succeed("ip netns exec outside nft add table inet candidate_fault; ip netns exec outside nft 'add chain inet candidate_fault input { type filter hook input priority -10; policy accept; }'; ip netns exec outside nft add rule inet candidate_fault input ip daddr 203.0.113.11 tcp dport 18094 counter drop")
+        machine.succeed("systemctl stop control-node.service; systemd-run --unit=candidate-node ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-dataplane.py strict-socks")
+        machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18080")
+        latencies = []
+        for name in ("fallback.fixture.example", "fallback6.fixture.example"):
+            for _ in range(5):
+                start = time.monotonic()
+                machine.succeed(f"setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 --max-time 8 -fsS http://{name}:18094/1 >/dev/null")
+                latencies.append(time.monotonic() - start)
+        machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 --max-time 8 -f http://fallback-mixed.fixture.example:18094/1")
+        assert max(latencies) < 8, latencies
+        print("candidate fault latencies:", json.dumps(latencies))
+        machine.succeed("ip netns exec outside nft delete table inet candidate_fault; ip -n outside addr del 203.0.113.11/32 dev peer0; systemctl stop benchmark-origin6 candidate-node; ip -n outside -6 addr del 2001:db8:ffff::10/128 dev peer0")
+        machine.succeed(f"systemd-run --unit=control-node ip netns exec outside {core} -d /run/netsec-node -f /run/netsec-node.json")
+        machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18080")
+        wait_proxy()
     with subtest("existing native TUN and SOCKS UDP receive paths are revoked in C"):
         import json
         machine.succeed("ip -n outside -6 addr add 2001:db8:ffff::10/128 dev peer0 nodad; systemd-run --unit=receive-push ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-dataplane.py push")

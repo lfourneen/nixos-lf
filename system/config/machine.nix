@@ -1,4 +1,4 @@
-{ lib, ... }:
+{ lib, config, ... }:
 
 # Everything specific to this machine: interfaces and their match keys, the TUN
 # device, the uids the nft rules match, the ports the ruleset and its services
@@ -139,6 +139,18 @@
     };
 
     dotAuthName = lib.mkOption { type = lib.types.str; default = "dot.360.cn"; };
+
+    dotEndpoints = lib.mkOption {
+      type = lib.types.nonEmptyListOf (lib.types.submodule {
+        options = {
+          address = lib.mkOption { type = lib.types.strMatching "[0-9a-fA-F:.]+"; };
+          authName = lib.mkOption { type = lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9.-]*"; };
+        };
+      });
+      default = map (address: { inherit address; authName = config.my.machine.dotAuthName; })
+        config.my.machine.dotUpstreams;
+      description = "Literal IPv4/IPv6 DoT endpoints with independent certificate names; firewall and health use the same list.";
+    };
 
     mihomoDomesticDnsUpstreams = lib.mkOption {
       type = lib.types.listOf lib.types.str;

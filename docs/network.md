@@ -27,7 +27,7 @@ The listeners are local. Environment variables (both cases), GSettings and Flatp
 
 Port reservation uses systemd's cgroup `bind4`/`bind6` hooks and requires kernel cgroup-BPF support. Its scope is processes in `user.slice`; untrusted system services need equivalent restrictions in their own slices. Root and managed service identities are trusted. Reply-UID checks authenticate the responding socket, while bind restrictions prevent delivery to an unauthorized UDP listener. See [systemd's bind policy](https://www.freedesktop.org/software/systemd/man/260/systemd.resource-control.html#SocketBindAllow=bind-rule).
 
-Mihomo marks its outbound sockets with `6666` (`0x1a0a`); the exception requires both socket and packet marks plus socket UID root or `clash-core`. Rule routing can choose DIRECT under the default `my.proxy.proxyOnly=false`. The optional [uniform proxy policy](proxy.md#routing-policy) refuses application DIRECT inside the core. Private-network and infrastructure paths outside the core have their own firewall rules. Inside the core, literal and resolved private targets have separate [local DIRECT and remote-leaf authorization](proxy.md#domain-targets); a subscription rule selecting a node does not grant access to that node’s internal network.
+Mihomo marks its outbound sockets with `6666` (`0x1a0a`); the exception requires both socket and packet marks plus socket UID root or `clash-core`. Rule routing can choose DIRECT under the default `my.proxy.proxyOnly=false`. The optional [uniform proxy policy](proxy.md#routing-policy) refuses application DIRECT inside the core. Private-network and infrastructure paths outside the core have their own firewall rules. Inside the core, literal and resolved private targets have separate [local DIRECT and remote-leaf authorization](proxy.md#domain-targets); node selection follows subscription rules, while access to internal targets requires a matching target grant.
 
 [DNS](dns.md) runs alongside this path: resolved → dnsmasq → Mihomo or Unbound. [Firefox](browser.md) defaults to the same Gost HTTP inlet; its optional transparent path uses native DNS and host sockets under this TUN/firewall policy, allowing HTTPS-RR/ECH discovery. Its parent and descendants run in an [outer filesystem and desktop-interface sandbox](browser.md#outer-sandbox), retaining the desktop UID and this host network policy.
 
@@ -37,7 +37,7 @@ Mihomo marks its outbound sockets with `6666` (`0x1a0a`); the exception requires
 |---|---|---|---|
 | A / `direct` | Cold boot with direct boot policy, or explicit `clash-off` | Direct access | Validating Unbound DoT, with bounded plaintext recovery |
 | B / `proxy` | Proxy intent, authorized core, required TUN routes and health proof | Proxy, explicit exceptions, or drop | Mihomo fake-IP |
-| C / `blocked` | Proxy requested but not ready, crashed or unhealthy | Blocked except recovery and link infrastructure | Unbound; external DoT is cut, cached answers may remain |
+| C / `blocked` | Proxy requested but not ready, crashed or unhealthy | Blocked except recovery and link infrastructure | Unbound; external DoT is cut, eligible cached answers are served |
 
 `proxy-mode` follows root-written, boot-scoped intent. Closing the GUI or stopping/crashing the core after `clash-on` keeps C. Use `clash-off` to request A. Starting a GUI alone cannot authorize A → B. `my.proxy.bootMode="proxy"` installs C before physical networking and waits for B; the default is `"direct"`.
 
@@ -45,7 +45,7 @@ DNS transport has an independent policy: `my.proxy.dnsEncryption="strict"` disab
 
 `unenforced` reports that the expected kernel policy could not be confirmed or repaired. It is an error status, not another protected mode. Applications using the shared readiness check refuse it.
 
-The core's service cgroup, passive TCP/UDP listener identities, managed controller values, TUN device/routes and actual unmarked IPv6 selection for root and the desktop UID feed the health decision. HTTP probes must complete through the currently selected proxy leaf with matching source-port logs; another real HTTP request to a fake-IP proves the transparent TCP path. The default shared deadline is 12 seconds. Definite configuration, route or TUN failures block immediately; unavailable observations use two consecutive rounds, at least two seconds apart. This samples selected TCP paths, not every UDP, IPv6 or application destination.
+The core's service cgroup, passive TCP/UDP listener identities, managed controller values, TUN device/routes and actual unmarked IPv6 selection for root and the desktop UID feed the health decision. HTTP probes must complete through the currently selected proxy leaf with matching source-port logs; another real HTTP request to a fake-IP proves the transparent TCP path. The default shared deadline is 12 seconds. Definite configuration, route or TUN failures block immediately; unavailable observations use two consecutive rounds, at least two seconds apart. The health decision uses these configured TCP probes together with listener, route and policy observations.
 
 ## Firewall lifecycle
 
@@ -63,7 +63,7 @@ The loader owns these exact table family/name pairs:
 
 Startup, reload and drift repair use this same scope. Shared iptables-nft tables such as `ip nat`, `ip6 nat`, `ip mangle` and `ip`/`ip6 filter`, plus native service tables such as `inet mihomo`, remain outside it. External services should use separate tables; rules inserted into a repository-owned table are subject to replacement and drift repair.
 
-Historical names `inet filter`, `ip proxymode_nat` and `ip6 proxymode_nat` are left untouched during ordinary operation. The explicit [legacy migration](operations.md#legacy-firewall-migration) combines their deletion with the complete replacement policy in the same locked transaction. It leaves no automatic cleanup enabled for later loads. A rejected nft transaction retains the existing tables and rules.
+Ordinary operation preserves `inet filter`, `ip proxymode_nat` and `ip6 proxymode_nat`. The explicit [table migration](operations.md#firewall-table-migration) removes these targets and installs the complete policy in one locked transaction. Cleanup is confined to that command. A rejected transaction retains the installed tables and rules.
 
 | Hook / priority | Purpose |
 |---|---|
@@ -83,7 +83,7 @@ Historical names `inet filter`, `ip proxymode_nat` and `ip6 proxymode_nat` are l
 
 NAT priorities order rule lookups within the kernel’s shared destination-NAT hook; the socket guest DNS filter at `-90` checks the actual rewritten target after that hook.
 
-In B, public host TCP is redirected, fake-IP traffic retains its core path, and other public uplink traffic is dropped after the explicit exceptions. These include marked core sockets, UID-scoped Unbound DoT and Chrony NTS/NTP, narrow DHCP, multicast and default private egress. Tailscale UDP requires UID 0, a physical uplink, and both socket `SO_MARK` and packet mark equal to the upstream Linux bypass mark (`0x80000`). Peer/STUN ports remain dynamic; unmarked root UDP has no blanket exception. This is a routing contract, not service authentication or isolation against root, which can set socket marks or change the firewall. The current LKL kernel supports `socket mark`, but not `socket cgroupv2`.
+In B, public host TCP is redirected, fake-IP traffic retains its core path, and other public uplink traffic is dropped after the explicit exceptions. These include marked core sockets, UID-scoped Unbound DoT and Chrony NTS/NTP, narrow DHCP, multicast and default private egress. Tailscale UDP requires UID 0, a physical uplink, and both socket `SO_MARK` and packet mark equal to the upstream Linux bypass mark (`0x80000`). Peer/STUN ports remain dynamic; unmarked root UDP has no blanket exception. Root and the managed core are trusted network administrators with permission to set socket marks and change firewall rules. The current LKL kernel supports `socket mark`, but not `socket cgroupv2`.
 
 [tailscale-transport.nix](../system/config/tailscale-transport.nix) treats the mark as an upstream constant, not a configurable local allocation. Normal system builds check the selected Tailscale source for its value and the reviewed magicsock/STUN marking paths. Network changes do not change the constant; upgrades require this check and `proxy-tailscale-vm`, which exercises the real selected CLI with isolated dual-stack STUN peers. Falling back to `SO_BINDTODEVICE` does not silently reopen unmarked root UDP.
 
@@ -111,7 +111,7 @@ Tailscale accepts neither DNS, subnet routes nor an exit node automatically. Onl
 
 ## Guests and containers
 
-[guest-policy.nix](../system/config/guest-policy.nix) distinguishes routed guest networks from backends that create host sockets. A private address does not establish trust.
+[guest-policy.nix](../system/config/guest-policy.nix) distinguishes routed guest networks from backends that create host sockets. Trust is assigned by declared ingress interfaces, source CIDRs and dedicated backend UIDs.
 
 | Class | Identity | Private destinations | Public destinations |
 |---|---|---|---|

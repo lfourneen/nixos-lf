@@ -8,9 +8,11 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 source = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else (
     Path(__file__).resolve().parents[2] / 'system/programs/clash/clash-verge-stage.py')
+health_source = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else source.parent.parent / 'systemd/netsec/health.py'
 spec = importlib.util.spec_from_file_location('stage', source)
 stage = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(stage)
@@ -18,6 +20,12 @@ spec.loader.exec_module(stage)
 
 class SnapshotTests(unittest.TestCase):
     def setUp(self):
+        read = Path.read_text
+        def boot_identity(path, *args, **kwargs):
+            return 'fixture-boot' if str(path) == '/proc/sys/kernel/random/boot_id' else read(path, *args, **kwargs)
+        self.boot_patch = patch.object(Path, 'read_text', boot_identity)
+        self.boot_patch.start()
+        self.addCleanup(self.boot_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -48,6 +56,24 @@ class SnapshotTests(unittest.TestCase):
 
     def verify(self):
         return stage.verify(self.runtime / 'effective', self.state / 'config-digest', self.state / 'authorized-config')
+
+    def test_provider_cache_is_separate_from_snapshot_authority(self):
+        self.authorize()
+        effective=self.runtime/'effective'
+        self.assertEqual((effective/'proxies').readlink(),self.data/'proxies')
+        (self.data/'proxies').mkdir()
+        (self.data/'proxies/provider').write_bytes(b'first contents')
+        digest=self.verify()
+        (self.data/'proxies/provider').write_bytes(b'updated contents')
+        self.assertEqual(self.verify(),digest)
+        (effective/'proxies').unlink()
+        self.restart()
+        self.assertEqual((effective/'proxies').readlink(),self.data/'proxies')
+        (effective/'proxies').unlink()
+        (effective/'proxies').symlink_to('/tmp/wrong-cache')
+        with self.assertRaises(ValueError):
+            self.restart()
+
 
     def test_import_binds_config_and_databases_and_restarts_use_snapshot(self):
         self.authorize()
@@ -148,6 +174,57 @@ class SnapshotTests(unittest.TestCase):
         (self.gui / 'GeoSite.dat').write_bytes(b'ambiguous')
         with self.assertRaisesRegex(ValueError, 'ambiguous database'):
             self.authorize()
+
+    def test_fast_snapshot_check_detects_changes_and_periodically_rehashes(self):
+        self.authorize()
+        effective = self.runtime / 'effective'
+        auth, digest = self.state / 'authorized-config', self.state / 'config-digest'
+        stage.verify(effective, digest, auth, fast=True)
+        record = self.state / 'snapshot-verification.json'
+        before = record.read_text()
+        stage.verify(effective, digest, auth, fast=True, cached_only=True)
+        stage.verify(effective, digest, auth, fast=True)
+        self.assertEqual(record.read_text(), before)
+        original = (effective / 'GeoSite.dat').read_bytes()
+        (effective / 'GeoSite.dat').write_bytes(b'x' * len(original))
+        with self.assertRaises(stage.FullVerificationRequired):
+            stage.verify(effective, digest, auth, fast=True, cached_only=True)
+        with self.assertRaises(ValueError): stage.verify(effective, digest, auth, fast=True)
+
+    def test_hidden_boot_identity_requires_full_verification(self):
+        self.authorize()
+        effective = self.runtime / 'effective'
+        auth, digest = self.state / 'authorized-config', self.state / 'config-digest'
+        stage.verify(effective, digest, auth)
+        record = self.state / 'snapshot-verification.json'
+        import json
+        before = json.loads(record.read_text())['full_verifications']
+        read = Path.read_text
+        def restricted(path, *args, **kwargs):
+            if str(path) == '/proc/sys/kernel/random/boot_id':
+                raise FileNotFoundError()
+            return read(path, *args, **kwargs)
+        with patch.object(Path, 'read_text', restricted):
+            stage.verify(effective, digest, auth, fast=True)
+            stage.verify(effective, digest, auth, fast=True)
+        self.assertEqual(json.loads(record.read_text())['full_verifications'], before + 2)
+
+    def test_health_reuses_protected_metadata_without_spawning_a_verifier(self):
+        self.authorize()
+        effective = self.runtime / 'effective'
+        auth, digest = self.state / 'authorized-config', self.state / 'config-digest'
+        stage.verify(effective, digest, auth)
+        spec = importlib.util.spec_from_file_location('health_probe', health_source)
+        health = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(health)
+        settings = dict(expected={}, effective_directory=str(effective), snapshot_required=True,
+                        digest_file=str(digest), authorization_file=str(auth), snapshot_tool=str(source))
+        with patch.object(health.subprocess, 'run', side_effect=AssertionError('unnecessary verifier process')):
+            health.check_config({'mode':'rule'}, settings)
+        effective.chmod(0o777)
+        with self.assertRaises(ValueError):
+            stage.verify(effective, digest, auth, fast=True)
+
 
 
 if __name__ == '__main__':

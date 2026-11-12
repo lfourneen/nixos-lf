@@ -16,11 +16,13 @@ English | [简体中文](CN/proxy_CN.md) | [Documentation](README.md)
 
 The helper retains the privileges needed for identity changes, directory ownership and child management. It accepts only the packaged, root-owned launcher as an executable. Managed logs use `/var/lib/clash-verge-service/logs`, with fixed rotation. Caller-supplied IPC paths do not drive root chmod/unlink or startup reconciliation. Systemd owns child cleanup. The helper's private state is separate from the writable core cache in `/var/lib/clash-core`.
 
-This reduces desktop-controlled root operations. A compromised core still has host `NET_ADMIN`; it is not isolated from host networking. Desktop programs with the same UID can use allowed GUI/controller operations. The helper's upstream IPC protocol is not a substitute for these execution and file-operation constraints.
+The helper enforces fixed execution paths and file-operation rules at its privileged boundary. The core holds host `NET_ADMIN` and belongs to the trusted network administration layer. Desktop programs sharing the GUI UID can use its permitted GUI/controller operations.
 
 An explicitly enabled IPv4 guest TPROXY inlet binds `0.0.0.0:7896`; the ordinary mixed/DNS/controller endpoints remain local under `allow-lan=false`. The packaged listener handles this bind separately and selects IPv4 sockets. Its TCP/UDP UID and service cgroup are checked before B; guest interface/source authorization remains in the firewall. Later core auto-redirect preserves the owned guest mark instead of replacing its transparent socket. See [guest networking](network.md#guests-and-containers).
 
 ## Authorizing a configuration
+
+`proxy-control preflight` checks the desktop profile, required assets and the managed parser without changing network intent. `clash-on` requires this preparation to succeed before opening an import session. Missing inputs can be prepared in deliberately selected A; an unsuccessful check preserves the requested mode.
 
 `clash-on` records proxy intent, enters C and starts a new import session. It clears previous authorization and opens one **single-use, 300-second** window. The GUI supplies the effective configuration; the packaged launcher imports it under a shared authorization lock before starting the core. A failed import consumes the window too. Run `clash-on` again after correcting inputs.
 
@@ -30,7 +32,7 @@ The digest covers the effective YAML, geodata bytes and absent optional assets. 
 
 Ordinary restarts require matching GUI YAML and intact snapshot hashes, then reuse the authorized databases. GUI database updates do not replace the running authorization. Import new YAML/geodata with another `clash-on`. Managed geodata downloads are disabled, including replacement attempts for missing or invalid databases. Snapshots survive helper restarts; health checks also verify their digest. `clash-off` clears boot-scoped authorization and requests direct mode.
 
-An import authorizes the inputs selected for that session. It does not make an already compromised desktop account trustworthy. Review subscription/configuration sources before granting a new import.
+Each import authorizes the YAML and assets selected for that session. The desktop account and its selected subscription/configuration sources form the input trust boundary.
 
 ## Managed profile and controller
 
@@ -50,6 +52,18 @@ The root policy also supplies the shared domain-filter store path, additions and
 
 Configuration loads, rule disabling, provider/geodata/storage changes, restart and upgrade APIs are forbidden. PATCH validates canonical upstream field names and duplicate keys before applying the same decoded schema. New controller write endpoints require an explicit policy decision when upgrading the core.
 
+## Subscription trust
+
+`my.proxy.subscriptionTrust="source"` accepts proxy providers as trusted, mutable sources. `"fixed"` refuses providers so inline node contents belong to the authorized YAML snapshot. `proxy-control preflight` reports inline-node and provider counts, source hosts and requested certificate exceptions without subscription URLs or credentials.
+
+The global merge script filters inline nodes with `skip-cert-verify` enabled and removes their group references. Exact names in `my.proxy.insecureProxyExceptions` are kept. An emptied group without provider members stops configuration generation. The core applies the same exception list after per-profile extensions and provider overrides.
+
+Certificate exceptions match the leaf name. A provider replacing a node's server under the same name retains that exception. `remoteTargetGrants` with mutable providers additionally requires `allowDynamicRemoteGrants=true`. Fixed mode binds inline node contents to each authorized import.
+
+Preflight checks the generated profile, assets and managed parser. It reports certificate-policy rejections separately and records a sanitized preparation summary. Provider contents are checked by the core during loading and refresh. The snapshot's root-owned `proxies/` link points to writable `/var/lib/clash-core/proxies/`. HTTP providers use that directory by default; explicit provider paths must remain relative to `proxies/`. HTTP providers try their cache first, fetch remotely after a cache rejection, and retain their last accepted nodes and cache on a rejected refresh. Configured fallback payloads remain available during initialization failures; providers with a positive update interval retry automatically.
+
+Fast snapshot checks compare protected file identities, permissions, sizes and ctime/mtime against the last full verification. Authorization changes, changed metadata or a 60-second interval require a complete SHA-256 pass. Startup/import always performs full verification. A sandbox without an observable boot identity also requires full verification. Snapshot files and the verification record are writable only by trusted root.
+
 ## Routing policy
 
 ```nix
@@ -57,7 +71,7 @@ my.proxy.proxyOnly = false; # Default: subscription Rule routing.
 # my.proxy.proxyOnly = true; # Use the subscription's final proxy catch-all.
 ```
 
-The default preserves domestic DIRECT and prepends known probe/download domain overrides. An unlisted IP-echo resource can still match DIRECT and see the actual exit address. Health confirms its configured sample paths, not every domain.
+The default preserves domestic DIRECT and prepends proxy rules for the configured probe/download domains. Other destinations follow the subscription rules. Health probes use the configured sample targets.
 
 With `true`, the generated profile routes application destinations reaching the core through the subscription's final proxy MATCH policy. It requires a usable proxy catch-all and overrides geographic/process splitting and profile REJECT rules. It also refuses application DIRECT/COMPATIBLE TCP/UDP dials inside the core, including direct leaves behind groups and renamed adapters. Rule-routed DNS is covered; explicit bootstrap/endpoint-resolution infrastructure and `#DIRECT` MagicDNS remain exempt.
 
@@ -69,7 +83,9 @@ Deploy the generation and import/restart the managed core for this policy to tak
 
 Managed sniffing is disabled in both Rule and uniform proxy modes. Explicit target names and fake-IP mappings remain the routing identity; an ECH cover SNI cannot replace the dial target. Literal-IP traffic uses IP rules. The parser also normalizes cached GUI profiles to this policy. See [browser ECH discovery](browser.md#ech-discovery-and-proxy-compatibility).
 
-[target_guard.go](../system/programs/systemd/netsec/target_guard.go) validates application targets before TCP/UDP egress. Public names must resolve locally to nonempty, entirely public answers; one resolver error gets one retry. The chosen IP is pinned for DIRECT and remote proxy dials, so the node never performs a second target-name lookup. Internal suffixes in `privateTargetDomains` and the authenticated MagicDNS suffix permit private answers, but still require local resolution, pinning and egress authorization. They do not create a resolver route or bypass the shared domain filter.
+[target_guard.go](../system/programs/systemd/netsec/target_guard.go) validates application targets before TCP/UDP egress. Public names must resolve locally to nonempty, entirely public answers; one resolver error gets one retry. TCP interleaves validated IPv4/IPv6 candidates and attempts at most eight literal addresses at the selected leaf, with a two-second attempt ceiling and six-second total deadline. Each candidate requires that leaf’s egress authorization. The node receives a pinned IP and performs no target-name lookup. UDP pins one target for its association. Internal suffixes in `privateTargetDomains` and the authenticated MagicDNS suffix permit private answers, but still require local resolution, pinning and egress authorization. They do not create a resolver route or bypass the shared domain filter.
+
+The core tries the next candidate when dialing returns an error. A successful dial hands the connection to the application, which sends its data through that connection. For optimistic or one-way proxy protocols, tunnel establishment is the dial success point; candidate fallback ends there.
 
 ### Local and remote authorization
 
@@ -102,13 +118,13 @@ Each new destination in a reused UDP association is validated and pinned against
 
 ### Address classes and modes
 
-IPv4-mapped addresses are normalized before authorization. The non-grantable metadata list covers `169.254.169.254`, `169.254.170.2`, `100.100.100.200` and `fd00:ec2::254`. Scoped IPv6 literals with a zone are refused. The reserved/transition denylist is targeted, not the whole IANA special-purpose registry or every provider-specific metadata service.
+IPv4-mapped addresses are normalized before authorization. The non-grantable metadata list covers `169.254.169.254`, `169.254.170.2`, `100.100.100.200` and `fd00:ec2::254`. Scoped IPv6 literals with a zone are refused.
 
-The well-known `64:ff9b::/96` is always recognized. `nat64Prefixes` declares additional [RFC 6052](https://www.rfc-editor.org/rfc/rfc6052.html) translation prefixes of length 32, 40, 48, 56, 64 or 96; overlapping declarations use the most specific prefix. Public embedded IPv4 remains usable, while private, metadata and synthetic embedded targets fail closed. The local-use `64:ff9b:1::/48` is refused unless explicitly declared as a translator. Unknown translation/gateway behavior cannot be inferred from an address alone.
+The well-known `64:ff9b::/96` is always recognized. `nat64Prefixes` declares additional [RFC 6052](https://www.rfc-editor.org/rfc/rfc6052.html) translation prefixes of length 32, 40, 48, 56, 64 or 96; overlapping declarations use the most specific prefix. Public embedded IPv4 remains usable, while private, metadata and synthetic embedded targets fail closed. The local-use `64:ff9b:1::/48` is refused unless explicitly declared as a translator.
 
 The configured fake-IP pool is a routing identity, never an egress destination. A live mapping must first recover its domain, which then passes normal filtering, resolution and authorization. Missing mappings and real DNS answers containing synthetic targets are refused, including with a customized pool.
 
-These checks govern applications reaching the core, normally in B. A retains literal HTTP portal access through direct Gost/native sockets under A's firewall policy. C blocks ordinary application access before the core; local/remote grants do not reopen it. Explicit internal bootstrap, proxy-endpoint transport and `#DIRECT` MagicDNS retain their trusted infrastructure scope; rule-routed DNS does not inherit that exemption. Native LAN access and guest forwarding have separate policies. Root, the `NET_ADMIN` core and authorized infrastructure remain trusted, so this is not universal internal-network isolation.
+These checks govern applications reaching the core, normally in B. A retains literal HTTP portal access through direct Gost/native sockets under A's firewall policy. C blocks ordinary application access before the core; local/remote grants do not reopen it. Explicit internal bootstrap, proxy-endpoint transport and `#DIRECT` MagicDNS retain their trusted infrastructure scope; rule-routed DNS does not inherit that exemption. Native LAN access and guest forwarding have separate policies. Root, the `NET_ADMIN` core and authorized infrastructure form the trusted network administration layer.
 
 ## Gost lifecycle
 

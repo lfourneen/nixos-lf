@@ -105,6 +105,11 @@
         touch "$out"
       '';
 
+      proxy-validation-tools = pkgs.runCommand "proxy-validation-tools" { } ''
+        ${pkgs.python3}/bin/python3 ${./tests/netsec/test_network_tools.py} ${./.}
+        touch "$out"
+      '';
+
       proxy-rules = self.nixosConfigurations.lfour.config.my.proxy.expectedRules;
       network-identity-config = import ./tests/netsec/identity-config.nix {
         inherit pkgs identityConfig;
@@ -120,9 +125,28 @@
       proxy-firewall-vm = import ./tests/netsec/firewall-vm.nix { inherit pkgs; };
       proxy-dns-strict-rules = strictDnsConfig.my.proxy.expectedRules;
 
-      proxy-dns-config = pkgs.runCommand "dns-policy-config" { } ''
-        ${pkgs.bash}/bin/bash -n ${self.nixosConfigurations.lfour.config.systemd.services.dns-upstream.serviceConfig.ExecStart}
-        ${pkgs.bash}/bin/bash -n ${strictDnsConfig.systemd.services.dns-upstream.serviceConfig.ExecStart}
+      proxy-dns-config = let
+        dual = (self.nixosConfigurations.lfour.extendModules { modules = [ ({ lib, ... }: {
+          my.machine.dotEndpoints = lib.mkForce [
+            { address = "192.0.2.53"; authName = "dot.fixture.test"; }
+            { address = "2001:db8::53"; authName = "other.fixture.test"; }
+          ];
+        }) ]; }).config;
+        v6 = (self.nixosConfigurations.lfour.extendModules { modules = [ ({ lib, ... }: {
+          my.machine.dotEndpoints = lib.mkForce [{ address = "2001:db8::53"; authName = "v6.fixture.test"; }];
+        }) ]; }).config;
+        variants = [ self.nixosConfigurations.lfour.config strictDnsConfig dual v6 ];
+        settings = pkgs.writeText "dns-endpoint-configs.json" (builtins.toJSON (map (c: {
+          endpoints = c.my.machine.dotEndpoints;
+          port = c.my.machine.ports.dot;
+          zones = c.services.unbound.settings.forward-zone;
+          script = c.systemd.services.dns-upstream.serviceConfig.ExecStart;
+        }) variants));
+      in pkgs.runCommand "dns-policy-config" { } ''
+        ${pkgs.python3}/bin/python3 ${./tests/netsec/check_dns_endpoints.py} ${settings}
+        ${pkgs.lib.concatMapStrings (c: "${pkgs.bash}/bin/bash -n ${c.systemd.services.dns-upstream.serviceConfig.ExecStart}\n") variants}
+        test -e ${dual.my.proxy.expectedRules}
+        test -e ${v6.my.proxy.expectedRules}
         touch "$out"
       '';
 
@@ -273,7 +297,7 @@
         nativeBuildInputs = [ pkgs.python3 ];
       } ''
         export PYTHONDONTWRITEBYTECODE=1
-        python3 ${./tests/netsec/test_control.py} ${./system/programs/clash/clash-verge-stage.py}
+        python3 ${./tests/netsec/test_control.py} ${./system/programs/clash/clash-verge-stage.py} ${./system/programs/systemd/netsec/health.py}
         touch "$out"
       '';
 

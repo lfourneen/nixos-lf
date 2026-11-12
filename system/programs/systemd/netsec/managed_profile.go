@@ -146,6 +146,9 @@ func lfValidateRaw(raw *RawConfig) (string, error) {
 	if err = json.Unmarshal(data, &document); err != nil {
 		return "", err
 	}
+	if err := lfValidateSubscription(document, raw.LFPrivateTargets); err != nil {
+		return "", err
+	}
 	id, err := lfValidate(document, false)
 	if err == nil {
 		err = lfguard.Configure(raw.LFPrivateTargets)
@@ -204,6 +207,9 @@ func lfManagedProfileDefaults(raw *RawConfig) error {
 		// over a field the policy already owns is a lockout, not a defence.
 		// PATCH (ValidateManagedPatch) stays strict.
 		raw.LFPrivateTargets = value
+	}
+	if enabled, ok := policy["dns.ipv6"].(bool); ok {
+		raw.DNS.IPv6 = enabled
 	}
 	if enabled, ok := policy["sniffer.enable"].(bool); ok {
 		// The strict system policy owns sniffing, including cached profiles.
@@ -367,4 +373,21 @@ func ManagedPolicyID() string {
 		return ""
 	}
 	return id
+}
+
+// Fixed nodes are snapshot inputs. Mutable sources require explicit trust for
+// grants whose leaf name could later refer to a different remote identity.
+func lfValidateSubscription(document, targets map[string]any) error {
+	providers, _ := document["proxy-providers"].(map[string]any)
+	mode, _ := targets["subscription-trust"].(string)
+	if mode == "fixed" && len(providers) != 0 {
+		return fmt.Errorf("fixed subscription trust refuses proxy providers")
+	}
+	// Nix JSON is decoded to []any; callers may supply []map values in tests.
+	if value := reflect.ValueOf(targets["remote-target-grants"]); value.IsValid() && value.Kind() == reflect.Slice && value.Len() > 0 {
+		if len(providers) != 0 && targets["allow-dynamic-remote-grants"] != true {
+			return fmt.Errorf("mutable provider identities require explicit remote-grant trust")
+		}
+	}
+	return nil
 }

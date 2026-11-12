@@ -60,5 +60,46 @@ for (const test of JSON.parse(fs.readFileSync(process.argv[2], "utf8"))) {
   assert.equal(tests["proxy-providers"].disabled["health-check"].enable, false);
   const encoded = JSON.stringify(tests);
   assert.equal(JSON.stringify(context.main(tests)), encoded, "HTTPS normalization is idempotent");
+
+  // Leaves that disable TLS certificate validation are unusable unless
+  // my.proxy.insecureProxyExceptions names them: the merge filter drops the
+  // rest (and prunes group references) so the profile still starts, while a
+  // named leaf is left for the core's matching exception.
+  const exceptions = test.expected.insecureExceptions || [];
+  const allowed = exceptions.length ? exceptions[0] : null;
+  const tlsProxies = [
+    { name: "keep", type: "vless", "skip-cert-verify": false },
+    { name: "drop", type: "hysteria2", "skip-cert-verify": true },
+    { name: "nested", type: "ss", plugin: { skip_cert_verify: "true" } },
+  ];
+  const tlsMembers = ["keep", "drop", "nested"];
+  if (allowed) {
+    tlsProxies.push({ name: allowed, type: "hysteria2", "skip-cert-verify": true });
+    tlsMembers.push(allowed);
+  }
+  const tls = context.main({
+    proxies: tlsProxies,
+    "proxy-groups": [{ name: "select", type: "select", proxies: tlsMembers }],
+    rules: ["MATCH,select"],
+  });
+  const tlsExpected = allowed ? ["keep", allowed] : ["keep"];
+  assert.deepEqual(Array.from(tls.proxies).map(proxy => proxy.name), tlsExpected);
+  assert.deepEqual(Array.from(tls["proxy-groups"][0].proxies), tlsExpected);
+  assert.throws(() => context.main({
+    proxies: [{ name: "only", type: "hysteria2", "skip-cert-verify": true }],
+    "proxy-groups": [{ name: "only", type: "select", proxies: ["only"] }],
+    rules: ["MATCH,only"],
+  }), /disables TLS verification/);
+  for (const value of [false, 0, "false", "False", "FALSE", "0", "f", "F"]) {
+    const result = context.main({proxies:[{name:"boolean-safe", nested:{SKIP_CERT_VERIFY:value}}]});
+    assert.equal(result.proxies.length, 1, `${test.name}: false Boolean form filtered`);
+  }
+  const provider = {"proxy-providers":{source:{type:"http", url:"https://fixture.example/proxies"}},
+    proxies:[{name:"drop", "skip-cert-verify":true}],
+    "proxy-groups":[{name:"provider-group", proxies:["drop"], use:["source"]}]};
+  const pruned = context.main(provider);
+  assert.equal(pruned.proxies.length,0);
+  assert.equal(pruned["proxy-groups"][0].proxies.length,0);
+  assert.equal(pruned["proxy-providers"].source.url,"https://fixture.example/proxies");
   console.log(`${test.name}: rendered routing script passed`);
 }

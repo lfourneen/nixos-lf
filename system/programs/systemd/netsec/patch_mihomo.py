@@ -33,6 +33,7 @@ replace(root / "constant/metadata.go", "type Metadata struct {",
         'type Metadata struct {\n\t// Set only by the internal rule-routed DNS dialer, never decoded from wire JSON.\n'
         '\tLFRuleDNS bool `json:"-"`\n'
         '\tLFGuarded bool `json:"-"`\n'
+        '\tLFCandidates []netip.Addr `json:"-"`\n'
         '\tLFLocalTarget bool `json:"-"`\n'
         '\tLFEgressDirect bool `json:"-"`\n'
         '\tLFEgressProxy string `json:"-"`')
@@ -44,15 +45,24 @@ if value.count(anchor) != 2:
 dns_dialer.write_text(value.replace(anchor, anchor + '\t\tLFRuleDNS: proxyName == DnsRespectRules,\n'))
 replace(root / "adapter/outbound/direct.go", '"github.com/metacubex/mihomo/component/dialer"',
         '"github.com/metacubex/mihomo/component/dialer"\n\t"github.com/metacubex/mihomo/component/lfguard"')
-for signature in [
+replace(root / "adapter/outbound/direct.go",
         'func (d *Direct) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {',
-        'func (d *Direct) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {']:
-    replace(root / "adapter/outbound/direct.go", signature,
-            signature + '\n\tif err := lfguard.CheckDirect(metadata); err != nil { return nil, err }\n'
-            '\tvar guardErr error\n'
-            '\tmetadata, guardErr = lfguard.Protect(ctx, metadata, metadata, resolver.LookupIP)\n'
-            '\tif guardErr != nil { return nil, guardErr }\n'
-            '\tif err := lfguard.CheckEgress(metadata, true, d.Name()); err != nil { return nil, err }')
+        'func (d *Direct) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {\n'
+        '\tif err := lfguard.CheckDirect(metadata); err != nil { return nil, err }\n'
+        '\tmetadata, err := lfguard.Protect(ctx, metadata, metadata, resolver.LookupIP)\n'
+        '\tif err != nil { return nil, err }\n'
+        '\treturn lfguard.DialTCP(ctx, metadata, func(attemptCtx context.Context, target *C.Metadata) (C.Conn, error) {\n'
+        '\t\tif err := lfguard.CheckEgress(target, true, d.Name()); err != nil { return nil, err }\n'
+        '\t\treturn d.lfDialContext(attemptCtx, target)\n\t})\n}\n\n'
+        'func (d *Direct) lfDialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {')
+replace(root / "adapter/outbound/direct.go",
+        'func (d *Direct) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {',
+        'func (d *Direct) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {\n'
+        '\tif err := lfguard.CheckDirect(metadata); err != nil { return nil, err }\n'
+        '\tvar guardErr error\n'
+        '\tmetadata, guardErr = lfguard.Protect(ctx, metadata, metadata, resolver.LookupIP)\n'
+        '\tif guardErr != nil { return nil, guardErr }\n'
+        '\tif err := lfguard.CheckEgress(metadata, true, d.Name()); err != nil { return nil, err }')
 # Check the actual child selected by a group, immediately before its dial.
 # Inspecting Unwrap and then dialing the group would race a new selection.
 replace(root / "adapter/adapter.go", '"github.com/metacubex/mihomo/component/ca"',
@@ -70,9 +80,21 @@ for signature in [
         var err error
         metadata, err = lfguard.Protect(ctx, metadata, metadata, resolver.LookupIP)
         if err != nil { return nil, err }
-        if err = lfguard.CheckEgress(metadata, p.Type() == C.Direct || p.Type() == C.Compatible, p.Name()); err != nil { return nil, err }
+        if len(metadata.LFCandidates) == 0 { if err = lfguard.CheckEgress(metadata, p.Type() == C.Direct || p.Type() == C.Compatible, p.Name()); err != nil { return nil, err } }
     }
 ''')
+replace(root / "adapter/adapter.go", '\tconn, err := p.ProxyAdapter.DialContext(ctx, metadata)',
+        '\tconn, err := lfguard.DialTCP(ctx, metadata, func(attemptCtx context.Context, target *C.Metadata) (C.Conn, error) {\n'
+        '\t\tif err := lfguard.CheckEgress(target, p.Type() == C.Direct || p.Type() == C.Compatible, p.Name()); err != nil { return nil, err }\n'
+        '\t\treturn p.ProxyAdapter.DialContext(attemptCtx, target)\n\t})')
+# Groups must delegate selection exactly once; only the chosen leaf retries.
+replace(root / "adapter/adapter.go", 'func (p *Proxy) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {',
+        'func (p *Proxy) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {\n'
+        '\tswitch p.Type() { case C.Selector, C.Fallback, C.URLTest, C.LoadBalance: return p.ProxyAdapter.DialContext(ctx, metadata) }')
+replace(root / "adapter/parser.go", '"fmt"', '"fmt"\n\t"github.com/metacubex/mihomo/component/lfguard"')
+replace(root / "adapter/parser.go", 'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {',
+        'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {\n'
+        '\tif err := lfguard.CheckProxy(mapping); err != nil { return nil, err }')
 replace(root / "config/config.go", "type RawConfig struct {",
         'type RawConfig struct {\n\tLFPrivateTargets map[string]any `yaml:"lf-private-targets" json:"lf-private-targets"`')
 # allow-lan=false keeps the ordinary inbounds on loopback. The TPROXY inbound
@@ -198,3 +220,5 @@ source = Path(__file__).parent
 (root / "hub/route/lf_policy.go").write_text((source / "policy_middleware.go").read_text())
 (root / "hub/route/lf_policy_test.go").write_text((source / "policy_middleware_test.go").read_text())
 (root / "config/lf_managed_rules_test.go").write_text((source / "managed_rules_test.go").read_text())
+
+(root / "adapter/provider/lf_managed_provider_test.go").write_text((source / "managed_provider_test.go").read_text())

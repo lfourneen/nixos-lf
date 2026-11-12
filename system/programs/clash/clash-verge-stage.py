@@ -106,12 +106,68 @@ def snapshot_digest(directory):
     return hashlib.sha256(json.dumps(document, sort_keys=True).encode()).hexdigest()
 
 
-def verify(directory, digest_file, auth_file):
+def snapshot_metadata(directory):
+    resolved = Path(directory).resolve()
+    owner = resolved.stat()
+    if not stat.S_ISDIR(owner.st_mode) or owner.st_uid != os.geteuid() or owner.st_mode & 0o022:
+        raise ValueError('snapshot directory ownership or permissions changed')
+    result = {'directory': str(resolved),
+              'directory_identity': [owner.st_dev, owner.st_ino, owner.st_uid, owner.st_mode]}
+    for name in FILES:
+        path = Path(directory) / name
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            result[name] = None
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise ValueError('snapshot permissions changed')
+        result[name] = [info.st_dev, info.st_ino, info.st_uid, info.st_gid,
+                        info.st_mode, info.st_size, info.st_ctime_ns, info.st_mtime_ns]
+    return result
+
+
+class FullVerificationRequired(ValueError):
+    pass
+
+
+def verify(directory, digest_file, auth_file, fast=False, cached_only=False):
     expected = Path(auth_file).read_text().strip()
     if not re.fullmatch('[0-9a-f]{64}', expected) or Path(digest_file).read_text().strip() != expected:
         raise ValueError('snapshot authorization is missing or inconsistent')
-    if snapshot_digest(directory) != expected:
+    cache = Path(auth_file).with_name('snapshot-verification.json')
+    metadata = snapshot_metadata(directory)
+    now = time.monotonic()
+    try:
+        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    except OSError:
+        # The helper's restricted /proc can omit boot_id. Full verification
+        # remains available; cache reuse requires an observable boot identity.
+        boot = None
+    previous = {}
+    try:
+        info = cache.lstat()
+        if stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o022:
+            previous = json.loads(cache.read_text())
+    except (OSError, ValueError):
+        pass
+    if fast and boot and previous.get('digest') == expected and previous.get('metadata') == metadata \
+            and previous.get('boot') == boot and 0 <= now - previous.get('at', -100) < 60:
+        return expected
+    if cached_only:
+        raise FullVerificationRequired('full snapshot verification required')
+    if snapshot_digest(directory) != expected or snapshot_metadata(directory) != metadata:
         raise ValueError('authorized snapshot digest mismatch')
+    # Only root-owned snapshots can use the periodic full-hash cache in the
+    # production health loop. Unit fixtures use their current owner as well.
+    record = dict(digest=expected, metadata=metadata, at=now, boot=boot,
+                  full_verifications=previous.get('full_verifications', 0) + 1,
+                  hashed_bytes=previous.get('hashed_bytes', 0) +
+                      sum(value[5] for value in metadata.values() if isinstance(value, list) and len(value) == 8))
+    temporary = cache.with_name(cache.name + '.new.' + str(os.getpid()))
+    temporary.unlink(missing_ok=True)
+    write_private(temporary, json.dumps(record).encode(), os.getegid())
+    temporary.replace(cache)
     return expected
 
 
@@ -120,6 +176,20 @@ def atomic_authority(path, digest):
     temporary.unlink(missing_ok=True)
     write_private(temporary, (digest + '\n').encode(), os.getegid(), mode=0o600)
     temporary.replace(path)
+
+
+def provider_cache(directory, data):
+    # Provider contents are mutable core state, alongside cache.db. The root
+    # snapshot keeps this exact link; the service user owns only its target.
+    link = Path(directory) / 'proxies'
+    target = Path(data) / 'proxies'
+    if link.is_symlink():
+        if link.readlink() != target:
+            raise ValueError('unexpected provider cache link')
+    elif link.exists():
+        raise ValueError('provider cache must use the managed data directory')
+    else:
+        link.symlink_to(target)
 
 
 def stage(settings, config, validate):
@@ -148,6 +218,7 @@ def stage(settings, config, validate):
             verify(effective, digest, auth)
             if candidate_config != (effective / 'clash-verge.yaml').read_bytes():
                 raise ValueError('configuration changed; run clash-on to authorize it')
+            provider_cache(effective, settings['data'])
             # Never import desktop databases on an ordinary restart.
             validate(effective)
             verify(effective, digest, auth)
@@ -166,6 +237,7 @@ def stage(settings, config, validate):
                     write_private(candidate / target,
                                   read_input(settings['gui_data'], matches[0], settings['desktop_uid']), gid)
             (candidate / 'cache.db').symlink_to(Path(settings['data']) / 'cache.db')
+            provider_cache(candidate, settings['data'])
             before = snapshot_digest(candidate)
             validate(candidate)
             if snapshot_digest(candidate) != before:
@@ -176,6 +248,7 @@ def stage(settings, config, validate):
             if destination.exists():
                 if snapshot_digest(destination) != before:
                     raise ValueError('stored snapshot was modified')
+                provider_cache(destination, settings['data'])
                 shutil.rmtree(candidate)
             else:
                 candidate.rename(destination)
@@ -198,7 +271,7 @@ def stage(settings, config, validate):
 
 def main():
     if sys.argv[1] == 'verify':
-        verify(*sys.argv[2:])
+        verify(*sys.argv[2:5], fast='--fast' in sys.argv[5:])
         return
     if os.geteuid() != 0:
         raise ValueError('staging requires the root helper')

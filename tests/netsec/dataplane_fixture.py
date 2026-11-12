@@ -84,6 +84,50 @@ def exchange(address, port, protocol):
         assert stream.recv(4096) == b'impostor:private-client-payload'
 
 
+def strict_socks():
+    """SOCKS5 success is sent only after the requested target really connects."""
+    def read(stream, size):
+        result = b''
+        while len(result) < size:
+            part = stream.recv(size - len(result))
+            if not part:
+                raise EOFError()
+            result += part
+        return result
+    def handle(client):
+        try:
+            with client:
+                version, methods = read(client, 2)
+                assert version == 5 and 0 in read(client, methods)
+                client.sendall(b'\x05\x00')
+                version, command, _, kind = read(client, 4)
+                assert version == 5 and command == 1 and kind in (1, 4), 'target must be pinned'
+                address = socket.inet_ntop(socket.AF_INET if kind == 1 else socket.AF_INET6,
+                                           read(client, 4 if kind == 1 else 16))
+                port = struct.unpack('!H', read(client, 2))[0]
+                with socket.create_connection((address, port), timeout=10) as remote:
+                    client.sendall(b'\x05\x00\x00\x01' + b'\0' * 6)
+                    def copy(source, destination):
+                        try:
+                            while data := source.recv(65536):
+                                destination.sendall(data)
+                        except OSError:
+                            pass
+                        try:
+                            destination.shutdown(socket.SHUT_WR)
+                        except OSError:
+                            pass
+                    worker = threading.Thread(target=copy, args=(client, remote), daemon=True)
+                    worker.start()
+                    copy(remote, client)
+        except (OSError, EOFError):
+            pass
+    with socket.create_server(('100.67.0.1', 18080)) as server:
+        while True:
+            client, _ = server.accept()
+            threading.Thread(target=handle, args=(client,), daemon=True).start()
+
+
 def push():
     def send(stream, peer, label):
         for sequence in range(36000):
@@ -150,5 +194,5 @@ def receive(label, address, socks='no'):
                 pass
 
 
-{'bind': binding, 'autobind': autobind, 'impostor': impostor, 'exchange': exchange,
+{'bind': binding, 'autobind': autobind, 'impostor': impostor, 'exchange': exchange, 'strict-socks': strict_socks,
  'push': push, 'receive': receive}[sys.argv[1]](*sys.argv[2:])

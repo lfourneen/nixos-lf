@@ -1,6 +1,7 @@
 """Bounded, cancellable Mihomo health probe. Never changes the core configuration."""
 
 import hashlib
+import importlib.util
 import http.client
 import ipaddress
 import json
@@ -15,6 +16,8 @@ import tempfile
 import threading
 import time
 from urllib.parse import urlsplit
+
+SNAPSHOT_TOOLS = {}
 
 
 class ProbeFailure(Exception):
@@ -69,8 +72,22 @@ def check_config(config, settings):
     directory = settings.get("effective_directory")
     if directory and (settings.get("snapshot_required") or (digest_path and os.path.exists(digest_path))):
         try:
+            path = settings['snapshot_tool']
+            if path not in SNAPSHOT_TOOLS:
+                spec = importlib.util.spec_from_file_location('snapshot_check', path)
+                tool = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(tool)
+                SNAPSHOT_TOOLS[path] = tool
+            # Only metadata/authority checks run in this process. A miss uses
+            # the existing cancellable, time-bounded full-verification worker.
+            SNAPSHOT_TOOLS[path].verify(directory, digest_path, settings['authorization_file'],
+                                        fast=True, cached_only=True)
+            return hashlib.sha256(json.dumps(view, sort_keys=True).encode()).hexdigest()
+        except (OSError, ValueError, ImportError):
+            pass
+        try:
             result = subprocess.run([sys.executable, settings["snapshot_tool"], "verify", directory,
-                                     digest_path, settings["authorization_file"]],
+                                     digest_path, settings["authorization_file"], "--fast"],
                                     text=True, capture_output=True, timeout=3, check=False)
         except (OSError, subprocess.SubprocessError) as error:
             raise ProbeFailure("config", f"cannot verify the authorized snapshot: {error}")
@@ -146,6 +163,7 @@ class Probe:
         self.start = clock()
         self.deadline = self.start + settings["budget_seconds"]
         self.timings = {}
+        self.target_slots = 1
 
     def remaining(self, maximum):
         remaining = min(maximum, self.deadline - self.clock())
@@ -207,7 +225,18 @@ class Probe:
     def tun_test(self, log_path=None):
         if not self.settings["require_tun"]:
             return
-        dig, name = self.settings["dig"], self.settings["tun_probe_name"]
+        failures = []
+        for name in self.settings.get('tun_probe_names', [self.settings['tun_probe_name']]):
+            try:
+                return self.tun_target(name, log_path)
+            except ProbeFailure as error:
+                if error.layer in {'config', 'route'}:
+                    raise
+                failures.append(error)
+        raise failures[-1]
+
+    def tun_target(self, name, log_path):
+        dig = self.settings['dig']
         answer = self.command([dig, "+time=1", "+tries=1", "+short", "@127.0.0.1",
                                "-p", str(self.settings["dns_port"]), name, "A"], 1.5)
         network = ipaddress.ip_network(self.settings["fake_ip_net"], strict=False)
@@ -221,10 +250,10 @@ class Probe:
                 fake_ip = str(address)
                 break
         if not fake_ip:
-            raise ProbeFailure("tun", "managed DNS did not return a fake IP")
+            raise ProbeFailure("dns", "managed DNS did not return a fake IP")
         if not self.command([dig, "+time=1", "+tries=1", "+short", "@" + fake_ip,
                              "-p", "53", name, "A"], 1.5).strip():
-            raise ProbeFailure("tun", "TUN DNS self-test did not answer")
+            raise ProbeFailure("dns", "TUN DNS self-test did not answer")
         # A root fake-IP TCP flow is excluded from gost's REDIRECT. It exercises
         # the core's effective TUN/auto-redirect data path as well as DNS hijack.
         output = self.command([self.settings["curl"], "--noproxy", "*", "--head", "-sS",
@@ -256,7 +285,8 @@ class Probe:
         if not host:
             raise ProbeFailure("config", "invalid health target URL")
         # Fresh source ports disambiguate the log from other local applications.
-        timeout = self.remaining(self.settings["request_timeout_seconds"])
+        timeout = self.remaining(min(self.settings["request_timeout_seconds"],
+                                     self.remaining(30) / self.target_slots))
         output = self.command([self.settings["curl"], "-sS", "-o", "/dev/null", "-w",
                                "%{http_code} %{local_port}", "--max-time", str(timeout),
                                "--noproxy", "", "--local-port", "15010-15090", "-x",
@@ -301,6 +331,7 @@ class Probe:
                 time.sleep(min(0.15, self.remaining(0.15)))
                 failures = []
                 for number, url in enumerate(self.settings["urls"]):
+                    self.target_slots = len(self.settings['urls']) - number + int(self.settings.get('require_tun', False))
                     try:
                         self.timed(f"target_{number}", lambda: self.target(url, log_path))
                         break

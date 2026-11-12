@@ -130,4 +130,98 @@ def refuse():
     assert SENTINEL.read_text() == 'root-owned sentinel\n', 'helper unlinked caller-supplied path'
 
 
-{'prepare': prepare, 'start': start, 'check': check, 'refuse': refuse, 'writer': writer}[sys.argv[1]]()
+def preflight_rejection():
+    import yaml
+    original = CONFIG.read_bytes()
+    try:
+        profile = yaml.safe_load(original)
+        profile['proxies'][0]['skip-cert-verify'] = True
+        CONFIG.write_text(yaml.safe_dump(profile, sort_keys=False))
+        result = subprocess.run(['proxy-control', 'on'], text=True, capture_output=True)
+        assert result.returncode != 0, result.stdout
+        verdict = json.loads(result.stdout)
+        assert verdict['phase'] == 'prepare-policy', verdict
+        assert verdict['subscription']['certificate_exceptions_rejected'] == 1, verdict
+        assert json.loads(Path('/run/proxy-mode/state.json').read_text())['mode'] == 'direct'
+        shown = subprocess.check_output(['setpriv', '--reuid=1000', '--clear-groups',
+                                         'proxy-status', '--plain'], text=True)
+        assert 'Certificate or subscription policy rejected' in shown, shown
+        assert 'rejected 1' in shown, shown
+    finally:
+        CONFIG.write_bytes(original)
+
+
+def provider_setup():
+    import yaml
+    profile = yaml.safe_load(CONFIG.read_bytes())
+    profile['proxy-providers'] = {'ProviderSource': {
+        'type': 'http', 'url': 'http://100.67.0.1:18095/provider.json',
+        'path': 'proxies/fixture.yaml', 'interval': 1,
+    }}
+    profile['proxy-groups'].append({'name': 'ProviderChoice', 'type': 'select', 'use': ['ProviderSource']})
+    CONFIG.write_text(yaml.safe_dump(profile, sort_keys=False))
+    sentinel = Path('/tmp/provider-root-sentinel')
+    sentinel.mkdir(mode=0o700)
+    # Model a compromised core replacing a child of its writable state.
+    # The root launcher must never chown/chmod through this link.
+    Path('/var/lib/clash-core/proxies').symlink_to(sentinel)
+    provider_contents(False)
+
+
+def provider_contents(insecure):
+    directory = Path('/tmp/netsec-provider')
+    directory.mkdir(exist_ok=True)
+    (directory / 'provider.json').write_text(json.dumps({'proxies': [{
+        'name': 'ProviderFixture', 'type': 'socks5', 'server': '100.67.0.1', 'port': 18080,
+        'skip-cert-verify': insecure,
+    }]}))
+
+
+def provider_check():
+    status, content = request('/run/clash-verge-rev/core/mihomo.sock', 'GET', '/providers/proxies/ProviderSource')
+    assert status == 200, status
+    assert [p['name'] for p in json.loads(content)['proxies']] == ['ProviderFixture']
+    cached = Path('/var/lib/clash-core/proxies/fixture.yaml')
+    assert cached.stat().st_uid == pwd.getpwnam('clash-core').pw_uid
+    assert json.loads(cached.read_text())['proxies'][0]['skip-cert-verify'] is False
+
+
+def provider_cache_boundary():
+    sentinel = Path('/tmp/provider-root-sentinel')
+    assert sentinel.stat().st_uid == 0
+    assert sentinel.stat().st_mode & 0o777 == 0o700
+    assert not list(sentinel.iterdir()), 'core wrote through a root-only directory'
+    cache = Path('/var/lib/clash-core/proxies')
+    cache.unlink()
+    cache.mkdir(mode=0o700)
+    account = pwd.getpwnam('clash-core')
+    os.chown(cache, account.pw_uid, account.pw_gid)
+
+
+def provider_reject_refresh():
+    # Subscribe before changing the source, using the same bounded log stream
+    # as the health probe. Core output is owned by the helper's private writer.
+    connection = http.client.HTTPConnection('localhost', timeout=12)
+    connection.sock = socket.socket(socket.AF_UNIX)
+    connection.sock.settimeout(12)
+    connection.sock.connect('/run/clash-verge-rev/core/mihomo.sock')
+    try:
+        connection.request('GET', '/logs?level=error')
+        provider_contents(True)
+        response = connection.getresponse()
+        assert response.status == 200
+        for _ in range(20):
+            line = response.readline(65536)
+            if b'ProviderSource' in line and b'explicit certificate-validation exception' in line:
+                return
+        raise AssertionError('no certificate-policy rejection for provider refresh')
+    finally:
+        connection.close()
+
+
+{'prepare': prepare, 'start': start, 'check': check, 'refuse': refuse,
+ 'writer': writer, 'preflight-rejection': preflight_rejection,
+ 'provider-setup': provider_setup, 'provider-check': provider_check,
+ 'provider-cache-boundary': provider_cache_boundary,
+ 'provider-reject-refresh': provider_reject_refresh,
+ 'provider-good': lambda: provider_contents(False)}[sys.argv[1]]()

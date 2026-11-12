@@ -39,7 +39,7 @@ in
     default = {
       enable = true;
       listen = "127.0.0.1:${toString m.ports.mihomoDns}";
-      ipv6 = false;
+      ipv6 = config.networking.enableIPv6;
       enhanced-mode = if p.tunMode then "fake-ip" else "redir-host";
       fake-ip-range = p.fakeIpRange;
       fake-ip-range6 = "";
@@ -51,6 +51,7 @@ in
         "*.lan" "*.local" "*.localhost" "*.test" "*.home.arpa" "*.internal"
         "*.wlan" "*.intranet" "*.private" "*.domain" "*.home" "*.host" "*.corp"
         "+.ts.net"
+
         # QQ file downloads need real DNS answers for Hermes' SSRF check.
         # This exact-host filter changes DNS only; routing stays rule-driven.
         "grouptalk.c2c.qq.com"
@@ -89,6 +90,9 @@ in
     default = {
       lf-private-targets = {
         proxy-only = p.proxyOnly;
+        subscription-trust = p.subscriptionTrust;
+        insecure-proxy-exceptions = p.insecureProxyExceptions;
+        allow-dynamic-remote-grants = p.allowDynamicRemoteGrants;
         blocked-domains-file = if p.dnsBlocklistFile == null then "" else toString p.dnsBlocklistFile;
         blocked-domains = map lib.toLower p.blockedDomains;
         blocked-domain-exceptions = map lib.toLower p.blockedDomainExceptions;
@@ -123,6 +127,7 @@ in
       redir-port = 0;
       tproxy-port = if p.transparentGuestInterfaces == [ ] then 0 else m.ports.mihomoTproxy;
       allow-lan = false;
+
       # Keep the plain proxy ports on loopback for allow-lan=false, but let the
       # optional TPROXY listener accept transparent traffic addressed to the
       # original destination. Without this the tproxy socket binds 127.0.0.1
@@ -133,6 +138,7 @@ in
       "tun.enable" = p.tunMode;
       "tun.file-descriptor" = 0;
       "dns.fallback" = [ ];
+
       # ECH's outer SNI is a cover name in both Rule and uniform proxy modes.
       # Fake-IP mappings and explicit proxy targets already supply the domain.
       "sniffer.enable" = false;
@@ -150,6 +156,7 @@ in
         "tun.route-exclude-address" = routeExclude;
         "tun.inet6-address" = lib.optionals config.networking.enableIPv6 [ p.tunIpv6Address ];
         "tun.dns-hijack" = [ "any:53" "tcp://any:53" ];
+
         # Require DNS interception during profile parsing and controller PATCH.
         "tun.dns-mode" = "hijack";
       });

@@ -147,6 +147,7 @@ let
     require_tun = requireTun;
     fake_ip_net = config.my.proxy.fakeIpNet;
     tun_probe_name = tunProbeName;
+    tun_probe_names = config.my.proxy.tunProbeNames;
 
     expected = {
       managed-policy = builtins.hashString "sha256" (builtins.toJSON config.my.proxy.managedProfile);
@@ -630,12 +631,12 @@ NFT_OFF
                 changed=1; woken=1
                 return 0
               fi
-              if [ "$health_gate" = "obs" ]; then
+              if [ "$health_gate" = "obs" ] || [ "$health_gate" = "dns" ]; then
                 obs_fails=$((obs_fails + 1))
               else
                 obs_fails=0
               fi
-              if [ "$health_gate" = "obs" ] && [ "$mode" = "proxy" ] && [ "$obs_fails" -lt 2 ]; then
+              if { [ "$health_gate" = "obs" ] || [ "$health_gate" = "dns" ]; } && [ "$mode" = "proxy" ] && [ "$obs_fails" -lt 2 ]; then
                 want=proxy; want_reason="obs:$obs_fails/2"
               else
                 want=blocked
@@ -847,6 +848,9 @@ NFT_OFF
             exec ${modeScript} --migrate-legacy
           fi
           if [ "$1" = on ]; then
+            ${lib.optionalString config.programs.clash-verge.enable ''
+            ${pkgs.coreutils}/bin/env LF_MANAGED_PROXY_POLICY=${lib.escapeShellArg config.systemd.services.clash-verge.environment.LF_MANAGED_PROXY_POLICY} ${pkgs.python3}/bin/python3 ${./netsec/preflight.py} ${config.programs.clash-verge.package.stageSettings}
+            ''}
             # An explicit operator action authorizes the configuration the GUI
             # currently holds. The window is single-use: the first core start
             # consumes it, so a later profile edit needs another clash-on.
@@ -889,13 +893,25 @@ NFT_OFF
           fi
           systemctl start --no-block proxy-net-wake.service
           ;;
+        preflight)
+          ${if config.programs.clash-verge.enable then ''
+          exec ${pkgs.coreutils}/bin/env LF_MANAGED_PROXY_POLICY=${lib.escapeShellArg config.systemd.services.clash-verge.environment.LF_MANAGED_PROXY_POLICY} ${pkgs.python3}/bin/python3 ${./netsec/preflight.py} ${config.programs.clash-verge.package.stageSettings}
+          '' else ''echo '{"ready":false,"issues":["managed GUI package is disabled"]}'; exit 1''}
+          ;;
         status)
-          ${pkgs.python3}/bin/python3 ${./netsec/state.py} "''${2:-proxy}" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} || true
+          target="''${2:-auto}"
+          [ "$target" != --check ] || target=auto
+          verdict=0
+          ${pkgs.python3}/bin/python3 ${./netsec/state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} || verdict=$?
+          if [ "''${3:-}" = --check ] || [ "''${2:-}" = --check ]; then exit "$verdict"; fi
           ;;
         wait)
           target="''${2:-proxy}"
           case "$target" in proxy|direct) ;; *) exit 2 ;; esac
           for ((attempt=0; attempt<90; attempt++)); do
+            if (( attempt % 10 == 0 )); then
+              ${pkgs.python3}/bin/python3 ${./netsec/state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} >&2 || true
+            fi
             if ${pkgs.python3}/bin/python3 ${./netsec/state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} >/dev/null; then
               echo "Proxy ready: $target"
               exit 0

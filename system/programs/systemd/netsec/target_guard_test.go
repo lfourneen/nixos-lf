@@ -364,3 +364,86 @@ func TestLocalAuthorizationCanBeRemoved(t *testing.T) {
 		t.Fatal("empty local CIDRs authorized a local target")
 	}
 }
+
+type lfCandidateConn struct{ C.Conn }
+
+func (*lfCandidateConn) Close() error { return nil }
+
+func TestValidatedCandidatesFallbackAndIsolation(t *testing.T) {
+	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"}})
+	defer Configure(nil)
+	for _, answers := range [][]string{
+		{"203.0.113.11", "203.0.113.10"},
+		{"203.0.113.11", "2001:db8::10"},
+		{"2001:db8::11", "2001:db8::10"},
+	} {
+		ips := []netip.Addr{}
+		for _, text := range answers {
+			ips = append(ips, netip.MustParseAddr(text))
+		}
+		metadata := &C.Metadata{Host: "fallback.example", DstPort: 443, NetWork: C.TCP, Type: C.SOCKS5}
+		protected, err := Protect(context.Background(), metadata, metadata,
+			func(context.Context, string) ([]netip.Addr, error) { return ips, nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		attempts := 0
+		conn, err := DialTCP(context.Background(), protected, func(ctx context.Context, target *C.Metadata) (C.Conn, error) {
+			attempts++
+			if target.Host != "" || len(target.LFCandidates) != 0 {
+				t.Fatal("target was not pinned")
+			}
+			if err := CheckEgress(target, false, "actual-leaf"); err != nil {
+				t.Fatal(err)
+			}
+			if target.DstIP != ips[len(ips)-1] {
+				return nil, errors.New("first address unavailable")
+			}
+			return &lfCandidateConn{}, nil
+		})
+		if err != nil || conn == nil || attempts != 2 {
+			t.Fatalf("fallback: %v, %d", err, attempts)
+		}
+		if protected.DstIP != ips[len(ips)-1] {
+			t.Fatal("successful target was not retained")
+		}
+	}
+	metadata := &C.Metadata{Host: "mixed.example", NetWork: C.TCP, Type: C.SOCKS5}
+	if _, err := Protect(context.Background(), metadata, metadata,
+		func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("203.0.113.10"), netip.MustParseAddr("10.0.0.1")}, nil
+		}); err == nil {
+		t.Fatal("mixed public/private answer accepted")
+	}
+	metadata.NetWork = C.UDP
+	result, err := Protect(context.Background(), metadata, metadata,
+		func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("203.0.113.10")}, nil
+		})
+	if err != nil || len(result.LFCandidates) != 0 {
+		t.Fatal("UDP gained per-packet fallback")
+	}
+}
+
+func TestProviderNodesRequireCertificateExceptions(t *testing.T) {
+	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"}})
+	defer Configure(nil)
+	if CheckProxy(map[string]any{"name": "node", "skip-cert-verify": true}) == nil {
+		t.Fatal("insecure node accepted")
+	}
+	if CheckProxy(map[string]any{"name": "node", "tls": map[string]any{"skip-cert-verify": true}}) == nil {
+		t.Fatal("nested insecure node accepted")
+	}
+	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"}, "insecure-proxy-exceptions": []string{"node"}})
+	if err := CheckProxy(map[string]any{"name": "node", "skip-cert-verify": true}); err != nil {
+		t.Fatal(err)
+	}
+	// A name exception intentionally follows a same-named node, including
+	// a provider replacing its server; it is not a server identity pin.
+	if err := CheckProxy(map[string]any{"name": "node", "server": "changed.example", "skip-cert-verify": true}); err != nil {
+		t.Fatal("same-name exception did not follow its documented scope:", err)
+	}
+	if CheckProxy(map[string]any{"name": "replacement", "skip-cert-verify": true}) == nil {
+		t.Fatal("exception crossed node names")
+	}
+}

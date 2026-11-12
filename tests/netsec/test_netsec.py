@@ -1357,5 +1357,153 @@ reason=""; publish_state observation
             self.run_shell(script, directory)
 
 
+
+class RecoveryAndDiagnosticsTests(unittest.TestCase):
+    def test_dns_backup_restore_and_manual_conflict(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = {'state': directory, 'nmcli': 'nmcli'}
+            uuid = '00000000-0000-0000-0000-000000000007'
+            original = ['no', 'no', '10.1.2.3', 'fd00::53', 'corp.example', '~corp.example']
+            values = list(original)
+            def command(args):
+                if '-g' in args:
+                    return '\n'.join(values)
+                offset = args.index(uuid) + 1
+                for key, value in zip(args[offset::2], args[offset + 1::2]):
+                    values[nm_dns.PROPERTIES.index(key)] = value
+                return ''
+            nm_dns.profile(settings, uuid, 'apply', command)
+            self.assertEqual(values, nm_dns.MANAGED)
+            self.assertTrue(nm_dns.profile(settings, uuid, 'plan', command)['restorable'])
+            values[2] = '10.9.8.7'
+            with self.assertRaisesRegex(ValueError, 'manually'):
+                nm_dns.profile(settings, uuid, 'restore', command)
+            values[:] = nm_dns.MANAGED
+            nm_dns.profile(settings, uuid, 'restore', command)
+            self.assertEqual(values, original)
+            record = json.loads(nm_dns.record_path(settings, uuid).read_text())
+            self.assertEqual(set(record), {'original', 'managed'})
+            self.assertNotIn('password', json.dumps(record))
+
+    def test_tun_candidates_tolerate_dns_failure_but_not_policy_failure(self):
+        probe = health.Probe({'budget_seconds':12, 'require_tun': True,
+                              'tun_probe_name':'one.example', 'tun_probe_names':['one.example','two.example']})
+        seen = []
+        def target(name, _):
+            seen.append(name)
+            if name == 'one.example': raise health.ProbeFailure('dns', 'no answer')
+        probe.tun_target = target
+        probe.tun_test()
+        self.assertEqual(seen, ['one.example', 'two.example'])
+        def invalid(name, _): raise health.ProbeFailure('config', 'invalid policy')
+        probe.tun_target = invalid
+        with self.assertRaises(health.ProbeFailure): probe.tun_test()
+
+    def test_inspection_keeps_safe_error_categories(self):
+        inspect = module('inspect')
+        for error, expected in [(PermissionError(), 'permission-denied'),
+                                (FileNotFoundError(), 'command-missing'),
+                                (subprocess.TimeoutExpired('fixture',1), 'timeout')]:
+            with patch.object(inspect.subprocess, 'run', side_effect=error):
+                result = inspect.command(['fixture'])
+                self.assertFalse(result['available'])
+                self.assertEqual(result['error'], expected)
+        for stderr, expected in [('Failed to connect to bus: Operation not permitted', 'permission-denied'),
+                                  ('Cannot find device "fixture"', 'not-found'),
+                                  ('Connection refused', 'service-unavailable')]:
+            with patch.object(inspect.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', stderr)):
+                result = inspect.command(['fixture'])
+                self.assertEqual(result['error'], expected)
+                self.assertNotIn('stderr', result)
+
+    def test_auto_readiness_follows_intent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'proxy-mode').mkdir()
+            (root / 'proxy-mode/intent').write_text('direct')
+            result = state.readiness(root, 'auto', now=100, boot_id='fixture')
+            self.assertEqual(result['target'], 'direct')
+            self.assertIn('phase', result)
+
+
+
+class SubscriptionAndStatusTests(unittest.TestCase):
+    def test_certificate_summary_matches_merge_and_core_boolean_forms(self):
+        preflight = module('preflight')
+        for value in [False, 0, 0.0, 'false', 'False', 'FALSE', '0', 'f', 'F']:
+            self.assertFalse(preflight.disables_tls({'TLS': {'SKIP_CERT_VERIFY': value}}))
+        for value in [True, 1, 'true', 'yes', '', None, []]:
+            self.assertTrue(preflight.disables_tls({'tls': {'skip-cert-verify': value}}))
+        document = {'proxies': [{'name':'safe'}, {'name':'allowed','skip-cert-verify':True},
+                                 {'name':'rejected','tls':{'skip_cert_verify':True}}]}
+        summary, issues = preflight.subscription_check(document, {'insecure-proxy-exceptions':['allowed']})
+        self.assertEqual(summary['certificate_exceptions_allowed'], 1)
+        self.assertEqual(summary['certificate_exceptions_rejected'], 1)
+        self.assertEqual(len(issues), 1)
+        self.assertNotIn('allowed', issues[0])
+
+    def test_provider_preparation_scope_is_explicit_and_fixed_mode_rejects(self):
+        preflight = module('preflight')
+        document = {'proxy-providers': {'fixture': {'url':'https://user:secret@example.com/path?token=secret'}}}
+        summary, issues = preflight.subscription_check(document, {})
+        self.assertFalse(issues)
+        self.assertEqual(summary['provider_contents'], 'runtime-validation')
+        self.assertEqual(summary['provider_hosts'], ['example.com'])
+        self.assertTrue(preflight.subscription_check(document, {'subscription-trust':'fixed'})[1])
+        for cache_path in ['providers/sub.yaml', '../cache.yaml', '/tmp/cache.yaml']:
+            document['proxy-providers']['fixture']['path']=cache_path
+            self.assertTrue(preflight.subscription_check(document,{})[1])
+        document['proxy-providers']['fixture']['path']='proxies/sub.yaml'
+        self.assertFalse(preflight.subscription_check(document,{})[1])
+
+
+    def test_preflight_record_is_private_data_free_and_atomic(self):
+        preflight = module('preflight')
+        with tempfile.TemporaryDirectory() as tmp, patch.object(preflight.os, 'geteuid', return_value=0):
+            preflight.publish({'ready':False,'phase':'prepare-policy',
+                               'subscription':{'inline_nodes':65,'provider_hosts':['private.example'],
+                                               'certificate_exceptions_rejected':16}}, {'state':tmp})
+            path = Path(tmp) / 'preflight.json'
+            record = json.loads(path.read_text())
+            self.assertNotIn('private.example', path.read_text())
+            self.assertEqual(record['subscription']['certificate_exceptions_rejected'],16)
+            self.assertEqual(path.stat().st_mode & 0o777,0o644)
+            self.assertEqual(list(Path(tmp).glob('*.new.*')),[])
+
+    def test_preparation_record_requires_current_boot_and_fresh_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); (root/'proxy-mode').mkdir()
+            path=root/'proxy-mode/preflight.json'
+            for record, visible in [({'boot_id':'old','monotonic_seconds':99}, False),
+                                    ({'boot_id':'current','monotonic_seconds':101}, False),
+                                    ({'boot_id':'current','monotonic_seconds':99,'phase':'prepare-policy'}, True)]:
+                path.write_text(json.dumps(record))
+                result=state.readiness(root,'auto',now=100,boot_id='current')
+                self.assertEqual(bool(result['last_preflight']),visible)
+
+    def test_human_status_modes_width_and_no_terminal_control_injection(self):
+        status = module('status')
+        for mode in ['direct','proxy','blocked','unenforced','unknown']:
+            value = {'mode':mode,'target':'proxy','ready':mode in ['direct','proxy'],
+                     'reason':'node','reasons':['bad\x1b[31m\nline'],
+                     'observations':{},'budget_remaining':120,'budget_total':1800}
+            for columns in [32,48,88]:
+                rendered = status.render(value,columns)
+                self.assertTrue(all(status.width(line)==columns for line in rendered.splitlines()))
+                self.assertNotIn('\x1b',rendered)
+                self.assertIn('Network status',rendered)
+            self.assertNotIn('╭',status.render(value,plain=True))
+
+    def test_status_keeps_last_preflight_failure_separate_from_current_readiness(self):
+        status = module('status')
+        value = {'ready':True,'mode':'direct','target':'direct',
+                 'last_preflight':{'ready':False,'phase':'prepare-policy',
+                    'subscription':{'inline_nodes':65,'certificate_exceptions_rejected':16}}}
+        rendered=status.render(value,plain=True)
+        self.assertIn('Ready',rendered)
+        self.assertIn('Certificate or subscription policy rejected',rendered)
+        self.assertIn('rejected 16',rendered)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

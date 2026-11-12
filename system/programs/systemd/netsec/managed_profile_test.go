@@ -433,3 +433,18 @@ func TestLFManagedPreviousGenerationAppliesPolicyExclusions(t *testing.T) {
 		}
 	}
 }
+
+func TestLFManagedSubscriptionTrust(t *testing.T) {
+	document := map[string]any{"proxy-providers": map[string]any{"source": map[string]any{"url": "https://example.invalid/private?token=secret"}}}
+	if lfValidateSubscription(document, map[string]any{"subscription-trust": "fixed"}) == nil {
+		t.Fatal("fixed trust accepted mutable source")
+	}
+	targets := map[string]any{"subscription-trust": "source", "remote-target-grants": []any{map[string]any{"proxy": "same-name"}}}
+	if lfValidateSubscription(document, targets) == nil {
+		t.Fatal("mutable identity inherited remote grant")
+	}
+	targets["allow-dynamic-remote-grants"] = true
+	if err := lfValidateSubscription(document, targets); err != nil {
+		t.Fatal(err)
+	}
+}

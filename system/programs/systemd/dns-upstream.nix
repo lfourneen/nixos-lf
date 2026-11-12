@@ -25,6 +25,7 @@ let
     nmcli = "${pkgs.networkmanager}/bin/nmcli";
     wireless = m.wireless.name;
     split_profiles = config.my.proxy.splitDnsProfileUuids;
+
     # Private exclusions are also what keep conditional upstreams outside
     # Mihomo's DNS hijack. Public split upstreams are deliberately unsupported.
     split_cidrs = lib.optionals config.my.hardening.directEgress.privateRoutes (m.privateV4 ++ m.ulaV6);
@@ -40,7 +41,7 @@ let
   # Every health round independently contacts these TLS upstreams. Cached
   # authenticated answers prove validation, never current reachability.
   dotProbeUpstreams = lib.concatMapStringsSep " "
-    (ip: "${ip}@${toString port.dot}#${m.dotAuthName}") m.dotUpstreams;
+    (endpoint: "${endpoint.address}@${toString port.dot}#${endpoint.authName}") m.dotEndpoints;
 
   resolvedSettings = pkgs.writeText "resolved-policy.json" (builtins.toJSON {
     ip = "${pkgs.iproute2}/bin/ip";
@@ -97,6 +98,7 @@ in
       RuntimeDirectory = "dns-policy";
       RuntimeDirectoryPreserve = true;
       ExecStart = "${pkgs.python3}/bin/python3 ${./netsec/dns_sleep.py} ${policySettings} before";
+
       # Runs even after a failed start. Do not wait here: resume is ordered after
       # sleep.target and must also handle a canceled sleep transaction.
       ExecStopPost = "${pkgs.systemd}/bin/systemctl start --no-block dns-policy-resume.service";
@@ -184,6 +186,7 @@ in
     unitConfig.OnFailure = [ "netsec-alert@%n.service" ];
     serviceConfig = {
       RuntimeDirectory = "dns-upstream";
+
       # Keep /run/dns-upstream/servers.conf across a restart: dnsmasq reads it at start
       # and the tmpfiles seed/budgets live here; keep them across service restarts.
       RuntimeDirectoryPreserve = true;
@@ -312,10 +315,11 @@ in
           ${config.my.proxy.listenerCheck} core-dns >/dev/null 2>&1
         }
         dns_ok() {
-          for name in www.baidu.com www.gstatic.com; do
+          for name in ${lib.concatStringsSep " " config.my.proxy.tunProbeNames}; do
             answer=$(dig +time=2 +tries=1 +short @127.0.0.1 -p ${toString port.mihomoDns} "$name" A 2>/dev/null)
-            [ -n "$answer" ] || return 1
+            [ -z "$answer" ] || return 0
           done
+          return 1
         }
         publish_dns() {
           now=$(now_mono)

@@ -14,9 +14,11 @@ let
 
   m = osConfig.my.machine;
   port = m.ports;
+
   # Portal/LAN/CGNAT bypass the TUN; same ranges as the firewall.
   routeExclude = lib.optionals osConfig.my.hardening.directEgress.privateRoutes (m.privateV4 ++ m.ulaV6 ++ m.linkLocalV6)
     ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6;
+
   # No trailing newline: the interpolation line supplies it.
   yamlItems = indent: xs: lib.concatStringsSep "\n" (map (x: "${indent}- ${x}") xs);
 
@@ -40,22 +42,26 @@ let
     "browserleaks.com" "ipleak.net" "dnsleaktest.com" "dnsleak.com"
     "dnschecker.org" "ip2location.com" "dns-detect.alicdn.com" "itdog.cn"
     "17ce.com" "boce.com" "tool.lu" "ping.pe"
+
     # Cross-network CDN/trace targets such as ip.net.coffee's "domestic" probes;
     # a CN-fronted /cdn-cgi/trace here reports the real v4 and v6 on the Direct path.
     "cloudflare-cn.com" "qualcomm.cn" "perfops.byte-test.com"
+
     # Common CN IP-echo endpoints.
     "chinaz.com" "pv.sohu.com"
+
     # NetEase CDN: a HEAD replies with the cdn-user-ip header (real IP on Direct).
     "necaptcha.nosdn.127.net"
   ];
+
   # Prepend-forced through the proxy, the subscription sends these DIRECT which times out
   healthProbeHosts = lib.filter (host: host != null) (map (url:
     let parts = builtins.match "https?://([a-zA-Z0-9.-]+)(:[0-9]+)?(/.*)?" url;
     in if parts == null then null else builtins.head parts
   ) osConfig.my.proxy.nodeProbeUrls);
-  forcedProxyDomains = lib.unique (probeDomains ++ healthProbeHosts ++ [
-    "dl.google.com" 
-    "dl-ssl.google.com" 
+  forcedProxyDomains = lib.unique (probeDomains ++ healthProbeHosts ++ osConfig.my.proxy.tunProbeNames ++ [
+    "dl.google.com"
+    "dl-ssl.google.com"
     "dl.googleusercontent.com"
   ]);
   forcedProxyDomainsJs =
@@ -66,10 +72,11 @@ let
   # silently break the health gate's TUN layer and pin the host in Mode C.
   tunProbeName = osConfig.my.proxy.tunProbeName;
   suffixOf = p: lib.removePrefix "+." (lib.removePrefix "*." (lib.removePrefix "." p));
-  probeFiltered = lib.any (p:
+
+  probeFiltered = lib.any (name: lib.any (p:
     let s = suffixOf p;
-    in p == tunProbeName || (s != p && (tunProbeName == s || lib.hasSuffix ".${s}" tunProbeName))
-  ) fakeIpFilter;
+    in p == name || (s != p && (name == s || lib.hasSuffix ".${s}" name))
+  ) fakeIpFilter) osConfig.my.proxy.tunProbeNames;
 
 in
 {
@@ -219,14 +226,21 @@ in
   };
 
   # Global extension script (after Merge, before per-profile extensions):
-  # (1) replace DNS with the managed object; (2) prepend forcedProxyDomains via
-  # the catch-all group. The core validates later per-profile extensions too.
+  # (1) drop subscription leaves that disable TLS verification unless
+  # my.proxy.insecureProxyExceptions names them; the core applies the same
+  # exact-name rule to whatever remains; (2) replace DNS with the managed
+  # object; (3) prepend forcedProxyDomains via the catch-all group. The core
+  # validates later per-profile extensions too, so a leaf re-added by one of
+  # them still fails closed at startup.
   home.file.".local/share/io.github.clash-verge-rev.clash-verge-rev/profiles/Script.js" = {
     text = ''
       // Managed by home/config/cvr-merge.nix -- do not edit in the GUI.
       const FORCED_PROXY_DOMAINS = ${forcedProxyDomainsJs};
       const DELAY_TEST_URL = ${builtins.toJSON osConfig.my.proxy.delayTestUrl};
       const PROXY_ONLY = ${lib.boolToString osConfig.my.proxy.proxyOnly};
+      // Same source of truth as the core's managed policy: the merge filter
+      // deletes an insecure leaf only when this list does not name it.
+      const INSECURE_PROXY_EXCEPTIONS = ${builtins.toJSON osConfig.my.proxy.insecureProxyExceptions};
 
       function httpsHealthChecks(config) {
         const insecure = url => url == null || url === "" ||
@@ -248,6 +262,67 @@ in
         }
       }
 
+      // The managed core refuses the whole profile when any leaf disables TLS
+      // certificate validation (skip-cert-verify). Drop such leaves and prune
+      // the group members so the rest starts, but keep a leaf whose exact name
+      // is in my.proxy.insecureProxyExceptions: that same name is the core's
+      // explicit exception, so the two layers cannot disagree. A leaf kept
+      // here for any other reason still fails closed in the core.
+      function insecureValue(value) {
+        if (value === false || value === 0) return false;
+        if (typeof value === "string") {
+          return ["0", "f", "F", "FALSE", "false", "False"].indexOf(value) === -1;
+        }
+        return true;
+      }
+
+      function disablesTLS(value) {
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            if (disablesTLS(item)) return true;
+          }
+          return false;
+        }
+        if (value && typeof value === "object") {
+          for (const key of Object.keys(value)) {
+            if (key.toLowerCase().replace(/_/g, "-") === "skip-cert-verify" && insecureValue(value[key])) {
+              return true;
+            }
+            if (disablesTLS(value[key])) return true;
+          }
+        }
+        return false;
+      }
+
+      function dropInsecureProxies(config) {
+        const proxies = config.proxies;
+        if (!Array.isArray(proxies)) return;
+        const dropped = [];
+        const kept = [];
+        for (const proxy of proxies) {
+          if (proxy && typeof proxy === "object" && disablesTLS(proxy) &&
+              !(typeof proxy.name === "string" && INSECURE_PROXY_EXCEPTIONS.indexOf(proxy.name) !== -1)) {
+            if (typeof proxy.name === "string") dropped.push(proxy.name);
+            continue;
+          }
+          kept.push(proxy);
+        }
+        if (dropped.length === 0) return;
+        config.proxies = kept;
+
+        const groups = config["proxy-groups"];
+        if (!Array.isArray(groups)) return;
+        const emptied = [];
+        for (const group of groups) {
+          if (!group || !Array.isArray(group.proxies) || group.proxies.length === 0) continue;
+          group.proxies = group.proxies.filter(name => dropped.indexOf(name) === -1);
+          if (group.proxies.length === 0 && !(group.use && group.use.length)) emptied.push(group.name);
+        }
+        if (emptied.length) {
+          throw new Error("Every proxy in these groups disables TLS verification: " + emptied.join(", "));
+        }
+      }
+
       // Catch-all group name differs per subscription, so take it from the
       // final MATCH rule instead of hardcoding (a stale name fails the config).
       function catchAllPolicy(rules) {
@@ -262,6 +337,7 @@ in
 
       function main(config) {
         if (config) httpsHealthChecks(config);
+        if (config) dropInsecureProxies(config);
         if (config) config["lf-private-targets"] = ${builtins.toJSON osConfig.my.proxy.managedProfile.lf-private-targets};
         // Replace the DNS object, including nested policy entries. Per-profile
         // extensions still run later; the core's final parser rejects any drift.

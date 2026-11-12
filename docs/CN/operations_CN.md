@@ -9,6 +9,9 @@
 底层系统命令为 `sudo proxy-control on`、`sudo proxy-control off`。`on` 打开一次性配置导入窗口并启动 helper，GUI 仍需提供配置并启动核心；`off` 清除授权并停止 helper。桌面命令额外处理 GUI 进程。A 中仅启动 `clash-verge` 不会授权核心。
 
 ```sh
+proxy-control preflight
+proxy-policy
+proxy-control status auto --check
 proxy-control status proxy
 proxy-control wait proxy
 proxy-control status direct
@@ -16,7 +19,7 @@ firefox --check
 proxy-inspect
 ```
 
-`status` 输出就绪 JSON，`wait` 等待目标模式满足共享就绪条件。Nushell 的 `proxy-status` 汇总模式、DNS、relay、验证、告警与实时探针，`egress-audit` 提供额外主动诊断。`proxy-inspect` 仅读取状态、服务资源及链路/队列/offload 统计，不发送探针。
+`status auto` 跟随操作意图，`--check` 在 JSON 未就绪时返回非零状态。JSON 包含阶段、原因、DNS 额度和下一步操作；`wait` 每十秒显示进度。`proxy-status` 用英文面板显示模式、出站策略、DNS、校验时效、入口、告警和上次准备结果，读取同一份就绪契约。`--plain` 输出适合日志的文本，`--json` 输出结构化数据，`--no-color` 和 `NO_COLOR` 关闭颜色。`egress-audit` 提供额外主动诊断。`proxy-inspect` 仅读取状态、服务资源及链路/队列/offload 统计，不发送探针。
 
 ## 远程桌面
 
@@ -24,7 +27,7 @@ Sunshine 已启用，随 `graphical-session.target` 启动，将当前图形会�
 
 管理界面仅接受本机客户端，默认 tailnet 防火墙也不放行该端口；UPnP 关闭。串流使用 [hardening-options.nix](../../system/config/hardening-options.nix) 的明确 TCP/UDP 清单。手机到电脑的 grants 需另在 Tailscale 管理后台配置，仓库不包含该权限策略。A 与健康 B 允许远控；C 会切断会话，包括已建立的 UDP 流及已解密 tailnet 入站。需要直连 A 时在本地使用 `clash-off`。
 
-[sunshine.nix](../../system/programs/sunshine.nix) 保留全局 CUDA 构建变体。锁定的 2026.914.233613 CUDA 包已存在于配置中的 `https://cache.nixos-cuda.org`。缓存必须提供锁定依赖和包选项生成的精确构建，加入 CUDA 缓存不代表覆盖全部包/版本。升级前可用 `nix build --max-jobs 0 --no-link .#nixosConfigurations.lfour.config.services.sunshine.package` 验证下载，它禁止本地编译。凭据与配对状态仍保存在用户的 Sunshine 目录，Desktop 和安全设置由 Nix 声明。硬件捕获/编码与手机串流需在部署后的图形会话验证。
+[sunshine.nix](../../system/programs/sunshine.nix) 选择 CUDA 构建变体。配置的 `https://cache.nixos-cuda.org` 提供与 lock 和软件包选项所选 derivation 匹配的二进制缓存。可用 `nix build --max-jobs 0 --no-link .#nixosConfigurations.lfour.config.services.sunshine.package` 检查缓存可用性，该命令禁用本地编译。凭据和配对状态保存在用户的 Sunshine 目录，Desktop 入口和服务设置由 Nix 声明。硬件捕获/编码与手机串流在部署后的图形会话中检查。
 
 ```sh
 systemctl --user status sunshine.service
@@ -36,6 +39,10 @@ sudo tailscale ping <手机的-tailnet-名称或-IP>
 可选受限 B、Unbound DoT 开关和时间目标限制见[直连例外](egress_CN.md)。受限 B 保留协商后的 Sunshine 媒体；C 始终切断远控。
 
 升级 Tailscale 时运行 `tailscale-transport`、`proxy-rules`、`proxy-egress-rules`、`proxy-tailscale-vm` 和 `proxy-egress-vm`；正常系统构建也强制执行源码约定检查。`0x80000` 来自 Tailscale 上游 Linux socket 标记，切换网络不变，升级时复核。无法打标或强制 bind-to-device 时，B 不会重新放行全部 root UDP；应诊断标记/权限，必要时明确切到 A。
+
+`proxy-policy` 同时显示原生 UID/接口/CIDR 授权、核心 DIRECT 范围、远程目标授权和订阅信任。这些权限相互独立：原生 restricted 与宽泛核心 DIRECT 范围并用时，连接本地代理入口的客户端仍可使用核心授权。限制宿主应用访问内网时，应同时审阅 `directEgress.mode="restricted"` 和 `localTargetCidrs=[]`，再声明必需授权。专用访客账户保留独立边界。
+
+`proxy-inspect` 报告命令失败分类及退出码，不输出任意服务 stderr。
 
 ## 状态与定位
 
@@ -90,11 +97,11 @@ sudo systemctl start nftables-verify.service
 
 Restart/reload 原子重装所属静态策略和安全模式；代理意图先回 C，再由健康门恢复 B。Stop 保留已加载规则。`nftables-verify-repair.service` 显式修复并复验，`nftables-recover` 重试失败的 nftables unit。不要清空全局 ruleset。
 
-## 旧版防火墙迁移
+## 防火墙表迁移
 
-旧 generation 使用过 `inet filter`、`ip proxymode_nat` 和 `ip6 proxymode_nat`。当前启动、重载和修复保留这些名称，因为它们可能已由其它服务使用。已经只使用[保留表](network_CN.md#防火墙生命周期)的系统无需迁移。
+`proxy-control migrate-firewall` 显式删除 `inet filter`、`ip proxymode_nat` 和 `ip6 proxymode_nat`，并安装[保留表](network_CN.md#防火墙生命周期)。普通启动、重载和修复保留这三个名称。执行迁移前须确认这些表归本配置所有。
 
-从这些旧名称对应的 generation 在线升级时，先查看已有表，确认归属旧版仓库配置：
+查看迁移目标并确认归属：
 
 ```sh
 sudo nft list table inet filter
@@ -102,16 +109,16 @@ sudo nft list table ip proxymode_nat
 sudo nft list table ip6 proxymode_nat
 ```
 
-安装当前 generation 后，显式迁移仍由旧配置拥有的历史表：
+确认归属后执行迁移，并检查安装的策略：
 
 ```sh
 sudo proxy-control migrate-firewall
 sudo systemctl start nftables-verify.service
 ```
 
-此 root 命令仅删除上述三个历史 family/name 组合，同时正常替换当前自有表。它取得 operator 和 policy 锁，以一次 nft 事务提交清理、静态规则和安全模式。事务被拒绝时保留原规则和历史表。历史表不存在不影响执行，因此在这些名称仍专供迁移的情况下可以重复运行。
+该 root 命令持有 operator 和 policy 锁，以一次 nft 事务提交三个目标表的删除、静态规则和安全模式。事务被拒绝时保留已安装的规则和目标表。目标表允许缺失，因此在名称仍归本配置所有时支持重复执行。
 
-代理意图或核心仍在运行时先安装 C，再由监督器通过健康检查恢复 B；直连意图且没有核心时安装 A。命令保留意图、核心授权及运行中的核心。使用上文的诊断方式检查当前模式和验证 JSON。迁移不会启用后续自动清理，其它服务以后复用历史名称也不会被日常重载删除。若现有历史名称归属其它服务，应保留该表并先解决归属，再使用迁移命令。
+代理意图或核心仍在运行时先安装 C，监督器在健康检查通过后开放 B；直连意图且没有核心时安装 A。迁移保留意图、授权和运行中的核心。使用上文诊断命令检查模式和验证 JSON。清理仅在本命令执行期间发生，其它服务的表由各自所有者管理。
 
 ## 配置入口
 

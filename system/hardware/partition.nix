@@ -7,7 +7,7 @@
   # Impermanence
   environment.persistence."/persist" = {
     hideMounts = true;
-    
+
     directories = [
       # Suggested subdirectory breakdown
       "/etc/NetworkManager/system-connections"
@@ -28,6 +28,7 @@
       "/var/lib/hermes"
       "/var/lib/lastlog"
       "/var/lib/NetworkManager"
+      { directory = "/var/lib/netsec-dns-profiles"; mode = "0700"; }
       { directory = "/var/lib/network-identity"; mode = "0700"; }
       "/var/lib/nixos"
       "/var/lib/power-profiles-daemon"
@@ -51,7 +52,7 @@
   ];
 
   boot.initrd.availableKernelModules = [ "tpm" "tpm_tis" "tpm_crb" ];
-    
+
   boot.initrd.systemd.extraBin = {
     cryptsetup = "${pkgs.cryptsetup}/bin/cryptsetup";
     tpm2_pcrread = "${pkgs.tpm2-tools}/bin/tpm2_pcrread";
@@ -68,8 +69,8 @@
   # boot.resumeDevice = "/dev/mapper/enc-swap";
 
   environment.systemPackages = with pkgs; [
-    btrfs-progs 
-    disko 
+    btrfs-progs
+    disko
     tpm2-tools
   ];
 }

@@ -26,7 +26,7 @@ Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；
 | Firefox 包 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[guard.py](../../home/programs/firefox/guard.py)、[sandbox.py](../../home/programs/firefox/sandbox.py)、[scope.c](../../home/programs/firefox/scope.c) | 不可变 policy/AutoConfig/字体、预检、外层命名空间、过滤总线、门户身份及 Landlock/seccomp；无 Gecko 源码 patch |
 | Unbound / Chrony / 网络 | [network.nix](../../system/config/network.nix)、[network-time.nix](../../system/config/network-time.nix)、[systemd 模块](../../system/programs/systemd) | 声明策略和仓库自有协调器；没有本地 Unbound/Chrony 源码补丁 |
 | 链路身份 | [link-identity.nix](../../system/config/link-identity.nix)、[link_identity.py](../../system/programs/systemd/netsec/link_identity.py)、[partition.nix](../../system/hardware/partition.nix) | 协调 profile 身份、私有迁移/恢复、原生有线生命周期与 DHCPv6 共存；无上游源码 patch |
-| 防火墙生命周期 | [network.nix](../../system/config/network.nix)、[proxy-mode.nix](../../system/programs/systemd/proxy-mode.nix)、[network-bootstrap.nix](../../system/programs/systemd/network-bootstrap.nix) | 精确表归属、持锁原子替换、失败保留和显式历史迁移 |
+| 防火墙生命周期 | [network.nix](../../system/config/network.nix)、[proxy-mode.nix](../../system/programs/systemd/proxy-mode.nix)、[network-bootstrap.nix](../../system/programs/systemd/network-bootstrap.nix) | 精确表归属、持锁原子替换、失败保留和显式表迁移 |
 | Tailscale 传输 | [tailscale-transport.nix](../../system/config/tailscale-transport.nix)、[tailscale_contract.py](../../system/programs/systemd/netsec/tailscale_contract.py) | 正常系统构建强制检查上游 socket mark 约定；升级复核 mark/后备/socket 变化并跑真实 CLI VM；没有 Tailscale 源码补丁 |
 | 直连例外 | [hardening-options.nix](../../system/config/hardening-options.nix)、[network.nix](../../system/config/network.nix)、[egress_policy.py](../../system/programs/systemd/netsec/egress_policy.py) | 主体/socket 身份、NAT 前授权、规范 CIDR 校验、时间/DoT 范围及 root/GUI 共享私网排除；比较兼容和受限模式 |
 | 访客信任 | [guest-policy.nix](../../system/config/guest-policy.nix)、[guest_policy.py](../../system/programs/systemd/netsec/guest_policy.py)、[socket-guest-dns.nix](../../system/config/socket-guest-dns.nix)、[virtualisation.nix](../../system/programs/virtualisation.nix) | 接口/源角色、规范授权、主/委派 UID 归属、NAT 前真实地址 DNS、双向撤销及 rootless 启动器 |
@@ -36,7 +36,7 @@ Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；
 
 共享域名过滤位于 [dns_filter.go](../../system/programs/systemd/netsec/dns_filter.go)、[target_guard.go](../../system/programs/systemd/netsec/target_guard.go) 和 [dns-blocklist.nix](../../system/config/dns-blocklist.nix)。`dns.newHandler` 与 `Resolver.ExchangeContext` 接入点需保持在 hosts、fake-IP、缓存答案及引导上游查询之前，覆盖非地址 RR 类型；应用目标先过滤后缀，再判断私网域名豁免。保留与 dnsmasq 一致的最长后缀、同精度例外优先语义，拒绝不可读/无效名单。过滤代码和测试须加入包 fileset，并保留 `./dns` Go 测试。
 
-`patch_mihomo.py` 接入最终 `ParseRawConfig`、controller router/PATCH、direct adapter、DNS metadata/dialer、TCP dial、UDP mapping、geodata downloader 与 Global 路由日志。升级须检查全部入口，parser 能编译不证明实际拨号和写 API 仍经过预期约束。
+`patch_mihomo.py` 接入最终 `ParseRawConfig`、controller router/PATCH、direct adapter、DNS metadata/dialer、TCP dial、UDP mapping、geodata downloader 与 Global 路由日志。升级须检查全部入口，集成检查覆盖实际拨号和控制写 API 上的策略执行。
 
 Root 策略来自 [proxy-profile.nix](../../system/config/proxy-profile.nix)，[cvr-merge.nix](../../home/config/cvr-merge.nix)、controller 输出及 [health.py](../../system/programs/systemd/netsec/health.py) 必须一致。新增 `RawTun` 字段须在 schema coverage 测试显式分类，检查监听/隧道字段、默认值、别名及 `GET /configs` 暴露值。保留重复键/非规范 PATCH 拒绝，以及同份解码对象的验证/应用。
 
@@ -52,7 +52,7 @@ Root 策略来自 [proxy-profile.nix](../../system/config/proxy-profile.nix)，[
 
 ## Mihomo 内的 sing-tun
 
-目标是 `vendor/github.com/metacubex/sing-tun`，不是独立安装的软件包；更新 Mihomo 可能同时改变它。检查 `go.mod`、replace 指令与实际 vendor 树。
+补丁作用于 Mihomo 内嵌的 `vendor/github.com/metacubex/sing-tun`，版本由 Mihomo 依赖树确定。检查 `go.mod`、replace 指令与实际 vendor 树。
 
 补丁包含三个独立部分：
 
@@ -60,7 +60,7 @@ Root 策略来自 [proxy-profile.nix](../../system/config/proxy-profile.nix)，[
 2. `redirect_nftables_rules.go`：受管非 mark auto-redirect 模式中，OUTPUT TCP DNAT 使用 TUN 自身地址代替 loopback，使 `SO_BINDTODEVICE(TUN)` 在 `route_localnet=0` 下正常。其它模式保留上游行为。
 3. `redirect_nftables_rules.go`：PREROUTING 排除已由自有 B 模式访客 TPROXY 规则设置 `0x233` mark 的报文，保留选定透明 socket 与原始目标。该 mark 与 `network.nix` 共享，普通访客无法通过线上报文设置宿主 packet mark。
 
-核对双栈、排除网段、hook 条件、访客 mark 和 redirect port；访客 mark 的查表规则优先级为 100，须早于 TUN 规则；C 自测应答例外与健康探针依赖该路径。源码匹配和编译不能证明内核重选路，升级 sing-tun 时需包括控制/网络 VM。
+核对双栈、排除网段、hook 条件、访客 mark 和 redirect port；访客 mark 的查表规则优先级为 100，须早于 TUN 规则；C 自测应答例外与健康探针依赖该路径。控制/网络 VM 覆盖内核重选路，属于 sing-tun 升级检查集。
 
 ## Gost
 
@@ -80,25 +80,25 @@ Helper patch 涉及 `src/core/manager.rs`、`logger.rs`、`reconcile.rs`。升�
 
 ## DNS 与浏览器集成
 
-Dnsmasq patch 是 `network.nix` 的内联 `--replace-fail`。Strict-order 重试中，最后服务器的 UDP SERVFAIL/REFUSED 应返回客户端并保留 EDE；使用 sent-to 数组索引，因为端点可能重复。对照新 `forward.c` 检查终端错误、重试和重复服务器，并保留网络 VM 的真实 DNS 应答测试。
+Dnsmasq patch 是 `network.nix` 的内联 `--replace-fail`。Strict-order 重试中，最后服务器的 UDP SERVFAIL/REFUSED 应返回客户端并保留 EDE；使用 sent-to 数组索引，支持重复端点。对照新 `forward.c` 检查终端错误、重试和重复服务器，并保留网络 VM 的真实 DNS 应答测试。
 
 Unbound 使用未改源码的 `pkgs.unbound-with-systemd`。未来 override 必须保留 `--enable-systemd`，unit 为 `Type=notify`。DNSSEC/CD、持久化锚初始化、TLS 认证、答案过滤、陈旧缓存上限和探针结论应与 [DNS](dns_CN.md) 一致；Chrony 仍须强制 NTS 和证书时间校验。
 
-Firefox 在打包层加入不可变 policy、AutoConfig、字体、preflight 和外层隔离。Home Manager 最终包/wrapper 或偏好语义变化可能不会触发源码 patch 失败，需用 `browser-privacy` 检查最终启动器、桌面/MIME、policy lock、DoH/代理值、沙箱环境及旧 profile/进程。
+Firefox 在打包层加入不可变 policy、AutoConfig、字体、preflight 和外层隔离。最终包/wrapper 和偏好语义由 `browser-privacy` 检查，覆盖最终启动器、桌面/MIME、policy lock、DoH/代理值、沙箱环境及旧 profile/进程。
 
-用 `browser-sandbox-vm` 检查真实 Wayland 浏览器、系统 CA 的 TLS 接受及不可信/域名不匹配证书拒绝、父进程文件/设备/socket 限制、音频、门户身份与文档授权、精确 profile 的链接复用、代次拒绝、重启及代理故障。依赖或内核升级时复核 bubblewrap、xdg-dbus-proxy、Landlock ABI、seccomp 和 xdg-desktop-portal 身份协议，保留应用专用文档视图及宿主实例记录。设备选择检查须拒绝普通文件和无关 GPU 的 primary 节点；NVIDIA 权限跟随声明的驱动选择，也可单独关闭。同时核对解析符号链接后的 NixOS CA bundle 可读且 `/etc/static` 仍隐藏。系统信任测试使用未导入 CA 的全新浏览器 profile；向该 profile 导入测试 CA 无法验证 NSS/p11-kit 的系统信任路径。默认 HTTP 和可选透明路径还需在外层隔离内运行 `browser-ech-vm`，复核所选 Firefox 的 CONNECT 门、原生 type-65 API 和 NSS 重试/证书行为。自动化的原生 DNS 测试开关只放在临时 profile，区分认证后不带 ECH 重试与证书验证失败。[浏览器手册](browser_CN.md#ech-发现与代理兼容)介绍这些路径；本地 CA 与密钥只属于隔离 fixture。
+用 `browser-sandbox-vm` 检查真实 Wayland 浏览器、系统 CA 的 TLS 接受及不可信/域名不匹配证书拒绝、父进程文件/设备/socket 限制、音频、门户身份与文档授权、精确 profile 的链接复用、代次拒绝、重启及代理故障。依赖或内核升级时复核 bubblewrap、xdg-dbus-proxy、Landlock ABI、seccomp 和 xdg-desktop-portal 身份协议，保留应用专用文档视图及宿主实例记录。设备选择检查须拒绝普通文件和无关 GPU 的 primary 节点；NVIDIA 权限跟随声明的驱动选择，也可单独关闭。同时核对解析符号链接后的 NixOS CA bundle 可读且 `/etc/static` 仍隐藏。系统信任测试使用全新浏览器 profile，由 NSS/p11-kit 从系统 CA bundle 读取信任。默认 HTTP 和可选透明路径还需在外层隔离内运行 `browser-ech-vm`，复核所选 Firefox 的 CONNECT 门、原生 type-65 API 和 NSS 重试/证书行为。自动化的原生 DNS 测试开关只放在临时 profile，区分认证后不带 ECH 重试与证书验证失败。[浏览器手册](browser_CN.md#ech-发现与代理兼容)介绍这些路径；本地 CA 与密钥只属于隔离 fixture。
 
 `dnsEncryption="strict"` 在协调器、broker 和静态防火墙中必须一致：不能自动或强制回退，不授予明文租约，不安装后备集合放行规则。保留已批准 split DNS、MagicDNS 和字面门户访问；两种传输策略都要验证，默认恢复预算仍是独立行为。
 
-NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWire/Pulse 后端。在相同软件包与隐私策略下对照隔离内外的 `about:support`，选择 NVIDIA 权限时应保留预期的硬件 WebRender 与 DMA-BUF 能力，并确认沙箱内 EGL 平台配置可解析。软件渲染 VM 无法验证物理 GPU 权限。硬件视频解码另有驱动及 Gecko 要求，需与无外层隔离的基线比较，不能由合成器测试推断解码可用。
+NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWire/Pulse 后端。在相同软件包与隐私策略下对照隔离内外的 `about:support`，选择 NVIDIA 权限时应保留预期的硬件 WebRender 与 DMA-BUF 能力，并确认沙箱内 EGL 平台配置可解析。硬件视频解码另有驱动及 Gecko 要求，使用相同软件包与无外层隔离的基线单独检查解码。
 
 ## 防火墙归属与加载
 
-[防火墙生命周期](network_CN.md#防火墙生命周期)保留精确的表 family/name 组合。日常激活、重载、模式切换和漂移修复均应遵循该归属边界。历史删除列表仅供 `proxy-control migrate-firewall` 使用；不能只凭名称认定运行中的表仍归旧 generation 所有。[迁移操作](operations_CN.md#旧版防火墙迁移)要求在删除前明确归属。
+[防火墙生命周期](network_CN.md#防火墙生命周期)保留精确的表 family/name 组合，激活、重载、模式切换和漂移修复在该归属范围内执行。删除列表专用于 `proxy-control migrate-firewall`；[迁移操作](operations_CN.md#防火墙表迁移)要求操作者在删除前确认每个目标的归属。
 
 保留共享 policy 锁，以及静态规则和安全模式片段的单次事务。显式迁移将清理追加到同一事务，不留下持久清理状态。nft 拒绝事务时须保留原策略，首次完整加载失败须保留独立 bootstrap 基线；停止 nftables unit 也须保留保护。代理意图在健康证明允许 B 前必须经过 C，包括重载或迁移时核心仍存活的情况。
 
-修改 nftables、systemd 加载或协调逻辑时，运行 `proxy-firewall-vm`、相关完整规则变体、`proxy-control-vm` 和 `proxy-network-vm`。专用 VM 检查 A/C 表归属、外部集合与有序规则、失败事务、锁竞争及之后的历史名称复用。控制 VM 检查真实 helper/核心、TUN 表保留、C 阻断与 B 恢复；完整网络 VM 保留首次加载和漂移恢复覆盖。
+修改 nftables、systemd 加载或协调逻辑时，运行 `proxy-firewall-vm`、相关完整规则变体、`proxy-control-vm` 和 `proxy-network-vm`。专用 VM 检查 A/C 表归属、外部集合与有序规则、失败事务、锁竞争及迁移目标名称复用。控制 VM 检查真实 helper/核心、TUN 表保留、C 阻断与 B 恢复；完整网络 VM 保留首次加载和漂移恢复覆盖。
 
 ## 链路身份
 
@@ -131,7 +131,7 @@ jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json 
 
 先复核上游与打包差异并完成组件检查，再修改对应基线条目，随后运行 `proxy-upgrade-review` 并构建候选系统。计划工具不会更新基线。Schema 要求各组件保留最小源码与回归覆盖，flake 也检查所列检查是否存在。
 
-该门确认输入身份，不证明语义正确。精确补丁锚点、软件包测试及真实内核/浏览器测试仍不可缺少。Recipe 指纹只覆盖主要软件包表达式，不覆盖完整传递构建闭包；仍需复核 lock 差异中的相关变化，包括部署内核和图形栈。增加补丁、依赖或入口时同步更新组件清单。
+该门检查源码版本与指纹；精确补丁锚点、软件包测试及内核/浏览器集成测试检查对应行为。Recipe 指纹只覆盖主要软件包表达式，不覆盖完整传递构建闭包；仍需复核 lock 差异中的相关变化，包括部署内核和图形栈。增加补丁、依赖或入口时同步更新组件清单。
 
 ### 复核与验证顺序
 
@@ -145,7 +145,7 @@ jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json 
 
 部署脚本在仓库中通过 `python3 tests/test_deployment.py scripts/push-to-dir.sh` 单独验证，以临时目录检查构建输入保留、文档排除、权限和输入缺失行为，无须 sudo 或宿主目标。需要 Python、Bash、rsync 和脚本使用的标准命令行工具；由于 `scripts/` 不部署，该检查与 flake checks 分开。
 
-以下为 `checks.x86_64-linux.*` 属性。Nix 构建通常使用本机 daemon，测试本身不要求宿主 root 网络操作；VM 使用隔离内核，可能需要本机 KVM 访问。首次依赖构建成本较高，按受影响行为选择后统一运行。
+以下为 `checks.x86_64-linux.*` 属性。Nix 构建通常使用本机 daemon，测试本身不要求宿主 root 网络操作；VM 使用隔离内核，通过 KVM 运行时需要本机 KVM 访问权限。首次依赖构建成本较高，按受影响行为选择后统一运行。
 
 | 检查 | 范围 |
 |---|---|
@@ -156,7 +156,7 @@ jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json 
 | `proxy-regressions` | 健康、状态、规则、DNS 租约、预算及监督器 |
 | `proxy-profile`、`proxy-gui` | 生成配置变体、策略/模板一致、GUI 默认与进程 wrapper |
 | `proxy-rules`、`proxy-egress-rules` | 构建期 LKL nft 解析完整兼容/受限模式规则 |
-| `proxy-firewall-vm` | A/C 表归属、外部表保留、加载被拒绝时的回滚、迁移锁、幂等及历史名称复用 |
+| `proxy-firewall-vm` | A/C 表归属、外部表保留、加载被拒绝时的回滚、迁移锁、幂等及迁移目标名称复用 |
 | `proxy-dns-strict-rules` | LKL 解析完整严格 DNS 防火墙规则 |
 | `proxy-dns-config` | 默认/严格 DNS 协调器生成脚本语法 |
 | `proxy-dns-strict-vm` | 真实 helper/核心、共享 DNS/代理过滤、严格故障/override/租约及残留集合拒绝、私网 split 权限与字面门户恢复 |

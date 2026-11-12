@@ -24,7 +24,7 @@ The launcher checks fonts under strict privacy and starts the browser in the out
 
 System certificate trust uses the NixOS CA bundle at `/etc/ssl/certs/ca-certificates.crt`, including declared system CAs. The launcher resolves its symlink and mounts the actual file read-only at that path: NSS/p11-kit can read it without exposing `/etc/static` or the full host certificate directory. A missing bundle refuses launch. Certificate verification remains enabled.
 
-`my.firefox.nvidiaAcceleration` defaults to the NixOS NVIDIA driver selection. NVIDIA's userspace renderer needs its matching DRM primary nodes, numbered `/dev/nvidia*` devices, `nvidiactl` and `nvidia-uvm`, plus the read-only EGL external-platform configuration. The launcher uses host sysfs only to associate primary nodes with NVIDIA render devices; neither the full `/sys` nor `/dev` is mounted. Other GPUs' primary nodes, `nvidia-modeset`, UVM tools and capability devices remain hidden. Setting this option to `false` keeps render-node-only device access and may require software rendering on NVIDIA. Gecko sandboxes remain active, and the locked preference continues to disable WebGL.
+`my.firefox.nvidiaAcceleration` defaults to the NixOS NVIDIA driver selection. NVIDIA's userspace renderer needs its matching DRM primary nodes, numbered `/dev/nvidia*` devices, `nvidiactl` and `nvidia-uvm`, plus the read-only EGL external-platform configuration. The launcher uses host sysfs only to associate primary nodes with NVIDIA render devices; neither the full `/sys` nor `/dev` is mounted. Other GPUs' primary nodes, `nvidia-modeset`, UVM tools and capability devices remain hidden. Setting this option to `false` keeps render-node-only device access. Gecko sandboxes remain active, and the locked preference continues to disable WebGL.
 
 The syscall filter also blocks keyring access, process inspection, file-handle opens and selected unused kernel interfaces. It leaves the namespace and seccomp operations needed by Gecko available. Landlock ABI 6 or newer and unprivileged user namespaces are required. Missing confinement or a failed bus proxy refuses or terminates the browser; there is no unconfined fallback.
 
@@ -42,13 +42,13 @@ WebRTC and HTTP/3 are disabled, keeping web traffic on TCP. DoH is disabled and 
 
 ## ECH discovery and proxy compatibility
 
-ECH encrypts the inner TLS ClientHello, including the origin SNI. In this configuration, the browser obtains its ECHConfig from an HTTPS DNS record. Enabling GREASE only adds a synthetic ECH-shaped extension; it does not establish an encrypted inner handshake.
+ECH encrypts the inner TLS ClientHello, including the origin SNI. In this configuration, the browser obtains its ECHConfig from an HTTPS DNS record. GREASE adds a synthetic ECH-shaped extension; a real ECH handshake uses the server's ECHConfig to encrypt ClientHelloInner.
 
 ### Browser paths
 
 | `my.firefox.networkPath` | Name discovery and transport | ECH behavior |
 |---|---|---|
-| `"http-proxy"` (default) | Locked Gost HTTP proxy; target resolution may be delegated to the core | The pinned Firefox 159.0.1 excludes HTTPS CONNECT from HTTPS-RR discovery. GREASE remains enabled; this path does not promise real ECH |
+| `"http-proxy"` (default) | Locked Gost HTTP proxy; target resolution may be delegated to the core | The pinned Firefox 159.0.1 excludes HTTPS CONNECT from HTTPS-RR discovery. GREASE remains enabled; HTTPS-RR discovery uses the transparent path below |
 | `"transparent"` | System DNS and native HTTPS-RR queries; A uses direct sockets, B uses the host TUN/firewall path | NSS can use the returned ECHConfig and perform a real ECH handshake with a compatible origin |
 
 Firefox's [connection gate](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/netwerk/protocol/http/nsHttpChannel.cpp) checks both the proxy DNS strategy and `UsingConnect()`. Changing DNS transport alone does not change this gate. This package keeps the test-only `force_use_https_rr` override disabled; the transparent option uses the packaged browser without a Gecko source patch.
@@ -60,7 +60,7 @@ my.proxy.tunMode = true;
 home-manager.users.lfour.my.firefox.networkPath = "transparent";
 ```
 
-Rebuild the generation and fully restart Firefox. The module rejects transparent operation with `tunMode=false`. This is a fixed package policy, not automatic failover from a failed HTTP proxy. The same launcher still checks network readiness; C blocks traffic in the kernel and refuses new launches. A keeps literal HTTP portal access. `bootMode`, `proxyOnly`, browser fingerprinting protection and `dnsEncryption` remain independent choices.
+Rebuild the generation and fully restart Firefox. The module rejects transparent operation with `tunMode=false`. The network path is selected when building the package. The same launcher still checks network readiness; C blocks traffic in the kernel and refuses new launches. A keeps literal HTTP portal access. `bootMode`, `proxyOnly`, browser fingerprinting protection and `dnsEncryption` remain independent choices.
 
 ### Where discovery happens
 
@@ -88,7 +88,7 @@ NSS selects the config, constructs ClientHelloInner/Outer, verifies the certific
 
 Managed core sniffing is disabled in both Rule and uniform proxy modes. An ECH outer SNI is a cover name and cannot replace the requested target. Explicit proxy targets and fake-IP mappings supply names for domain routing; literal IP traffic follows IP rules. The root parser applies this policy to cached GUI profiles too.
 
-When no usable HTTPS/ECH record exists, ordinary certificate-verified TLS remains available. ECH is therefore opportunistic, not an every-site requirement. `network.dns.echconfig.fallback_to_origin_when_all_failed=false` disables the origin fallback controlled by that preference, but does not prohibit NSS's separate authenticated retry without ECH. A trusted server rejecting ECH with no usable retry keys can cause a new ordinary TLS connection carrying the origin SNI. Authenticated key retries remain allowed; an untrusted rejection or invalid certificate does not authorize this retry. Missing/stripped records, DNS failure and authenticated rejection therefore have different outcomes. `dnsEncryption="strict"` governs DNS transport and does not require every site to support ECH.
+When no usable HTTPS/ECH record exists, ordinary certificate-verified TLS remains available. ECH is used for sites with a usable configuration. `network.dns.echconfig.fallback_to_origin_when_all_failed=false` disables the origin fallback controlled by that preference, but does not prohibit NSS's separate authenticated retry without ECH. A trusted server rejecting ECH with no usable retry keys can cause a new ordinary TLS connection carrying the origin SNI. Authenticated key retries remain allowed; an untrusted rejection or invalid certificate does not authorize this retry. Missing/stripped records, DNS failure and authenticated rejection therefore have different outcomes. `dnsEncryption="strict"` governs DNS transport and does not require every site to support ECH.
 
 An explicit HTTP proxy can see CONNECT targets, including when another client supports ECH through that proxy. The native path's local core can see DNS/fake-IP mappings and routing targets. ECH does not hide destination IPs, traffic timing, accounts or the content visible to the origin. See [RFC 9849](https://www.rfc-editor.org/rfc/rfc9849.html) for the protocol's acceptance and retry rules.
 
@@ -96,7 +96,7 @@ An explicit HTTP proxy can see CONNECT targets, including when another client su
 
 `browser-ech-vm` runs the selected production Firefox packages inside the outer sandbox with the real helper/core with a local DNS fixture, temporary CA, ECH server and a different address for the cover name. It distinguishes accepted ECH from ordinary TLS/GREASE, key retry, authenticated retry without ECH, untrusted rejection and certificate failure. It checks that cover SNI does not retarget the connection and retains A portal/C launch checks. It uses fresh profiles and never attaches to a personal browser.
 
-Run `browser-ech-vm` and `browser-ech-uniform-vm` alongside `browser-sandbox-vm`, `browser-privacy`, `proxy-core` and `proxy-profile` after browser or core changes. Both routing policies exercise actual locked preferences and both browser network paths. Browser upgrades can change the CONNECT gate, native resolver behavior and retry handling; core upgrades can change fake-IP service-record handling. Use the [component review gate](maintenance.md#component-review-gate) and keep these path descriptions aligned with the selected versions.
+Run `browser-ech-vm` and `browser-ech-uniform-vm` alongside `browser-sandbox-vm`, `browser-privacy`, `proxy-core` and `proxy-profile` after browser or core changes. Both routing policies exercise actual locked preferences and both browser network paths. Review the browser's CONNECT gate, native resolver and retry handling together with the core's fake-IP service-record handling. Use the [component review gate](maintenance.md#component-review-gate) and keep these path descriptions aligned with the selected versions.
 
 ## Privacy settings
 
@@ -109,7 +109,7 @@ Run `browser-ech-vm` and `browser-ech-uniform-vm` alongside `browser-sandbox-vm`
 | URLs and profiling | Query stripping, bounce cleanup, cross-origin referrer restrictions and GPC; suggestions, speculation, telemetry, studies, sponsored content, Sync and built-in IP Protection disabled |
 | APIs and fonts | WebRTC, WebGPU, geolocation, battery and sensors disabled; strict privacy also disables WebGL and restricts visibility to fixed DejaVu/Noto/CJK/emoji fonts |
 | ECH / TLS | Native HTTPS records, ECH and GREASE enabled; transparent mode supports ECH discovery, while the pinned browser's default CONNECT path does not |
-| Exit address | Shared A/B/C and routing policy; default B Rule routing can still choose DIRECT |
+| Exit address | Shared A/B/C and routing policy; default B Rule routing selects DIRECT or a proxy node |
 
 Strict extension policy blocks undeclared extensions. uBlock Origin is force-installed and KISS Translator is removable. Signed packages/updates come from Mozilla Add-ons through the selected network path and require connectivity; package policy and Gecko protections do not depend on extension download completing.
 

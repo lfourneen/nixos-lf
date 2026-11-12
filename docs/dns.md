@@ -26,7 +26,7 @@ Plain DNS on uplinks, including hardcoded private/portal resolvers, is redirecte
 | Node / encrypted-resolver bootstrap | Core resolver queries use the shared filter before cache/upstream access | Separate, literal-address encrypted bootstrap resolvers avoid depending on an already connected proxy; internal infrastructure is exempt from application target/IP and `proxyOnly` checks |
 | Approved split DNS / native MagicDNS | Split forwarding follows dnsmasq's domain precedence; resolved's native MagicDNS route bypasses dnsmasq | Explicit private resolver / Tailscale overlay exception; no local public DNSSEC guarantee |
 
-The blocklist, DNSSEC authenticity, private-address validation and transport encryption answer different questions. A local NXDOMAIN from the filter is a policy decision, not a DNSSEC-authenticated denial. B's encrypted resolvers do not establish local DNSSEC validation. Literal IP requests, independent application DoH, remote-side lookups outside the managed core and native MagicDNS are outside the common suffix filter's scope.
+The suffix filter returns local NXDOMAIN for blocked domains. A uses Unbound for local DNSSEC validation; B uses the core's encrypted resolvers. Private-address checks run separately on DNS answers and application targets. Literal IP requests, independent application DoH, remote-side lookups outside the managed core and native MagicDNS are outside the common suffix filter's scope.
 
 ## Mode A: validation and recovery
 
@@ -34,7 +34,7 @@ Unbound uses 360 DoT endpoints `101.226.4.6`, `218.30.118.6` and `123.125.81.6`,
 
 Upstream private/CGNAT, guest, loopback, unspecified, link-local and ULA answers are filtered, including IPv4-mapped forms. Explicit local data and narrowly declared private domains remain usable. Validated cached data can be served for up to 900 seconds during upstream failure, with a reply TTL of 30 seconds. Split DNS and plaintext fallback bypass this Unbound path.
 
-[dnssec_probe.py](../system/programs/systemd/netsec/dnssec_probe.py) reports local validation and encrypted transport separately. Each health round queries a fresh root name locally **and** opens a new authenticated TLS/DNS exchange with the configured upstreams. Positive, expired and aggressive NSEC caches can answer locally, including authenticated denials for names never queried before; an AD bit alone does not establish connectivity. Overall `secure` requires local validation plus reachable transport. A validation error remains a validation error, while a cached secure answer with failed transport reports `unavailable`. Each endpoint exchange has a five-second total deadline, including handshake and framed reads; the local query has eight seconds. The first usable endpoint ends the transport stage.
+[dnssec_probe.py](../system/programs/systemd/netsec/dnssec_probe.py) reports local validation and encrypted transport separately. Each health round queries a fresh root name locally **and** opens a new authenticated TLS/DNS exchange with the configured upstreams. Positive and eligible stale answers come from the local cache; aggressive NSEC caching also synthesizes authenticated denials. The probe records this local validation result separately from the fresh TLS exchange. Overall `secure` requires local validation plus reachable transport. A validation error remains a validation error, while a cached secure answer with failed transport reports `unavailable`. Each endpoint exchange has a five-second total deadline, including handshake and framed reads; the local query has eight seconds. The first usable endpoint ends the transport stage.
 
 `dnssec_probe.local` and `dnssec_probe.transport` preserve both observations in `/run/dns-upstream/state.json` and `/var/lib/dns-upstream/history.log`. A manual invocation without configured transport endpoints is explicitly labelled `scope=validation-only`; the production coordinator always supplies them. Cold anchor priming is deferred only while transport works.
 
@@ -60,6 +60,10 @@ Replenishment requires two successful rounds within 90 seconds in the same coord
 
 [dns_policy.py](../system/programs/systemd/netsec/dns_policy.py) is the privileged kernel-lease broker. Timed nft sets permit only the dnsmasq UID and exact upstream destinations. A stalled or dead coordinator cannot keep a lease past expiry. Sleep and connection changes revoke permissions before renewal.
 
+`my.machine.dotEndpoints` declares each literal IPv4/IPv6 address with its certificate `authName`; Unbound, the independent probe and firewall consume that same list. The default derives from `dotUpstreams` and `dotAuthName`. Select independently operated endpoints using measurements on the intended access network. `my.proxy.dnsStaleWaitMilliseconds` bounds the wait for fresh data before an eligible validated stale answer; its default is 300 ms. The core's DNS IPv6 setting follows the host's IPv6 support.
+
+DoT and NTS require an accurate clock. With an incorrect RTC, verify time through an independent trusted source, set the clock locally and restart the encrypted services. Certificate time checks remain enabled; plaintext DNS policy does not repair time authentication.
+
 ## Optional strict encryption
 
 ```nix
@@ -70,7 +74,7 @@ This changes managed **public DNS transport**, independently of A/B/C, `bootMode
 
 Approved private split DNS and MagicDNS remain intentional exceptions. Loopback DNS is local IPC. This setting does not encrypt every application protocol, police arbitrary HTTPS/DoH payloads, authenticate unsigned zones or constrain privileged root diagnostics. [Mihomo's resolver roles](https://wiki.metacubex.one/config/dns/) distinguish application DNS from proxy-endpoint and resolver bootstrap.
 
-When encrypted DNS fails, fresh public names fail; local and eligible cached answers may still work. State reports `encryption_policy=strict`, `degraded-dot-only`, a zero window and no active plaintext override. Readiness remains unavailable until the encrypted path recovers. Use a different uplink, a literal HTTP portal address in A, or repair the declared authenticated upstreams. If a portal requires unavailable public DNS, deliberately select a prepared generation using `opportunistic`; neither `clash-off` nor a runtime override relaxes strict encryption. See [offline recovery](operations.md#offline-recovery).
+When encrypted DNS fails, fresh public names fail; local and eligible cached answers remain available. State reports `encryption_policy=strict`, `degraded-dot-only`, a zero window and no active plaintext override. Readiness remains unavailable until the encrypted path recovers. Use a different uplink, a literal HTTP portal address in A, or repair the declared authenticated upstreams. If a portal requires unavailable public DNS, deliberately select a prepared generation using `opportunistic`; neither `clash-off` nor a runtime override relaxes strict encryption. See [offline recovery](operations.md#offline-recovery).
 
 ## Mode B: managed Mihomo DNS
 
@@ -84,7 +88,7 @@ In managed fake-IP mode, address-record behavior stays synthetic while HTTPS/SVC
 
 ## Restricted socket guest DNS
 
-When `my.hardening.socketGuestUsers` is nonempty, [socket-guest-dns.nix](../system/config/socket-guest-dns.nix) starts an additional loopback dnsmasq on port 1056 as UID 985. It shares the immutable suffix filter, additions and exceptions, but always forwards to Unbound 1055 and returns real addresses. It has no plaintext lease, split-DNS or native MagicDNS path. Unavailable DoT, including `unboundDotInProxy=false` in B, makes fresh public names fail; eligible cached/local data may remain.
+When `my.hardening.socketGuestUsers` is nonempty, [socket-guest-dns.nix](../system/config/socket-guest-dns.nix) starts an additional loopback dnsmasq on port 1056 as UID 985. It shares the immutable suffix filter, additions and exceptions, but always forwards to Unbound 1055 and returns real addresses. It has no plaintext lease, split-DNS or native MagicDNS path. Unavailable DoT, including `unboundDotInProxy=false` in B, makes fresh public names fail; eligible cached/local answers remain available.
 
 The declared primary and subordinate UIDs have TCP/UDP port 53 redirected here before the core's auto-redirect. A post-NAT check rejects old conntrack associations that still point at a previous resolver, and direct calls to 1056 remain reserved for root. The private-destination guard refuses direct fake-IP/known translation targets and host proxy inlets. Independent HTTPS/DoH payloads remain outside suffix filtering, while their resulting literal socket targets still face the account policy. C cuts these accounts' tracked replies as well as public egress. This path belongs to [host-socket guest authorization](network.md#guests-and-containers); the normal desktop resolver and bridge gateway DNS retain their separate paths.
 
@@ -100,8 +104,10 @@ Refresh upstream data with [refresh-dns-blocklist.py](../scripts/refresh-dns-blo
 
 ## Wi-Fi, split DNS and MagicDNS
 
+Wi-Fi DNS edits save only the six DNS properties in root-private `/var/lib/netsec-dns-profiles/`. `sudo proxy-dns-profile plan <UUID>` reports backup/restoration readiness; `restore <UUID>` restores those fields without reconnecting. Restoration refuses intervening manual edits. Approving a backed-up profile for split DNS restores its original DNS values. Credentials, routes and identity fields are outside the backup.
+
 [nm_dns.py](../system/programs/systemd/netsec/nm_dns.py) disables automatically supplied DNS for both families on managed Wi-Fi, clears unwanted explicit servers/search domains and pins resolved to the local gateway with `~.`. Fallback discovery reads raw DHCP information rather than this rewritten effective DNS list. Wired dhcpcd remains separate.
 
 `my.proxy.splitDnsProfileUuids` is empty by default. Approved profiles can supply private/ULA conditional resolvers already excluded from TUN by the shared [direct-egress routing policy](egress.md), including restricted B. Dnsmasq binds queries to the managed Wi-Fi interface. Leases bind UUID, ActiveConnection, ifindex, carrier-down counter and revocation epoch, expire within 120 seconds of observation and are revoked on dispatcher transitions. Public upstreams and unreadable/unsupported profiles enter `split-error` rather than opening default forwarding. A local resolver identity failure enters `resolver-error` and cannot open plaintext fallback.
 
-[resolved_policy.py](../system/programs/systemd/netsec/resolved_policy.py) excludes the managed TUN from resolved's default selection. Tailscale automatic DNS/routes remain disabled; only the authenticated tailnet's current MagicDNS suffix routes to its resolver with `DefaultRoute=no`. Literal peer addresses and this verified suffix retain intentional private access. External LAN/tailnet DNS service requires its own listener, client ACL and answer-routing policy; the host gateway is not a wildcard resolver.
+[resolved_policy.py](../system/programs/systemd/netsec/resolved_policy.py) excludes the managed TUN from resolved's default selection. Tailscale automatic DNS/routes remain disabled; only the authenticated tailnet's current MagicDNS suffix routes to its resolver with `DefaultRoute=no`. Literal peer addresses and this verified suffix retain intentional private access. The host gateway binds local resolver endpoints. Serving LAN/tailnet clients requires a separate listener, client ACL and answer-routing policy.
