@@ -18,14 +18,14 @@
 #   ./scripts/refresh-dns-blocklist.py --check  # report drift, write nothing
 #
 # BEGIN GENERATED
-#   stevenblack    77756  https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
-#   peterlowe       3562  https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext
+#   stevenblack    78213  https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+#   peterlowe       3561  https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext
 #   adaway          6540  https://adaway.org/hosts.txt
-#   oisd_big      232131  https://big.oisd.nl/dnsmasq
+#   oisd_big      227690  https://big.oisd.nl/dnsmasq
 #   1hosts_lite   202951  https://raw.githubusercontent.com/badmojr/1Hosts/master/Lite/hosts.txt
 #   notracking    250165  https://raw.githubusercontent.com/notracking/hosts-blocklists/master/hostnames.txt
-#   total         677520  merged and de-duplicated
-# Snapshot: 2026-11-03
+#   total         674737  merged and de-duplicated
+# Snapshot: 2026-11-12
 # END GENERATED
 #
 # Additions that are specific to this host belong in `my.proxy.blockedDomains`
