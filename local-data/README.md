@@ -9,11 +9,11 @@ are ignored unless explicitly listed in `.gitignore`.
 
 | File | Produced by | Used by |
 | --- | --- | --- |
-| `dns-blocklist.txt.xz` | `scripts/refresh-dns-blocklist.py` | `system/config/dns-blocklist.nix` (one immutable domain file for dnsmasq rules and the managed core's DNS/dial filter) |
+| `dns-blocklist.txt.xz` | `scripts/refresh-dns-blocklist.py` | `system/config/network/dns/blocklist.nix` (one immutable domain file for dnsmasq rules and the managed core's DNS/dial filter) |
 
 `dns-blocklist.txt.xz` is the merged, de-duplicated name list behind the DNS
 blocklist: one lowercase name per line, combining every entry of the upstreams
-recorded in the header of `system/config/dns-blocklist.nix`. Its size follows
+recorded in the header of `system/config/network/dns/blocklist.nix`. Its size follows
 those upstreams. Each configuration build uses the checked-in snapshot.
 
 ## Regenerating
@@ -31,7 +31,7 @@ committed. Re-run it when `--check` reports drift.
 
 ## Why the file must exist on the build host
 
-`system/config/dns-blocklist.nix` reads this file. That is why
+`system/config/network/dns/blocklist.nix` reads this file. That is why
 `scripts/push-to-dir.sh` copies `local-data/` into `/etc/nixos` along with
 `home/`, `overlays/` and `system/`: `nixos-rebuild --flake /etc/nixos#lfour`
 evaluates the flake from there, and a missing file fails the evaluation with a

@@ -6,7 +6,7 @@
 
 版本由 [flake.lock](../../flake.lock) 决定，不跟随桌面自更新。稳定 Nixpkgs 提供 Gost、dnsmasq、Unbound、Firefox；unstable 提供 Mihomo、Clash Verge GUI 及独立打包的 helper。当前锁定组合为 Mihomo 1.19.33、vendored MetaCubeX sing-tun 0.4.28、Gost 3.3.2、GUI 2.5.2、helper 2.3.3、dnsmasq 2.93、Unbound 1.26.2。GUI/helper/core 版本相互独立。
 
-[clash-verge.nix](../../system/programs/clash/clash-verge.nix) 构建定制核心/helper 并装入 GUI 包，[gost-relay.nix](../../system/programs/systemd/gost-relay.nix) 构建定制 relay。两者以 `lib.fileset.toSource` 只收集 patcher、Go 代码和测试，避免无关仓库改动重建 Go 包。**新增补丁文件或测试时必须更新对应 fileset**，否则文件即使在仓库中也不会进入 builder。
+[clash-verge.nix](../../system/programs/clash/clash-verge.nix) 构建定制核心/helper 并装入 GUI 包，[default.nix](../../system/programs/gost/default.nix) 构建定制 relay。两者以 `lib.fileset.toSource` 只收集 patcher、Go 代码和测试，避免无关仓库改动重建 Go 包。**新增补丁文件或测试时必须更新对应 fileset**，否则文件即使在仓库中也不会进入 builder。
 
 Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；Rust helper 在 `postPatch` 追加修改，保留继承的 Nixpkgs 处理。锚点要求精确匹配，升级失败时应比较上游行为，不能放宽匹配或跳过补丁。
 
@@ -14,31 +14,31 @@ Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；
 
 | 对象 | 仓库入口 | 目的 / 升级关注点 |
 |---|---|---|
-| Mihomo parser | [patch_mihomo.py](../../system/programs/systemd/netsec/patch_mihomo.py)、[managed_profile.go](../../system/programs/systemd/netsec/managed_profile.go) | 最终受管策略、摘要、已知旧配置规范化，拒绝无条件 DIRECT 兜底 |
-| Mihomo controller | [managed_route.go](../../system/programs/systemd/netsec/managed_route.go)、[policy_middleware.go](../../system/programs/systemd/netsec/policy_middleware.go) | 同 schema PATCH 解码与运行时写白名单 |
-| Mihomo 出站 / DNS / 日志 | [target_guard.go](../../system/programs/systemd/netsec/target_guard.go)、`patch_mihomo.py` | 目标验证/固定 IP、本地与远程叶节点授权、可选直拨拒绝、rule DNS metadata、Global 实际链路日志、只用快照 geodata |
-| Mihomo SOCKS parser | [patch_socks.py](../../system/programs/systemd/netsec/patch_socks.py)、[socks_addr_test.go](../../system/programs/systemd/netsec/socks_addr_test.go) | 整数偏移避免长域名字节运算溢出 |
-| Vendored sing-tun | [patch_sing_tun.py](../../system/programs/systemd/netsec/patch_sing_tun.py) | nft 最大地址区间端点，以及 TUN-bound OUTPUT TCP DNAT |
-| Vendored Gost HTTP | [patch_gost.py](../../system/programs/systemd/netsec/patch_gost.py)、[gost_http.go](../../system/programs/systemd/netsec/gost_http.go) | 兼容裸数字 IPv6 CONNECT，保留 Go HTTP 解析 |
-| Clash Verge helper | [patch_clash_service.py](../../system/programs/clash/patch_clash_service.py) | 固定 root 执行、日志及 socket/启动文件操作 |
-| Clash Verge 打包/启动 | [clash-verge.nix](../../system/programs/clash/clash-verge.nix)、[核心启动器](../../system/programs/clash/clash-verge-core-launcher.sh)、[stage 工具](../../system/programs/clash/clash-verge-stage.py)、[GUI 启动器](../../system/programs/clash/clash-verge-gui.py)、[GUI defaults](../../system/programs/clash/clash-verge-defaults.sh) | 授权快照、降权、singleton 处理、HTTPS 延迟默认；复用原 GUI 二进制 |
-| dnsmasq | [network.nix](../../system/config/network.nix) 内联替换 `src/forward.c` | 返回 strict-order 终端 UDP SERVFAIL/REFUSED，保留 DNSSEC EDE |
+| Mihomo parser | [patch_mihomo.py](../../system/programs/clash/mihomo/patches/patch_mihomo.py)、[managed_profile.go](../../system/programs/clash/mihomo/config/managed_profile.go) | 最终受管策略、摘要、已知旧配置规范化，拒绝无条件 DIRECT 兜底 |
+| Mihomo controller | [managed_route.go](../../system/programs/clash/mihomo/controller/managed_route.go)、[policy_middleware.go](../../system/programs/clash/mihomo/controller/policy_middleware.go) | 同 schema PATCH 解码与运行时写白名单 |
+| Mihomo 出站 / DNS / 日志 | [target_guard.go](../../system/programs/clash/mihomo/guard/target_guard.go)、`patch_mihomo.py` | 目标验证/固定 IP、本地与远程叶节点授权、可选直拨拒绝、rule DNS metadata、Global 实际链路日志、只用快照 geodata |
+| Mihomo SOCKS parser | [patch_socks.py](../../system/programs/clash/mihomo/patches/patch_socks.py)、[socks_addr_test.go](../../system/programs/clash/mihomo/tests/socks_addr_test.go) | 整数偏移避免长域名字节运算溢出 |
+| Vendored sing-tun | [patch_sing_tun.py](../../system/programs/clash/mihomo/patches/patch_sing_tun.py) | nft 最大地址区间端点，以及 TUN-bound OUTPUT TCP DNAT |
+| Vendored Gost HTTP | [patch_gost.py](../../system/programs/gost/patches/patch_gost.py)、[gost_http.go](../../system/programs/gost/src/gost_http.go) | 兼容裸数字 IPv6 CONNECT，保留 Go HTTP 解析 |
+| Clash Verge helper | [patch_clash_service.py](../../system/programs/clash/service/patch_clash_service.py) | 固定 root 执行、日志及 socket/启动文件操作 |
+| Clash Verge 打包/启动 | [clash-verge.nix](../../system/programs/clash/clash-verge.nix)、[核心启动器](../../system/programs/clash/service/clash-verge-core-launcher.sh)、[stage 工具](../../system/programs/clash/service/clash-verge-stage.py)、[GUI 启动器](../../system/programs/clash/gui/clash-verge-gui.py)、[GUI defaults](../../system/programs/clash/gui/clash-verge-defaults.sh) | 授权快照、降权、singleton 处理、HTTPS 延迟默认；复用原 GUI 二进制 |
+| dnsmasq | [default.nix](../../system/config/network/network.nix) 内联替换 `src/forward.c` | 返回 strict-order 终端 UDP SERVFAIL/REFUSED，保留 DNSSEC EDE |
 | Firefox 包 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[guard.py](../../home/programs/firefox/guard.py)、[sandbox.py](../../home/programs/firefox/sandbox.py)、[scope.c](../../home/programs/firefox/scope.c) | 不可变 policy/AutoConfig/字体、预检、外层命名空间、过滤总线、门户身份及 Landlock/seccomp；无 Gecko 源码 patch |
-| Unbound / Chrony / 网络 | [network.nix](../../system/config/network.nix)、[network-time.nix](../../system/config/network-time.nix)、[systemd 模块](../../system/programs/systemd) | 声明策略和仓库自有协调器；没有本地 Unbound/Chrony 源码补丁 |
-| 链路身份 | [link-identity.nix](../../system/config/link-identity.nix)、[link_identity.py](../../system/programs/systemd/netsec/link_identity.py)、[partition.nix](../../system/hardware/partition.nix) | 协调 profile 身份、私有迁移/恢复、原生有线生命周期与 DHCPv6 共存；无上游源码 patch |
-| 防火墙生命周期 | [network.nix](../../system/config/network.nix)、[proxy-mode.nix](../../system/programs/systemd/proxy-mode.nix)、[network-bootstrap.nix](../../system/programs/systemd/network-bootstrap.nix) | 精确表归属、持锁原子替换、失败保留和显式表迁移 |
-| Tailscale 传输 | [tailscale-transport.nix](../../system/config/tailscale-transport.nix)、[tailscale_contract.py](../../system/programs/systemd/netsec/tailscale_contract.py) | 正常系统构建强制检查上游 socket mark 约定；升级复核 mark/后备/socket 变化并跑真实 CLI VM；没有 Tailscale 源码补丁 |
-| 直连例外 | [hardening-options.nix](../../system/config/hardening-options.nix)、[network.nix](../../system/config/network.nix)、[egress_policy.py](../../system/programs/systemd/netsec/egress_policy.py) | 主体/socket 身份、NAT 前授权、规范 CIDR 校验、时间/DoT 范围及 root/GUI 共享私网排除；比较兼容和受限模式 |
-| 访客信任 | [guest-policy.nix](../../system/config/guest-policy.nix)、[guest_policy.py](../../system/programs/systemd/netsec/guest_policy.py)、[socket-guest-dns.nix](../../system/config/socket-guest-dns.nix)、[virtualisation.nix](../../system/programs/virtualisation.nix) | 接口/源角色、规范授权、主/委派 UID 归属、NAT 前真实地址 DNS、双向撤销及 rootless 启动器 |
+| Unbound / Chrony / 网络 | [default.nix](../../system/config/network/network.nix)、[time.nix](../../system/config/network/time.nix)、[网络模块](../../system/config/network) | 声明策略和仓库自有协调器；没有本地 Unbound/Chrony 源码补丁 |
+| 链路身份 | [default.nix](../../system/config/network/identity/default.nix)、[link_identity.py](../../system/config/network/identity/link_identity.py)、[partition.nix](../../system/hardware/partition.nix) | 协调 profile 身份、私有迁移/恢复、原生有线生命周期与 DHCPv6 共存；无上游源码 patch |
+| 防火墙生命周期 | [default.nix](../../system/config/network/network.nix)、[coordinator.nix](../../system/config/network/proxy/coordinator.nix)、[bootstrap.nix](../../system/config/network/firewall/bootstrap.nix) | 精确表归属、持锁原子替换、失败保留和显式表迁移 |
+| Tailscale 传输 | [transport.nix](../../system/config/network/tailscale/transport.nix)、[tailscale_contract.py](../../system/config/network/tailscale/tailscale_contract.py) | 正常系统构建强制检查上游 socket mark 约定；升级复核 mark/后备/socket 变化并跑真实 CLI VM；没有 Tailscale 源码补丁 |
+| 直连例外 | [options.nix](../../system/config/network/options.nix)、[default.nix](../../system/config/network/network.nix)、[egress_policy.py](../../system/config/network/firewall/egress_policy.py) | 主体/socket 身份、NAT 前授权、规范 CIDR 校验、时间/DoT 范围及 root/GUI 共享私网排除；比较兼容和受限模式 |
+| 访客信任 | [policy.nix](../../system/config/network/guests/policy.nix)、[guest_policy.py](../../system/config/network/guests/guest_policy.py)、[socket-guest.nix](../../system/config/network/dns/socket-guest.nix)、[default.nix](../../system/programs/virtualisation/default.nix) | 接口/源角色、规范授权、主/委派 UID 归属、NAT 前真实地址 DNS、双向撤销及 rootless 启动器 |
 | Sunshine | [sunshine.nix](../../system/programs/sunshine.nix) | 随图形会话提供 Desktop，管理仅本机、关闭 UPnP；保留 CUDA，以禁止本地编译的方式验证所配置 CUDA 缓存中的精确包 |
 
 ## Mihomo
 
-共享域名过滤位于 [dns_filter.go](../../system/programs/systemd/netsec/dns_filter.go)、[target_guard.go](../../system/programs/systemd/netsec/target_guard.go) 和 [dns-blocklist.nix](../../system/config/dns-blocklist.nix)。`dns.newHandler` 与 `Resolver.ExchangeContext` 接入点需保持在 hosts、fake-IP、缓存答案及引导上游查询之前，覆盖非地址 RR 类型；应用目标先过滤后缀，再判断私网域名豁免。保留与 dnsmasq 一致的最长后缀、同精度例外优先语义，拒绝不可读/无效名单。过滤代码和测试须加入包 fileset，并保留 `./dns` Go 测试。
+共享域名过滤位于 [dns_filter.go](../../system/programs/clash/mihomo/guard/dns_filter.go)、[target_guard.go](../../system/programs/clash/mihomo/guard/target_guard.go) 和 [blocklist.nix](../../system/config/network/dns/blocklist.nix)。`dns.newHandler` 与 `Resolver.ExchangeContext` 接入点需保持在 hosts、fake-IP、缓存答案及引导上游查询之前，覆盖非地址 RR 类型；应用目标先过滤后缀，再判断私网域名豁免。保留与 dnsmasq 一致的最长后缀、同精度例外优先语义，拒绝不可读/无效名单。过滤代码和测试须加入包 fileset，并保留 `./dns` Go 测试。
 
 `patch_mihomo.py` 接入最终 `ParseRawConfig`、controller router/PATCH、direct adapter、DNS metadata/dialer、TCP dial、UDP mapping、geodata downloader 与 Global 路由日志。升级须检查全部入口，集成检查覆盖实际拨号和控制写 API 上的策略执行。
 
-Root 策略来自 [proxy-profile.nix](../../system/config/proxy-profile.nix)，[cvr-merge.nix](../../home/config/cvr-merge.nix)、controller 输出及 [health.py](../../system/programs/systemd/netsec/health.py) 必须一致。新增 `RawTun` 字段须在 schema coverage 测试显式分类，检查监听/隧道字段、默认值、别名及 `GET /configs` 暴露值。保留重复键/非规范 PATCH 拒绝，以及同份解码对象的验证/应用。
+Root 策略来自 [profile.nix](../../system/config/network/proxy/profile.nix)，[cvr-merge.nix](../../home/config/clash/cvr-merge.nix)、controller 输出及 [health.py](../../system/config/network/proxy/health.py) 必须一致。新增 `RawTun` 字段须在 schema coverage 测试显式分类，检查监听/隧道字段、默认值、别名及 `GET /configs` 暴露值。保留重复键/非规范 PATCH 拒绝，以及同份解码对象的验证/应用。
 
 目标检查位于路由/嗅探后、真实拨号前，远程代理也须保持已验证 IP。内部后缀与字面 IP 也需出口授权；检查应在实际选中的子节点执行，不能先检查 `Unwrap` 再重新拨代理组。复用 UDP association 时保留实际叶节点与已验证目标来源，检查新映射，缓存映射每包重查入口、端口和授权，不重复解析。保留 mapped IP、元数据、全部 RFC 6052 前缀长度、自定义 fake-IP 与基础设施范围测试。`LFRuleDNS` 区分按规则 DNS 与内部引导，避免 `proxyOnly` 豁免应用 DNS。Metadata、适配器命名和组叶子变化需对照直拨测试。
 
@@ -66,7 +66,7 @@ Root 策略来自 [proxy-profile.nix](../../system/config/proxy-profile.nix)，[
 
 补丁作用于 `pkgs.gost` 的 vendored `github.com/go-gost/x/handler/http`。升级同时检查 Gost 和 `go-gost/x` 版本。`lfReadRequest` 只改写数字 IPv6、十进制非零端口的裸 CONNECT 目标；`net/http.ReadRequest` 保留 HTTP 校验，返回的 reader 保留已缓冲隧道数据。
 
-[gost_http_test.go](../../system/programs/systemd/netsec/gost_http_test.go) 应保留带括号 IPv6、普通请求、非法端口/framing、立即到达 payload 的测试。Relay 唯一监听、旧进程回收和资源限制也要保留；parser 修正不能替代生命周期保护。实际服务使用 `my.proxy.gostPackage`，不能换成 PATH 中未打补丁的包。
+[gost_http_test.go](../../system/programs/gost/tests/gost_http_test.go) 应保留带括号 IPv6、普通请求、非法端口/framing、立即到达 payload 的测试。Relay 唯一监听、旧进程回收和资源限制也要保留；parser 修正不能替代生命周期保护。实际服务使用 `my.proxy.gostPackage`，不能换成 PATH 中未打补丁的包。
 
 ## Clash Verge helper 与启动器
 
@@ -74,7 +74,7 @@ GUI `.unwrapped` 有意复用上游并断言相等。自定义位于独立 Rust 
 
 Helper patch 涉及 `src/core/manager.rs`、`logger.rs`、`reconcile.rs`。升级时枚举所有执行、log writer、socket chmod/unlink 和已存进程恢复入口。受管执行须解析到 `LF_CLASH_CORE_PATH`，文件/祖先 root 所有，允许 root 所有 sticky store 祖先。日志始终使用私有服务目录，客户端路径/PID 不得转为 root 文件或进程操作。
 
-[runtime.nix](../../system/programs/clash/runtime.nix)、[identity.nix](../../system/programs/clash/identity.nix)、launcher 和 stage 工具须同步。顶层 runtime 组须匹配 systemd，避免重启递归改所有权。可写核心缓存由独立 tmpfiles 创建，不加入 root helper 的 `StateDirectory`。快照跨 helper 重启保留，授权/验证日志私有，并从真实 helper 启动的核心读取五类 capability 集。
+[runtime.nix](../../system/programs/clash/service/runtime.nix)、[identity.nix](../../system/programs/clash/service/identity.nix)、launcher 和 stage 工具须同步。顶层 runtime 组须匹配 systemd，避免重启递归改所有权。可写核心缓存由独立 tmpfiles 创建，不加入 root helper 的 `StateDirectory`。快照跨 helper 重启保留，授权/验证日志私有，并从真实 helper 启动的核心读取五类 capability 集。
 
 当前 Nixpkgs 以 `.verge-mihomo-wrapped` 暴露底层核心，包将公开 `verge-mihomo` 替换为授权启动器。GUI/打包更新需检查 wrapper 布局、`clash-on/off` 使用的 GUI 进程身份和旧同用户 singleton 清理，防止保留旧包路径。HTTPS delay 默认通过可写偏好设置，不重新编译 GUI。
 
@@ -102,7 +102,7 @@ NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWi
 
 ## 链路身份
 
-[link-identity.nix](../../system/config/link-identity.nix) 和 [link_identity.py](../../system/programs/systemd/netsec/link_identity.py) 使用上游 NetworkManager/systemd/dhcpcd 接口，没有源码补丁。升级时核对实际 nmcli 属性名及枚举格式、两个主机名开关、stable-id 替换量、DHCP 标识和 IPv6 地址生成。保留仅含身份字段的备份白名单、私有状态、断开/自动连接守卫及拒绝覆盖手工修改的行为；重建不自动应用 profile 目标。
+[default.nix](../../system/config/network/identity/default.nix) 和 [link_identity.py](../../system/config/network/identity/link_identity.py) 使用上游 NetworkManager/systemd/dhcpcd 接口，没有源码补丁。升级时核对实际 nmcli 属性名及枚举格式、两个主机名开关、stable-id 替换量、DHCP 标识和 IPv6 地址生成。保留仅含身份字段的备份白名单、私有状态、断开/自动连接守卫及拒绝覆盖手工修改的行为；重建不自动应用 profile 目标。
 
 扩展 dhcpcd 单接口命令、PID 文件和 reload 时，保留上游生成配置与服务加固。其 DHCPv6 socket 必须能与 NetworkManager 的 Wi-Fi 客户端共存。一起运行 `network-identity-config`、`network-identity-vm`、`proxy-control-vm` 和 `proxy-network-vm`；身份 VM 对每次激活都要求新报文，包括 MAC 不变的连接。持久化准备和重新授权见[链路身份指南](identity_CN.md)。
 
@@ -110,15 +110,15 @@ NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWi
 
 ### 按组件触发复核
 
-[network-upgrades.json](../../system/config/network-upgrades.json) 按组件记录维护入口、不变量和回归检查。[network-upgrades.nix](../../system/config/network-upgrades.nix) 对实际选定包的源码、可用的 vendored 依赖摘要及主要 Nixpkgs 打包文件生成指纹。正常系统构建要求这些输入匹配已复核基线；即使版本号未变，源码或 recipe 改变仍须复核。Mihomo 变化也会选中其 vendored sing-tun 和 SOCKS 组件。
+[sources.json](../../system/config/network/maintenance/sources.json) 按组件记录维护入口、不变量和回归检查。[default.nix](../../system/config/network/maintenance/default.nix) 对实际选定包的源码、可用的 vendored 依赖摘要及主要 Nixpkgs 打包文件生成指纹。正常系统构建要求这些输入匹配已复核基线；即使版本号未变，源码或 recipe 改变仍须复核。Mihomo 变化也会选中其 vendored sing-tun 和 SOCKS 组件。
 
 在仓库中生成当前输入清单并查看计划：
 
 ```sh
 nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources \
   > /tmp/network-upgrade-selected.json
-python3 system/programs/systemd/netsec/upgrades.py plan \
-  system/config/network-upgrades.json /tmp/network-upgrade-selected.json \
+python3 system/config/network/maintenance/upgrades.py plan \
+  system/config/network/maintenance/sources.json /tmp/network-upgrade-selected.json \
   > /tmp/network-upgrade-plan.json
 ```
 
@@ -143,7 +143,7 @@ jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json 
 
 ## 验证
 
-部署脚本在仓库中通过 `python3 tests/test_deployment.py scripts/push-to-dir.sh` 单独验证，以临时目录检查构建输入保留、文档排除、权限和输入缺失行为，无须 sudo 或宿主目标。需要 Python、Bash、rsync 和脚本使用的标准命令行工具；由于 `scripts/` 不部署，该检查与 flake checks 分开。
+部署脚本在仓库中通过 `python3 tests/deployment/test_deployment.py scripts/push-to-dir.sh` 单独验证，以临时目录检查构建输入保留、文档排除、权限和输入缺失行为，无须 sudo 或宿主目标。需要 Python、Bash、rsync 和脚本使用的标准命令行工具；由于 `scripts/` 不部署，该检查与 flake checks 分开。
 
 以下为 `checks.x86_64-linux.*` 属性。Nix 构建通常使用本机 daemon，测试本身不要求宿主 root 网络操作；VM 使用隔离内核，通过 KVM 运行时需要本机 KVM 访问权限。首次依赖构建成本较高，按受影响行为选择后统一运行。
 

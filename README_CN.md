@@ -58,6 +58,8 @@ sudo nixos-rebuild switch --flake .#yourname
 
 ## 目录结构
 
+模块职责与入口见[源码目录](docs/CN/layout_CN.md)。
+
 ```
 .
 ├── flake.nix               # Flake 主配置
@@ -66,6 +68,7 @@ sudo nixos-rebuild switch --flake .#yourname
 │   └── CN/                 # 中文文档
 ├── home/                   # 用户配置
 │   ├── config/             # 用户级配置
+│   │   └── clash/          # 用户 profile 文件与状态界面
 │   ├── programs/           # 用户程序
 │   ├── wallpapers/         # 壁纸文件
 │   └── userpkgs/           # 用户软件包
@@ -81,13 +84,19 @@ sudo nixos-rebuild switch --flake .#yourname
 │   └── refresh-dns-blocklist.py      # 从上游清单重建 local-data/dns-blocklist.txt.xz
 │
 ├── tests/                  # Flake 检查引用的回归测试源码
-│   └── netsec/             # 网络策略、生成配置与 VM 检查
+│   ├── network/            # 按功能分组的网络策略和 VM 检查
+│   ├── home/               # Clash GUI 和 Firefox 检查
+│   └── deployment/         # 部署复制检查
 │
 └── system/                 # 系统级配置
     ├── config/             # 系统配置
+    │   └── network/        # 网络声明及配套运行脚本
     ├── hardware/           # 硬件相关配置
     ├── modules/            # 内核模块配置
     ├── programs/           # 系统程序与服务
+    │   ├── clash/          # 系统 GUI/helper 和 Mihomo 构建载荷
+    │   ├── gost/           # Relay 软件包、补丁和服务
+    │   └── systemd/        # journald/coredump 全局设置
     ├── secrets/            # 加密密钥（sops）
     └── systempkgs/         # 系统软件包
 
@@ -98,8 +107,8 @@ sudo nixos-rebuild switch --flake .#yourname
 ## 脚本
 
 * **`scripts/sync-to-git.sh`** — 将 `/etc/nixos` 复制到 `~/Projects/Nix/nixos`（如 `~/Projects/Nix` 不存在则自动创建），把所有权改为当前用户并设置宽松权限（目录 755 / 文件 644），以便提交到 Git。
-* **`scripts/push-to-dir.sh`** — 仅将明确选择的 `home/`、`overlays/`、`system/`、`tests/`、`local-data/`、`flake.nix`、`flake.lock` 和 `.sops.yaml` 复制到 `/etc/nixos`，目录 700 / 文件 600。以普通用户运行，脚本内部使用 `sudo`；`docs/` 和 `scripts/` 留在仓库。`tests/` 提供检查源码，复制不会执行测试。`local-data/` 的必要 DNS 快照已由 Git 跟踪，脚本在触碰目标前检查它。可用 `python3 tests/test_deployment.py scripts/push-to-dir.sh` 在临时目录验证复制行为。
-* **`scripts/refresh-dns-blocklist.py`** — 拉取上游清单，合并去重后写入 `local-data/dns-blocklist.txt.xz`，并重写 `system/config/dns-blocklist.nix` 的上游/快照头部。`--check` 只报告漂移不写入。构建时与运行时都不下载任何东西。
+* **`scripts/push-to-dir.sh`** — 仅将明确选择的 `home/`、`overlays/`、`system/`、`tests/`、`local-data/`、`flake.nix`、`flake.lock` 和 `.sops.yaml` 复制到 `/etc/nixos`，目录 700 / 文件 600。以普通用户运行，脚本内部使用 `sudo`；`docs/` 和 `scripts/` 留在仓库。`tests/` 提供检查源码，复制不会执行测试。`local-data/` 的必要 DNS 快照已由 Git 跟踪，脚本在触碰目标前检查它。可用 `python3 tests/deployment/test_deployment.py scripts/push-to-dir.sh` 在临时目录验证复制行为。
+* **`scripts/refresh-dns-blocklist.py`** — 拉取上游清单，合并去重后写入 `local-data/dns-blocklist.txt.xz`，并重写 `system/config/network/dns/blocklist.nix` 的上游/快照头部。`--check` 只报告漂移不写入。构建时与运行时都不下载任何东西。
 
 ---
 

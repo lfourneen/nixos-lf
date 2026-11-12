@@ -6,7 +6,7 @@
 
     # file
     ./agent-skills.nix
-    ./cvr-merge.nix
+    ./clash
     ./dconf.nix
     ./neovim.nix
     ./nushell.nix

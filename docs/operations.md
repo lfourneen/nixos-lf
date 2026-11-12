@@ -25,7 +25,7 @@ proxy-inspect
 
 Sunshine is enabled and starts with `graphical-session.target`, exposing the current session as **Desktop**. After deployment, log into the desktop and open `https://localhost:47990` on the computer to set credentials and approve Moonlight's pairing PIN. Both the phone and computer must be logged into the same permitted tailnet. Add the computer's Tailscale IP manually in Moonlight; discovery is not required. The same overlay address works on LAN and over the internet, subject to the tailnet's access policy. Direct access by physical LAN IP is not enabled by the default empty `trustedLanCidrs`.
 
-The web UI accepts only local clients; it is not a default tailnet firewall allowance. UPnP is disabled. Streaming uses the explicit tailnet TCP/UDP port lists in [hardening-options.nix](../system/config/hardening-options.nix). Configure phone-to-computer grants in the Tailscale admin console separately; that policy is not stored in this repository. A and healthy B allow remote desktop; C cuts the session, including existing UDP flows and decrypted tailnet input. Use `clash-off` locally when direct A is intended.
+The web UI accepts only local clients; it is not a default tailnet firewall allowance. UPnP is disabled. Streaming uses the explicit tailnet TCP/UDP port lists in [options.nix](../system/config/network/options.nix). Configure phone-to-computer grants in the Tailscale admin console separately; that policy is not stored in this repository. A and healthy B allow remote desktop; C cuts the session, including existing UDP flows and decrypted tailnet input. Use `clash-off` locally when direct A is intended.
 
 [sunshine.nix](../system/programs/sunshine.nix) selects the CUDA build variant. The configured `https://cache.nixos-cuda.org` substituter supplies binaries matching the derivation selected by the lock and package options. Check cache availability with `nix build --max-jobs 0 --no-link .#nixosConfigurations.lfour.config.services.sunshine.package`; this command disables local compilation. Credentials and pairing state reside in the user's Sunshine directory; the Desktop entry and service settings are declarative. Check hardware capture/encoding and phone streaming in the deployed graphical session.
 
@@ -86,7 +86,7 @@ Some service logs and authority files require sudo. Do not publish snapshots or 
 
 Socket-directory events, TUN link monitoring, nft events, NetworkManager dispatch and dhcpcd hooks wake the supervisors. Adaptive polling backs them up (two seconds during transitions, capped at five seconds in enforced modes and 60 seconds in direct mode); the mode supervisor has a 90-second watchdog. A cancelled probe does not count as a failed observation.
 
-Build-time [expected rules](../system/programs/systemd/proxy-mode.nix) are generated with the same nft implementation inside an LKL userspace kernel. The verifier compares owned tables, hooks, priorities, policies and full ordered expressions. Handles, counters, set-element order and tightly bounded authorized DNS leases are normalized. Read/parse errors are failures, never empty successes. A correctly installed C passes even with no core.
+Build-time [expected rules](../system/config/network/proxy/coordinator.nix) are generated with the same nft implementation inside an LKL userspace kernel. The verifier compares owned tables, hooks, priorities, policies and full ordered expressions. Handles, counters, set-element order and tightly bounded authorized DNS leases are normalized. Read/parse errors are failures, never empty successes. A correctly installed C passes even with no core.
 
 `nftables-verify` publishes failure/alarms but exits zero so repair/rebuild jobs can proceed. Check the JSON verdict, not just unit exit status. Each component clears only its own alarm. Queued verification requests survive a busy round.
 
@@ -125,10 +125,10 @@ Proxy intent or a running core installs C first; the supervisor opens B after he
 | Source | Settings |
 |---|---|
 | [machine.nix](../system/config/machine.nix) | User, interfaces/match keys, UIDs, ports, mark, address ranges and upstream endpoints |
-| [proxy-options.nix](../system/config/proxy-options.nix) | TUN, route table 2022, fake-IP pool, probe URLs, boot intent, proxyOnly, dnsEncryption, shared domain filtering, localTargetCidrs, remoteTargetGrants, nat64Prefixes, guests, split DNS and freshness |
-| [proxy-profile.nix](../system/config/proxy-profile.nix) | Root-owned managed DNS/TUN/profile contract |
-| [hardening-options.nix](../system/config/hardening-options.nix) | Host/guest private access, per-interface guest trust/sources, dedicated socket guest accounts, host-service ports, hotspot, tailnet and Wi-Fi MAC policy |
-| [cvr-merge.nix](../home/config/cvr-merge.nix) | Matching Clash GUI Merge template and routing enhancement |
+| [options.nix](../system/config/network/proxy/options.nix) | TUN, route table 2022, fake-IP pool, probe URLs, boot intent, proxyOnly, dnsEncryption, shared domain filtering, localTargetCidrs, remoteTargetGrants, nat64Prefixes, guests, split DNS and freshness |
+| [profile.nix](../system/config/network/proxy/profile.nix) | Root-owned managed DNS/TUN/profile contract |
+| [options.nix](../system/config/network/options.nix) | Host/guest private access, per-interface guest trust/sources, dedicated socket guest accounts, host-service ports, hotspot, tailnet and Wi-Fi MAC policy |
+| [cvr-merge.nix](../home/config/clash/cvr-merge.nix) | Matching Clash GUI Merge template and routing enhancement |
 | [firefox.nix](../home/programs/firefox/firefox.nix), [options.nix](../home/programs/firefox/options.nix) | Native browser, networkPath, nvidiaAcceleration, privacy, policy, fonts and outer sandbox |
 
 TUN defaults: `Mihomo`, table 2022, rule priority 9000, internal marks 8227/8228, fallback priority 32768, file descriptor 0. Parser, template and health share these values. `tunMode=false` selects HTTP-only/redir-host operation, dropping the requirement for a TUN. Fake-IP network is derived from `fakeIpRange`; avoid independent edits to consumers.

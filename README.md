@@ -61,6 +61,8 @@ sudo nixos-rebuild switch --flake .#yourname
 
 ## Directory Structure
 
+See [Source layout](docs/layout.md) for module ownership and entrypoints.
+
 ```
 .
 ├── flake.nix               # Main flake configuration
@@ -69,6 +71,7 @@ sudo nixos-rebuild switch --flake .#yourname
 │   └── CN/                 # Chinese guides
 ├── home/                   # User configuration
 │   ├── config/             # User-specific configs
+│   │   └── clash/          # User profile files and status renderer
 │   ├── programs/           # User programs
 │   ├── wallpapers/         # Wallpaper files
 │   └── userpkgs/           # User packages
@@ -84,13 +87,19 @@ sudo nixos-rebuild switch --flake .#yourname
 │   └── refresh-dns-blocklist.py  # Rebuild local-data/dns-blocklist.txt.xz from its upstreams
 │
 ├── tests/                  # Regression sources referenced by flake checks
-│   └── netsec/             # Network policy, profile and VM checks
+│   ├── network/            # Feature-grouped network policy and VM checks
+│   ├── home/               # Clash GUI and Firefox checks
+│   └── deployment/         # Deployment-copy checks
 │
 └── system/                 # System-wide configuration
     ├── config/             # System configs
+    │   └── network/        # Network declarations and runtime helpers
     ├── hardware/           # Hardware-specific configurations
     ├── modules/            # Kernel modules configurations
     ├── programs/           # System programs and services
+    │   ├── clash/          # System GUI/helper and grouped Mihomo sources
+    │   ├── gost/           # Relay package, patch and service
+    │   └── systemd/        # Global journald/coredump settings
     ├── secrets/            # Encrypted secrets (sops)
     └── systempkgs/         # System packages
 
@@ -101,8 +110,8 @@ sudo nixos-rebuild switch --flake .#yourname
 ## Scripts
 
 * **`scripts/sync-to-git.sh`** — Copies `/etc/nixos` to `~/Projects/Nix/nixos` (creating `~/Projects/Nix` if needed), changes ownership to the current user, and sets permissive permissions (dirs 755 / files 644) so the config can be committed to Git.
-* **`scripts/push-to-dir.sh`** — Copies the explicitly selected `home/`, `overlays/`, `system/`, `tests/`, `local-data/`, `flake.nix`, `flake.lock`, and `.sops.yaml` into `/etc/nixos` with dirs 700 / files 600. Run as your normal user; the script uses `sudo` internally. `docs/` and `scripts/` stay in the checkout. `tests/` supplies check sources without executing them. The required DNS snapshot in `local-data/` is tracked; the script checks it before touching the destination. Verify copying in a disposable directory with `python3 tests/test_deployment.py scripts/push-to-dir.sh`.
-* **`scripts/refresh-dns-blocklist.py`** — Fetches the upstream lists, merges and de-duplicates them into `local-data/dns-blocklist.txt.xz`, and rewrites the upstream/snapshot header of `system/config/dns-blocklist.nix`. `--check` reports drift without writing. Nothing is downloaded at build time or at run time.
+* **`scripts/push-to-dir.sh`** — Copies the explicitly selected `home/`, `overlays/`, `system/`, `tests/`, `local-data/`, `flake.nix`, `flake.lock`, and `.sops.yaml` into `/etc/nixos` with dirs 700 / files 600. Run as your normal user; the script uses `sudo` internally. `docs/` and `scripts/` stay in the checkout. `tests/` supplies check sources without executing them. The required DNS snapshot in `local-data/` is tracked; the script checks it before touching the destination. Verify copying in a disposable directory with `python3 tests/deployment/test_deployment.py scripts/push-to-dir.sh`.
+* **`scripts/refresh-dns-blocklist.py`** — Fetches the upstream lists, merges and de-duplicates them into `local-data/dns-blocklist.txt.xz`, and rewrites the upstream/snapshot header of `system/config/network/dns/blocklist.nix`. `--check` reports drift without writing. Nothing is downloaded at build time or at run time.
 
 ---
 

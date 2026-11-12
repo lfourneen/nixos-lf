@@ -12,7 +12,7 @@ English | [简体中文](CN/proxy_CN.md) | [Documentation](README.md)
 | Gost | HTTP `127.0.0.1:33332`, transparent `127.0.0.1:33333` and `[::1]:33333` | UID 987, no capabilities |
 | dnsmasq / Unbound / dhcpcd | Local DNS / wired DHCP | UIDs 985 / 983 / 986 |
 
-[identity.nix](../system/programs/clash/identity.nix) and [runtime.nix](../system/programs/clash/runtime.nix) define the core identity and service contract. The root launcher starts the core via `setpriv`, retaining only the two network capabilities in its permitted, effective, inheritable, ambient and bounding sets. The real controller is `/run/clash-verge-rev/core/mihomo.sock`; supervisors use it directly. A desktop-UID `socat` forwarder supplies the GUI path.
+[identity.nix](../system/programs/clash/service/identity.nix) and [runtime.nix](../system/programs/clash/service/runtime.nix) define the core identity and service contract. The root launcher starts the core via `setpriv`, retaining only the two network capabilities in its permitted, effective, inheritable, ambient and bounding sets. The real controller is `/run/clash-verge-rev/core/mihomo.sock`; supervisors use it directly. A desktop-UID `socat` forwarder supplies the GUI path.
 
 The helper retains the privileges needed for identity changes, directory ownership and child management. It accepts only the packaged, root-owned launcher as an executable. Managed logs use `/var/lib/clash-verge-service/logs`, with fixed rotation. Caller-supplied IPC paths do not drive root chmod/unlink or startup reconciliation. Systemd owns child cleanup. The helper's private state is separate from the writable core cache in `/var/lib/clash-core`.
 
@@ -26,7 +26,7 @@ An explicitly enabled IPv4 guest TPROXY inlet binds `0.0.0.0:7896`; the ordinary
 
 `clash-on` records proxy intent, enters C and starts a new import session. It clears previous authorization and opens one **single-use, 300-second** window. The GUI supplies the effective configuration; the packaged launcher imports it under a shared authorization lock before starting the core. A failed import consumes the window too. Run `clash-on` again after correcting inputs.
 
-[clash-verge-stage.py](../system/programs/clash/clash-verge-stage.py) opens desktop-owned, bounded regular inputs without following symlinks, copies YAML and geodata into a root-owned snapshot and detects concurrent input changes. It normalizes the controller location and runs the core's `-t` validation as `clash-core` without capabilities. Snapshot directories use 0750 and files 0640, readable by the core group. Authority records and validation/helper logs are root-only.
+[clash-verge-stage.py](../system/programs/clash/service/clash-verge-stage.py) opens desktop-owned, bounded regular inputs without following symlinks, copies YAML and geodata into a root-owned snapshot and detects concurrent input changes. It normalizes the controller location and runs the core's `-t` validation as `clash-core` without capabilities. Snapshot directories use 0750 and files 0640, readable by the core group. Authority records and validation/helper logs are root-only.
 
 The digest covers the effective YAML, geodata bytes and absent optional assets. Canonical assets include `Country.mmdb`, `GeoIP.dat`, `GeoSite.dat` and optional `ASN.mmdb`/`BundleMRS.7z`; supported legacy country-database names are normalized. `cache.db` points to separate writable core state and is outside the digest.
 
@@ -36,7 +36,7 @@ Each import authorizes the YAML and assets selected for that session. The deskto
 
 ## Managed profile and controller
 
-[proxy-profile.nix](../system/config/proxy-profile.nix) is the root policy; [cvr-merge.nix](../home/config/cvr-merge.nix) generates the matching GUI Merge configuration. The final core parser enforces listeners, mark, DNS, TUN routes/exclusions and private-target settings after GUI/subscription processing. Rule providers are pinned empty and automatic geodata updates are disabled. Unconditional `MATCH,DIRECT` and `FINAL,DIRECT` rules are refused. Subscription rules and group selection otherwise retain their authorized meaning.
+[profile.nix](../system/config/network/proxy/profile.nix) is the root policy; [cvr-merge.nix](../home/config/clash/cvr-merge.nix) generates the matching GUI Merge configuration. The final core parser enforces listeners, mark, DNS, TUN routes/exclusions and private-target settings after GUI/subscription processing. Rule providers are pinned empty and automatic geodata updates are disabled. Unconditional `MATCH,DIRECT` and `FINAL,DIRECT` rules are refused. Subscription rules and group selection otherwise retain their authorized meaning.
 
 The core reports a `managed-policy` digest to health consumers. This policy digest describes system invariants; the separate snapshot digest binds authorized YAML and assets.
 
@@ -83,7 +83,7 @@ Deploy the generation and import/restart the managed core for this policy to tak
 
 Managed sniffing is disabled in both Rule and uniform proxy modes. Explicit target names and fake-IP mappings remain the routing identity; an ECH cover SNI cannot replace the dial target. Literal-IP traffic uses IP rules. The parser also normalizes cached GUI profiles to this policy. See [browser ECH discovery](browser.md#ech-discovery-and-proxy-compatibility).
 
-[target_guard.go](../system/programs/systemd/netsec/target_guard.go) validates application targets before TCP/UDP egress. Public names must resolve locally to nonempty, entirely public answers; one resolver error gets one retry. TCP interleaves validated IPv4/IPv6 candidates and attempts at most eight literal addresses at the selected leaf, with a two-second attempt ceiling and six-second total deadline. Each candidate requires that leaf’s egress authorization. The node receives a pinned IP and performs no target-name lookup. UDP pins one target for its association. Internal suffixes in `privateTargetDomains` and the authenticated MagicDNS suffix permit private answers, but still require local resolution, pinning and egress authorization. They do not create a resolver route or bypass the shared domain filter.
+[target_guard.go](../system/programs/clash/mihomo/guard/target_guard.go) validates application targets before TCP/UDP egress. Public names must resolve locally to nonempty, entirely public answers; one resolver error gets one retry. TCP interleaves validated IPv4/IPv6 candidates and attempts at most eight literal addresses at the selected leaf, with a two-second attempt ceiling and six-second total deadline. Each candidate requires that leaf’s egress authorization. The node receives a pinned IP and performs no target-name lookup. UDP pins one target for its association. Internal suffixes in `privateTargetDomains` and the authenticated MagicDNS suffix permit private answers, but still require local resolution, pinning and egress authorization. They do not create a resolver route or bypass the shared domain filter.
 
 The core tries the next candidate when dialing returns an error. A successful dial hands the connection to the application, which sends its data through that connection. For optimistic or one-way proxy protocols, tunnel establishment is the dial success point; candidate fallback ends there.
 
@@ -128,6 +128,6 @@ These checks govern applications reaching the core, normally in B. A retains lit
 
 ## Gost lifecycle
 
-[gost-relay.nix](../system/programs/systemd/gost-relay.nix) follows the mode's atomic state. It reaps the previous process before binding, avoids `SO_REUSEPORT`, requires exactly one listener per endpoint and limits descriptors, memory and tasks. In B it relies on the supervisor's health decision and rechecks the mixed listener identity. It uses passive socket observations rather than connecting to the transparent inlet, with a self-loop detector as a backstop.
+[default.nix](../system/programs/gost/default.nix) follows the mode's atomic state. It reaps the previous process before binding, avoids `SO_REUSEPORT`, requires exactly one listener per endpoint and limits descriptors, memory and tasks. In B it relies on the supervisor's health decision and rechecks the mixed listener identity. It uses passive socket observations rather than connecting to the transparent inlet, with a self-loop detector as a backstop.
 
 The relay also accepts legacy bare numeric IPv6 CONNECT targets with valid ports while retaining Go's HTTP framing and buffered tunnel bytes. Prefer standard `[IPv6]:port` syntax. Gost is invoked by store path, not installed on the system PATH or in the initrd. See [Patch maintenance](maintenance.md) for all source and packaging customizations.

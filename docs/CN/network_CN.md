@@ -51,7 +51,7 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 
 ## 防火墙生命周期
 
-[network.nix](../../system/config/network.nix) 定义静态策略及 B/C 片段。[proxy-mode.nix](../../system/programs/systemd/proxy-mode.nix) 在共享锁下以一次 `nft -f` 事务安装静态规则和安全模式，只替换本仓库拥有的表，保留 Mihomo 等服务的表。
+[default.nix](../../system/config/network/network.nix) 定义静态策略及 B/C 片段。[coordinator.nix](../../system/config/network/proxy/coordinator.nix) 在共享锁下以一次 `nft -f` 事务安装静态规则和安全模式，只替换本仓库拥有的表，保留 Mihomo 等服务的表。
 
 本仓库管理以下精确的表 family/name 组合：
 
@@ -87,7 +87,7 @@ NAT 优先级排列内核共享 destination-NAT hook 中的规则查找顺序；
 
 B 重定向宿主公网 TCP，fake-IP 保留核心路径，其余公网出站在明确例外后丢弃。例外包括核心 mark、按 UID 限定的 Unbound DoT 与 Chrony NTS/NTP、窄 DHCP、组播和默认私网访问。Tailscale UDP 例外要求 UID 0、物理上行口，且 socket 的 `SO_MARK` 与 packet mark 都等于上游 Linux bypass mark（`0x80000`）。保留动态 peer/STUN 端口，未打标 root UDP 按普通规则处理。Root 和受管核心是可信网络管理主体，具有设置 socket mark 和修改防火墙的权限。当前 LKL 内核支持 `socket mark`，不支持 `socket cgroupv2`。
 
-[tailscale-transport.nix](../../system/config/tailscale-transport.nix) 将该 mark 作为上游常量，而非可自行分配的配置。正常系统构建会核对所选 Tailscale 源码的常量及已审查的 magicsock/STUN 打标路径。切换网络不会改变常量；升级时须通过该检查与 `proxy-tailscale-vm`，后者用所选真实 CLI 和隔离的双栈 STUN peer 验证。退回 `SO_BINDTODEVICE` 不会静默重新放行未打标 root UDP。
+[transport.nix](../../system/config/network/tailscale/transport.nix) 将该 mark 作为上游常量，而非可自行分配的配置。正常系统构建会核对所选 Tailscale 源码的常量及已审查的 magicsock/STUN 打标路径。切换网络不会改变常量；升级时须通过该检查与 `proxy-tailscale-vm`，后者用所选真实 CLI 和隔离的双栈 STUN peer 验证。退回 `SO_BINDTODEVICE` 不会静默重新放行未打标 root UDP。
 
 [直连例外清单](egress_CN.md)逐项记录主体、目标、端口和模式。可选受限 B 按接口/UID/CIDR/端口授权，在 TUN/NAT 前切断撤权后的已有宿主主动连接。Unbound 即使在 A 也只能使用声明的 DoT 目标，B 的此项例外可关闭；Chrony 可在 A/B 固定目标 CIDR。默认保留 LAN 与 NTS 地址变化兼容性。
 
@@ -97,7 +97,7 @@ C 阻断已跟踪、由宿主应用发起的 TCP/UDP 连接回包，覆盖原生
 
 接收方向的约束依赖这些 conntrack 标记，其它防火墙所有者须保留其含义。Socket 队列内的数据不在此约束范围内。C 仍保留 loopback IPC、本地 DNS、root/核心恢复和链路维护流量。
 
-[network-bootstrap.nix](../../system/programs/systemd/network-bootstrap.nix) 在 NetworkManager/dhcpcd 前安装入站和转发基线；首次完整装载失败仍保留它。静态漂移触发完整修复：直连意图回到 A，代理意图先回 C，再检查健康。失败报告 `unenforced`。
+[bootstrap.nix](../../system/config/network/firewall/bootstrap.nix) 在 NetworkManager/dhcpcd 前安装入站和转发基线；首次完整装载失败仍保留它。静态漂移触发完整修复：直连意图回到 A，代理意图先回 C，再检查健康。失败报告 `unenforced`。
 
 停止 `nftables.service` 保留规则；restart/reload 用于协调恢复。避免 `nft flush ruleset`，它会同时破坏核心自己的表。验证和恢复方式见[操作与诊断](operations_CN.md)。
 
@@ -109,11 +109,11 @@ Wi-Fi `wlo1` 由 NetworkManager 管理，以 PCI 路径稳定匹配。扫描使�
 
 Tailscale 不自动接受 DNS、子网路由或出口节点；只有已认证 tailnet 的 MagicDNS 后缀获得条件 DNS 路由。宿主入站默认仅 Sunshine 串流 TCP 47984/47989/48010 和 UDP 47998/47999/48000/48002/48010。Sunshine 随图形会话启动，管理界面仅本机可用，关闭 UPnP，见[远程桌面操作](operations_CN.md#远程桌面)。Avahi 仅在 loopback、tailnet 及显式启用的 AP 上发布；外网 Wi-Fi 客户端不发布。本配置没有导入 sshd 模块，防火墙允许端口也不会自行创建 SSH 监听。
 
-[network-time.nix](../../system/config/network-time.nix) 为 Chrony 配置认证 NTS、UDP 123 和 NTS-KE TCP 4460。RTC/drift 恢复提供离线时间下限；证书时间校验保留，不配置明文时间回退。[network-hardening.nix](../../system/config/network-hardening.nix) 提供共享 sysctl、redirect/source-route 和模块限制。Nix daemon 的 trusted-users 仅含 root。
+[time.nix](../../system/config/network/time.nix) 为 Chrony 配置认证 NTS、UDP 123 和 NTS-KE TCP 4460。RTC/drift 恢复提供离线时间下限；证书时间校验保留，不配置明文时间回退。[hardening.nix](../../system/config/network/hardening.nix) 提供共享 sysctl、redirect/source-route 和模块限制。Nix daemon 的 trusted-users 仅含 root。
 
 ## 访客与容器
 
-[guest-policy.nix](../../system/config/guest-policy.nix) 区分经宿主转发的访客网络与创建宿主 socket 的后端。信任范围由声明的入口接口、源 CIDR 和专用后端 UID 确定。
+[policy.nix](../../system/config/network/guests/policy.nix) 区分经宿主转发的访客网络与创建宿主 socket 的后端。信任范围由声明的入口接口、源 CIDR 和专用后端 UID 确定。
 
 | 类别 | 身份依据 | 私网目标 | 公网目标 |
 |---|---|---|---|

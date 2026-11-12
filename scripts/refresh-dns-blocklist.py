@@ -2,7 +2,7 @@
 """Refresh local-data/dns-blocklist.txt.xz from the upstream lists below.
 
 The merged list is a plain, one-per-line, sorted, de-duplicated set of names.
-`system/config/dns-blocklist.nix` turns it into `address=/<name>/` lines for
+`system/config/network/dns/blocklist.nix` turns it into `address=/<name>/` lines for
 dnsmasq, so every name here answers NXDOMAIN for itself and all its subdomains.
 
 Run it from the repository root when you want to pick up upstream changes:
@@ -37,7 +37,7 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "local-data", "dns-blocklist.txt.xz")
-NIX = os.path.join(ROOT, "system", "config", "dns-blocklist.nix")
+NIX = os.path.join(ROOT, "system", "config", "network", "dns", "blocklist.nix")
 
 # name, url, format, note
 SOURCES = [

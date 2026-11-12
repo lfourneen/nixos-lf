@@ -26,7 +26,7 @@ def main():
     parser.add_argument('--timeout', type=int, default=3600)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    inventory = json.loads((root / 'system/config/network-upgrades.json').read_text())['components']
+    inventory = json.loads((root / 'system/config/network/maintenance/sources.json').read_text())['components']
     selected = sorted(inventory) if args.all else args.component
     if not selected or any(name not in inventory for name in selected):
         parser.error('choose --all or --component from: ' + ', '.join(sorted(inventory)))

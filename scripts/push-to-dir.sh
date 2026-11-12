@@ -151,7 +151,7 @@ for tree in "${config_trees[@]}"; do
 done
 
 # local-data/ : generated build inputs, including the tracked DNS snapshot (see
-# local-data/README.md). `system/config/dns-blocklist.nix` reads
+# local-data/README.md). `system/config/network/dns/blocklist.nix` reads
 # dns-blocklist.txt.xz from here, so /etc/nixos needs it too. Keep the README
 # (the module's error message points at it), hence no *.md cut for this tree.
 rsync -a --delete --no-owner --no-group \

@@ -1,0 +1,224 @@
+"""Attach the managed policy at the final parser and controller mutation point."""
+from pathlib import Path
+import sys
+
+
+def replace(path, old, new):
+    value = path.read_text()
+    if value.count(old) != 1:
+        raise RuntimeError("upstream managed-policy anchor changed: " + str(path))
+    path.write_text(value.replace(old, new, 1))
+
+
+root = Path(sys.argv[1])
+# Filter before hosts/fake-IP and before resolver cache/transport selection.
+# The second hook also covers proxy-endpoint/bootstrap resolver queries.
+replace(root / "dns/middleware.go", '\tvar middlewares []middleware',
+        '\tvar middlewares []middleware\n\tmiddlewares = append(middlewares, lfDomainFilter)')
+replace(root / "dns/middleware.go", '\t\t\tcase D.TypeSVCB, D.TypeHTTPS:\n\t\t\t\treturn handleMsgWithEmptyAnswer(r), nil',
+        '\t\t\tcase D.TypeSVCB, D.TypeHTTPS:\n'
+        '\t\t\t\tif lfServiceRecords() { return next(ctx, r) }\n'
+        '\t\t\t\treturn handleMsgWithEmptyAnswer(r), nil')
+replace(root / "dns/resolver.go",
+        'func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, err error) {',
+        'func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, err error) {\n'
+        '\tif reply := lfBlockedReply(m); reply != nil { return reply, nil }')
+# Managed geodata must come from the authorized snapshot. Even a missing or
+# damaged database must not trigger an unaudited network replacement in -t.
+replace(root / "component/geodata/init.go",
+        'func downloadToPath(url string, path string) (err error) {',
+        'func downloadToPath(url string, path string) (err error) {\n'
+        '\tif os.Getenv("LF_MANAGED_PROXY_POLICY") != "" { return fmt.Errorf("managed geodata requires a new clash-on snapshot") }')
+replace(root / "constant/metadata.go", "type Metadata struct {",
+        'type Metadata struct {\n\t// Set only by the internal rule-routed DNS dialer, never decoded from wire JSON.\n'
+        '\tLFRuleDNS bool `json:"-"`\n'
+        '\tLFGuarded bool `json:"-"`\n'
+        '\tLFCandidates []netip.Addr `json:"-"`\n'
+        '\tLFLocalTarget bool `json:"-"`\n'
+        '\tLFEgressDirect bool `json:"-"`\n'
+        '\tLFEgressProxy string `json:"-"`')
+dns_dialer = root / "tunnel/dns_dialer.go"
+value = dns_dialer.read_text()
+anchor = '\t\tType:    C.INNER,\n'
+if value.count(anchor) != 2:
+    raise RuntimeError("upstream DNS metadata anchors changed")
+dns_dialer.write_text(value.replace(anchor, anchor + '\t\tLFRuleDNS: proxyName == DnsRespectRules,\n'))
+replace(root / "adapter/outbound/direct.go", '"github.com/metacubex/mihomo/component/dialer"',
+        '"github.com/metacubex/mihomo/component/dialer"\n\t"github.com/metacubex/mihomo/component/lfguard"')
+replace(root / "adapter/outbound/direct.go",
+        'func (d *Direct) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {',
+        'func (d *Direct) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {\n'
+        '\tif err := lfguard.CheckDirect(metadata); err != nil { return nil, err }\n'
+        '\tmetadata, err := lfguard.Protect(ctx, metadata, metadata, resolver.LookupIP)\n'
+        '\tif err != nil { return nil, err }\n'
+        '\treturn lfguard.DialTCP(ctx, metadata, func(attemptCtx context.Context, target *C.Metadata) (C.Conn, error) {\n'
+        '\t\tif err := lfguard.CheckEgress(target, true, d.Name()); err != nil { return nil, err }\n'
+        '\t\treturn d.lfDialContext(attemptCtx, target)\n\t})\n}\n\n'
+        'func (d *Direct) lfDialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {')
+replace(root / "adapter/outbound/direct.go",
+        'func (d *Direct) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {',
+        'func (d *Direct) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {\n'
+        '\tif err := lfguard.CheckDirect(metadata); err != nil { return nil, err }\n'
+        '\tvar guardErr error\n'
+        '\tmetadata, guardErr = lfguard.Protect(ctx, metadata, metadata, resolver.LookupIP)\n'
+        '\tif guardErr != nil { return nil, guardErr }\n'
+        '\tif err := lfguard.CheckEgress(metadata, true, d.Name()); err != nil { return nil, err }')
+# Check the actual child selected by a group, immediately before its dial.
+# Inspecting Unwrap and then dialing the group would race a new selection.
+replace(root / "adapter/adapter.go", '"github.com/metacubex/mihomo/component/ca"',
+        '"github.com/metacubex/mihomo/component/ca"\n'
+        '\t"github.com/metacubex/mihomo/component/lfguard"\n'
+        '\t"github.com/metacubex/mihomo/component/resolver"')
+for signature in [
+        'func (p *Proxy) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {',
+        'func (p *Proxy) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {']:
+    replace(root / "adapter/adapter.go", signature, signature + '''
+    switch p.Type() {
+    case C.Selector, C.Fallback, C.URLTest, C.LoadBalance:
+        // The selected child checks its actual egress.
+    default:
+        var err error
+        metadata, err = lfguard.Protect(ctx, metadata, metadata, resolver.LookupIP)
+        if err != nil { return nil, err }
+        if len(metadata.LFCandidates) == 0 { if err = lfguard.CheckEgress(metadata, p.Type() == C.Direct || p.Type() == C.Compatible, p.Name()); err != nil { return nil, err } }
+    }
+''')
+replace(root / "adapter/adapter.go", '\tconn, err := p.ProxyAdapter.DialContext(ctx, metadata)',
+        '\tconn, err := lfguard.DialTCP(ctx, metadata, func(attemptCtx context.Context, target *C.Metadata) (C.Conn, error) {\n'
+        '\t\tif err := lfguard.CheckEgress(target, p.Type() == C.Direct || p.Type() == C.Compatible, p.Name()); err != nil { return nil, err }\n'
+        '\t\treturn p.ProxyAdapter.DialContext(attemptCtx, target)\n\t})')
+# Groups must delegate selection exactly once; only the chosen leaf retries.
+replace(root / "adapter/adapter.go", 'func (p *Proxy) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {',
+        'func (p *Proxy) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {\n'
+        '\tswitch p.Type() { case C.Selector, C.Fallback, C.URLTest, C.LoadBalance: return p.ProxyAdapter.DialContext(ctx, metadata) }')
+replace(root / "adapter/parser.go", '"fmt"', '"fmt"\n\t"github.com/metacubex/mihomo/component/lfguard"')
+replace(root / "adapter/parser.go", 'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {',
+        'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {\n'
+        '\tif err := lfguard.CheckProxy(mapping); err != nil { return nil, err }')
+replace(root / "config/config.go", "type RawConfig struct {",
+        'type RawConfig struct {\n\tLFPrivateTargets map[string]any `yaml:"lf-private-targets" json:"lf-private-targets"`')
+# allow-lan=false keeps the ordinary inbounds on loopback. The TPROXY inbound
+# is different: it must accept packets addressed to the original destination,
+# so a 127.0.0.1 socket can never receive them. Honor an explicit "*" bind for
+# this listener only; mixed/DNS/controller stay loopback and the firewall still
+# decides which guests may reach the bridge address.
+replace(root / "listener/listener.go",
+        '\taddr := genAddr(bindAddress, port, allowLan)\n\n\tif tproxyListener != nil {',
+        '\taddr := genTProxyAddr(bindAddress, port, allowLan)\n\n\tif tproxyListener != nil {')
+replace(root / "listener/listener.go",
+        "func genAddr(host string, port int, allowLan bool) string {",
+        "func genTProxyAddr(host string, port int, allowLan bool) string {\n"
+        "\tif host == \"*\" {\n"
+        "\t\t// An IPv6 wildcard socket is not a reliable TPROXY target for\n"
+        "\t\t// IPv4 transit; bind the IPv4 wildcard explicitly.\n"
+        "\t\treturn fmt.Sprintf(\"0.0.0.0:%d\", port)\n"
+        "\t}\n"
+        "\treturn genAddr(host, port, allowLan)\n"
+        "}\n\n"
+        "func genAddr(host string, port int, allowLan bool) string {")
+# Bind a real IPv4 TPROXY socket for the IPv4 inlet; Go's generic "tcp"/
+# "udp" networks may otherwise turn 0.0.0.0 into an IPv6 dual-stack socket.
+replace(root / "listener/tproxy/tproxy.go",
+        "func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {",
+        "func lfNetwork(network, addr string) string {\n"
+        "\thost, _, err := net.SplitHostPort(addr)\n"
+        "\tif err == nil { if ip := net.ParseIP(host); ip != nil && ip.To4() != nil { return network + \"4\" } }\n"
+        "\treturn network\n}\n\n"
+        "func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {")
+replace(root / "listener/tproxy/tproxy.go",
+        '\tl, err := lc.Listen(context.Background(), "tcp", addr)',
+        '\tl, err := lc.Listen(context.Background(), lfNetwork("tcp", addr), addr)')
+replace(root / "listener/tproxy/udp.go",
+        '\tl, err := net.ListenPacket("udp", addr)',
+        '\tl, err := net.ListenPacket(lfNetwork("udp", addr), addr)')
+replace(root / "tunnel/tunnel.go", '"github.com/metacubex/mihomo/component/resolver"',
+        '"github.com/metacubex/mihomo/component/resolver"\n\t"github.com/metacubex/mihomo/component/lfguard"')
+replace(root / "tunnel/tunnel.go", '\t\t\trawPc, err := retry(ctx,',
+        '\t\t\tdialMetadata, err = lfguard.Protect(ctx, metadata, dialMetadata, resolver.LookupIP)\n'
+        '\t\t\tif err != nil { return nil, nil, err }\n'
+        '\t\t\trawPc, err := retry(ctx,')
+replace(root / "tunnel/tunnel.go", '\tremoteConn, err := retry(ctx,',
+        '\tdialMetadata, err = lfguard.Protect(ctx, metadata, dialMetadata, resolver.LookupIP)\n'
+        '\tif err != nil { log.Warnln("[Managed target] %s", err); return }\n'
+        '\tremoteConn, err := retry(ctx,')
+replace(root / "tunnel/connection.go", 'C "github.com/metacubex/mihomo/constant"',
+        'C "github.com/metacubex/mihomo/constant"\n'
+        '\t"github.com/metacubex/mihomo/component/lfguard"\n'
+        '\t"github.com/metacubex/mihomo/component/resolver"')
+# The initial dial already validates and seeds a pinned mapping. Validate only
+# an unmapped destination in a reused UDP association, then let AddMapping pin
+# it. Re-resolving every packet can disagree with the original dial/mapping.
+replace(root / "tunnel/connection.go", 'originToTarget map[string]netip.Addr',
+        'originToTarget map[string]*C.Metadata\n\tegressDirect bool\n\tegressProxy string\n\tegressSet bool')
+replace(root / "tunnel/connection.go", 'make(map[string]netip.Addr)', 'make(map[string]*C.Metadata)')
+replace(root / "tunnel/connection.go", '''if addr := s.originToTarget[originKey]; !addr.IsValid() { // overwrite only if the record is illegal
+		s.originToTarget[originKey] = targetAddr
+	}''', '''if target := s.originToTarget[originKey]; target == nil || !target.DstIP.IsValid() {
+        s.originToTarget[originKey] = metadata.Clone()
+    }
+    if !s.egressSet {
+        s.egressDirect, s.egressProxy, s.egressSet = metadata.LFEgressDirect, metadata.LFEgressProxy, true
+    }''')
+replace(root / "tunnel/connection.go", '''if targetAddr.IsValid() {
+		addr = net.UDPAddrFromAddrPort(netip.AddrPortFrom(targetAddr, metadata.DstPort))
+	}''', '''if targetAddr != nil && targetAddr.DstIP.IsValid() {
+        checked := targetAddr.Clone()
+        checked.DstPort, checked.Type, checked.NetWork = metadata.DstPort, metadata.Type, metadata.NetWork
+        if err := lfguard.CheckEgress(checked, s.egressDirect, s.egressProxy); err != nil { return }
+        addr = net.UDPAddrFromAddrPort(netip.AddrPortFrom(checked.DstIP, checked.DstPort))
+    }''')
+replace(root / "tunnel/connection.go", '\t\tmetadata = metadata.Pure()\n',
+        '\t\tguardOrigin := metadata\n'
+        '\t\tmetadata = metadata.Pure()\n'
+        '\t\tguardCtx, guardCancel := context.WithTimeout(s.ctx, resolver.DefaultDNSTimeout)\n'
+        '\t\tprotected, guardErr := lfguard.Protect(guardCtx, guardOrigin, metadata, resolver.LookupIP)\n'
+        '\t\tguardCancel()\n'
+        '\t\tif guardErr != nil { log.Warnln("[Managed UDP target] %s", guardErr); return }\n'
+        '\t\tmetadata = protected\n'
+        '\t\tif err := lfguard.CheckEgress(metadata, s.egressDirect, s.egressProxy); err != nil { return }\n')
+# Global-mode logs previously omitted the actual connection leaf. The health
+# gate must observe the same group[leaf] chain as rule-mode connections.
+replace(root / "tunnel/tunnel.go",
+        'log.Infoln("[%s] %s --> %s using GLOBAL", strings.ToUpper(metadata.NetWork.String()), metadata.SourceDetail(), metadata.RemoteAddress())',
+        'log.Infoln("[%s] %s --> %s using %s", strings.ToUpper(metadata.NetWork.String()), metadata.SourceDetail(), metadata.RemoteAddress(), remoteConn.Chains().String())')
+replace(root / "config/config.go", "type General struct {", 'type General struct {\n\tManagedPolicy string `json:"managed-policy"`')
+replace(root / "config/config.go", "func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {",
+        "func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {\n"
+        "\tmanagedID, managedErr := lfValidateRaw(rawCfg)\n"
+        "\tif managedErr != nil { return nil, managedErr }")
+replace(root / "config/config.go", "config.General = general", "general.ManagedPolicy = managedID\n\tconfig.General = general")
+replace(root / "hub/route/configs.go", '''func patchConfigs(w http.ResponseWriter, r *http.Request) {
+	general := &configSchema{}
+	if err := render.DecodeJSON(r.Body, &general); err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrBadRequest)
+		return
+	}''', '''func patchConfigs(w http.ResponseWriter, r *http.Request) {
+	general, managedOK := lfDecodeManagedPatch(w, r)
+	if !managedOK { return }''')
+replace(root / "hub/route/configs.go", "general := executor.GetGeneral()",
+        "general := executor.GetGeneral()\n\tgeneral.ManagedPolicy = config.ManagedPolicyID()")
+# Restrict the controller API to the GUI operations that do not change the
+# privileged core's configuration or binaries. Installed only for managed
+# builds; the middleware itself checks LF_MANAGED_PROXY_POLICY.
+replace(root / "hub/route/server.go", "\tr := chi.NewRouter()\n\tcors.Apply(r)",
+        "\tr := chi.NewRouter()\n\tlfPolicyUse(r)\n\tcors.Apply(r)")
+source = Path(__file__).parent.parent
+(root / "dns/lf_filter.go").write_text((source / "guard/dns_filter.go").read_text())
+(root / "dns/lf_filter_test.go").write_text((source / "guard/dns_filter_test.go").read_text())
+(root / "component/lfguard").mkdir()
+(root / "component/lfguard/guard.go").write_text((source / "guard/target_guard.go").read_text())
+(root / "component/lfguard/guard_test.go").write_text((source / "guard/target_guard_test.go").read_text())
+(root / "adapter/lf_managed_target_test.go").write_text((source / "tests/managed_target_test.go").read_text())
+(root / "adapter/outbound/lf_managed_direct_test.go").write_text((source / "tests/managed_direct_test.go").read_text())
+(root / "tunnel/lf_managed_udp_test.go").write_text((source / "tests/managed_udp_test.go").read_text())
+(root / "tunnel/lf_managed_dns_test.go").write_text((source / "tests/managed_dns_test.go").read_text())
+(root / "config/lf_managed.go").write_text((source / "config/managed_profile.go").read_text())
+(root / "config/lf_managed_test.go").write_text((source / "config/managed_profile_test.go").read_text())
+(root / "hub/route/lf_managed.go").write_text((source / "controller/managed_route.go").read_text())
+(root / "hub/route/lf_managed_test.go").write_text((source / "controller/managed_route_test.go").read_text())
+(root / "hub/route/lf_policy.go").write_text((source / "controller/policy_middleware.go").read_text())
+(root / "hub/route/lf_policy_test.go").write_text((source / "controller/policy_middleware_test.go").read_text())
+(root / "config/lf_managed_rules_test.go").write_text((source / "config/managed_rules_test.go").read_text())
+
+(root / "adapter/provider/lf_managed_provider_test.go").write_text((source / "tests/managed_provider_test.go").read_text())

@@ -88,30 +88,36 @@
       proxy-regressions = pkgs.runCommand "proxy-regressions" {
         nativeBuildInputs = [ pkgs.python3 pkgs.bash pkgs.jq ];
       } ''
-        export NETSEC_MODULES=${./system/programs/systemd}
+        export NETWORK_SOURCES=${pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./system/config/network ./system/programs/clash/service/preflight.py
+            ./home/config/clash/status.py
+          ];
+        }}
         export PYTHONDONTWRITEBYTECODE=1
-        python3 ${./tests/netsec/test_netsec.py}
+        python3 ${./tests/network/unit/test_netsec.py}
         touch "$out"
       '';
 
       proxy-upgrade-review = let
-        review = builtins.fromJSON (builtins.readFile ./system/config/network-upgrades.json);
+        review = builtins.fromJSON (builtins.readFile ./system/config/network/maintenance/sources.json);
         required = pkgs.lib.unique (pkgs.lib.concatMap (entry: entry.checks) (builtins.attrValues review.components));
       in assert pkgs.lib.all (name: builtins.hasAttr name self.checks.${system}) required;
       pkgs.runCommand "proxy-upgrade-review" { } ''
         test -e ${self.nixosConfigurations.lfour.config.my.proxy.upgradeCheck}
-        ${pkgs.python3}/bin/python3 ${./tests/netsec/test_upgrades.py} \
-          ${./system/programs/systemd/netsec/upgrades.py} ${./system/config/network-upgrades.json}
+        ${pkgs.python3}/bin/python3 ${./tests/network/maintenance/test_upgrades.py} \
+          ${./system/config/network/maintenance/upgrades.py} ${./system/config/network/maintenance/sources.json}
         touch "$out"
       '';
 
       proxy-validation-tools = pkgs.runCommand "proxy-validation-tools" { } ''
-        ${pkgs.python3}/bin/python3 ${./tests/netsec/test_network_tools.py} ${./.}
+        ${pkgs.python3}/bin/python3 ${./tests/network/maintenance/test_network_tools.py} ${./.}
         touch "$out"
       '';
 
       proxy-rules = self.nixosConfigurations.lfour.config.my.proxy.expectedRules;
-      network-identity-config = import ./tests/netsec/identity-config.nix {
+      network-identity-config = import ./tests/network/identity/identity-config.nix {
         inherit pkgs identityConfig;
         config = self.nixosConfigurations.lfour.config;
         fixedConfig = (self.nixosConfigurations.lfour.extendModules {
@@ -121,8 +127,8 @@
           } ];
         }).config;
       };
-      network-identity-vm = import ./tests/netsec/identity-vm.nix { inherit pkgs; };
-      proxy-firewall-vm = import ./tests/netsec/firewall-vm.nix { inherit pkgs; };
+      network-identity-vm = import ./tests/network/identity/identity-vm.nix { inherit pkgs; };
+      proxy-firewall-vm = import ./tests/network/firewall/firewall-vm.nix { inherit pkgs; };
       proxy-dns-strict-rules = strictDnsConfig.my.proxy.expectedRules;
 
       proxy-dns-config = let
@@ -143,7 +149,7 @@
           script = c.systemd.services.dns-upstream.serviceConfig.ExecStart;
         }) variants));
       in pkgs.runCommand "dns-policy-config" { } ''
-        ${pkgs.python3}/bin/python3 ${./tests/netsec/check_dns_endpoints.py} ${settings}
+        ${pkgs.python3}/bin/python3 ${./tests/network/dns/check_dns_endpoints.py} ${settings}
         ${pkgs.lib.concatMapStrings (c: "${pkgs.bash}/bin/bash -n ${c.systemd.services.dns-upstream.serviceConfig.ExecStart}\n") variants}
         test -e ${dual.my.proxy.expectedRules}
         test -e ${v6.my.proxy.expectedRules}
@@ -162,12 +168,12 @@
 
       tailscale-transport = self.nixosConfigurations.lfour.config.my.hardening.tailscale.transportCheck;
 
-      proxy-tailscale-vm = import ./tests/netsec/tailscale-vm.nix {
+      proxy-tailscale-vm = import ./tests/network/tailscale/tailscale-vm.nix {
         inherit pkgs;
         tailscale = self.nixosConfigurations.lfour.config.services.tailscale.package;
       };
 
-      proxy-egress-vm = import ./tests/netsec/tailscale-vm.nix {
+      proxy-egress-vm = import ./tests/network/tailscale/tailscale-vm.nix {
         inherit pkgs;
         tailscale = self.nixosConfigurations.lfour.config.services.tailscale.package;
         restricted = true;
@@ -188,7 +194,7 @@
         } ];
       }).config.my.proxy.expectedRules;
 
-      browser-privacy = import ./tests/netsec/firefox.nix {
+      browser-privacy = import ./tests/home/firefox/firefox.nix {
         inherit pkgs;
         config = self.nixosConfigurations.lfour.config;
         compatConfig = (self.nixosConfigurations.lfour.extendModules {
@@ -200,12 +206,12 @@
         }).config;
       };
 
-      browser-sandbox-vm = import ./tests/netsec/firefox-sandbox-vm.nix {
+      browser-sandbox-vm = import ./tests/home/firefox/firefox-sandbox-vm.nix {
         inherit pkgs;
         firefox = self.nixosConfigurations.lfour.config.home-manager.users.lfour.programs.firefox.finalPackage;
       };
 
-      browser-ech-vm = import ./tests/netsec/control-vm.nix {
+      browser-ech-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
         ech = {
@@ -216,7 +222,7 @@
         };
       };
 
-      browser-ech-uniform-vm = import ./tests/netsec/control-vm.nix {
+      browser-ech-uniform-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
         uniformProxy = true;
@@ -231,7 +237,7 @@
         };
       };
 
-      proxy-profile = import ./tests/netsec/profile.nix {
+      proxy-profile = import ./tests/network/proxy/profile.nix {
         inherit pkgs;
         config = self.nixosConfigurations.lfour.config;
         inherit uniformProxyConfig;
@@ -252,42 +258,42 @@
         }).config;
       };
 
-      proxy-network-vm = import ./tests/netsec/vm.nix {
+      proxy-network-vm = import ./tests/network/integration/vm.nix {
         inherit pkgs;
         core = self.nixosConfigurations.lfour.config.programs.clash-verge.package.managedCore;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
       };
 
-      proxy-control-vm = import ./tests/netsec/control-vm.nix {
+      proxy-control-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
       };
 
-      proxy-uniform-vm = import ./tests/netsec/control-vm.nix {
+      proxy-uniform-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
         uniformProxy = true;
       };
 
-      proxy-target-vm = import ./tests/netsec/control-vm.nix {
+      proxy-target-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
         targetPolicy = true;
       };
 
-      proxy-guest-vm = import ./tests/netsec/control-vm.nix {
+      proxy-guest-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
         guests = true;
       };
 
-      proxy-dns-strict-vm = import ./tests/netsec/control-vm.nix {
+      proxy-dns-strict-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
         strictDns = true;
       };
 
-      proxy-egress-control-vm = import ./tests/netsec/control-vm.nix {
+      proxy-egress-control-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
         restricted = true;
@@ -297,7 +303,7 @@
         nativeBuildInputs = [ pkgs.python3 ];
       } ''
         export PYTHONDONTWRITEBYTECODE=1
-        python3 ${./tests/netsec/test_control.py} ${./system/programs/clash/clash-verge-stage.py} ${./system/programs/systemd/netsec/health.py}
+        python3 ${./tests/network/proxy/test_control.py} ${./system/programs/clash/service/clash-verge-stage.py} ${./system/config/network/proxy/health.py}
         touch "$out"
       '';
 

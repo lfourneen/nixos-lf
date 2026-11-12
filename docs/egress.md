@@ -6,12 +6,12 @@ B enforces a managed path plus the exceptions below; subscription Rule routing m
 
 ## Exception ledger
 
-UIDs, interfaces and ports come from [machine.nix](../system/config/machine.nix), service accounts and [hardening-options.nix](../system/config/hardening-options.nix). This table describes host output; guest forwarding and host input have separate policies.
+UIDs, interfaces and ports come from [machine.nix](../system/config/machine.nix), service accounts and [options.nix](../system/config/network/options.nix). This table describes host output; guest forwarding and host input have separate policies.
 
 | Actor / path | Destination and transport | Modes and limits |
 |---|---|---|
 | Proxy core | Socket owner root or `clash-core` (982), **both** socket `SO_MARK` and packet mark 6666; destinations selected by the core | B and C recovery. UID alone or a packet-only mark gives no exception. Root and the core's `NET_ADMIN` remain trusted |
-| Tailscale | Root-owned UDP socket, **both** marks equal to upstream `LinuxBypassMarkNum` (`0x80000`), physical `ens1`/`wlo1`; dynamic peer/STUN targets and ports | B allows hole punching, C blocks it. Normal system builds check the [source contract](../system/config/tailscale-transport.nix); this is not authentication against root |
+| Tailscale | Root-owned UDP socket, **both** marks equal to upstream `LinuxBypassMarkNum` (`0x80000`), physical `ens1`/`wlo1`; dynamic peer/STUN targets and ports | B allows hole punching, C blocks it. Normal system builds check the [source contract](../system/config/network/tailscale/transport.nix); this is not authentication against root |
 | Unbound (983) | Configured literal IPv4/IPv6 upstreams, TCP 853 | A/B target guard; B can disable this exception with `unboundDotInProxy=false`. C blocks external DoT. Other ordinary UIDs cannot use TCP/UDP 853; root diagnostics remain trusted. Port 443 DoH is separate |
 | Chrony (61) | Physical uplinks, UDP 123 and TCP 4460 | A/B; C blocks. Default permits changing addresses. Optional `timeServerCidrs` bounds original targets before TUN/NAT in A/B; include NTS-KE and negotiated NTP servers |
 | dnsmasq (985) split DNS | Installed, expiring interface + resolver-address leases, TCP/UDP 53 | Earlier DNS guard enforces the lease; restricted B retains it, C blocks external queries |

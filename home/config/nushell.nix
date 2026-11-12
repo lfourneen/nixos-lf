@@ -218,7 +218,7 @@ in
     # system.slice/clash-verge.service, the user helper selects only GUI processes.
     # The shared helper recognizes public and historical wrapped GUI names.
     def clash-gui-running [] {
-      (^${pkgs.python3}/bin/python3 ${../../system/programs/clash/clash-verge-gui.py} --running | complete).exit_code == 0
+      (^${pkgs.python3}/bin/python3 ${../../system/programs/clash/gui/clash-verge-gui.py} --running | complete).exit_code == 0
     }
 
     # Stop the Clash core and return to Mode A (direct egress).
@@ -226,7 +226,7 @@ in
     # helper, so quitting the GUI does NOT stop it -- stopping the unit does.
     def clash-off [] {
       print $"(ansi yellow_bold)Stopping the Clash core \(service mode\)...(ansi reset)"
-      let gui = (^${pkgs.python3}/bin/python3 ${../../system/programs/clash/clash-verge-gui.py} --stop | complete)
+      let gui = (^${pkgs.python3}/bin/python3 ${../../system/programs/clash/gui/clash-verge-gui.py} --stop | complete)
       if $gui.exit_code != 0 {
         print -e $gui.stderr
         print $"(ansi red_bold)Failed to stop the Clash GUI ✗(ansi reset)"

@@ -8,12 +8,9 @@
     ./security.nix
     ./user.nix
     ./machine.nix
-    ./proxy-options.nix
-    ./proxy-profile.nix
-    ./hardening-options.nix
-    ./network.nix
-    ./network-upgrades.nix
-    ./dns-blocklist.nix
+    ./network
+    ./home-guard.nix
+    ./nix/daemon.nix
   ];
 }
 

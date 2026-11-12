@@ -1,0 +1,1330 @@
+{ pkgs, config, lib, ... }:
+
+let
+  # Machine identity lives in system/config/machine.nix; everything below reads it.
+  m = config.my.machine;
+  wired = m.wired.name;
+  wireless = m.wireless.name;
+  hotspotIface = m.hotspot.interface;
+  port = m.ports;
+  join = lib.concatStringsSep ", ";
+  guestPolicy = import ./guests/policy.nix { inherit config lib; };
+  egress = config.my.hardening.directEgress;
+  restrictedEgress = egress.mode == "restricted";
+  privateEgress = egress.privateRoutes;
+  allowedPrivate4 = lib.optionals privateEgress m.privateV4;
+  allowedPrivate6 = lib.optionals privateEgress (m.linkLocalV6 ++ m.ulaV6);
+
+  # Unbound serves the encrypted Mode-A path. Explicit split DNS and the
+  # leased portal fallback go through dnsmasq instead; B keeps Mihomo fake-IP.
+  rebind = import ./lib/private-addresses.nix { inherit config lib; };
+  rebindV4 = rebind.ipv4;
+
+  # Ranges the TUN leaves alone and the kill switch treats as reachable.
+  multicast4 = m.multicastV4 ++ [ m.limitedBroadcastV4 ];
+  local4 = join m.privateV4;
+  exempt4 = join (allowedPrivate4 ++ multicast4);
+  redirectExempt4 = join ([ "127.0.0.0/8" ] ++ allowedPrivate4 ++ multicast4);
+  local6 = join (m.linkLocalV6 ++ m.ulaV6);
+  exempt6 = join (allowedPrivate6 ++ m.multicastV6);
+  redirectExempt6 = join ([ "::1" ] ++ allowedPrivate6 ++ m.multicastV6);
+
+  # Trusted LANs allowed to reach host services (private/CGNAT IP != trust).
+  # Empty = none; add e.g. "192.168.1.0/24". Tailnet/hotspot/VM are built in.
+  # Empty also means the home LAN can't reach hostServices (Sunshine/RDP/VNC/
+  # Minecraft); only hotspot/VM/tailnet can.
+  trustedLanCidrs = [
+  ];
+
+  # Ports a trusted peer may reach.
+  hostServices = src: ''
+    ${src} udp dport 5353 accept                            # mDNS/Avahi
+    ${src} tcp dport 53317 accept                           # LocalSend
+    ${src} udp dport 53317 accept
+    ${src} tcp dport { 3389, 5900 } accept                  # RDP / VNC
+    ${src} tcp dport { 47984, 47989, 48010 } accept         # Sunshine streaming
+    ${src} udp dport { 47998, 47999, 48000, 48002, 48010 } accept
+    ${src} tcp dport 25565 accept                           # Minecraft
+    # ${src} tcp dport 22 accept                            # SSH (ssh.nix)
+  '';
+  # The AP uses its own guest role; a Wi-Fi client remains an uplink.
+  hotspotEnable = config.my.hardening.hotspot.enable;
+  tailnetTcp = lib.concatStringsSep ", " config.my.hardening.tailnetTcpPorts;
+  tailnetUdp = lib.concatStringsSep ", " config.my.hardening.tailnetUdpPorts;
+  trustedLanSrc = ''iifname { "${wired}", "${wireless}" } ip saddr { ${join trustedLanCidrs} }'';
+  trustedLanRules = lib.optionalString (trustedLanCidrs != []) (hostServices trustedLanSrc);
+
+  # TUN captures all L3 traffic (mihomo owns DNS/QUIC); false = plain
+  # HTTP-proxy model. Toggles the per-app guards below. Single source of
+  # truth (my.proxy.tunMode) -- home/config/clash/cvr-merge.nix reads it via osConfig.
+  tunMode = config.my.proxy.tunMode;
+  # TUN device name; home/config/clash/cvr-merge.nix pins the same value via osConfig so the
+  # firewall rules and the clash Merge template can't drift apart.
+  tunDev = config.my.proxy.tunDev;
+  # Network form of the fake-ip pool; the Mode-C guard exempts root to it so
+  # proxy-mode's own TUN self-test can run while blocked.
+  fakeIpNet = config.my.proxy.fakeIpNet;
+  tunIpv4Address = lib.head (lib.splitString "/" config.my.proxy.fakeIpRange);
+
+  # Force QUIC-heavy apps off UDP/443. Non-TUN only (under TUN it breaks
+  # QUIC sites); kept for the fallback model.
+  blockQuic = !tunMode;
+
+  guestIfaces = config.my.proxy.guestInterfaces;
+  nftIfaces = xs: "{ " + join (map (i: ''"${i}"'') xs) + " }";
+  guestGuard = mode: let
+    v4 = if mode == "proxy" then lib.subtractLists vmTransparentProxyIfaces guestIfaces else guestIfaces;
+  in ''
+    flush chain inet lf_filter lf_guest_guard
+    ${lib.optionalString (mode == "proxy" && vmTransparentProxyIfaces != [ ]) ''add rule inet lf_filter lf_guest_guard iifname ${nftIfaces vmTransparentProxyIfaces} ip daddr ${fakeIpNet} meta l4proto { tcp, udp } meta mark set ${tproxyMark}''}
+    ${lib.optionalString (v4 != [ ]) ''add rule inet lf_filter lf_guest_guard iifname ${nftIfaces v4} ip daddr != { 127.0.0.0/8, ${local4}, ${join multicast4} } counter drop''}
+    add rule inet lf_filter lf_guest_guard iifname ${nftIfaces guestIfaces} ip6 daddr != { ::1, ${local6}, ${join m.multicastV6} } counter drop
+  '';
+
+  # Kill switch: everything leaving an uplink for a public destination must go
+  # through the proxy core or be dropped (fail closed). The core is exempted by
+  # matching socket+packet marks (`routing-mark`) and a root/core socket owner;
+  # unmarked root traffic is subject to the same drop/redirect as anything else.
+  proxyKillSwitch = true;
+
+  # The core's mark (also pinned in the Clash merge template) and the one uid
+  # kept out of the TCP redirect: gost dials only loopback, but a passthrough
+  # relay must not dial itself. nft prints a mark as zero-padded lowercase hex
+  # (6666 -> 0x00001a0a), so the fragment emits that form and the live rules
+  # compare equal to it.
+  coreMark = "0x" + lib.toLower (lib.fixedWidthString 8 "0" (lib.toHexString m.mihomoMark));
+  # Root is an explicit administrative actor (also used by isolated fixtures),
+  # not a blanket UID exemption. Other UIDs and packet-only marks cannot borrow
+  # the core transport. This does not isolate a NET_ADMIN-capable core or root.
+  # Conntrack ownership for ordinary host-initiated flows; distinct from guest
+  # identities (0x47500000 + UID) and from routing/socket marks.
+  appConnmark = "0x4c460001";
+  reservedListenerPorts = map toString [
+    port.mihomoMixed port.mihomoDns port.mihomoTproxy
+    port.gostHttp port.gostRedirect port.dnsmasq port.unbound port.socketGuestDns
+  ];
+  coreSocket = "meta skuid { 0, ${toString m.uids.clashCore} } socket mark ${coreMark} meta mark ${coreMark}";
+
+  # Tailscale's LinuxBypassMarkNum (tsconst/linuxfw.go), also used by its
+  # netns.Listener for IPv4/IPv6 magicsock and standalone STUN sockets. Match
+  # SO_MARK as well as the packet mark: an unrelated unmarked root socket must
+  # not inherit this transport exception. This is a routing contract, not an
+  # isolation boundary against root, which can set SO_MARK itself.
+  tailscaleMark = "0x" + lib.toLower (lib.fixedWidthString 8 "0"
+    (lib.toHexString config.my.hardening.tailscale.transportMark));
+
+  redirectExemptUidSet = "{ ${toString config.users.users.gost.uid} }";
+
+  # The :53 redirect must exempt dnsmasq's own upstream sockets or they loop back
+  # into its listener. Root is no longer exempt: root's :53 lands in dnsmasq now.
+  dnsRedirectExemptUidSet = "{ ${toString config.users.users.dnsmasq.uid} }";
+
+  # DNS/DoT/NTP/NTS channels are pinned per-process instead of opened to any
+  # destination: unbound needs DoT (tcp/853) to its configured upstreams -- the
+  # only resolver left when Clash is down -- and chrony uses authenticated NTP (udp/123)
+  # with NTS key exchange (tcp/4460).
+  #
+  # A literal uid cannot be checked by the evaluator and would silently stop
+  # matching the daemon; the pins live in the module body.
+  dotRules = lib.concatMap (endpoint: [
+    "meta skuid ${toString unboundUid} ${if lib.hasInfix ":" endpoint.address then "ip6" else "ip"} daddr ${endpoint.address} tcp dport ${toString port.dot} accept"
+  ]) m.dotEndpoints;
+  unboundUid = config.users.users.unbound.uid;
+  dnsmasqUid = config.users.users.dnsmasq.uid;
+  timeUid = config.users.users.chrony.uid;
+  timeCidrs4 = lib.filter (cidr: !lib.hasInfix ":" cidr) egress.timeServerCidrs;
+  timeCidrs6 = lib.filter (cidr: lib.hasInfix ":" cidr) egress.timeServerCidrs;
+  timeDestinations = if egress.timeServerCidrs == [ ] then [ "" ] else
+    lib.optional (timeCidrs4 != [ ]) "ip daddr { ${join timeCidrs4} }"
+    ++ lib.optional (timeCidrs6 != [ ]) "ip6 daddr { ${join timeCidrs6} }";
+  timeRules = uplink: lib.concatMap (destination: [
+    "meta skuid ${toString timeUid} ${uplink} ${destination} udp dport ${toString port.ntp} accept"
+    "meta skuid ${toString timeUid} ${uplink} ${destination} tcp dport ${toString port.nts} accept"
+  ]) timeDestinations;
+
+  timeNatReturn = cidrs: lib.optionalString (egress.timeServerCidrs == [ ] || cidrs != [ ])
+    ("meta skuid ${toString timeUid} "
+      + lib.optionalString (cidrs != [ ])
+        "${if lib.hasInfix ":" (lib.head cidrs) then "ip6" else "ip"} daddr { ${join cidrs} } "
+      + "tcp dport ${toString port.nts} return");
+
+  dnsSplitRules = [
+    "meta skuid ${toString dnsmasqUid} meta oifname . ip daddr @dns_split4 meta l4proto { tcp, udp } th dport 53 accept"
+    "meta skuid ${toString dnsmasqUid} meta oifname . ip6 daddr @dns_split6 meta l4proto { tcp, udp } th dport 53 accept"
+  ];
+
+  processDirectRules = map (rule: ''oifname { "${wired}", "${wireless}" } ${rule}'') dotRules ++ timeRules ''oifname { "${wired}", "${wireless}" }'' ++ dnsSplitRules;
+
+  addRules = chain: rules: lib.concatMapStrings (rule:
+    "add rule inet lf_filter ${chain} ${rule}\n") rules;
+
+  dhcpRules = [
+    ''meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept''
+    ''meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept''
+  ];
+
+  hostDirectExceptions = lib.concatMap (entry:
+    let
+      family = if lib.hasInfix ":" entry.cidr then "ip6" else "ip";
+      owner = lib.optionalString (entry.uids != [ ]) "meta skuid { ${join (map toString entry.uids)} }";
+      rule = protocol: ports: lib.optional (ports != [ ])
+        ''oifname "${entry.interface}" ${owner} ${family} daddr ${entry.cidr} ${protocol} dport { ${join (map toString ports)} } counter accept'';
+    in rule "tcp" entry.tcpPorts ++ rule "udp" entry.udpPorts
+  ) egress.exceptions;
+
+  egressConfigCheck = pkgs.runCommand "direct-egress-config" {
+    nativeBuildInputs = [ pkgs.python3 ];
+  } ''
+    python3 ${./firewall/egress_policy.py} ${pkgs.writeText "direct-egress-policy.json" (builtins.toJSON {
+      inherit (egress) exceptions timeServerCidrs;
+      scopes = m.privateV4 ++ m.ulaV6 ++ m.linkLocalV6 ++ m.multicastV4
+        ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6;
+    })}
+    touch "$out"
+  '';
+
+  restrictedGuestIfaces = guestIfaces;
+  guestConfigCheck = pkgs.runCommand "guest-network-config" {
+    nativeBuildInputs = [ pkgs.python3 ];
+  } ''
+    python3 ${./guests/guest_policy.py} ${pkgs.writeText "guest-network-policy.json" (builtins.toJSON guestPolicy.data)}
+    touch "$out"
+  '';
+
+  # Replies to guests are identified by the bridge, the gateway source and the
+  # DHCP/DNS service ports -- never by uid. A daemon that drops privileges keeps
+  # the listening socket's creator uid but its accepted TCP sockets carry the
+  # dropped uid, so a uid match would allow UDP DNS and drop TCP DNS.
+  guestReplyRules = lib.concatMap (n:
+    lib.optionals (n.gateway4 != [ ] && n.source4 != [ ]) [
+      ''oifname "${n.interface}" ip saddr { ${join n.gateway4} } ip daddr { ${join n.source4}, 255.255.255.255 } udp sport 67 udp dport 68 accept''
+      ''oifname "${n.interface}" ip saddr { ${join n.gateway4} } ip daddr { ${join n.source4} } meta l4proto { tcp, udp } th sport 53 accept''
+    ] ++ lib.optionals (n.gateway6 != [ ] && n.source6 != [ ]) [
+      ''oifname "${n.interface}" ip6 saddr { ${join n.gateway6} } ip6 daddr { ${join n.source6} } meta l4proto { tcp, udp } th sport 53 accept''
+      ''oifname "${n.interface}" ip6 saddr { ${join n.gateway6}, fe80::/10 } ip6 hoplimit 255 meta l4proto icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept''
+    ]
+  ) guestPolicy.networks;
+
+  # Exemptions stay static so DNS/NTP keep working in direct mode; the drops and
+  # the redirect are loaded only while Clash runs (see proxy/coordinator.nix).
+  killSwitchAccepts = lib.optionalString proxyKillSwitch (lib.concatStringsSep "\n" processDirectRules);
+
+  hostDirectGuard = ''
+    flush chain inet lf_filter lf_host_egress_guard
+    flush chain inet lf_filter lf_host_direct
+    ${lib.optionalString (!egress.unboundDotInProxy) ''
+    add rule inet lf_filter lf_host_egress_guard meta skuid ${toString unboundUid} tcp dport ${toString port.dot} counter drop
+    ''}
+    ${lib.optionalString restrictedEgress ''
+    add rule inet lf_filter lf_host_egress_guard ip daddr { ${local4}, ${join multicast4} } jump lf_host_direct
+    add rule inet lf_filter lf_host_egress_guard ip6 daddr { ${local6}, ${join m.multicastV6} } jump lf_host_direct
+
+    ${addRules "lf_host_direct" ([
+      "${coreSocket} accept"
+      ''meta skuid 0 oifname { "${wired}", "${wireless}" } meta l4proto udp socket mark ${tailscaleMark} meta mark ${tailscaleMark} accept''
+      ''oifname "lo" accept''
+      # Input policy authorizes the initiating peer/port. Revoking an outbound
+      # grant still cuts its ORIGINAL direction, even when already established.
+      "ct direction reply ct state established,related accept"
+    ] ++ dhcpRules ++ guestReplyRules ++ processDirectRules ++ [
+      ''oifname { "${wired}", "${wireless}" } ip6 hoplimit 255 meta l4proto icmpv6 icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept''
+      ''oifname { "${wired}", "${wireless}" } ip6 daddr ff02::/16 ip6 hoplimit 1 meta l4proto icmpv6 icmpv6 type { mld-listener-report, mld-listener-done, mld2-listener-report } accept''
+      # Physical hard-coded DNS is still redirected to the managed gateway.
+      # dnsmasq's own upstreams have already passed the earlier lease guard.
+      ''oifname { "${wired}", "${wireless}" } ip daddr != ${m.magicDns} meta l4proto { tcp, udp } th dport 53 accept''
+      ''oifname { "${wired}", "${wireless}" } meta nfproto ipv6 meta l4proto { tcp, udp } th dport 53 accept''
+    ] ++ lib.optionals (config.services.tailscale.enable && config.my.hardening.tailscale.magicDns) [
+      ''oifname "${config.services.tailscale.interfaceName}" meta skuid { 0, ${toString dnsmasqUid}, ${toString config.users.users.systemd-resolve.uid} } ip daddr ${m.magicDns} meta l4proto { tcp, udp } th dport 53 accept''
+    ] ++ lib.optionals (config.services.tailscale.enable && config.my.hardening.tailnetUdpPorts != [ ]) [
+      # Sunshine can initiate media from its fixed server ports after RTSP
+      # negotiation; ordinary tailnet client sockets need explicit grants.
+      ''oifname "${config.services.tailscale.interfaceName}" meta skuid ${toString config.users.users.${m.desktopUser}.uid} udp sport { ${tailnetUdp} } accept''
+    ] ++ hostDirectExceptions ++ [ "counter drop" ])}
+    ''}
+  '';
+
+  # Fragment proxy-mode.service applies while Clash runs: LAN/multicast stay
+  # link-local, and the tail also covers interfaces not pinned in network.links.
+  proxyModeRules = lib.optionalString proxyKillSwitch ''
+    # One atomic load: the mode-dependent NAT tables are torn down here, inside the
+    # same `nft -f`, so the fragment is applied or not (no partial window).
+    destroy table ip lf_proxymode_nat
+    destroy table ip6 lf_proxymode_nat
+
+    # Leaving Mode C: the guard must be empty or its drop would refuse everything.
+    flush chain inet lf_filter lf_blocked_guard
+    flush chain inet lf_filter lf_tailnet_guard
+    ${hostDirectGuard}
+    flush set inet lf_filter dns_plaintext4
+    ${guestGuard "proxy"}
+    ${lib.optionalString vmTproxy ''
+    flush chain ip lf_mangle proxymode_tproxy
+    ${tproxyPrerouting}
+    ''}
+
+    flush chain inet lf_filter proxymode_drops
+    # The proxy core marks its own outbound sockets (routing-mark): allow it, it
+    # must reach the nodes directly.
+    add rule inet lf_filter proxymode_drops ${coreSocket} accept
+    # DHCP clients on the uplinks: NM is root, dhcpcd has its pinned UID.
+    add rule inet lf_filter proxymode_drops meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept
+    add rule inet lf_filter proxymode_drops meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept
+    # Keep dynamic peer/STUN ports, but only for root sockets carrying
+    # Tailscale's own bypass SO_MARK. Unlike socket cgroupv2 this expression is
+    # supported by the build-time LKL kernel. Never fall back to all-root UDP
+    # when the socket is unmarked. Mode C still cuts the tailnet.
+    add rule inet lf_filter proxymode_drops meta skuid 0 oifname { "${wired}", "${wireless}" } meta l4proto udp socket mark ${tailscaleMark} meta mark ${tailscaleMark} counter accept
+    # Everything else leaving an uplink for a non-local destination is dropped,
+    # root included.
+    add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } ip daddr != { ${exempt4} } counter drop
+    add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } ip6 daddr != { ${exempt6} } counter drop
+
+    flush chain inet lf_filter proxymode_tail
+    add rule inet lf_filter proxymode_tail ${coreSocket} accept
+    add rule inet lf_filter proxymode_tail oifname != { "lo", "${tunDev}" } ip daddr != { ${join multicast4} } counter drop
+    add rule inet lf_filter proxymode_tail oifname != { "lo", "${tunDev}" } ip6 daddr != ${join m.multicastV6} counter drop
+
+    # Guests. Forwarded traffic never reaches chain output and carries no skuid, so
+    # the killswitch cannot see it: public destinations are refused instead (v4
+    # and v6).
+    flush chain inet lf_filter proxymode_forward
+    add rule inet lf_filter proxymode_forward iifname ${nftIfaces guestIfaces} ip daddr != { ${local4} } counter drop
+    add rule inet lf_filter proxymode_forward iifname ${nftIfaces guestIfaces} ip6 daddr != { ${local6} } counter drop
+    add rule inet lf_filter proxymode_forward oifname ${nftIfaces guestIfaces} ip saddr != { ${local4} } counter drop
+    add rule inet lf_filter proxymode_forward oifname ${nftIfaces guestIfaces} ip6 saddr != { ${local6} } counter drop
+
+    # `redirect` is an nft statement keyword, so the chain cannot be named that.
+    table ip lf_proxymode_nat {
+      chain output {
+        type nat hook output priority -100; policy accept;
+        # Fake-IP traffic belongs to the TUN / auto-redirect path (including the
+        # core's reply to the self-test, whose destination is the TUN address).
+        # Never hand it to gost, which would re-source it and break the probe.
+        ip daddr ${fakeIpNet} return
+        # Retain the declared Chrony direct exception in the Gost fallback;
+        # the earlier time guard checks the original target when constrained.
+        ${timeNatReturn timeCidrs4}
+        meta mark != ${coreMark} meta skuid != ${redirectExemptUidSet} ip daddr != { ${redirectExempt4} } tcp dport != { 53, ${toString port.dot} } counter redirect to :${toString port.gostRedirect}
+      }
+    }
+
+    table ip6 lf_proxymode_nat {
+      chain output {
+        type nat hook output priority -100; policy accept;
+        ${timeNatReturn timeCidrs6}
+        meta mark != ${coreMark} meta skuid != ${redirectExemptUidSet} ip6 daddr != { ${redirectExempt6} } tcp dport != { 53, ${toString port.dot} } counter redirect to :${toString port.gostRedirect}
+      }
+    }
+  '';
+
+  # Fragment proxy-mode.service applies while Clash runs but its path is not the
+  # strict TUN one we require: the TUN is missing/unready, mihomo is in `direct`
+  # mode, or the node is dead. It fills the `output`-hook base chain
+  # `lf_blocked_guard` (priority -197, before mihomo's own redirect) with a hard
+  # cut that keeps ONLY loopback, the core's marked sockets and DHCP renewal:
+  # the core stays reachable so it can recover a node or be driven from the GUI,
+  # loopback keeps local IPC working, DHCP keeps the lease, and every other
+  # egress -- LAN, DNS, NTP, tailnet, all other uids -- is dropped. Only the core
+  # is exempted by mark; a TUN-less or DIRECT-mode core cannot leak from any
+  # other process, and the redirect is torn down so non-TUN flows are refused,
+  # not relayed.
+  blockedModeRules = lib.optionalString proxyKillSwitch ''
+    # Tear the normal fragment down inside the same load: no stale redirect and
+    # no stale drop can survive next to the guard.
+    destroy table ip lf_proxymode_nat
+    destroy table ip6 lf_proxymode_nat
+    flush chain inet lf_filter proxymode_drops
+    flush chain inet lf_filter proxymode_tail
+    flush chain inet lf_filter proxymode_forward
+    flush chain inet lf_filter lf_host_egress_guard
+    flush chain inet lf_filter lf_host_direct
+    flush chain inet lf_filter lf_tailnet_guard
+    ${lib.optionalString config.services.tailscale.enable ''
+    add rule inet lf_filter lf_tailnet_guard iifname "${config.services.tailscale.interfaceName}" counter drop
+    ''}
+    ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
+    add rule inet lf_filter lf_tailnet_guard ct mark ${guestPolicy.socketMarks} ct direction reply counter drop
+    ''}
+    # Application replies are revoked with the same transaction as output.
+    # Root/core/relay-originated transport stays unmarked for recovery probes.
+    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply iifname != "lo" counter drop
+    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply ct original ip daddr != 127.0.0.0/8 counter drop
+    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply ct original ip6 daddr != ::1 counter drop
+    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply meta l4proto { tcp, udp } ct original proto-dst { ${toString port.mihomoMixed}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
+    flush set inet lf_filter dns_plaintext4
+    ${guestGuard "blocked"}
+    ${lib.optionalString vmTproxy "flush chain ip lf_mangle proxymode_tproxy"}
+
+    flush chain inet lf_filter lf_blocked_guard
+    # Every Clash-facing port on loopback is refused for non-root, TCP and UDP,
+    # across all of 127.0.0.0/8 and ::1: mihomo's mixed port (bound TCP and UDP),
+    # DNS listener and optional TPROXY inbound, plus gost's HTTP + redirect
+    # listeners. Loopback stays up for local IPC, so without this an application
+    # could dial the core or gost (or use the core as a resolver) and be proxied
+    # straight through Mode C. Root is allowed because proxy-mode's own node
+    # probe dials the mixed port. The managed core rejects extra protocol
+    # listeners at its final parser and at controller PATCH, before creation.
+    add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip daddr 127.0.0.0/8 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoDns}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
+    add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip6 daddr ::1 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoDns}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
+    # Local IPC (and the local resolver) keeps working.
+    add rule inet lf_filter lf_blocked_guard ip daddr 127.0.0.0/8 accept
+    add rule inet lf_filter lf_blocked_guard ip6 daddr ::1 accept
+    # Cut in-flight transparent guest replies before the marked core exception.
+    ${guestPolicy.blockedReplies}
+    # The core keeps its egress so it can reach its nodes and recover.
+    add rule inet lf_filter lf_blocked_guard ${coreSocket} accept
+    # Root may reach the fake-ip network for the TUN self-test. Do not require
+    # a particular oifname: the shared route checks and the probe's exact-source
+    # log prove the effective path. Auto-redirect runs later at -150.
+    add rule inet lf_filter lf_blocked_guard meta skuid 0 ip daddr ${fakeIpNet} meta l4proto { tcp, udp } th dport { 53, 80, 443 } accept
+    # Retain the loopback-source reply allowance for the PREROUTING redirect
+    # path. Reverse NAT runs after this chain, so replies still carry the
+    # redirect listener's local source here.
+    add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.clashCore} } ip saddr 127.0.0.1 ip daddr ${fakeIpNet} accept
+    # The patched OUTPUT DNAT uses the TUN's local address, preserving sockets
+    # bound to that interface. Permit only root TCP replies to those DNAT flows
+    # so the fake-IP self-test can recover while C still refuses client egress.
+    add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.clashCore} } ip saddr ${tunIpv4Address} ip daddr ${fakeIpNet} meta l4proto tcp ct direction reply ct status dnat ct original ip daddr ${fakeIpNet} ct original proto-dst { 80, 443 } accept
+    # Retain pinned DHCP clients, including unicast renewals. Server replies
+    # are only needed for the explicitly enabled AP and its own subnet.
+    add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept
+    ${addRules "lf_blocked_guard" guestReplyRules}
+    add rule inet lf_filter lf_blocked_guard meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept
+    # Link maintenance has no application payload; without ND an IPv6-only
+    # uplink cannot recover once its neighbour cache expires in Mode C.
+    add rule inet lf_filter lf_blocked_guard oifname { "${wired}", "${wireless}" } ip6 hoplimit 255 meta l4proto icmpv6 icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept
+    # Everything else, on any interface, to any other destination: gone.
+    add rule inet lf_filter lf_blocked_guard counter drop
+
+    # Guests/VMs are forwarded traffic: the output guard never sees them, so they
+    # are refused public destinations here (LAN/portal stays reachable; the
+    # forward chain's early `jump proxymode_forward` runs before its accepts).
+    add rule inet lf_filter proxymode_forward iifname ${nftIfaces guestIfaces} ip daddr != { ${local4} } counter drop
+    add rule inet lf_filter proxymode_forward iifname ${nftIfaces guestIfaces} ip6 daddr != { ${local6} } counter drop
+    add rule inet lf_filter proxymode_forward oifname ${nftIfaces guestIfaces} ip saddr != { ${local4} } counter drop
+    add rule inet lf_filter proxymode_forward oifname ${nftIfaces guestIfaces} ip6 saddr != { ${local6} } counter drop
+  '';
+
+  # TPROXY bridges whose egress goes through mihomo (tproxy-port, see
+  # cvr-merge.nix). Empty = off; covered by the isolated real-kernel VM test.
+  vmTransparentProxyIfaces = config.my.proxy.transparentGuestInterfaces;
+  vmTproxy = vmTransparentProxyIfaces != [ ];
+  tproxyMark = "0x233";
+
+  tproxyPrerouting = lib.concatMapStrings (i: ''
+    add rule ip lf_mangle proxymode_tproxy iifname "${i}" ip daddr != { ${local4}, 127.0.0.0/8, ${join multicast4} } meta l4proto { tcp, udp } counter tproxy to :${toString port.mihomoTproxy} meta mark set ${tproxyMark} accept
+  '') vmTransparentProxyIfaces;
+
+  tproxyInputAccept = lib.concatMapStrings (i: ''iifname "${i}" meta mark ${tproxyMark} accept
+  '') vmTransparentProxyIfaces;
+
+  nmDnsSettings = pkgs.writeText "nm-dns-policy.json" (builtins.toJSON {
+    state = "/var/lib/netsec-dns-profiles";
+    nmcli = "${pkgs.networkmanager}/bin/nmcli";
+    resolvectl = "${pkgs.systemd}/bin/resolvectl";
+    interface = wireless;
+    exceptions = config.my.proxy.splitDnsProfileUuids;
+    resolver = "127.0.0.1:${toString port.dnsmasq}";
+    systemctl = "${pkgs.systemd}/bin/systemctl";
+  });
+
+  nmDnsPolicy = pkgs.writeShellScript "nm-dns-policy" ''
+    exec ${pkgs.python3}/bin/python3 ${./dns/nm_dns.py} ${nmDnsSettings} "$1" "$2"
+  '';
+
+  # DNS suffix rules, shared with the managed core's DNS and dial filter.
+  # dnsmasq filters gateway queries in A/B; native MagicDNS and explicit
+  # split-server delegation retain their separate routing precedence.
+  blockedDomains = lib.unique (lib.filter (d: d != "") config.my.proxy.blockedDomains);
+  blockedDomainExceptions =
+    lib.unique (lib.filter (d: d != "") config.my.proxy.blockedDomainExceptions);
+
+in
+{
+  imports = [
+    ./hardening.nix
+    ./identity/default.nix
+    ./time.nix
+    ./dns/socket-guest.nix
+    ./tailscale/transport.nix
+  ];
+
+  # The nft rules match these daemons by uid, so the accounts are pinned.
+  users.users.unbound.uid = m.uids.unbound;
+  users.users.dnsmasq.uid = m.uids.dnsmasq;
+  users.users.dhcpcd.uid = m.uids.dhcpcd;
+  my.hardening.directEgress.configCheck = egressConfigCheck;
+  my.hardening.guestConfigCheck = guestConfigCheck;
+  system.checks = [ egressConfigCheck guestConfigCheck ];
+
+  # A null or shared uid makes an exemption match nothing or the wrong daemon;
+  # uniqueness is what the evaluator can check.
+  assertions = [
+    {
+      assertion = lib.all (entry: entry.tcpPorts != [ ] || entry.udpPorts != [ ]) egress.exceptions;
+      message = "Host direct exceptions require at least one explicit TCP or UDP destination port.";
+    }
+    {
+      assertion = lib.all (entry: builtins.elem entry.interface restrictedGuestIfaces
+        && builtins.match "[0-9a-fA-F:.]+/[0-9]+" entry.cidr != null
+        && (entry.tcpPorts != [ ] || entry.udpPorts != [ ])) config.my.hardening.guestPrivateExceptions
+        && m.ntsUpstreams != [ ]
+        && lib.all (host: builtins.match "[a-zA-Z0-9.-]+" host != null) m.ntsUpstreams
+        && lib.count (u: u.uid == timeUid) (lib.attrValues config.users.users) == 1;
+      message = "Guest private exceptions require a guest interface, CIDR and ports; NTS requires explicit hosts and a unique chrony UID.";
+    }
+    {
+      assertion = port.unbound >= 1024
+        && (config.services.unbound.settings.server.ip-transparent or false) == false;
+      message = "The capability-free Unbound forwarder requires an unprivileged port and ip-transparent=false.";
+    }
+    {
+      # The fallback is plaintext by design, so it may only be an IPv4 literal
+      # and must never be reused as a validated upstream.
+      assertion = lib.all (ip: builtins.match
+        "(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}"
+        ip != null) m.dotTransportFallback
+        && lib.all (ip: !builtins.elem ip (map (endpoint: endpoint.address) m.dotEndpoints)) m.dotTransportFallback;
+      message = "Mode-A plaintext fallback requires IPv4 literals that are not the validated DoT upstreams.";
+    }
+    {
+      assertion = lib.all (i: builtins.elem i guestIfaces) vmTransparentProxyIfaces
+        && lib.length (lib.unique guestIfaces) == lib.length guestIfaces
+        && lib.all (i: builtins.match "[a-zA-Z0-9_.-]{1,15}" i != null
+          && !(builtins.elem i [ "lo" wired wireless tunDev "tailscale0" ])) guestIfaces;
+      message = "Guest ingress interfaces must be valid, distinct from host uplinks/TUN/loopback, and include every TPROXY interface.";
+    }
+    {
+      assertion = lib.count (u: u.uid == m.uids.dhcpcd) (lib.attrValues config.users.users) == 1;
+      message = "The pinned dhcpcd UID must belong to exactly one account.";
+    }
+    {
+      assertion = lib.length (lib.unique (lib.attrValues port)) == lib.length (lib.attrValues port)
+        && m.mihomoMark > 0 && m.mihomoMark <= 4294967295
+        && builtins.match "[a-zA-Z0-9_.-]{1,15}" tunDev != null;
+      message = "Proxy ports must be distinct; the routing mark and TUN interface name must be valid.";
+    }
+    {
+      assertion = lib.count (u: u.uid == unboundUid) (lib.attrValues config.users.users) == 1;
+      message = ''
+        network.nix: the pinned uid for unbound (${toString unboundUid}) must belong
+        to exactly one account. Set my.machine.uids.unbound to a free number.
+      '';
+    }
+    {
+      assertion = lib.count (u: u.uid == dnsmasqUid) (lib.attrValues config.users.users) == 1;
+      message = ''
+        network.nix: the pinned uid for dnsmasq (${toString dnsmasqUid}) must belong
+        to exactly one account. Set my.machine.uids.dnsmasq to a free number.
+      '';
+    }
+  ];
+
+  # The mode-dependent rules are applied by proxy-mode.service (see proxy/coordinator.nix).
+  my.proxy.proxyModeRules = proxyModeRules;
+  my.proxy.blockedModeRules = blockedModeRules;
+
+  # Pin NIC names so they survive kernel naming changes. Wired matches by
+  # permanent hardware MAC: the on-link address may be cloned and PCI paths
+  # can change if bus numbers shift.
+  systemd.network.links."10-wired-${wired}" = {
+    linkConfig.Name = wired;
+
+    matchConfig = {
+      PermanentMACAddress = m.wired.mac;
+      Driver = m.wired.driver;
+    };
+  };
+
+  systemd.network.links."10-wifi-${wireless}" = {
+    linkConfig.Name = wireless;
+
+    matchConfig = {
+      Path = m.wireless.path;
+      Driver = m.wireless.driver;
+    };
+  };
+
+  # Networking
+  networking = {
+    hostName = m.hostName;
+    networkmanager = {
+      enable = true;
+      # LAN's DHCP offers are broadcast and NM's clients drop them, so dhcpcd
+      # owns the wired NIC. Match by name+MAC so NM can never grab it.
+      unmanaged = [ "interface-name:${wired}" "mac:${m.wired.mac}" ];
+      dns = "systemd-resolved";   # Pin NM to resolved
+      wifi = {
+        powersave = false;
+        scanRandMacAddress = true;
+        # Native connection defaults preserve explicit per-profile exceptions.
+        # /var/lib/NetworkManager and machine-id are already persistent.
+        macAddress = config.my.hardening.wifi.clonedMacAddress;
+      };
+
+      settings = {
+        # Keep checking ON so GNOME can pop the captive-portal login page.
+        # response = "" expects an empty 204 body (Cloudflare probe).
+        connectivity = {
+          uri = "http://cp.cloudflare.com/";
+          response = "";
+          interval = 300;
+        };
+
+        # Opportunistic 802.11w default (mitigates rogue-AP deauth).
+        connection = {
+          "wifi-sec.pmf" = 2;
+        };
+
+      };
+
+      # Wake the proxy supervisors on link changes, so a new network (portal,
+      # DHCP change, connectivity transition) re-evaluates at once instead of
+      # waiting for a backstop interval. Same coordinator as the core event.
+      dispatcherScripts = [
+        { type = "pre-up"; source = nmDnsPolicy; }
+        { type = "pre-down"; source = nmDnsPolicy; }
+        { type = "basic"; source = nmDnsPolicy; }
+        {
+          type = "basic";
+          source = pkgs.writeShellScript "nm-proxy-net-wake" ''
+            case "$2" in
+              up|down|connectivity-change|dhcp4-change|dhcp6-change)
+                ${pkgs.systemd}/bin/systemctl start --no-block proxy-net-wake.service 2>/dev/null || true
+                ;;
+            esac
+          '';
+        }
+      ];
+    };
+
+    resolvconf.enable = false;
+
+    # dhcpcd owns the wired uplink; its hooks stay out of resolv.conf.
+    interfaces.${wired}.useDHCP = true;
+
+    dhcpcd = {
+      enable = true;
+      extraConfig = ''
+        nohook resolv.conf
+        nohook ntp.conf
+      '';
+      runHook = ''
+        case "$reason" in
+          BOUND|RENEW|REBIND|REBOOT|EXPIRE|FAIL|NAK|NOCARRIER|CARRIER|STOP|BOUND6|RENEW6|REBIND6|EXPIRE6|ROUTERADVERT)
+            ${pkgs.systemd}/bin/systemctl --no-ask-password start --no-block proxy-net-wake.service 2>/dev/null || true
+            ;;
+        esac
+      '';
+    };
+
+    proxy = {
+      default = "http://127.0.0.1:${toString port.gostHttp}/";
+      noProxy = "127.0.0.1,localhost,::1,${join m.privateV4},*.local";
+    };
+  };
+
+  # dhcpcd runs without root. Its exit hook may only start this fixed wakeup
+  # coordinator, not manage arbitrary units or change their properties.
+  security.polkit.extraConfig = ''
+    polkit.addRule(function(action, subject) {
+      if (subject.user == "dhcpcd" && action.id == "org.freedesktop.systemd1.manage-units"
+          && action.lookup("unit") == "proxy-net-wake.service" && action.lookup("verb") == "start") {
+        return polkit.Result.YES;
+      }
+    });
+  '';
+
+  # Desktop sessions and user managers inherit cgroup bind4/bind6 enforcement.
+  # Reserving both protocols also prevents an old UDP association delivering its
+  # next datagram to an occupier after the real listener exits. System services
+  # retain their own identities; the output reply guard is a second boundary.
+  systemd.slices.user.sliceConfig.SocketBindDeny = reservedListenerPorts;
+
+  # Uppercase proxy vars for tools that ignore the lowercase *_proxy ones
+  environment.sessionVariables = {
+    HTTP_PROXY = "http://127.0.0.1:${toString port.gostHttp}/";
+    HTTPS_PROXY = "http://127.0.0.1:${toString port.gostHttp}/";
+    ALL_PROXY = "http://127.0.0.1:${toString port.gostHttp}/";
+    NO_PROXY = "127.0.0.1,localhost,::1,${join m.privateV4},*.local";
+  };
+
+  # Substituters mirrors
+  nix = {
+    settings = {
+      substituters = [
+        #"https://mirror.tuna.tsinghua.edu.cn/nix-channels/store"
+        "https://mirrors.ustc.edu.cn/nix-channels/store"
+        "https://cache.nixos.org"
+        "https://cache.nixos-cuda.org"
+        "https://cache.numtide.com"
+        "https://noctalia.cachix.org"
+      ];
+
+      trusted-public-keys = [
+        "cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M="
+        "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
+        "noctalia.cachix.org-1:pCOR47nnMEo5thcxNDtzWpOxNFQsBRglJzxWPp3dkU4="
+      ];
+    };
+  };
+
+  # Tailscale (encrypted tailnet; run `sudo tailscale up` once after install to login)
+  services.tailscale = {
+    enable = true;
+    package = pkgs.unstable.tailscale;
+    # resolved-policy installs only the authenticated MagicDNS suffix. Never
+    # accept a tailnet's default resolver, subnet routes or exit-node state.
+    extraSetFlags = [ "--accept-dns=false" "--accept-routes=false"
+      "--advertise-routes=" "--advertise-exit-node=false" "--exit-node=" "--ssh=false" ];
+  };
+
+  # Avahi / mDNS. Skip the untrusted physical LAN (${wired}); hotspot + tailnet only.
+  services.avahi = {
+    enable = true;
+    nssmdns4 = true;
+    nssmdns6 = true;
+    # The wireless interface is trusted only while it *is* the AP: as a client of a
+    # foreign network it must not announce, so it is wired to the hotspot opt-in.
+    allowInterfaces = [ "lo" "tailscale0" ] ++ lib.optionals hotspotEnable [ hotspotIface ];
+  };
+
+  # DNS upstream: dnsmasq forwards to mihomo while clash runs and to the encrypted
+  # fallback otherwise; dns-upstream.service switches the upstream (see dns/upstream.nix).
+  services.dnsmasq = {
+    enable = true;
+    # In strict-order mode, terminal UDP SERVFAIL/REFUSED must reach the
+    # client. The upstream retry path otherwise discards the last response.
+    package = pkgs.dnsmasq.overrideAttrs (old: {
+      postPatch = (old.postPatch or "") + ''
+        substituteInPlace src/forward.c --replace-fail \
+          '  if ((RCODE(header) == REFUSED || RCODE(header) == SERVFAIL) && forward->forwardall == 0)' \
+          '  /* Return the final strict-order error, including its DNSSEC EDE.
+                Use the sent-to index because endpoints can be duplicated. */
+          if ((RCODE(header) == REFUSED || RCODE(header) == SERVFAIL) && forward->forwardall == 0 &&
+              !(option_bool(OPT_ORDER) && forward->sentto->arrayposn == last - 1))'
+      '';
+    });
+    # resolved owns /etc/resolv.conf and forwards to this high-port gateway.
+    # Disable the legacy resolvconf subscriber and its writable /etc files.
+    resolveLocalQueries = false;
+    settings = {
+      port = port.dnsmasq;
+      bind-interfaces = true;
+      interface = "lo";
+      no-resolv = true;       # upstream only from conf-file
+      no-hosts = true;
+      strict-order = true;    # order within the mode's own list; see the note below
+      cache-size = 4096;
+      "neg-ttl" = "30";       # default negative TTL when an upstream supplies no SOA TTL
+      servers-file = "/run/dns-upstream/servers.conf";  # hot-reloaded with SIGHUP
+      # Blocked names answer NXDOMAIN here and never reach an upstream. Empty
+      # by default, so an unconfigured machine behaves exactly as before.
+      address = map (d: "/${d}/") blockedDomains;
+      # Exceptions inside a blocked domain. dnsmasq prefers the more specific
+      # domain, and `#` means "use the standard servers", so these follow the
+      # per-mode servers-file instead of the blocklist.
+      server = map (d: "/${d}/#") blockedDomainExceptions;
+      # No static second server outside the mode's own list; transport
+      # encryption does not by itself establish local DNSSEC validation.
+    };
+  };
+
+  # Keep the existing root-start/self-drop and D-Bus reload lifecycle. The
+  # networking capabilities below are retained for dnsmasq's own capset; KILL
+  # lets the root ExecReload signal the self-dropped daemon. Guest DHCP servers
+  # are separate processes and are not changed by this unit.
+  systemd.services.dnsmasq.serviceConfig = {
+    NoNewPrivileges = true;
+    CapabilityBoundingSet = [ "CAP_CHOWN" "CAP_DAC_OVERRIDE" "CAP_FOWNER" "CAP_KILL"
+      "CAP_SETUID" "CAP_SETGID" "CAP_SETPCAP"
+      "CAP_NET_BIND_SERVICE" "CAP_NET_ADMIN" "CAP_NET_RAW" ];
+    ProtectSystem = lib.mkForce "strict";
+    StateDirectory = "dnsmasq";
+    ReadWritePaths = [ "/var/lib/dnsmasq" ];
+    PrivateDevices = true;
+    ProtectKernelTunables = true;
+    ProtectKernelModules = true;
+    ProtectKernelLogs = true;
+    ProtectControlGroups = true;
+    ProtectClock = true;
+    ProtectHostname = true;
+    ProtectProc = "invisible";
+    ProcSubset = "pid";
+    RestrictNamespaces = true;
+    RestrictRealtime = true;
+    RestrictSUIDSGID = true;
+    RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
+    SystemCallArchitectures = "native";
+    LockPersonality = true;
+    MemoryDenyWriteExecute = true;
+  };
+
+  # Encrypted resolver (DoT via the configured 360 endpoints) while clash is down.
+  # dns-upstream uses this for direct mode, with separately leased portal fallback.
+  # Keep `unbound-with-systemd`: the unit uses Type=notify, a plain build lacks
+  # --enable-systemd.
+  services.unbound = {
+    enable = true;
+    package = pkgs.unbound-with-systemd;
+    resolveLocalQueries = false;
+    enableRootTrustAnchor = true;
+    settings = {
+      server = {
+        interface = [ "127.0.0.1@${toString port.unbound}" ];
+        "tls-upstream" = true;
+        module-config = ''"validator iterator"'';
+        val-permissive-mode = false;
+        ignore-cd-flag = true;
+        harden-dnssec-stripped = true;
+        ede = true;
+        # Upstream failures are otherwise silent at verbosity 1, which is why the
+        # last outage could only be inferred from the statistics counter.
+        log-servfail = true;
+        # While the DoT upstream is unreachable, answer from cache with data
+        # that already passed validation instead of failing the query outright.
+        # Local validation may use this cache or synthesize NSEC denials. An
+        # independent TLS/DNS probe establishes reachability; a bounded ceiling
+        # limits how long clients can receive stale validated data.
+        serve-expired = true;
+        serve-expired-ttl = 900;
+        serve-expired-reply-ttl = 30;
+        serve-expired-client-timeout = config.my.proxy.dnsStaleWaitMilliseconds;
+        # Additional-section records that were not validated stay out of cache.
+        val-clean-additional = true;
+        # Only upstream answers are filtered; explicit local-data/private-domain
+        # remain available for deliberately configured internal names.
+        # 198.18/15 is the RFC 2544 benchmarking block, which mihomo also uses
+        # for fake-IP. A rebinding answer inside it would be indistinguishable
+        # from a fake address and get routed into the TUN, so refuse it here.
+        # Deliberately not added to private-addresses.nix: the guard there
+        # exempts private targets, and fake-IP must stay a proxied destination.
+        "private-address" = lib.unique (rebind.all ++ [ "198.18.0.0/15" fakeIpNet ]);
+      };
+      "forward-zone" = [
+        {
+          name = ".";
+          "forward-addr" = map (endpoint: "${endpoint.address}@${toString port.dot}#${endpoint.authName}") m.dotEndpoints;
+        }
+      ];
+    };
+  };
+
+  # NixOS disables build-time checkconf when remote-control is present, so
+  # validate at start: a bad config fails fast with a clear error.
+  systemd.services.unbound.preStart = lib.mkForce ''
+    # Seed from the locked root-data package without a DNS/HTTPS bootstrap
+    # dependency. Unbound maintains RFC5011 state over its authenticated DoT.
+    if [ ! -s ${config.services.unbound.stateDir}/root.key ]; then
+      ${pkgs.coreutils}/bin/install -m 0644 ${pkgs.dns-root-data}/root.key ${config.services.unbound.stateDir}/root.key
+    fi
+    ${lib.optionalString config.services.unbound.settings.remote-control.control-enable ''
+      ${config.services.unbound.package}/bin/unbound-control-setup -d ${config.services.unbound.stateDir}
+    ''}
+    ${config.services.unbound.package}/bin/unbound-checkconf /etc/unbound/unbound.conf
+  '';
+
+  # This loopback high-port forwarder uses neither privileged binds nor
+  # ip-transparent. Keep the upstream unit's remaining sandbox and notify type.
+  systemd.services.unbound.serviceConfig = {
+    AmbientCapabilities = lib.mkForce "";
+    CapabilityBoundingSet = lib.mkForce "";
+  };
+
+  # Resolved
+  services.resolved = {
+    enable = true;
+
+    settings = {
+      Resolve = {
+        Domains = ["~."];
+
+        MulticastDNS = "no";
+
+        DNS = [ "127.0.0.1:${toString port.dnsmasq}" ];
+
+        # DNS is always set, so the fallback is never consulted; clear it rather
+        # than leave resolved's built-in public resolvers as dead config.
+        FallbackDNS = [ ];
+
+        # Must be "no": opportunistic DoT tries cert validation against IPs and kills fallback
+        DNSOverTLS = "no";
+
+        # DNSSEC off: mihomo answers carry no DNSSEC signature -> SERVFAIL otherwise
+        DNSSEC = "no";
+        LLMNR = "no";   # Disable LLMNR (LAN poisoning surface)
+
+        # External clients use their dedicated gateway DNS. A wildcard stub
+        # would expose B's fake-IP answers without supplying a client route.
+        DNSStubListenerExtra = [ ];
+      };
+    };
+  };
+
+  # nixos-rebuild reloads resolved (incomplete, "Reload operation timed out"); restart it instead
+  systemd.services.systemd-resolved.restartIfChanged = true;
+
+  # Shutdown: stop NM before the user session, else user apps block on its
+  # D-Bus and "Stopping User Manager" spins out its 90s timeout.
+  systemd.services.NetworkManager.after = [ "user@${toString config.users.users.${m.desktopUser}.uid}.service" ];
+
+  # Nftables (FireWall)
+  networking.firewall.enable = false;
+
+  networking.nftables = {
+    enable = true;
+
+    # Build-check the static ruleset so a typo fails at build time, not boot.
+    checkRuleset = true;
+
+    # Never flush the whole ruleset: it removes mihomo's own tables too, and only a
+    # TUN restart recreates them. Our tables are torn down below instead.
+    flushRuleset = false;
+
+    ruleset = ''
+      # Our own tables only, under private lf_* names so a reload can never clobber
+      # the shared iptables-nft tables (`ip nat`, `ip6 nat`, `ip mangle`) used by
+      # libvirt / Docker / NetworkManager. `destroy` is delete-if-exists, so this
+      # stays idempotent. The loader appends the selected safety fragment to
+      # this static text and commits both in a single nft transaction.
+      destroy table inet lf_filter
+      destroy table inet lf_bootstrap
+      destroy table ip lf_nat
+      destroy table ip6 lf_nat
+      destroy table ip lf_mangle
+      destroy table ip lf_proxymode_nat
+      destroy table ip6 lf_proxymode_nat
+
+      table inet lf_filter {
+        # Only the elements of these three named sets are runtime leases.
+        # Their type, flags, timeout ceiling and every referencing rule are verified.
+        set dns_plaintext4 { type ipv4_addr; flags timeout; timeout 120s; }
+        set dns_split4 { type ifname . ipv4_addr; flags timeout; timeout 120s; }
+        set dns_split6 { type ifname . ipv6_addr; flags timeout; timeout 120s; }
+        chain dns_plaintext_mode {
+          ${lib.optionalString (config.my.proxy.dnsEncryption != "strict") "ip daddr @dns_plaintext4 accept"}
+        }
+        chain dns_egress {
+          meta oifname . ip daddr @dns_split4 accept
+          meta oifname . ip6 daddr @dns_split6 accept
+          jump dns_plaintext_mode
+          counter drop
+        }
+        chain lf_dns_guard {
+          type filter hook output priority -199; policy accept;
+          meta skuid ${toString dnsmasqUid} oifname != "lo" meta l4proto { tcp, udp } th dport 53 jump dns_egress
+          ${lib.optionalString (config.my.proxy.dnsEncryption == "strict") ''
+          ${lib.optionalString config.my.hardening.tailscale.magicDns ''${coreSocket} oifname "${config.services.tailscale.interfaceName}" ip daddr ${m.magicDns} meta l4proto { tcp, udp } th dport 53 accept''}
+          meta skuid ${toString m.uids.clashCore} oifname != "lo" meta l4proto { tcp, udp } th dport 53 counter drop
+          ${coreSocket} oifname != "lo" meta l4proto { tcp, udp } th dport 53 counter drop
+          ''}
+        }
+        chain lf_local_dns_guard {
+          type filter hook output priority -198; policy accept;
+          ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
+          oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.socketGuestDns} meta skuid != 0 counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.socketGuestDns} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
+          ''}
+          # Only the gateway and root diagnostics may query internal upstreams.
+          # Leave 1054 open: uplink :53 is redirected there with the caller UID.
+          oifname "lo" meta l4proto { tcp, udp } th dport { ${toString port.mihomoDns}, ${toString port.unbound} } meta skuid != { 0, ${toString dnsmasqUid} } counter drop
+          # A port occupier must not answer allowed clients between checks.
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.mihomoDns} meta skuid != { 0, ${toString m.uids.clashCore} } counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.dnsmasq} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.unbound} meta skuid != { 0, ${toString unboundUid} } counter drop
+        }
+        # A local high-port occupier may bind, but cannot complete a client
+        # exchange before the supervisor's next UID/cgroup observation. Apply
+        # before reverse NAT changes a transparent reply's source port.
+        chain lf_local_proxy_guard {
+          type filter hook output priority -198; policy accept;
+          oifname "lo" meta l4proto { tcp, udp } th sport { ${toString port.gostHttp}, ${toString port.gostRedirect} } meta skuid != { 0, ${toString m.uids.gost} } counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport { ${toString port.mihomoMixed}, ${toString port.mihomoTproxy} } meta skuid != { 0, ${toString m.uids.clashCore} } counter drop
+        }
+        chain lf_app_track {
+          # After conntrack and guest identity assignment, before any DNAT.
+          type filter hook output priority -198; policy accept;
+          meta skuid != { 0, ${toString m.uids.clashCore}, ${toString m.uids.gost} } ct direction original ct mark 0 meta l4proto { tcp, udp } ct mark set ${appConnmark}
+        }
+        # Guest source, host and routed-reply checks precede generic accepts.
+        ${guestPolicy.nft}
+        chain input {
+          type filter hook input priority 0; policy drop;
+
+          ct state invalid drop
+          ${import ./firewall/ndp-validation.nix}
+          iif lo accept
+          # Clash Verge TUN device: replies only. The core writes arbitrary
+          # bytes into this device, and every host-service accept below is
+          # scoped to a real ingress interface, so a blanket `iifname accept`
+          # was the one way a TUN packet could skip the ingress policy and
+          # land on a 0.0.0.0-bound listener (sshd, the DSH web GUI, libvirt).
+          # Host flows leave through the TUN and their reply is tracked, so
+          # conntrack covers every legitimate packet arriving here.
+          iifname "${tunDev}" ct state established,related accept
+          iifname ${nftIfaces restrictedGuestIfaces} jump lf_guest_host
+          ct state established,related accept
+          # TPROXY'd bridge traffic, if enabled.
+          ${tproxyInputAccept}
+
+          # DHCP client replies on the uplinks, before the martian drop below so an
+          # OFFER/ACK sourced from 0.0.0.0 is not caught by it.
+          iifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
+          iifname { "${wired}", "${wireless}" } udp sport 547 udp dport 546 accept
+
+          # Martian sources on the wired WAN. 100.64.0.0/10 is absent on purpose:
+          # this uplink is CGNAT, so those are the ISP's own subscribers.
+          iifname "${wired}" ip saddr { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4, 255.255.255.255/32 } counter drop
+
+          # Tailscale WireGuard endpoint (ts-input does the ACLs), scoped to the
+          # uplinks so it cannot match public IPv6 inbound.
+          iifname { "${wired}", "${wireless}" } udp dport 41641 accept
+
+          # Tailnet: authenticated, but a blanket accept would expose every
+          # 0.0.0.0-bound listener. List ports in my.hardening.tailnet{Tcp,Udp}Ports.
+          iifname "tailscale0" tcp dport { ${tailnetTcp} } accept
+          iifname "tailscale0" udp dport { ${tailnetUdp} } accept
+
+          # Validation runs before conntrack accepts, using the same rules as
+          # the bootstrap. Link-local RA sources differ from NS/NA sources,
+          # which may be global addresses during neighbour discovery.
+          meta l4proto icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept
+          meta l4proto icmpv6 icmpv6 type { packet-too-big, echo-request, destination-unreachable, time-exceeded } accept
+
+          # Refuse the remaining new public IPv6 input (exceptions above).
+          ip6 saddr != { ::1, fe80::/10, fc00::/7 } drop
+
+          ip protocol icmp icmp type { destination-unreachable, time-exceeded } accept
+          ip protocol icmp icmp type echo-request limit rate 10/second accept
+
+          # Explicitly trusted LAN prefixes (empty by default).
+          ${trustedLanRules}
+
+          # Counted: dmesg is restricted, so this is the only view of what is refused.
+          counter drop
+        }
+
+        chain forward {
+          type filter hook forward priority 0; policy drop;
+
+          # Guest policy, filled by proxy-mode while Clash runs and empty otherwise.
+          # Before the conntrack accept so an established guest flow cannot leak.
+          jump proxymode_forward
+
+          ct state established,related accept
+          ct state invalid drop
+
+          # Each routed guest has an exact source subnet and allowed uplinks.
+          ${lib.concatMapStrings (n:
+            let uplinks = if n.interface == hotspotIface then [ wired ] else [ wired wireless ];
+            in lib.optionalString (n.source4 != [ ]) ''iifname "${n.interface}" ip saddr { ${join n.source4} } oifname ${nftIfaces uplinks} accept
+            '' + lib.optionalString (n.source6 != [ ]) ''iifname "${n.interface}" ip6 saddr { ${join n.source6} } ip6 daddr { ${local6} } oifname ${nftIfaces uplinks} accept
+            '') guestPolicy.networks}
+
+          counter drop
+        }
+
+        # Filled by proxy-mode.service while Clash runs; empty means no enforcement.
+        # Declared before the jumps because a target must exist when the rule loads.
+        chain proxymode_forward { }
+        chain proxymode_drops { }
+        chain proxymode_tail { }
+        # Mode-C guard: a base chain on the `output` hook at priority -197, i.e.
+        # evaluated BEFORE mihomo's own nat/output auto-redirect (priority -150).
+        # It must run before the redirect, or a locally generated non-root TCP
+        # flow is rewritten to 127.0.0.1:<redirect-inbound> before the guard sees
+        # it and slips through. Filled by proxy-mode.service only in the
+        # `blocked` state; empty in every other mode (policy accept = no-op).
+        chain lf_blocked_guard {
+          # Conntrack attaches at -200. The DNAT reply exception must see its
+          # direction/status, while the client cut still precedes NAT at -150.
+          type filter hook output priority -197; policy accept;
+        }
+        # B-only host direct grants see the original destination and socket
+        # before sing-tun/Gost can replace them. C runs earlier and flushes B.
+        chain lf_host_egress_guard {
+          type filter hook output priority -195; policy accept;
+        }
+        chain lf_host_direct { }
+        # Cut decrypted tailnet traffic in C before established input accepts,
+        # including packets already in flight when the transport is blocked.
+        chain lf_tailnet_guard {
+          type filter hook input priority -1; policy accept;
+        }
+        ${lib.optionalString (egress.timeServerCidrs != [ ]) ''
+        # Target-constrain Chrony before any transparent redirect, in A/B.
+        # A selected address may still route through the managed proxy; the
+        # direct exception below additionally requires a physical uplink.
+        chain lf_time_egress_guard {
+          type filter hook output priority -194; policy accept;
+          ${lib.concatStringsSep "\n" (timeRules "")}
+          meta skuid ${toString timeUid} udp dport ${toString port.ntp} counter drop
+          meta skuid ${toString timeUid} tcp dport ${toString port.nts} counter drop
+        }
+        ''}
+        # Guest refusal must see original destinations before any transparent
+        # redirect can turn a forwarded flow into local input to the core.
+        chain lf_guest_guard {
+          type filter hook prerouting priority -201; policy accept;
+        }
+
+        # Encrypted-DNS egress guard. It has to be evaluated before sing-tun's
+        # auto-redirect (-150): that redirect rewrites a locally generated,
+        # non-root TCP flow to 127.0.0.1:<redirect-inbound>, so a rule in the
+        # priority-0 chain below would only ever see the rewritten destination
+        # and the original :853 would be invisible — the managed core
+        # then completes the connection and the app keeps its own resolver.
+        # Root, the marked core and the configured Unbound path may use :853.
+        # DoH shares 443 and stays addressable (see docs/dns.md).
+        chain lf_dns_egress_guard {
+          type filter hook output priority -196; policy accept;
+          ${lib.concatStringsSep "\n" dotRules}
+          ${coreSocket} meta l4proto { tcp, udp } th dport ${toString port.dot} accept
+          meta skuid != 0 meta l4proto { tcp, udp } th dport ${toString port.dot} counter drop
+        }
+
+        # Only NAT may deliver traffic to gost's transparent listener. Reject
+        # explicit loopback connects before NAT, preventing recursive self-dials.
+        chain redirect_guard {
+          type filter hook output priority -201; policy accept;
+          ip daddr 127.0.0.0/8 tcp dport ${toString port.gostRedirect} reject with tcp reset
+          ip6 daddr ::1 tcp dport ${toString port.gostRedirect} reject with tcp reset
+        }
+
+        chain output {
+          type filter hook output priority 0; policy accept;
+
+          # The Mode-C guard is a separate base chain on this same hook at
+          # priority -197 (declared above), so it is evaluated before every
+          # accept here AND before mihomo's nat/output redirect. It is empty
+          # outside `blocked`, so it is a no-op the rest of the time.
+
+          ${lib.optionalString privateEgress ''ip daddr { ${local4} } accept''}
+          ${lib.optionalString privateEgress ''ip6 daddr { ${local6} } accept''}
+          ip daddr 127.0.0.0/8 accept
+          ip6 daddr ::1 accept
+
+          # QUIC drop (non-TUN only; see blockQuic).
+          ${lib.optionalString blockQuic "meta skuid != 0 udp dport 443 drop"}
+
+          # Per-process DNS/NTP exemptions; static so direct mode keeps working.
+          ${killSwitchAccepts}
+
+          # Encrypted DNS egress is enforced in the lf_dns_egress_guard base
+          # chain at priority -196 (declared above), i.e. before sing-tun's
+          # auto-redirect. A drop here would only ever match the redirected
+          # destination, never the original :853.
+
+          # Enforcement is loaded only while Clash runs; empty chain = no-op.
+          jump proxymode_drops
+
+          # No unscoped accept for the mixed port: loopback is accepted above, and
+          # an unscoped accept would let a flow on an unexpected egress interface
+          # skip the chain-tail default-deny below.
+          # Chain-tail reverse default-deny, loaded only while Clash runs.
+          jump proxymode_tail
+        }
+      }
+
+      # NAT
+      table ip lf_nat {
+        ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
+        chain socket_guest_dns {
+          type nat hook output priority -190; policy accept;
+          meta skuid ${guestPolicy.socketOwners} meta l4proto { tcp, udp } th dport 53 redirect to :${toString port.socketGuestDns}
+        }
+        ''}
+        # Force :53 out an uplink into dnsmasq: those destinations are the ones the
+        # TUN excludes, so mihomo's dns-hijack never sees them. A redirect, not a
+        # drop, so an in-range resolver still answers.
+        chain output {
+          type nat hook output priority -100; policy accept;
+
+          meta skuid != ${dnsRedirectExemptUidSet} oifname { "${wired}", "${wireless}" } ip daddr != { 127.0.0.0/8, ${m.magicDns} } udp dport 53 redirect to :${toString port.dnsmasq}
+          meta skuid != ${dnsRedirectExemptUidSet} oifname { "${wired}", "${wireless}" } ip daddr != { 127.0.0.0/8, ${m.magicDns} } tcp dport 53 redirect to :${toString port.dnsmasq}
+        }
+
+        chain postrouting {
+          type nat hook postrouting priority 100;
+
+          # Libvirt VMs -> real uplinks
+          oifname { "${wired}", "${wireless}" } ip saddr ${m.vmSubnet} masquerade
+
+          # Hotspot clients -> wired uplink (opt-in with the AP itself)
+          ${lib.optionalString hotspotEnable ''oifname "${wired}" ip saddr ${m.hotspot.subnet} masquerade''}
+        }
+      }
+
+      # IPv6 twin of the redirect above: otherwise a ULA or link-local resolver is
+      # reached in the clear. Same selector; ::1 and the tailnet are exempt.
+      table ip6 lf_nat {
+        ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
+        chain socket_guest_dns {
+          type nat hook output priority -190; policy accept;
+          meta skuid ${guestPolicy.socketOwners} meta l4proto { tcp, udp } th dport 53 redirect to :${toString port.socketGuestDns}
+        }
+        ''}
+        chain output {
+          type nat hook output priority -100; policy accept;
+
+          meta skuid != ${dnsRedirectExemptUidSet} oifname { "${wired}", "${wireless}" } ip6 daddr != { ::1 } udp dport 53 redirect to :${toString port.dnsmasq}
+          meta skuid != ${dnsRedirectExemptUidSet} oifname { "${wired}", "${wireless}" } ip6 daddr != { ::1 } tcp dport 53 redirect to :${toString port.dnsmasq}
+        }
+      }
+
+      ${lib.optionalString vmTproxy ''
+      # Divert listed bridges' public TCP/UDP into mihomo's tproxy port.
+      table ip lf_mangle {
+        chain proxymode_tproxy { }
+        chain prerouting {
+          type filter hook prerouting priority mangle; policy accept;
+          jump proxymode_tproxy
+        }
+      }
+      ''}
+    '';
+  };
+
+  # Retry a failed first load; subsequent failed transactions preserve the old
+  # policy. on-failure is the restart mode supported for oneshot units.
+  systemd.services.nftables = {
+    # Three failed loads leave the host with no ruleset; the failure has to be
+    # visible (firewall/recover.nix also retries it periodically).
+    unitConfig.OnFailure = [ "netsec-alert@%n.service" ];
+    serviceConfig = {
+      Restart = "on-failure";
+      RestartSec = "2s";
+      # proxy/coordinator.nix supplies the atomic static+mode loader for start/reload.
+    };
+    unitConfig.StartLimitBurst = 3;
+  };
+
+  # Deliver marked bridge packets locally to mihomo's tproxy socket.
+  systemd.services.vm-transparent-proxy = lib.mkIf vmTproxy {
+    description = "TPROXY routing for libvirt VMs";
+    after = [ "network.target" "nftables.service" ];
+    wants = [ "nftables.service" ];
+    wantedBy = [ "multi-user.target" ];
+    # Routes can exist before the GUI starts the core: only the healthy Mode-B
+    # fragment installs TPROXY rules, and the verifier checks listener identity.
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      ExecStart = pkgs.writeShellScript "vm-tproxy-up" ''
+        ${pkgs.iproute2}/bin/ip rule add pref 100 fwmark ${tproxyMark} lookup 100 2>/dev/null || true
+        ${pkgs.iproute2}/bin/ip route add local default dev lo table 100 2>/dev/null || true
+      '';
+      ExecStop = pkgs.writeShellScript "vm-tproxy-down" ''
+        ${pkgs.iproute2}/bin/ip rule del pref 100 fwmark ${tproxyMark} lookup 100 2>/dev/null || true
+        ${pkgs.iproute2}/bin/ip route del local default dev lo table 100 2>/dev/null || true
+      '';
+    };
+  };
+
+  # CrowdSec — SSH brute-force protection (needs ssh.nix + the SSH rules above)
+  #services.crowdsec = {
+    #enable = true;
+
+    #hub.collections = [
+      #"crowdsecurity/sshd"
+      #"crowdsecurity/linux"
+    #];
+
+    #localConfig.acquisitions = [
+      #{
+        #source = "journald";
+        #journalctl_filter = [ "_SYSTEMD_UNIT=sshd.service" ];
+        #labels.type = "syslog";
+      #}
+    #];
+  #};
+
+  #services.crowdsec-firewall-bouncer = {
+    #enable = true;
+    #registerBouncer.enable = true;
+    #settings.mode = "nftables";
+  #};
+
+  # Fail2ban — simpler alternative to CrowdSec. NOTE: our input chain (priority 0,
+  # policy drop) runs FIRST, so bans can only affect the ACCEPTED rules (i.e. the
+  # SSH rules) — which is exactly what we want; verify chain order with `nft list ruleset`.
+  #services.fail2ban = {
+    #enable = true;
+
+    #jails.sshd = {
+      #filter = "sshd";
+      #action = "nftables-allports";
+      #maxretry = 3;
+      #bantime = 3600;
+      #findtime = 600;
+      #settings.backend = "systemd";
+    #};
+  #};
+
+  # Kernel modules
+  boot.extraModprobeConfig = ''
+    options ${m.wireless.driver} disable_aspm=1
+  '';
+
+  # Kernel settings
+  boot.kernelModules = [ "tcp_bbr" ] ++ lib.optionals vmTproxy [ "nft_tproxy" "nf_tproxy_ipv4" ];
+
+  boot.kernelParams = [
+    # Disable USB auto-suspend
+    "usbcore.autosuspend=-1"
+  ];
+
+  boot.kernel.sysctl = lib.mkMerge [ (lib.mkIf (lib.any (n: n.source6 != [ ]) guestPolicy.networks) {
+    "net.ipv6.conf.all.forwarding" = 1;
+    # Keep uplink router discovery when declared ULA guests need forwarding.
+    "net.ipv6.conf.${wired}.accept_ra" = 2;
+    "net.ipv6.conf.${wireless}.accept_ra" = 2;
+  }) {
+    # bind(0) and implicit connect/send allocation do not name a port at the
+    # cgroup bind hook. Keep reserved listeners out of both families' allocator.
+    "net.ipv4.ip_local_reserved_ports" = lib.concatStringsSep "," reservedListenerPorts;
+
+    # BBR + cake: the AQM keeps queue delay low on both the LAN device and the
+    # TUN, instead of only pacing it like fq.
+    "net.core.default_qdisc" = "cake";
+    "net.ipv4.tcp_congestion_control" = "bbr";
+
+    # Socket autotuning ceilings; these do not manage queues at the WAN bottleneck.
+    "net.core.rmem_max" = 16777216;
+    "net.core.wmem_max" = 16777216;
+    "net.core.rmem_default" = 262144;
+    "net.core.wmem_default" = 262144;
+
+    # TCP auto-tuning: max 16 MiB
+    "net.ipv4.tcp_rmem" = "4096 87380 16777216";
+    "net.ipv4.tcp_wmem" = "4096 65536 16777216";
+
+    # TCP Fast Open (client only, disable if unstable)
+    "net.ipv4.tcp_fastopen" = 1;
+
+    # Keep cwnd after idle (good for interactive use)
+    "net.ipv4.tcp_slow_start_after_idle" = 0;
+
+    # Slightly larger UDP buffers for QUIC/WebRTC
+    "net.ipv4.udp_rmem_min" = 16384;
+    "net.ipv4.udp_wmem_min" = 16384;
+
+    # ECN
+    "net.ipv4.tcp_ecn" = 1;
+
+    # Netdev
+    "net.core.netdev_max_backlog" = 16384;
+    "net.core.netdev_budget" = 600;
+
+    # Optmem
+    "net.core.optmem_max" = 65536;
+  } ];
+
+  environment.systemPackages = with pkgs; [
+    (writeShellScriptBin "proxy-dns-profile" ''
+      exec ${pkgs.python3}/bin/python3 ${./dns/nm_dns.py} ${nmDnsSettings} "$@"
+    '')
+    bpftrace
+    traceroute
+  ];
+}

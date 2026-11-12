@@ -4,21 +4,21 @@ let
   guiProcess = pkgs.writeShellApplication {
     name = "clash-verge-gui-prepare";
     runtimeInputs = [ pkgs.python3 ];
-    text = ''exec python3 ${./clash-verge-gui.py} "$@"'';
+    text = ''exec python3 ${./gui/clash-verge-gui.py} "$@"'';
   };
 
   # Set the writable GUI preference without rebuilding the Rust application.
   guiDefaults = pkgs.writeShellApplication {
     name = "clash-verge-defaults";
     runtimeInputs = [ pkgs.yq-go pkgs.coreutils pkgs.procps ];
-    text = builtins.readFile ./clash-verge-defaults.sh;
+    text = builtins.readFile ./gui/clash-verge-defaults.sh;
   };
 
   guiDefaultsCheck = pkgs.runCommand "proxy-gui-defaults" { } ''
-    ${pkgs.nodejs}/bin/node ${../../../tests/netsec/test_gui_defaults.js} \
+    ${pkgs.nodejs}/bin/node ${../../../tests/home/clash/test_gui_defaults.js} \
       ${guiDefaults}/bin/clash-verge-defaults ${pkgs.yq-go}/bin/yq \
       ${lib.escapeShellArg config.my.proxy.delayTestUrl}
-    ${pkgs.python3}/bin/python3 ${../../../tests/netsec/test_gui_process.py} ${./clash-verge-gui.py}
+    ${pkgs.python3}/bin/python3 ${../../../tests/home/clash/test_gui_process.py} ${./gui/clash-verge-gui.py}
     touch "$out"
   '';
 
@@ -34,7 +34,7 @@ let
     data = "/var/lib/clash-core";
     setpriv = "${pkgs.util-linux}/bin/setpriv";
     yq = "${pkgs.yq-go}/bin/yq";
-    snapshot_tool = "${./clash-verge-stage.py}";
+    snapshot_tool = "${./service/clash-verge-stage.py}";
     managed_core = "${managedCore}/bin/mihomo";
     managed_policy = pkgs.writeText "mihomo-preflight-policy.json" (builtins.toJSON config.my.proxy.managedProfile);
   });
@@ -46,8 +46,8 @@ let
     export PATH=${lib.makeBinPath [ pkgs.bash pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.socat pkgs.util-linux ]}:$PATH
     ${builtins.replaceStrings
       [ "@desktopUid@" "@guiData@" "@clashCore@" "@python@" "@stageTool@" "@stageSettings@" "@controlGroup@" ]
-      [ (toString desktopUid) guiData "clash-core" "${pkgs.python3}/bin/python3" "${./clash-verge-stage.py}" (toString stageSettings) config.programs.clash-verge.group ]
-      (builtins.readFile ./clash-verge-core-launcher.sh)}
+      [ (toString desktopUid) guiData "clash-core" "${pkgs.python3}/bin/python3" "${./service/clash-verge-stage.py}" (toString stageSettings) config.programs.clash-verge.group ]
+      (builtins.readFile ./service/clash-verge-core-launcher.sh)}
   '';
 
   # The packaged helper (2.3.3) execs the client-supplied core_path as root.
@@ -55,7 +55,7 @@ let
   # remaining authorization lives in the launcher and the firewall.
   patchedService = pkgs.unstable.clash-verge-rev.service.overrideAttrs (old: {
     postPatch = (old.postPatch or "") + ''
-      ${pkgs.python3}/bin/python3 ${./patch_clash_service.py} .
+      ${pkgs.python3}/bin/python3 ${./service/patch_clash_service.py} .
     '';
   });
 
@@ -69,36 +69,18 @@ let
     };
   };
 
-  httpOnlyPolicy = (import ../../config/proxy-profile.nix {
+  httpOnlyPolicy = (import ../../config/network/proxy/profile.nix {
     inherit lib;
     config = httpOnlyConfig;
   }).options.my.proxy.managedProfile.default;
 
   # Rebuild the core only when its source patches change.
-  netsecDir = ../systemd/netsec;
+  mihomoDir = ./mihomo;
   managedSources = lib.fileset.toSource {
-    root = netsecDir;
+    root = mihomoDir;
     fileset = lib.fileset.unions [
-      (netsecDir + "/patch_mihomo.py")
-      (netsecDir + "/patch_sing_tun.py")
-      (netsecDir + "/patch_socks.py")
-      (netsecDir + "/socks_addr_test.go")
-      (netsecDir + "/managed_profile.go")
-      (netsecDir + "/managed_profile_test.go")
-      (netsecDir + "/managed_route.go")
-      (netsecDir + "/managed_route_test.go")
-      (netsecDir + "/managed_rules_test.go")
-      (netsecDir + "/policy_middleware.go")
-      (netsecDir + "/policy_middleware_test.go")
-      (netsecDir + "/managed_direct_test.go")
-      (netsecDir + "/managed_target_test.go")
-      (netsecDir + "/managed_provider_test.go")
-      (netsecDir + "/managed_dns_test.go")
-      (netsecDir + "/managed_udp_test.go")
-      (netsecDir + "/target_guard.go")
-      (netsecDir + "/target_guard_test.go")
-      (netsecDir + "/dns_filter.go")
-      (netsecDir + "/dns_filter_test.go")
+      ./mihomo/patches ./mihomo/guard ./mihomo/config
+      ./mihomo/controller ./mihomo/tests
     ];
   };
 
@@ -108,7 +90,7 @@ let
       runHook preCheck
       export LF_MANAGED_TEST_POLICY=${pkgs.writeText "mihomo-managed-test-policy.json" (builtins.toJSON config.my.proxy.managedProfile)}
       export LF_MANAGED_TEST_HTTP_POLICY=${pkgs.writeText "mihomo-managed-test-http-policy.json" (builtins.toJSON httpOnlyPolicy)}
-      export LF_MANAGED_TEST_LEGACY_PROFILE=${../../../tests/netsec/legacy-managed-profile.json}
+      export LF_MANAGED_TEST_LEGACY_PROFILE=${../../../tests/network/proxy/legacy-managed-profile.json}
       go test -mod=vendor ./config ./hub/route -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/inbound ./transport/socks5 -count=1
       go test -mod=vendor ./component/lfguard -count=1
@@ -121,15 +103,15 @@ let
 
     postConfigure = (old.postConfigure or "") + ''
       chmod -R u+w vendor/github.com/metacubex/sing-tun
-      ${pkgs.python3}/bin/python3 ${managedSources}/patch_mihomo.py .
-      ${pkgs.python3}/bin/python3 ${managedSources}/patch_sing_tun.py .
-      ${pkgs.python3}/bin/python3 ${managedSources}/patch_socks.py .
+      ${pkgs.python3}/bin/python3 ${managedSources}/patches/patch_mihomo.py .
+      ${pkgs.python3}/bin/python3 ${managedSources}/patches/patch_sing_tun.py .
+      ${pkgs.python3}/bin/python3 ${managedSources}/patches/patch_socks.py .
     '';
   });
 
 in
 {
-  imports = [ ./runtime.nix ];
+  imports = [ ./service/runtime.nix ];
   # Service mode drops the core to its pinned UID; the firewall permits its mark.
   # Source patches enforce the managed profile and correct nftables interval
   # endpoints and SOCKS address parsing. Exact anchors reject incompatible

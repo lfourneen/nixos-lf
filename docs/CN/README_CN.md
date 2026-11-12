@@ -6,6 +6,7 @@
 
 | 手册 | 内容 |
 |---|---|
+| [源码目录](layout_CN.md) | 系统与桌面职责、网络模块、构建载荷及测试目录 |
 | [网络架构](network_CN.md) | 流量路径、A/B/C 模式、防火墙、上行、访客与 Tailscale |
 | [链路身份](identity_CN.md) | MAC 默认值、按 profile 身份、DHCP/IPv6 协同迁移、有线策略与持久状态 |
 | [直连例外](egress_CN.md) | 例外清单、可选受限 B 授权、时间服务器目标限制与 C 阻断 |

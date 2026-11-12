@@ -12,7 +12,7 @@
 | Gost | HTTP `127.0.0.1:33332`、透明 `127.0.0.1:33333` / `[::1]:33333` | UID 987，无能力 |
 | dnsmasq / Unbound / dhcpcd | 本地 DNS / 有线 DHCP | UID 985 / 983 / 986 |
 
-[identity.nix](../../system/programs/clash/identity.nix) 和 [runtime.nix](../../system/programs/clash/runtime.nix) 定义核心身份与服务约定。root 启动器经 `setpriv` 降权，核心的 permitted、effective、inheritable、ambient、bounding 集均只保留两项网络能力。真实控制口为 `/run/clash-verge-rev/core/mihomo.sock`，监督器直接访问；桌面 UID 的 `socat` 提供 GUI 前向路径。
+[identity.nix](../../system/programs/clash/service/identity.nix) 和 [runtime.nix](../../system/programs/clash/service/runtime.nix) 定义核心身份与服务约定。root 启动器经 `setpriv` 降权，核心的 permitted、effective、inheritable、ambient、bounding 集均只保留两项网络能力。真实控制口为 `/run/clash-verge-rev/core/mihomo.sock`，监督器直接访问；桌面 UID 的 `socat` 提供 GUI 前向路径。
 
 Helper 保留身份切换、目录所有权和子进程管理所需权限，仅允许打包的 root 所有启动器作为可执行文件。受管日志固定在 `/var/lib/clash-verge-service/logs` 并固定轮转；客户端 IPC 路径不驱动 root chmod/unlink 或启动恢复。Systemd 管理子进程清理。Helper 私有状态与 `/var/lib/clash-core` 的可写缓存分开。
 
@@ -26,7 +26,7 @@ Helper 在特权边界执行固定路径和文件操作约束。核心持有宿�
 
 `clash-on` 写入代理意图，进入 C 并开始新导入会话：清除旧授权，打开**一次性 300 秒**窗口。GUI 提供生效配置，打包启动器在共享授权锁下导入后再启动核心。失败也消费窗口，修正输入后需重新 `clash-on`。
 
-[clash-verge-stage.py](../../system/programs/clash/clash-verge-stage.py) 只接受桌面用户所有、大小受限的普通输入文件，不跟随 symlink，复制 YAML/geodata 到 root 所有的快照并检测并发变化。它规范控制口位置，以无能力的 `clash-core` 执行核心 `-t` 验证。目录 0750、文件 0640，core 组可读；授权记录、验证/helper 日志仅 root 可读写。
+[clash-verge-stage.py](../../system/programs/clash/service/clash-verge-stage.py) 只接受桌面用户所有、大小受限的普通输入文件，不跟随 symlink，复制 YAML/geodata 到 root 所有的快照并检测并发变化。它规范控制口位置，以无能力的 `clash-core` 执行核心 `-t` 验证。目录 0750、文件 0640，core 组可读；授权记录、验证/helper 日志仅 root 可读写。
 
 摘要覆盖生效 YAML、geodata 字节及可选文件缺失状态。规范资源包括 `Country.mmdb`、`GeoIP.dat`、`GeoSite.dat`，以及可选 `ASN.mmdb`/`BundleMRS.7z`；支持的旧 country 数据库名字会规范化。`cache.db` 指向独立可写状态，不纳入摘要。
 
@@ -36,7 +36,7 @@ Helper 在特权边界执行固定路径和文件操作约束。核心持有宿�
 
 ## 受管 profile 与控制 API
 
-[proxy-profile.nix](../../system/config/proxy-profile.nix) 定义 root 策略，[cvr-merge.nix](../../home/config/cvr-merge.nix) 生成匹配的 GUI Merge。最终核心 parser 在 GUI/订阅处理后约束监听、mark、DNS、TUN 路由/排除项和私网目标设置。Rule providers 固定为空，geodata 自动更新关闭，无条件 `MATCH,DIRECT`/`FINAL,DIRECT` 被拒绝；其它订阅规则和组选择保留授权语义。
+[profile.nix](../../system/config/network/proxy/profile.nix) 定义 root 策略，[cvr-merge.nix](../../home/config/clash/cvr-merge.nix) 生成匹配的 GUI Merge。最终核心 parser 在 GUI/订阅处理后约束监听、mark、DNS、TUN 路由/排除项和私网目标设置。Rule providers 固定为空，geodata 自动更新关闭，无条件 `MATCH,DIRECT`/`FINAL,DIRECT` 被拒绝；其它订阅规则和组选择保留授权语义。
 
 核心向健康消费者报告 `managed-policy` 摘要，描述系统不变量；独立快照摘要绑定已授权 YAML 和资源。
 
@@ -83,7 +83,7 @@ my.proxy.proxyOnly = false; # 默认保留订阅 Rule 分流。
 
 受管核心在 Rule 和统一代理模式均禁用嗅探，使用显式目标和 fake-IP 映射作为域名路由身份；ECH 掩护 SNI 不能替代拨号目标，字面 IP 使用 IP 规则。Parser 也将旧 GUI 配置规范到这一策略，见[浏览器 ECH 发现](browser_CN.md#ech-发现与代理兼容)。
 
-[target_guard.go](../../system/programs/systemd/netsec/target_guard.go) 在 TCP/UDP 出站前校验应用目标。公网域名必须在核心本地解析得到非空、全部为公网的答案；解析错误允许重试一次。选定 IP 同时固定用于 DIRECT 和远程代理拨号，不交给节点再次解析。`privateTargetDomains` 中的内部后缀及已认证 MagicDNS 后缀可以得到私网答案，但仍需本地解析、固定地址和出口授权；后缀本身不建立解析路由，也不能绕过共享域名过滤。
+[target_guard.go](../../system/programs/clash/mihomo/guard/target_guard.go) 在 TCP/UDP 出站前校验应用目标。公网域名必须在核心本地解析得到非空、全部为公网的答案；解析错误允许重试一次。选定 IP 同时固定用于 DIRECT 和远程代理拨号，不交给节点再次解析。`privateTargetDomains` 中的内部后缀及已认证 MagicDNS 后缀可以得到私网答案，但仍需本地解析、固定地址和出口授权；后缀本身不建立解析路由，也不能绕过共享域名过滤。
 
 TCP 在实际选定的叶节点交错尝试已验证的 IPv4/IPv6 候选，最多八个，单次上限两秒、总截止六秒。每个候选均需通过该叶节点的出站授权；节点只接收固定 IP，不执行目标域名解析。UDP 为关联固定单一目标。
 
@@ -130,6 +130,6 @@ fake-IP 池只表示路由身份，不能成为实际出站目标。必须先通
 
 ## Gost 生命周期
 
-[gost-relay.nix](../../system/programs/systemd/gost-relay.nix) 遵循模式原子状态，绑定前回收旧进程，不使用 `SO_REUSEPORT`，每端点要求唯一监听，并限制文件描述符、内存和任务数。B 信任监督器健康结论并复核 mixed 监听身份；以被动 socket 观测代替连接透明入口，自连接检测作为后备。
+[default.nix](../../system/programs/gost/default.nix) 遵循模式原子状态，绑定前回收旧进程，不使用 `SO_REUSEPORT`，每端点要求唯一监听，并限制文件描述符、内存和任务数。B 信任监督器健康结论并复核 mixed 监听身份；以被动 socket 观测代替连接透明入口，自连接检测作为后备。
 
 Relay 兼容带有效端口的裸数字 IPv6 CONNECT，保留 Go HTTP framing 和缓冲中的隧道数据。建议客户端使用标准 `[IPv6]:port`。Gost 通过 store 绝对路径运行，不放进系统 PATH 或 initrd。源码及打包自定义见[维护手册](maintenance_CN.md)。

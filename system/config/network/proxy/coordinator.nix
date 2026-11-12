@@ -1,0 +1,1178 @@
+{ pkgs, config, lib, ... }:
+
+let
+  # The two mode-dependent fragments. `rules` is the normal Mode-B refusal (the
+  # core is exempt by its mark and may reach its nodes); `blockedRules` is the
+  # strict application cut; the core keeps its marked recovery sockets.
+  rules = pkgs.writeText "proxymode-rules.nft" config.my.proxy.proxyModeRules;
+  blockedRules = pkgs.writeText "blockedmode-rules.nft" config.my.proxy.blockedModeRules;
+  staticRules = pkgs.writeText "lf-static-rules.nft" config.networking.nftables.ruleset;
+
+  # These unnamespaced names belonged to older generations, but can now belong
+  # to other software. Only an explicit operator migration may delete them.
+  legacyRules = pkgs.writeText "lf-legacy-firewall-migration.nft" ''
+    destroy table inet filter
+    destroy table ip proxymode_nat
+    destroy table ip6 proxymode_nat
+  '';
+
+  verifyRequest = pkgs.writeShellScript "netsec-request" ''
+    umask 022
+    mkdir -p /run/netsec/requests
+    ${pkgs.coreutils}/bin/mktemp /run/netsec/requests/request.XXXXXXXXXX >/dev/null
+  '';
+
+  rulesCheck = pkgs.writeShellScript "netsec-rules" ''
+    exec ${pkgs.python3}/bin/python3 ${../firewall/rules.py} "$@"
+  '';
+
+  # Parse each complete mode with the same nft implementation in an isolated
+  # userspace kernel. `-e` echoes the applied objects so the JSON carries the
+  # rules (a bare `list ruleset` inside the same batch would not); unwrap turns
+  # the echo into `list ruleset` shape, so it compares with the live snapshot.
+  expectedRules = pkgs.runCommand "lf-expected-rules" { } ''
+    mkdir -p "$out"
+    for mode in direct proxy blocked; do
+      cat ${staticRules} > rules.nft
+      case "$mode" in
+        proxy) cat ${rules} >> rules.nft ;;
+        blocked) cat ${blockedRules} >> rules.nft ;;
+      esac
+      LD_PRELOAD="${pkgs.lklWithFirewall.lib}/lib/liblkl-hijack.so" ${pkgs.nftables}/bin/nft -e -j -f rules.nft > "$out/$mode.raw.json"
+      ${rulesCheck} unwrap "$out/$mode.raw.json" "$out/$mode.json"
+      rm -f "$out/$mode.raw.json"
+    done
+  '';
+
+  m = config.my.machine;
+  port = m.ports;
+
+  # Same canonical form nft prints (and nftables-verify greps for), so the
+  # "core exemption present?" test reads the live rules consistently.
+  coreMark = "0x" + lib.toLower (lib.fixedWidthString 8 "0" (lib.toHexString m.mihomoMark));
+
+  # The TUN path is only required with tunMode; the plain HTTP-proxy model
+  # (tunMode=false) deliberately runs Clash without a TUN, so it must not be
+  # blackholed for lacking one. With tunMode the TUN is mandatory.
+  requireTun = config.my.proxy.tunMode;
+
+  tunSettings = pkgs.writeText "proxy-tun.json" (builtins.toJSON {
+    ip = "${pkgs.iproute2}/bin/ip";
+    device = config.my.proxy.tunDev;
+    table = config.my.proxy.routeTable;
+    ipv6 = config.networking.enableIPv6;
+    uids = lib.unique [ 0 config.users.users.${m.desktopUser}.uid ];
+  });
+
+  tunCheck = pkgs.writeShellScript "proxy-tun-check" ''
+    exec ${pkgs.python3}/bin/python3 ${./tun.py} ${tunSettings}
+  '';
+
+  # A name used for the TUN self-test: its fake-ip answer is only
+  # reachable through the TUN. The probe resolves the name to the fake IP, sends a
+  # real HTTP request over the TUN and requires both a final status and the core's
+  # exact-source-port route log, so a DNS-only success is not accepted. It is a
+  # distinct transparent-path observation. Rule profiles may send this domestic
+  # name DIRECT; opt-in proxyOnly routing sends it through the proxy as well.
+  # Single source: home/config/clash/cvr-merge.nix asserts it is not fake-ip-filtered.
+  tunProbeName = config.my.proxy.tunProbeName;
+
+  # The core runs as clash-core and owns its control socket outside the desktop
+  # user's 0700 runtime directory. An unprivileged forwarder exposes the legacy
+  # /run/user/<uid>/clash-verge-rev/verge-mihomo.sock path for the GUI, so the
+  # supervisors watch the socket the core actually creates.
+  clashCoreUid = m.uids.clashCore;
+  coreUids = if config.programs.clash-verge.enable then [ clashCoreUid ] else [ 0 clashCoreUid ];
+  mihomoDir = "/run/clash-verge-rev/core";
+  mihomoSock = "${mihomoDir}/mihomo.sock";
+  frontSock = "/run/user/${toString config.users.users.${config.my.machine.desktopUser}.uid}/clash-verge-rev/verge-mihomo.sock";
+
+  listener = service: uids: protocol: address: port: {
+    inherit uids protocol address port;
+    cgroup = "/system.slice/${service}.service";
+  };
+
+  dnsListeners = service: uids: port:
+    map (protocol: listener service uids protocol "127.0.0.1" port) [ "tcp" "udp" ];
+
+  listenerSettings = pkgs.writeText "proxy-listeners.json" (builtins.toJSON {
+    ss = "${pkgs.iproute2}/bin/ss";
+    groups = {
+      core-dns = dnsListeners "clash-verge" coreUids port.mihomoDns;
+      core-mixed = [ (listener "clash-verge" coreUids "tcp" "127.0.0.1" port.mihomoMixed) ];
+
+      core = [ (listener "clash-verge" coreUids "tcp" "127.0.0.1" port.mihomoMixed) ]
+        ++ dnsListeners "clash-verge" coreUids port.mihomoDns
+        ++ lib.optionals (config.my.proxy.transparentGuestInterfaces != [ ])
+          (map (protocol: listener "clash-verge" coreUids protocol "0.0.0.0" port.mihomoTproxy) [ "tcp" "udp" ]);
+
+      dns = dnsListeners "dnsmasq" [ 0 config.users.users.dnsmasq.uid ] port.dnsmasq
+        ++ dnsListeners "unbound" [ 0 config.users.users.unbound.uid ] port.unbound
+        ++ lib.optionals config.networking.enableIPv6
+          (map (protocol: listener "dnsmasq" [ 0 config.users.users.dnsmasq.uid ] protocol "::1" port.dnsmasq) [ "tcp" "udp" ]);
+
+      socket-guest-dns = lib.optionals (config.my.hardening.socketGuestUsers != [ ])
+        (dnsListeners "socket-guest-dns" [ config.users.users.dnsmasq.uid ] port.socketGuestDns
+          ++ lib.optionals config.networking.enableIPv6
+            (map (protocol: listener "socket-guest-dns" [ config.users.users.dnsmasq.uid ] protocol "::1" port.socketGuestDns) [ "tcp" "udp" ]));
+
+      relay = [
+        (listener "gost-relay" [ m.uids.gost ] "tcp" "127.0.0.1" port.gostHttp)
+        (listener "gost-relay" [ m.uids.gost ] "tcp" "127.0.0.1" port.gostRedirect)
+        (listener "gost-relay" [ m.uids.gost ] "tcp" "::1" port.gostRedirect)
+      ];
+    };
+  });
+
+  listenerCheck = pkgs.writeShellScript "proxy-listeners" ''
+    exec ${pkgs.python3}/bin/python3 ${./listeners.py} ${listenerSettings} "$@"
+  '';
+
+  healthConfig = {
+    curl = "${pkgs.curl}/bin/curl";
+    dig = "${pkgs.dnsutils}/bin/dig";
+    socket = mihomoSock;
+    snapshot_tool = "${../../../programs/clash/service/clash-verge-stage.py}";
+    effective_directory = "/run/clash-verge-rev/effective";
+    snapshot_required = config.programs.clash-verge.enable;
+    digest_file = "/run/proxy-mode/config-digest";
+    authorization_file = "/run/proxy-mode/authorized-config";
+    listener_check = listenerCheck;
+    runtime = "/run/proxy-mode";
+    budget_seconds = config.my.proxy.healthBudgetSeconds;
+    request_timeout_seconds = config.my.proxy.healthRequestTimeoutSeconds;
+    urls = config.my.proxy.nodeProbeUrls;
+    mixed_port = port.mihomoMixed;
+    dns_port = port.mihomoDns;
+    require_tun = requireTun;
+    fake_ip_net = config.my.proxy.fakeIpNet;
+    tun_probe_name = tunProbeName;
+    tun_probe_names = config.my.proxy.tunProbeNames;
+
+    expected = {
+      managed-policy = builtins.hashString "sha256" (builtins.toJSON config.my.proxy.managedProfile);
+      routing-mark = m.mihomoMark;
+      mixed-port = port.mihomoMixed;
+      port = 0;
+      socks-port = 0;
+      redir-port = 0;
+      tproxy-port = if config.my.proxy.transparentGuestInterfaces == [ ] then 0 else port.mihomoTproxy;
+      allow-lan = false;
+      bind-address = "*";
+      ipv6 = config.networking.enableIPv6;
+      log-level = "info";
+
+      tun = { enable = requireTun; file-descriptor = 0; }
+        // lib.optionalAttrs requireTun (config.my.proxy.tunRouting // {
+        device = config.my.proxy.tunDev;
+        stack = config.my.proxy.tunStack;
+        mtu = config.my.proxy.tunMtu;
+        iproute2-table-index = config.my.proxy.routeTable;
+        auto-route = true;
+        auto-redirect = true;
+        strict-route = true;
+        dns-mode = "hijack";
+        dns-hijack = lib.sort builtins.lessThan [ "any:53" "tcp://any:53" ];
+        inet6-address = lib.optionals config.networking.enableIPv6 [ config.my.proxy.tunIpv6Address ];
+
+        route-exclude-address = lib.sort builtins.lessThan (
+          lib.optionals config.my.hardening.directEgress.privateRoutes (m.privateV4 ++ m.ulaV6 ++ m.linkLocalV6)
+          ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6);
+
+        route-address-set = [ ];
+        route-exclude-address-set = [ ];
+        route-address = [ ];
+        include-interface = [ ];
+        exclude-interface = [ ];
+        include-uid = [ ];
+        exclude-uid = [ ];
+        include-uid-range = [ ];
+        exclude-uid-range = [ ];
+      });
+    };
+  };
+
+  healthSettings = pkgs.writeText "proxy-health.json" (builtins.toJSON healthConfig);
+
+  # Desktop consumers require the root supervisor's fresh readiness verdict,
+  # then check live API invariants through their own forwarder. Snapshot files
+  # and the internal controller remain private; only the supervisor verifies them.
+  desktopHealthSettings = pkgs.writeText "proxy-desktop-health.json" (builtins.toJSON {
+    inherit (healthConfig) budget_seconds listener_check expected;
+    socket = frontSock;
+  });
+
+  # Single source of truth for "Clash is on": ../dns/upstream.nix calls the same script, so
+  # the criterion cannot drift between the two supervisors.
+  isClashOn = pkgs.writeShellScript "is-clash-on" ''
+    # clash-verge.service also runs an on-demand root helper, so its state alone
+    # is not "Clash is on": require the core inside the unit's cgroup, which a local
+    # process cannot forge. Matching a process name would let any user process pin
+    # the host in proxy mode with a dead core. The cgroup is read directly -- an
+    # `is-active` would only add a D-Bus round-trip the cgroup already answers.
+    for p in $(${pkgs.coreutils}/bin/cat /sys/fs/cgroup/system.slice/clash-verge.service/cgroup.procs 2>/dev/null); do
+      ${pkgs.gnugrep}/bin/grep -qa -e 'bin/verge-mihomo' -e 'bin/.verge-mihomo-wrapped' "/proc/$p/cmdline" 2>/dev/null && exit 0
+    done
+    exit 1
+  '';
+
+  # One pass: decide the mode from the Clash/TUN/node state, then make nft match it.
+  modeScript = pkgs.writeShellScript "proxy-mode-sync" ''
+    RULES=${rules}
+    B_RULES=${blockedRules}
+    IS_CLASH_ON=${isClashOn}
+    STATUS=/run/proxy-mode/status
+    REASON=/run/proxy-mode/reason
+    MARKER=/run/proxy-mode/core-seen
+    CAPTURE=/run/proxy-mode/probe.log
+    NFT=${pkgs.nftables}/bin/nft
+    IP=${pkgs.iproute2}/bin/ip
+    SYSTEMCTL=${pkgs.systemd}/bin/systemctl
+    GREP=${pkgs.gnugrep}/bin/grep
+    SED=${pkgs.gnused}/bin/sed
+    JQ=${pkgs.jq}/bin/jq
+    CAT=${pkgs.coreutils}/bin/cat
+    TIMEOUT=${pkgs.coreutils}/bin/timeout
+    SLEEP=${pkgs.coreutils}/bin/sleep
+    CURL=${pkgs.curl}/bin/curl
+    DIG=${pkgs.dnsutils}/bin/dig
+    FLOCK=${pkgs.util-linux}/bin/flock
+    RULE_CHECK=${rulesCheck}
+    EXPECTED=${expectedRules}
+    INTENT=/run/proxy-mode/intent
+    VERSION=/run/proxy-mode/version
+    STATIC_RULES=${staticRules}
+    LEGACY_RULES=${legacyRules}
+
+    TUNDEV=${config.my.proxy.tunDev}
+    REQUIRE_TUN=${if requireTun then "1" else "0"}
+    MIHOMO_MIXED=${toString port.mihomoMixed}
+    MIHOMO_DNS=${toString port.mihomoDns}
+    GOST_REDIRECT=${toString port.gostRedirect}
+    MIHOMO_SOCK=${mihomoSock}
+    CORE_MARK=${coreMark}
+    # Range the probe's source port is taken from. A single fixed port cannot be
+    # reused: once curl closes, that port sits in TIME_WAIT (~60 s) and the next
+    # bind fails, which would blackhole a healthy Mode B. Each probe takes a fresh
+    # port from the range, and `%{local_port}` reports which so the log line can be
+    # matched exactly. Kept below the ephemeral range and away from vetted ports.
+    PROBE_LOCAL_RANGE=15010-15090
+    TUN_PROBE_NAME=${tunProbeName}
+    FAKE_IP_NET=${config.my.proxy.fakeIpNet}
+    ROUTE_TABLE=${toString config.my.proxy.routeTable}
+    HEALTH=${pkgs.python3}/bin/python3
+    HEALTH_SCRIPT=${./health.py}
+    HEALTH_SETTINGS=${healthSettings}
+    SETSID=${pkgs.util-linux}/bin/setsid
+
+    umask 022
+    mkdir -p /run/proxy-mode
+    exec 9>/run/proxy-mode/lock
+    atomic_write() {
+      printf '%s\n' "$2" > "$1.$$" && mv -f "$1.$$" "$1"
+    }
+    lock_state() { $FLOCK -x -w 10 9 || exit 1; }
+    unlock_state() { $FLOCK -u 9; }
+    read_intent() { $CAT "$INTENT" 2>/dev/null || echo auto; }
+    read_version() { $CAT "$VERSION" 2>/dev/null || echo 0; }
+    core_stamp() { $CAT /sys/fs/cgroup/system.slice/clash-verge.service/cgroup.procs 2>/dev/null || true; }
+    publish_state() {
+      version=$(read_version)
+      if [ "''${1:-policy}" = policy ]; then version=$((version + 1)); fi
+      revision=$($JQ -r '.revision // 0' /run/proxy-mode/state.json 2>/dev/null || echo 0)
+      atomic_write "$VERSION" "$version" || return 1
+      atomic_write "$STATUS" "$mode" || return 1
+      atomic_write "$REASON" "$reason" || return 1
+      $JQ -n --arg mode "$mode" --arg reason "$reason" --argjson version "$version" \
+        --argjson revision "$((revision + 1))" --arg updated "$(${pkgs.coreutils}/bin/date -Iseconds)" \
+        '{mode:$mode,reason:$reason,version:$version,policy_version:$version,revision:$revision,updated_at:$updated}' > /run/proxy-mode/state.json.$$
+      mv -f /run/proxy-mode/state.json.$$ /run/proxy-mode/state.json
+      [ "''${1:-policy}" != policy ] || request_verify
+    }
+
+    mode=""
+    reason=""           # "no-tun" | "direct-mode" | "node" | "core-gone" | "obs" | ""
+    obs_fails=0         # consecutive `obs` health failures (2-strike hysteresis)
+    fails=0
+    once=0
+    changed=1
+    nap_pid=""
+    interval=2          # start fast; the loop backs off once the state is stable
+    MIN=2
+    last_full_repair=-30
+    # Backstop cap: short while enforcement is (or should be) loaded -- a missed
+    # event (or a base-ruleset reload, which recreates the fragment chains empty)
+    # must not leave the guard off for long -- and long when settled in direct,
+    # where nothing is loaded and events still drive transitions.
+    cap_for() { case "$1" in proxy|blocked|unenforced) echo 5 ;; *) echo 60 ;; esac; }
+    [ "''${1:-}" = "--once" ] && once=1
+
+    log() { echo "proxy-mode: $*" >&2; }
+    loud() {
+      echo "proxy-mode: $*" >&2
+      ${pkgs.systemd}/bin/systemd-cat -t proxy-mode -p err ${pkgs.coreutils}/bin/echo "proxy-mode: $*" || true
+    }
+
+    # Event-driven sleep: `proxy-net-wake.service` sends SIGWINCH when the Clash
+    # core appears or disappears, and a trapped SIGWINCH interrupts `wait`, so the
+    # loop reacts at once instead of waiting out the backstop interval. SIGWINCH
+    # (not SIGUSR1) because its default action is to be ignored: a wake that lands
+    # before this trap is installed cannot kill the process. The interval adapts
+    # while the mode is settled, bounded by cap_for (5 s enforced / 60 s direct).
+    trap 'woken=1' WINCH
+    # woken=1 when a wake arrived (during a nap OR while a pass was running). The
+    # wait's exit status is not discarded, and the flag is consumed at the next
+    # decision round, so a wake landing inside a pass is not lost.
+    woken=1
+    nap() {
+      ${pkgs.coreutils}/bin/sleep "$1" &
+      nap_pid=$!
+      if [ "$woken" = 0 ]; then wait "$nap_pid" 2>/dev/null; rc=$?; else rc=129; fi
+      kill "$nap_pid" 2>/dev/null || true
+      nap_pid=""
+      [ "$rc" -gt 128 ] && woken=1
+    }
+
+    # Ask for an immediate verification. A start issued here rides the activation
+    # transaction when a rebuild restarts proxy-mode, but that is harmless now:
+    # nftables-verify reports through the journal + /run/netsec/failed and always
+    # exits 0 (see ../firewall/verify.nix), so it can never fail the rebuild.
+    # Immutable queue entries survive requests made while the verifier is busy.
+    # Its .path rechecks DirectoryNotEmpty after every completion.
+    request_verify() { ${verifyRequest}; }
+
+    # A mode change must reach the other two supervisors at once: gost keys its
+    # whole state off /run/proxy-mode/status and backs off to 30 s in the steady
+    # state, so without this it could keep forwarding through a core that just
+    # went blocked (a leak from a direct-mode core) or stay closed through a
+    # recovery. SIGWINCH interrupts each loop's sleep (same mechanism as
+    # proxy-net-wake), and each loop still re-decides on its own.
+    request_wake() {
+      for u in gost-relay.service dns-upstream.service; do
+        $SYSTEMCTL kill -s WINCH --kill-whom=main "$u" 2>/dev/null || true
+      done
+    }
+
+    # --- live state readers -------------------------------------------------
+    # Table existence is not enough: `nft flush table` leaves an empty table that
+    # would pass, so require the redirect rule itself.
+    rules_loaded() { $NFT list table ip lf_proxymode_nat 2>/dev/null | $GREP -q "redirect to :$GOST_REDIRECT"; }
+    rules_loaded6() { $NFT list table ip6 lf_proxymode_nat 2>/dev/null | $GREP -q "redirect to :$GOST_REDIRECT"; }
+    chains_loaded() { $NFT list chain inet lf_filter proxymode_drops 2>/dev/null | $GREP -q 'counter'; }
+    # The Mode-C guard is filled iff its terminal drop is present. nft prints it
+    # as "counter packets N bytes N drop", so match the verdict, not the counter.
+    guard_active() { $NFT list chain inet lf_filter lf_blocked_guard 2>/dev/null | $GREP -q 'drop'; }
+    # Guest/VM refusal lives in proxymode_forward (both fragments fill it); an
+    # emptied chain would silently drop the refusal, so probe its content too.
+    forward_loaded() { $NFT list chain inet lf_filter proxymode_forward 2>/dev/null | $GREP -q 'counter'; }
+    # Percent-encode a Clash name for a URL path: a group/node name is profile
+    # data and may contain '/', '?', '#', '%' or a space, any of which would
+    # otherwise make the request fail and be misread as a dead node.
+    urlenc() { printf '%s' "$1" | $JQ -sRr @uri; }
+
+    # Anything that would still redirect or drop after a tear-down.
+    rules_present() {
+      guard_active && return 0
+      rules_loaded && return 0
+      rules_loaded6 && return 0
+      chains_loaded && return 0
+      forward_loaded && return 0
+      return 1
+    }
+    # Live-policy snapshot: taken at most once per pass and reused until an
+    # apply invalidates it. The same dump decides both "already correct" and the
+    # post-condition, so a stable pass no longer dumps the ruleset twice.
+    SNAPSHOT=/run/proxy-mode/check.$$.json
+    snapshot_ok=0
+    take_snapshot() { $NFT -j list ruleset > "$SNAPSHOT" && snapshot_ok=1; }
+    forget_snapshot() { snapshot_ok=0; rm -f "$SNAPSHOT"; }
+    matches() {
+      case "$1" in proxy|blocked|direct) ;; *) return 1 ;; esac
+      [ "$snapshot_ok" = 1 ] || take_snapshot
+      [ "$snapshot_ok" = 1 ] || return 1
+      "$RULE_CHECK" compare "$EXPECTED/$1.json" "$SNAPSHOT"
+    }
+    static_matches() {
+      [ "$snapshot_ok" = 1 ] || take_snapshot
+      [ "$snapshot_ok" = 1 ] || return 1
+      "$RULE_CHECK" compare-static "$EXPECTED/direct.json" "$SNAPSHOT"
+    }
+    trap 'rm -f "$SNAPSHOT"' EXIT
+
+    # A silent teardown failure leaves the user offline with Clash closed, so every
+    # step is checked: absent tables are fine, a failed delete or flush is not.
+    rules_off() {
+      $NFT -f - <<'NFT_OFF'
+destroy table ip lf_proxymode_nat
+destroy table ip6 lf_proxymode_nat
+flush chain inet lf_filter proxymode_drops
+flush chain inet lf_filter proxymode_tail
+flush chain inet lf_filter proxymode_forward
+flush chain inet lf_filter lf_blocked_guard
+flush chain inet lf_filter lf_guest_guard
+flush chain inet lf_filter lf_host_egress_guard
+flush chain inet lf_filter lf_host_direct
+flush chain inet lf_filter lf_tailnet_guard
+flush set inet lf_filter dns_plaintext4
+${lib.optionalString (config.my.proxy.transparentGuestInterfaces != [ ]) "flush chain ip lf_mangle proxymode_tproxy"}
+NFT_OFF
+    }
+    # The fragments tear down and re-create their own NAT tables, so each is a
+    # single atomic transaction.
+    rules_on_proxy() { $NFT -f "$RULES"; }
+    rules_on_blocked() { $NFT -f "$B_RULES"; }
+
+    # Caller holds the policy lock: never recursively run --reload here.
+    load_complete() {
+      local target="$1" transaction=/run/proxy-mode/reload.$$.nft rc=0
+      local -a sources=("$STATIC_RULES")
+      case "$target" in
+        blocked) sources+=("$B_RULES") ;;
+        proxy) sources+=("$RULES") ;;
+      esac
+      # Never persist migration intent: later reloads/repairs must not remove a
+      # foreign table that happens to reuse an old name. Cleanup and replacement
+      # policy commit together, so rejection retains both the old and owned rules.
+      if [ "''${2:-}" = migrate-legacy ]; then sources+=("$LEGACY_RULES"); fi
+      if $CAT "''${sources[@]}" > "$transaction"; then
+        $NFT -f "$transaction" || rc=$?
+      else
+        rc=$?
+      fi
+      rm -f "$transaction"
+      forget_snapshot
+      [ "$rc" = 0 ] && matches "$target"
+    }
+    safety_mode() {
+      if $IS_CLASH_ON || [ "$(read_intent)" = proxy ] \
+         || { [ "$(read_intent)" != direct ] && [ -f "$MARKER" ]; }; then
+        echo blocked
+      else
+        echo direct
+      fi
+    }
+
+    # Shared with the verifier: include actual unmarked IPv6 route selection,
+    # not just the presence of the TUN table and a rule referring to it.
+    tun_ready() {
+      ${tunCheck}
+    }
+    # Full health gate. All three must hold:
+    #  (1) the core answers a proxied HTTP request through its mixed port, and
+    #      Clash's own log for that connection does not say `using DIRECT` --
+    #      this catches direct mode, a rule profile that is effectively
+    #      all-DIRECT, and a group/slot selected to DIRECT;
+    #  (2) the successful request's recorded leaf matches the current policy
+    #      graph. No delay API call may mutate node health or automatic selection;
+    #  (3) a fake-ip answer is reachable through the TUN, proving the TUN really
+    #      carries packets (shape-only checks cannot see a stuck sing-tun).
+    # health_gate names the failing layer for the reason file:
+    #   obs   = the route could not be read (probe code / log line / group list)
+    #   route = the probe was routed DIRECT or REJECT (no real node)
+    #   tun   = the TUN does not carry packets
+    stop_health() {
+      [ -n "''${health_pid:-}" ] || return 0
+      kill -TERM -- "-$health_pid" 2>/dev/null || true
+      for _ in 1 2 3 4 5; do
+        kill -0 "$health_pid" 2>/dev/null || break
+        $SLEEP 0.1
+      done
+      kill -KILL -- "-$health_pid" 2>/dev/null || true
+      wait "$health_pid" 2>/dev/null || true
+      health_pid=""
+    }
+    health_ok() {
+      local output=/run/proxy-mode/health.$$.json next_fast=$SECONDS
+      health_gate=obs
+      $SETSID "$HEALTH" "$HEALTH_SCRIPT" "$HEALTH_SETTINGS" > "$output" 9>&- &
+      health_pid=$!
+      while kill -0 "$health_pid" 2>/dev/null; do
+        if [ "$woken" = 1 ]; then
+          stop_health; rm -f "$output"
+          health_gate=interrupted; return 1
+        fi
+        if [ "$SECONDS" -ge "$next_fast" ]; then
+          next_fast=$((SECONDS + 1))
+          if ! $IS_CLASH_ON; then
+            stop_health; rm -f "$output"
+            health_gate=core-gone; return 1
+          fi
+          if [ "$REQUIRE_TUN" = 1 ] && ! tun_ready; then
+            stop_health; rm -f "$output"
+            health_gate=no-tun; return 1
+          fi
+          fast=$($TIMEOUT 2 "$HEALTH" "$HEALTH_SCRIPT" "$HEALTH_SETTINGS" --fast 9>&- 2>/dev/null || true)
+          fast_reason=$(printf '%s' "$fast" | $JQ -r '.reason // "obs"')
+          case "$fast_reason" in direct-mode|config)
+            stop_health; rm -f "$output"
+            health_gate="$fast_reason"; return 1 ;;
+          esac
+        fi
+        $SLEEP 0.2
+      done
+      wait "$health_pid" 2>/dev/null || true
+      health_pid=""
+      if ! $JQ -e 'has("ok") and has("duration_ms")' "$output" >/dev/null 2>&1; then
+        rm -f "$output"; return 1
+      fi
+      mv -f "$output" /run/proxy-mode/health.json
+      health_gate=$($JQ -r '.reason' /run/proxy-mode/health.json)
+      $JQ -e '.ok == true' /run/proxy-mode/health.json >/dev/null
+    }
+    # mihomo "direct" mode routes everything DIRECT even with the TUN up, so the
+    # core-mark exemption would let every flow leave from the real address. Read
+    # the live mode from the control socket (loopback, so it works while blocked)
+    # and refuse to trust it; "rule"/"global" are fine ("global" still uses the
+    # group). A read failure is not judged here, so a starting core is not cut.
+    mode_direct() {
+      cfg=$($TIMEOUT 2 $CURL --noproxy "*" --max-time 1 -s --unix-socket "$MIHOMO_SOCK" http://localhost/configs 2>/dev/null || true)
+      case "$cfg" in
+        *'"mode":"direct"'*) return 0 ;;
+        *) return 1 ;;
+      esac
+    }
+
+    sync_pass() {
+      pass_verified=0
+      lock_state
+      # A snapshot belongs to this lock window, never to the process lifetime.
+      forget_snapshot
+      mode=$($CAT "$STATUS" 2>/dev/null || true)
+      reason=$($CAT "$REASON" 2>/dev/null || true)
+      prev="$mode"
+      intent=$(read_intent)
+      decision_core=$(core_stamp)
+      prearmed=0
+
+      if ! static_matches; then
+        if [ "$((SECONDS - last_full_repair))" -lt 30 ]; then
+          mode=unenforced; reason=policy-repair-backoff
+          publish_state observation
+          unlock_state
+          changed=1
+          return 1
+        fi
+        last_full_repair=$SECONDS
+        mode=$(safety_mode); reason=policy-repair
+        if ! load_complete "$mode"; then
+          mode=unenforced; reason=policy-repair-failed
+          publish_state observation
+          request_verify; request_wake
+          unlock_state
+          changed=1
+          return 1
+        fi
+        publish_state
+        request_wake
+        prearmed=1
+      fi
+
+      # No fragment at all (proxyKillSwitch off): the host is unenforced direct.
+      if [ ! -s "$RULES" ]; then
+        rules_off
+        mode=direct; reason=""
+        publish_state
+        unlock_state
+        changed=1
+        return 0
+      fi
+
+      if $IS_CLASH_ON; then
+        # Remember that the core ran this boot; the marker is what turns "core
+        # vanished" into a block instead of a silent drop to Mode A.
+        : > "$MARKER" 2>/dev/null || true
+        # Enforcement vanished (a base-ruleset reload destroys lf_filter): fail
+        # closed at once, before the health gate, so the host is never left with
+        # no guard, no killswitch and no :33333 redirect while the gate decides.
+        # The gate below then upgrades to proxy if the path is healthy.
+        if ! rules_present; then
+          if rules_on_blocked; then
+            mode=blocked; reason="reload"; prearmed=1
+            publish_state
+            request_wake
+          fi
+        fi
+        decision_version=$(read_version)
+        unlock_state
+        # tun_ok is 1 unless we require a TUN and it is not ready. In the plain
+        # HTTP-proxy model (REQUIRE_TUN=0) a missing TUN is not a failure.
+        tun_ok=1
+        if [ "$REQUIRE_TUN" = "1" ] && ! tun_ready; then tun_ok=0; fi
+
+        if [ "$intent" = direct ]; then
+          want=blocked; want_reason="stopping"
+        elif [ "$intent" != proxy ]; then
+          # Mode B needs an explicit clash-on. A core started by the GUI (or
+          # restored by the helper) while the boot default is Mode A stays
+          # blocked instead of silently turning the host into Mode B.
+          want=blocked; want_reason="unauthorized-core"
+        elif [ "$tun_ok" = "1" ]; then
+          # A TUN-up core in "direct" mode leaks exactly like a node-dead one:
+          # everything leaves DIRECT under the exempt mark. The mode is read over
+          # loopback, so it can be checked whether or not the guard is up.
+          if mode_direct; then
+            want=blocked; want_reason="direct-mode"
+          else
+            # The core keeps its egress in blocked, so this runs every pass and
+            # the node is picked up the moment it recovers. The reason names the
+            # failing layer (a/b/c) for `proxy-status`.
+            #
+            # Hysteresis for the `obs` layer ONLY: a transient inability to read
+            # the route (a probe hiccup, an empty delay answer while the node is
+            # fine) must not blackhole the whole host; require two consecutive
+            # `obs` failures. Route/config/TUN failures keep an immediate cut.
+            # HTTP timeouts are observations; a full successful request and its
+            # exact-source route log prove the selected node without /delay.
+            if health_ok; then
+              obs_fails=0
+              want=proxy; want_reason=""
+            else
+              if [ "$health_gate" = interrupted ]; then
+                changed=1; woken=1
+                return 0
+              fi
+              if [ "$health_gate" = "obs" ] || [ "$health_gate" = "dns" ]; then
+                obs_fails=$((obs_fails + 1))
+              else
+                obs_fails=0
+              fi
+              if { [ "$health_gate" = "obs" ] || [ "$health_gate" = "dns" ]; } && [ "$mode" = "proxy" ] && [ "$obs_fails" -lt 2 ]; then
+                want=proxy; want_reason="obs:$obs_fails/2"
+              else
+                want=blocked
+                [ "$health_gate" = "obs" ] && want_reason="obs:2/2" || want_reason="$health_gate"
+              fi
+            fi
+          fi
+        else
+          want=blocked; want_reason="no-tun"
+        fi
+      else
+        decision_version=$(read_version)
+        # Only an explicit off request clears boot-scoped proxy intent. Losing
+        # the whole helper/core cgroup must never be mistaken for that request.
+        if [ "$intent" = proxy ] || { [ "$intent" != direct ] && [ -f "$MARKER" ]; }; then
+          want=blocked; want_reason="core-gone"
+        else
+          want=direct; want_reason=""
+        fi
+        unlock_state
+      fi
+
+      # Probes run without the commit lock. A reload, an operator request or a
+      # new core invalidates their result; retry against the new state instead.
+      lock_state
+      # Probes released the lock; foreign writers need not update our version.
+      forget_snapshot
+      if [ "$(read_version)" != "$decision_version" ] || [ "$(read_intent)" != "$intent" ] \
+         || [ "$(core_stamp)" != "$decision_core" ]; then
+        unlock_state
+        changed=1; woken=1
+        return 0
+      fi
+      if [ "$want" = proxy ] && [ "$REQUIRE_TUN" = 1 ] && ! tun_ready; then
+        want=blocked; want_reason=no-tun
+      fi
+
+      # Apply the fragment the want requires whenever it differs or its
+      # post-condition does not hold (e.g. a manual nft flush emptied it).
+      # The pre-arm already changed `mode`; force one apply so STATUS/REASON are
+      # written and verify/wake fire even when the gate reaches the same verdict.
+      if [ "$prearmed" = "1" ] || [ "$want" != "$mode" ] || ! matches "$want"; then
+        applied=0
+        case "$want" in
+          proxy)
+            if rules_on_proxy; then applied=1; fi
+            ;;
+          blocked)
+            if rules_on_blocked; then applied=1; fi
+            ;;
+          direct)
+            if rules_off; then applied=1; fi
+            ;;
+        esac
+        # Any apply (even a failed one) may have changed the kernel; the next
+        # comparison must read it afresh instead of reusing the stale snapshot.
+        forget_snapshot
+        if [ "$applied" = "1" ]; then
+          mode="$want"; reason="$want_reason"
+          if [ -n "$prev" ] && [ "$mode" != "$prev" ]; then
+            log "mode $prev -> $mode''${reason:+ ($reason)}"
+          elif [ "$want" = "blocked" ] && [ -n "$reason" ]; then
+            log "blocked ($reason)"
+          fi
+        else
+          # Never record a mode that was not entered: `unenforced` is the state
+          # for "Clash is on, enforcement is not loaded".
+          loud "could not apply the $want fragment; enforcement absent"
+          mode=unenforced; reason="$want_reason"
+        fi
+        if [ "$applied" = 1 ]; then publish_state; else publish_state observation; fi
+        if [ "$mode" != "$prev" ] || [ "$prearmed" = 1 ]; then
+          request_verify
+          request_wake
+        fi
+      elif [ "$reason" != "$want_reason" ]; then
+        reason="$want_reason"
+        publish_state observation
+      fi
+
+      # Post-condition of the recorded mode; a mismatch keeps the user offline
+      # after closing Clash, so fail visibly through the verifier unit.
+      ok=1
+      if [ "$mode" = "proxy" ] || [ "$mode" = "blocked" ]; then
+        matches "$mode" || ok=0
+      elif [ "$mode" = "unenforced" ]; then
+        # Always loud: Clash is on and our enforcement is not loaded.
+        ok=0
+      else
+        rules_present && ok=0
+      fi
+      if [ "$ok" = "1" ]; then
+        fails=0
+        pass_verified=1
+        verified_version=$(read_version)
+      else
+        # A successful fragment transaction is not proof of a complete policy.
+        if [ "$mode" != unenforced ]; then
+          mode=unenforced; reason=policy-mismatch
+          publish_state observation
+          request_wake
+        fi
+        fails=$((fails + 1))
+        if [ "$fails" = "1" ] || [ $((fails % 6)) -eq 0 ]; then
+          loud "nft state does not match mode $mode (attempt $fails)"
+          request_verify
+        fi
+      fi
+
+      # Back off only when the mode is stable and the post-condition holds; any
+      # change or mismatch keeps the loop at the fast interval.
+      if [ "$mode" != "$prev" ] || [ "$ok" != "1" ] || [ "$reason" = "obs:1/2" ]; then
+        changed=1
+      else
+        changed=0
+      fi
+      unlock_state
+      [ "$ok" = 1 ]
+    }
+
+    case "''${1:-}" in
+      --reload|--migrate-legacy)
+        lock_state
+        mode=$(safety_mode); reason=reload
+        migration=""
+        if [ "$1" = --migrate-legacy ]; then migration=migrate-legacy; fi
+        if ! load_complete "$mode" "$migration"; then
+          unlock_state
+          exit 1
+        fi
+        publish_state
+        ${pkgs.python3}/bin/python3 ${../firewall/alerts.py} clear nftables.service
+        unlock_state
+        request_wake
+        $SYSTEMCTL kill -s WINCH --kill-whom=main proxy-mode.service 2>/dev/null || true
+        exit 0
+        ;;
+      --request-proxy|--request-direct)
+        lock_state
+        case "$1" in --request-proxy) intent=proxy ;; *) intent=direct ;; esac
+        atomic_write "$INTENT" "$intent" || exit 1
+        # Arm C before starting/stopping the core. GUI/start failures leave the
+        # requested proxy state protected; off becomes A only after core exit.
+        if ! load_complete blocked; then unlock_state; exit 1; fi
+        mode=blocked; reason=request
+        publish_state
+        unlock_state
+        request_wake
+        exit 0
+        ;;
+    esac
+
+    ready_sent=0
+    while true; do
+      woken=0
+      sync_pass
+      pass_rc=$?
+      [ "$once" = "1" ] && exit "$pass_rc"
+      if [ "$pass_verified" = 1 ]; then
+        lock_state
+        if [ "$(read_version)" != "$verified_version" ]; then
+          unlock_state
+          continue
+        fi
+        read -r monotonic _ < /proc/uptime
+        $JQ -n --argjson monotonic "$monotonic" --arg mode "$mode" \
+          --argjson version "$(read_version)" \
+          '{monotonic_seconds:$monotonic,mode:$mode,policy_version:$version}' > /run/proxy-mode/heartbeat.json.$$
+        mv -f /run/proxy-mode/heartbeat.json.$$ /run/proxy-mode/heartbeat.json
+        unlock_state
+        if [ -n "''${NOTIFY_SOCKET:-}" ]; then
+          if [ "$ready_sent" = 0 ]; then
+            ${pkgs.systemd}/bin/systemd-notify --ready --status="Policy verified: $mode"
+            ready_sent=1
+          fi
+          ${pkgs.systemd}/bin/systemd-notify WATCHDOG=1
+        fi
+      fi
+      if [ "$changed" = 1 ]; then
+        interval=$MIN
+      else
+        cap=$(cap_for "$mode")
+        [ "$interval" -lt "$cap" ] && interval=$(( interval * 2 > cap ? cap : interval * 2 ))
+      fi
+      # A wake that arrived during the pass must not wait a whole interval for the
+      # next decision: re-run at once (the flag is pre-cleared so this repeats at
+      # most once per event).
+      if [ "$woken" = 1 ]; then
+        woken=0
+        continue
+      fi
+      nap "$interval"
+    done
+  '';
+
+  proxyControl = pkgs.writeShellApplication {
+    name = "proxy-control";
+    runtimeInputs = [ pkgs.coreutils pkgs.systemd pkgs.jq pkgs.util-linux pkgs.python3 ];
+    text = ''
+      case "''${1:-}" in
+        on|off|migrate-firewall)
+          if [ "$EUID" != 0 ]; then echo 'Use sudo proxy-control on|off|migrate-firewall' >&2; exit 1; fi
+          # Serialize the whole operation, including service start/stop. This is
+          # separate from the short policy commit lock used by the loop.
+          mkdir -p /run/proxy-mode
+          exec 8>/run/proxy-mode/operator.lock
+          flock -x -w 30 8
+          if [ "$1" = migrate-firewall ]; then
+            exec ${modeScript} --migrate-legacy
+          fi
+          if [ "$1" = on ]; then
+            ${lib.optionalString config.programs.clash-verge.enable ''
+            ${pkgs.coreutils}/bin/env LF_MANAGED_PROXY_POLICY=${lib.escapeShellArg config.systemd.services.clash-verge.environment.LF_MANAGED_PROXY_POLICY} ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/preflight.py} ${config.programs.clash-verge.package.stageSettings}
+            ''}
+            # An explicit operator action authorizes the configuration the GUI
+            # currently holds. The window is single-use: the first core start
+            # consumes it, so a later profile edit needs another clash-on.
+            ${modeScript} --request-proxy
+            systemctl stop clash-verge.service
+            exec 9>/run/proxy-mode/authorization.lock
+            flock -x -w 30 9
+            rm -f /run/proxy-mode/authorized-config /run/proxy-mode/config-digest
+            (umask 077; : > /run/proxy-mode/authorize-window)
+            flock -u 9
+            systemctl start clash-verge.service
+          else
+            ${modeScript} --request-direct
+            if ! systemctl stop clash-verge.service; then
+              ${modeScript} --request-proxy
+              exit 1
+            fi
+            exec 9>/run/proxy-mode/authorization.lock
+            flock -x -w 30 9
+            rm -f /run/proxy-mode/authorized-config /run/proxy-mode/config-digest \
+              /run/proxy-mode/authorize-window ${frontSock}
+            flock -u 9
+            if [ -f /run/clash-verge-rev/forwarder.pid ]; then
+              forwarder_pid=$(cat /run/clash-verge-rev/forwarder.pid 2>/dev/null || true)
+              if [ -n "$forwarder_pid" ]; then
+                case "$forwarder_pid" in
+                  *[!0-9]*) ;;
+                  *)
+                    if [ -r "/proc/$forwarder_pid/cmdline" ] \
+                      && tr '\0' ' ' <"/proc/$forwarder_pid/cmdline" \
+                        | grep -q "UNIX-LISTEN:.*verge-mihomo.sock"; then
+                      kill "$forwarder_pid" 2>/dev/null || true
+                    fi
+                    ;;
+                esac
+              fi
+              rm -f /run/clash-verge-rev/forwarder.pid
+            fi
+            ${modeScript} --once
+          fi
+          systemctl start --no-block proxy-net-wake.service
+          ;;
+        preflight)
+          ${if config.programs.clash-verge.enable then ''
+          exec ${pkgs.coreutils}/bin/env LF_MANAGED_PROXY_POLICY=${lib.escapeShellArg config.systemd.services.clash-verge.environment.LF_MANAGED_PROXY_POLICY} ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/preflight.py} ${config.programs.clash-verge.package.stageSettings}
+          '' else ''echo '{"ready":false,"issues":["managed GUI package is disabled"]}'; exit 1''}
+          ;;
+        status)
+          target="''${2:-auto}"
+          [ "$target" != --check ] || target=auto
+          verdict=0
+          ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} || verdict=$?
+          if [ "''${3:-}" = --check ] || [ "''${2:-}" = --check ]; then exit "$verdict"; fi
+          ;;
+        wait)
+          target="''${2:-proxy}"
+          case "$target" in proxy|direct) ;; *) exit 2 ;; esac
+          for ((attempt=0; attempt<90; attempt++)); do
+            if (( attempt % 10 == 0 )); then
+              ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} >&2 || true
+            fi
+            if ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} >/dev/null; then
+              echo "Proxy ready: $target"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Still waiting for current, verified $target policy and consumers" >&2
+          ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} || true
+          cat /run/proxy-mode/reason /run/dns-upstream/reason 2>/dev/null || true
+          exit 1
+          ;;
+        *) echo 'Usage: proxy-control on|off|migrate-firewall|status [proxy|direct]|wait [proxy|direct]' >&2; exit 2 ;;
+      esac
+    '';
+  };
+
+in
+{
+  options.my.proxy.proxyModeRules = lib.mkOption {
+    type = lib.types.str;
+    default = "";
+    internal = true;
+    description = "nftables fragment applied while Clash runs and is healthy; filled in by network.nix.";
+  };
+
+  options.my.proxy.blockedModeRules = lib.mkOption {
+    type = lib.types.str;
+    default = "";
+    internal = true;
+    description = "nftables fragment applied while Clash runs but is not the required TUN path or its node is down; filled in by network.nix.";
+  };
+
+  options.my.proxy.expectedRules = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.rulesCheck = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.modeScript = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.requestVerify = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.healthSettings = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.desktopHealthSettings = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.listenerCheck = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.listenerSettings = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.tunCheck = lib.mkOption { type = lib.types.path; internal = true; };
+
+  options.my.proxy.isClashOn = lib.mkOption {
+    type = lib.types.path;
+    internal = true;
+    description = "Script that exits 0 when Clash is running; shared decision, do not duplicate.";
+  };
+
+  config = {
+    my.proxy.isClashOn = isClashOn;
+    my.proxy.expectedRules = expectedRules;
+    my.proxy.rulesCheck = rulesCheck;
+    my.proxy.modeScript = modeScript;
+    my.proxy.requestVerify = verifyRequest;
+    my.proxy.healthSettings = healthSettings;
+    my.proxy.desktopHealthSettings = desktopHealthSettings;
+    my.proxy.listenerCheck = listenerCheck;
+    my.proxy.listenerSettings = listenerSettings;
+    my.proxy.tunCheck = tunCheck;
+    systemd.tmpfiles.rules = [
+      "d /run/netsec 0755 root root -"
+      "d /run/netsec/requests 0755 root root -"
+    ];
+    environment.systemPackages = [ proxyControl ];
+
+    # Enforcement follows boot-scoped operator intent and observed core state.
+    # Only a deliberate off request clears a previously observed proxy session.
+    systemd.services.proxy-mode = {
+      description = "Apply the proxy killswitch / redirect while Clash is on, blackholing a TUN-less or node-dead core";
+      after = [ "nftables.service" ];
+
+      # Never claim `proxy` behind a firewall that is not there: a failed
+      # nftables.service propagates here.
+      requires = [ "nftables.service" ];
+      unitConfig.OnFailure = [ "netsec-alert@%n.service" ];
+      wantedBy = [ "multi-user.target" ];
+      unitConfig.StartLimitIntervalSec = 0;
+      serviceConfig = {
+        Type = "notify";
+        NotifyAccess = "all";
+        WatchdogSec = "90s";
+        TimeoutStartSec = "90s";
+        MemoryAccounting = true;
+        RuntimeDirectory = "proxy-mode";
+        RuntimeDirectoryMode = "0755";
+
+        # Keep /run/proxy-mode across a restart: the `core-seen` marker must
+        # survive so a core that crashes after a proxy-mode restart is still read
+        # as a crash (block), not as a fresh boot (direct).
+        RuntimeDirectoryPreserve = true;
+
+        # /run is writable under ProtectSystem=strict. Do not list
+        # /run/user/<uid>: that path does not exist at boot, and a
+        # ReadWritePaths entry on a missing path fails the unit.
+        ReadWritePaths = [ "/run/netsec" ];
+
+        # The loop synchronizes before its first sleep; nftables has already
+        # atomically installed the initial safe mode.
+        ExecStart = modeScript;
+        ExecStartPost = "${pkgs.python3}/bin/python3 ${../firewall/alerts.py} clear proxy-mode.service";
+        Restart = "always";
+        RestartSec = "5";
+
+        # Only nft needs NET_ADMIN; DAC_READ_SEARCH traverses the core's 0750
+        # socket directory. Read-only cgroup/sysctl mounts permit all live
+        # checks without granting write access. ProtectHome stays off so
+        # the operator CLI can remove the legacy GUI forward socket under
+        # /run/user/<uid>/ outside this unit's sandbox.
+        NoNewPrivileges = true;
+        CapabilityBoundingSet = [ "CAP_NET_ADMIN" "CAP_DAC_READ_SEARCH" ];
+        ProtectSystem = "strict";
+        ProtectKernelTunables = true;
+        ProtectControlGroups = true;
+        PrivateTmp = true;
+        ProtectKernelModules = true;
+        ProtectKernelLogs = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        RestrictNamespaces = true;
+        RestrictSUIDSGID = true;
+        RestrictRealtime = true;
+        RemoveIPC = true;
+        RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" "AF_NETLINK" ];
+      };
+    };
+
+    # Every start/reload loads static rules plus Mode C (or cold-boot A) in
+    # ONE transaction. ExecStartPost cannot close a reload or inter-transaction gap.
+    systemd.services.nftables.serviceConfig = {
+      ExecStart = lib.mkForce [ "${modeScript} --reload" ];
+      ExecReload = lib.mkForce [ "${modeScript} --reload" ];
+      ExecStartPost = lib.mkForce [ ];
+      ExecStop = lib.mkForce [ ];  # stopping the unit never removes protection
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = [ "CAP_NET_ADMIN" "CAP_DAC_READ_SEARCH" ];
+    };
+
+    systemd.services.proxy-rules-watch = {
+      description = "Wake policy supervision after owned nft rules change";
+      after = [ "nftables.service" ];
+      wants = [ "nftables.service" ];
+      wantedBy = [ "multi-user.target" ];
+      unitConfig.StartLimitIntervalSec = 0;
+      serviceConfig = {
+        ExecStart = pkgs.writeShellScript "proxy-rules-watch" ''
+          set -o pipefail
+          ${pkgs.nftables}/bin/nft monitor ruleset \
+            | ${pkgs.python3}/bin/python3 ${./events.py} ${pkgs.systemd}/bin/systemctl
+        '';
+        Restart = "always";
+        RestartSec = "5s";
+        NoNewPrivileges = true;
+        CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictAddressFamilies = [ "AF_NETLINK" "AF_UNIX" ];
+      };
+    };
+
+    # Event trigger: the mihomo control socket is created when the core starts and
+    # removed when it stops (or restarts), so watching it turns the supervisors
+    # from 2 s pollers into event-driven loops. A backstop interval inside each
+    # loop still heals anything the event misses.
+    systemd.paths.proxy-net-watch = {
+      wantedBy = [ "multi-user.target" ];
+      pathConfig = {
+        # The socket and its directory: either one changing (core start/stop,
+        # socket recreate) fires the coordinator.
+        PathChanged = [ mihomoSock mihomoDir ];
+        Unit = "proxy-net-wake.service";
+      };
+    };
+
+    # Re-arm the event watcher after a stop or start limit. Backstop polling
+    # maintains enforcement while the watcher is inactive.
+    systemd.services.proxy-net-watch-recover = {
+      description = "Re-arm the proxy event .path if it is not active";
+      serviceConfig = { Type = "oneshot"; };
+      script = ''
+        if ! ${pkgs.systemd}/bin/systemctl is-active --quiet proxy-net-watch.path; then
+          ${pkgs.systemd}/bin/systemctl reset-failed proxy-net-watch.path 2>/dev/null || true
+          ${pkgs.systemd}/bin/systemctl start proxy-net-watch.path 2>/dev/null || true
+        fi
+      '';
+    };
+
+    systemd.timers.proxy-net-watch-recover = {
+      description = "Check the proxy event .path every minute";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "1min";
+        OnUnitActiveSec = "1min";
+        AccuracySec = "10s";
+      };
+    };
+
+    # A TUN link change (the GUI toggling TUN off/on, or the core recreating it)
+    # is a netlink event, not a filesystem one -- sysfs does not emit inotify, so
+    # a systemd.path cannot see it. Watch rtnetlink and wake the same coordinator;
+    # the 5 s backstop still covers anything missed.
+    systemd.services.proxy-tun-watch = {
+      description = "Wake the proxy supervisor on a TUN link change";
+      after = [ "network.target" ];
+      wantedBy = [ "multi-user.target" ];
+      unitConfig.StartLimitIntervalSec = 0;
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = pkgs.writeShellScript "proxy-tun-watch" ''
+          ${pkgs.coreutils}/bin/stdbuf -oL ${pkgs.iproute2}/bin/ip -o monitor link \
+            | while IFS= read -r line; do
+                case "$line" in
+                  *"${config.my.proxy.tunDev}"*)
+                    ${pkgs.systemd}/bin/systemctl start --no-block proxy-net-wake.service 2>/dev/null || true
+                    ;;
+                esac
+              done
+        '';
+        Restart = "always";
+        RestartSec = "5";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        ProtectKernelModules = true;
+        ProtectKernelLogs = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        RestrictNamespaces = true;
+        RestrictSUIDSGID = true;
+        RestrictRealtime = true;
+        RemoveIPC = true;
+        RestrictAddressFamilies = [ "AF_NETLINK" "AF_UNIX" ];
+      };
+    };
+
+    # The coordinator: one event wakes nft (proxy-mode), DNS (dns-upstream) and gost in
+    # the same instant, so they switch together instead of three loops noticing at
+    # different times. SIGWINCH only interrupts each loop's sleep; every loop keeps
+    # its own idempotent decision logic and stays the source of truth.
+    systemd.services.proxy-net-wake = {
+      description = "Wake the proxy supervisors on a Clash core state change";
+
+      # A single Clash start emits several TUN/socket events, so this oneshot is
+      # restarted 3-5x in ~1s; without this it hits the default StartLimit
+      # (5/10s), goes failed, and the .path that feeds it goes
+      # `unit-start-limit-hit` -- a permanently dead event layer. Match the other
+      # supervisors by never rate-limiting it.
+      unitConfig.StartLimitIntervalSec = 0;
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = pkgs.writeShellScript "proxy-net-wake" ''
+          for u in proxy-mode.service dns-upstream.service gost-relay.service; do
+            ${pkgs.systemd}/bin/systemctl kill -s WINCH --kill-whom=main "$u" 2>/dev/null || true
+          done
+        '';
+      };
+    };
+  };
+}
+

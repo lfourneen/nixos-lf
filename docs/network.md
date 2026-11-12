@@ -49,7 +49,7 @@ The core's service cgroup, passive TCP/UDP listener identities, managed controll
 
 ## Firewall lifecycle
 
-[network.nix](../system/config/network.nix) defines the static policy and the B/C fragments. [proxy-mode.nix](../system/programs/systemd/proxy-mode.nix) installs the static rules plus a safety fragment in one scoped `nft -f` transaction under a shared lock. Only repository-owned tables are replaced; Mihomo and other services retain their own tables.
+[default.nix](../system/config/network/network.nix) defines the static policy and the B/C fragments. [coordinator.nix](../system/config/network/proxy/coordinator.nix) installs the static rules plus a safety fragment in one scoped `nft -f` transaction under a shared lock. Only repository-owned tables are replaced; Mihomo and other services retain their own tables.
 
 The loader owns these exact table family/name pairs:
 
@@ -85,7 +85,7 @@ NAT priorities order rule lookups within the kernel’s shared destination-NAT h
 
 In B, public host TCP is redirected, fake-IP traffic retains its core path, and other public uplink traffic is dropped after the explicit exceptions. These include marked core sockets, UID-scoped Unbound DoT and Chrony NTS/NTP, narrow DHCP, multicast and default private egress. Tailscale UDP requires UID 0, a physical uplink, and both socket `SO_MARK` and packet mark equal to the upstream Linux bypass mark (`0x80000`). Peer/STUN ports remain dynamic; unmarked root UDP has no blanket exception. Root and the managed core are trusted network administrators with permission to set socket marks and change firewall rules. The current LKL kernel supports `socket mark`, but not `socket cgroupv2`.
 
-[tailscale-transport.nix](../system/config/tailscale-transport.nix) treats the mark as an upstream constant, not a configurable local allocation. Normal system builds check the selected Tailscale source for its value and the reviewed magicsock/STUN marking paths. Network changes do not change the constant; upgrades require this check and `proxy-tailscale-vm`, which exercises the real selected CLI with isolated dual-stack STUN peers. Falling back to `SO_BINDTODEVICE` does not silently reopen unmarked root UDP.
+[transport.nix](../system/config/network/tailscale/transport.nix) treats the mark as an upstream constant, not a configurable local allocation. Normal system builds check the selected Tailscale source for its value and the reviewed magicsock/STUN marking paths. Network changes do not change the constant; upgrades require this check and `proxy-tailscale-vm`, which exercises the real selected CLI with isolated dual-stack STUN peers. Falling back to `SO_BINDTODEVICE` does not silently reopen unmarked root UDP.
 
 The [direct-egress ledger](egress.md) records every actor, target, port and mode. Optional restricted B grants use interface/UID/CIDR/ports and cut revoked established host-initiated flows before TUN/NAT. Unbound is limited to configured DoT targets even in A; its B exception can be disabled. Chrony can pin destination CIDRs in A/B. Defaults preserve LAN and changing NTS addresses.
 
@@ -95,7 +95,7 @@ C blocks replies to tracked host-initiated application TCP/UDP flows, covering n
 
 Receive enforcement depends on these conntrack marks; other firewall owners must preserve them. Socket-queued data is outside this enforcement boundary. Loopback IPC, local DNS, root/core recovery and link maintenance remain available in C.
 
-[network-bootstrap.nix](../system/programs/systemd/network-bootstrap.nix) installs ingress/forwarding protection before NetworkManager or dhcpcd. A failed first full load retains that baseline. Static drift triggers a complete repair into A for direct intent or C for proxy intent, followed by health evaluation. A failed repair reports `unenforced`.
+[bootstrap.nix](../system/config/network/firewall/bootstrap.nix) installs ingress/forwarding protection before NetworkManager or dhcpcd. A failed first full load retains that baseline. Static drift triggers a complete repair into A for direct intent or C for proxy intent, followed by health evaluation. A failed repair reports `unenforced`.
 
 Stopping `nftables.service` leaves the rules installed. Restart or reload reconciles them; avoid `nft flush ruleset`, which also destroys core-owned tables. [Operations](operations.md) describes verification and recovery.
 
@@ -107,11 +107,11 @@ Wi-Fi `wlo1` uses NetworkManager, with a stable PCI-path match. Scans randomize 
 
 Tailscale accepts neither DNS, subnet routes nor an exit node automatically. Only the authenticated tailnet's MagicDNS suffix receives conditional resolver routing. Host input defaults to Sunshine streaming TCP 47984/47989/48010 and UDP 47998/47999/48000/48002/48010. Sunshine starts with the graphical session; its administration UI stays local and UPnP is disabled. See [remote desktop operation](operations.md#remote-desktop). Avahi advertises on loopback and tailnet, plus an explicitly enabled AP; a Wi-Fi client on a foreign network does not advertise. This configuration does not import the sshd module. A firewall allowance alone does not create an SSH listener.
 
-[network-time.nix](../system/config/network-time.nix) configures Chrony with authenticated NTS servers, UDP 123 and NTS-KE TCP 4460. RTC/drift restoration provides an offline time floor; certificate-time checks stay enabled and no plaintext time fallback is configured. [network-hardening.nix](../system/config/network-hardening.nix) supplies shared sysctl, redirect/source-route and module restrictions. Nix daemon trust is restricted to root.
+[time.nix](../system/config/network/time.nix) configures Chrony with authenticated NTS servers, UDP 123 and NTS-KE TCP 4460. RTC/drift restoration provides an offline time floor; certificate-time checks stay enabled and no plaintext time fallback is configured. [hardening.nix](../system/config/network/hardening.nix) supplies shared sysctl, redirect/source-route and module restrictions. Nix daemon trust is restricted to root.
 
 ## Guests and containers
 
-[guest-policy.nix](../system/config/guest-policy.nix) distinguishes routed guest networks from backends that create host sockets. Trust is assigned by declared ingress interfaces, source CIDRs and dedicated backend UIDs.
+[policy.nix](../system/config/network/guests/policy.nix) distinguishes routed guest networks from backends that create host sockets. Trust is assigned by declared ingress interfaces, source CIDRs and dedicated backend UIDs.
 
 | Class | Identity | Private destinations | Public destinations |
 |---|---|---|---|

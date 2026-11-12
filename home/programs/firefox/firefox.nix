@@ -229,8 +229,8 @@ let
     nvidiaAcceleration = config.my.firefox.nvidiaAcceleration;
     fontDirectories = map (p: "${p}/share/fonts") fontPackages;
     fontList = "${pkgs.fontconfig}/bin/fc-list";
-    stateModule = ../../../system/programs/systemd/netsec/state.py;
-    healthModule = ../../../system/programs/systemd/netsec/health.py;
+    stateModule = ../../../system/config/network/proxy/state.py;
+    healthModule = ../../../system/config/network/proxy/health.py;
     healthSettings = osConfig.my.proxy.desktopHealthSettings;
     maxAge = osConfig.my.proxy.stateMaxAgeSeconds;
     verificationMaxAge = osConfig.my.proxy.verificationMaxAgeSeconds;

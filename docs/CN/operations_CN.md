@@ -25,7 +25,7 @@ proxy-inspect
 
 Sunshine 已启用，随 `graphical-session.target` 启动，将当前图形会话提供为 **Desktop**。部署后先登录电脑桌面，在电脑本机打开 `https://localhost:47990` 设置凭据并批准 Moonlight 配对 PIN。手机与电脑需登录同一获准的 tailnet，在 Moonlight 中手动添加电脑的 Tailscale IP，不依赖自动发现。同一 overlay 地址可用于局域网和公网，仍受 tailnet 权限策略约束。默认 `trustedLanCidrs` 为空，不直接开放物理 LAN IP 的远控访问。
 
-管理界面仅接受本机客户端，默认 tailnet 防火墙也不放行该端口；UPnP 关闭。串流使用 [hardening-options.nix](../../system/config/hardening-options.nix) 的明确 TCP/UDP 清单。手机到电脑的 grants 需另在 Tailscale 管理后台配置，仓库不包含该权限策略。A 与健康 B 允许远控；C 会切断会话，包括已建立的 UDP 流及已解密 tailnet 入站。需要直连 A 时在本地使用 `clash-off`。
+管理界面仅接受本机客户端，默认 tailnet 防火墙也不放行该端口；UPnP 关闭。串流使用 [options.nix](../../system/config/network/options.nix) 的明确 TCP/UDP 清单。手机到电脑的 grants 需另在 Tailscale 管理后台配置，仓库不包含该权限策略。A 与健康 B 允许远控；C 会切断会话，包括已建立的 UDP 流及已解密 tailnet 入站。需要直连 A 时在本地使用 `clash-off`。
 
 [sunshine.nix](../../system/programs/sunshine.nix) 选择 CUDA 构建变体。配置的 `https://cache.nixos-cuda.org` 提供与 lock 和软件包选项所选 derivation 匹配的二进制缓存。可用 `nix build --max-jobs 0 --no-link .#nixosConfigurations.lfour.config.services.sunshine.package` 检查缓存可用性，该命令禁用本地编译。凭据和配对状态保存在用户的 Sunshine 目录，Desktop 入口和服务设置由 Nix 声明。硬件捕获/编码与手机串流在部署后的图形会话中检查。
 
@@ -86,7 +86,7 @@ cat /var/lib/dns-upstream/history.log
 
 Socket 目录事件、TUN link 监视、nft 事件、NetworkManager dispatcher 和 dhcpcd hook 唤醒监督器。自适应轮询后备为转换中两秒、执行模式最多五秒、直连最多 60 秒；模式监督器有 90 秒 watchdog。取消的探针不算失败观测。
 
-构建期的[预期规则](../../system/programs/systemd/proxy-mode.nix) 在 LKL 用户态内核中用同版 nft 生成。Verifier 比较所属表、hook、priority、policy 和完整有序表达式，仅规范化 handle、counter、集合元素顺序和受严格约束的 DNS 租约。读取/解析错误是失败，不当作空成功；没有核心但正确安装 C 也能通过。
+构建期的[预期规则](../../system/config/network/proxy/coordinator.nix) 在 LKL 用户态内核中用同版 nft 生成。Verifier 比较所属表、hook、priority、policy 和完整有序表达式，仅规范化 handle、counter、集合元素顺序和受严格约束的 DNS 租约。读取/解析错误是失败，不当作空成功；没有核心但正确安装 C 也能通过。
 
 `nftables-verify` 报告失败和告警后仍退出零，以便修复/重建继续；应看 JSON 结论，不能只看 unit 退出码。各组件只清自己的告警，忙碌轮次保留排队验证请求。
 
@@ -125,10 +125,10 @@ sudo systemctl start nftables-verify.service
 | 来源 | 设置 |
 |---|---|
 | [machine.nix](../../system/config/machine.nix) | 用户、接口及匹配键、UID、端口、mark、网段和上游 |
-| [proxy-options.nix](../../system/config/proxy-options.nix) | TUN、表 2022、fake-IP、探针、开机意图、proxyOnly、dnsEncryption、共享域名过滤、访客、split DNS 和新鲜度 |
-| [proxy-profile.nix](../../system/config/proxy-profile.nix) | root 受管 DNS/TUN/profile 约定 |
-| [hardening-options.nix](../../system/config/hardening-options.nix) | 宿主/访客私网、逐接口访客信任/源地址、独立 socket 访客账户、宿主端口、热点、tailnet 和 Wi-Fi MAC |
-| [cvr-merge.nix](../../home/config/cvr-merge.nix) | 匹配的 GUI Merge 及路由增强 |
+| [options.nix](../../system/config/network/proxy/options.nix) | TUN、表 2022、fake-IP、探针、开机意图、proxyOnly、dnsEncryption、共享域名过滤、访客、split DNS 和新鲜度 |
+| [profile.nix](../../system/config/network/proxy/profile.nix) | root 受管 DNS/TUN/profile 约定 |
+| [options.nix](../../system/config/network/options.nix) | 宿主/访客私网、逐接口访客信任/源地址、独立 socket 访客账户、宿主端口、热点、tailnet 和 Wi-Fi MAC |
+| [cvr-merge.nix](../../home/config/clash/cvr-merge.nix) | 匹配的 GUI Merge 及路由增强 |
 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[options.nix](../../home/programs/firefox/options.nix) | 原生浏览器、networkPath、nvidiaAcceleration、隐私、策略、字体和外层沙箱 |
 
 TUN 默认 `Mihomo`，表 2022、规则优先级 9000、内部 mark 8227/8228、fallback priority 32768、file descriptor 0，由 parser、模板和健康检查共用。`tunMode=false` 选择 HTTP-only/redir-host，不再要求 TUN。Fake-IP 网络由 `fakeIpRange` 推导，避免单独修改消费者。
