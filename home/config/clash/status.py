@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sys
+import time
 import unicodedata
 
 MODES = {'direct': 'A · Direct', 'proxy': 'B · Proxy', 'blocked': 'C · Protected', 'unenforced': 'Unenforced'}
@@ -54,10 +55,87 @@ def age(observation):
     return 'Age unknown' if seconds is None else f'{seconds:g}s ago'
 
 
+def stamp(at):
+    if not at:
+        return 'unknown'
+    moment, today = time.localtime(at), time.localtime()
+    if (moment.tm_year, moment.tm_yday) == (today.tm_year, today.tm_yday):
+        return time.strftime('%H:%M', moment)
+    return time.strftime('%m-%d %H:%M', moment)
+
+
+def auto_update_text(value):
+    state = value.get('state')
+    if state == 'ok':
+        return (f"every {value['interval']}m · last fetch {stamp(value['updated'])}"
+                f" · next ~{stamp(value['next_due'])}")
+    if state == 'timer-off':
+        return 'disabled · ' + value.get('reason', 'no schedule')
+    if state == 'gui-closed':
+        return (f"GUI not running · last fetch {stamp(value['updated'])}"
+                f" · next ~{stamp(value['next_due'])}")
+    if state == 'overdue':
+        return (f"overdue · last fetch {stamp(value['updated'])}"
+                f" · expected {stamp(value['next_due'])}")
+    return 'unknown'
+
+
+def update_result_text(value):
+    if not value:
+        return 'unknown'
+    reason = {'node': 'node health failed', 'tun': 'tun health failed',
+              'dns': 'dns health failed'}.get(value['reason'], value['reason'])
+    label = {'accepted': 'accepted', 'verifying': 'verifying', 'fallback': 'rejected',
+             'rolled_back': 'rolled back', 'refused': 'refused'}[value['result']]
+    if value['result'] in ('accepted', 'verifying'):
+        return f"{label} · {stamp(value['at'])}"
+    return f"{label} · {reason} · {stamp(value['at'])}"
+
+
+def runtime_text(value):
+    state = value.get('state')
+    return {'in sync': 'in sync',
+            'differs': 'differs · GUI and authorized snapshot contain different YAML'}.get(
+                state, 'unknown')
+
+
+def refresh_text(value):
+    stamp = lambda at: time.strftime('%H:%M', time.localtime(at)) if at else 'unknown'
+    policy, result = value['policy'], value['result']
+    if policy == 'strict' and result == 'refused':
+        return 'strict · refused · run clash-on'
+    reason = {'node': 'node health failed', 'tun': 'tun health failed', 'dns': 'dns health failed'}.get(value['reason'], value['reason'])
+    if result == 'accepted':
+        return f"{policy} · accepted {stamp(value['at'])} · snapshot from {stamp(value['snapshot_at'])}"
+    if result == 'verifying':
+        return f"{policy} · verifying · snapshot from {stamp(value['snapshot_at'])}"
+    label = {'fallback': 'rejected', 'rolled_back': 'rolled back', 'refused': 'refused'}[result]
+    return f"{policy} · {label} · {reason} · running snapshot from {stamp(value['snapshot_at'])}"
+
+
 def rows(state):
     ready, mode = state.get('ready', False), state.get('mode', 'unknown')
     yield 'Network status', ('Ready' if ready else 'Protected · waiting for recovery' if mode == 'blocked' else 'Not ready')
     yield 'Mode', MODES.get(mode, 'Unknown') + '; requested ' + MODES.get(state.get('target'), 'Unknown')
+    auto = state.get('auto_update') or {}
+    if auto:
+        yield 'Auto update', auto_update_text(auto)
+    if state.get('profile_refresh'):
+        findings = state['profile_refresh'].get('audit')
+        if findings and findings.get('verdict') != 'pass':
+            counts = [f'{name} {sum(findings.get(name, {}).values())}'
+                      for name in ('deny', 'warn', 'unknown') if findings.get(name)]
+            yield 'Content audit', findings['verdict'] + ' · ' + ', '.join(counts)
+        yield 'Profile refresh', refresh_text(state['profile_refresh'])
+        yield 'Update result', update_result_text(state['profile_refresh'])
+    runtime = state.get('profile_vs_runtime') or {}
+    if runtime:
+        yield 'Profile vs runtime', runtime_text(runtime)
+    subscription = state.get('subscription_health', {})
+    if subscription.get('stale'):
+        age_days = subscription.get('age_days')
+        yield 'Subscription health', ('stale · last successful activity ' + str(age_days) + 'd ago'
+                                      if age_days is not None else 'stale · no accepted update observed')
     if mode == 'proxy':
         yield 'Application egress', 'Uniform proxy routing' if state.get('proxy_only') else 'Rule routing · DIRECT or proxy'
     elif mode == 'direct':
@@ -156,11 +234,15 @@ def main():
     parser.add_argument('--plain', action='store_true')
     parser.add_argument('--no-color', action='store_true')
     parser.add_argument('--proxy-only', action='store_true')
+    parser.add_argument('--profiles', default=os.path.expanduser('~/.local/share/io.github.clash-verge-rev.clash-verge-rev/profiles.yaml'))
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location('network_state', args.state_tool)
     source = importlib.util.module_from_spec(spec); spec.loader.exec_module(source)
     state = source.readiness(target='auto', maximum=args.max_age, verification_maximum=args.verification_max_age)
     state['proxy_only'] = args.proxy_only
+    state['subscription_health'] = source.subscription_health(args.profiles, state.get('profile_refresh'))
+    state['auto_update'] = source.auto_update(args.profiles)
+    state['profile_vs_runtime'] = source.profile_vs_runtime(args.profiles)
     if args.json:
         print(json.dumps(state, ensure_ascii=False))
     else:

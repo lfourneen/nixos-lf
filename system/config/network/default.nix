@@ -1,5 +1,6 @@
 {
   imports = [
+    ./host.nix
     ./network.nix
     ./options.nix
     ./proxy/options.nix

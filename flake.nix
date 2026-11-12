@@ -49,6 +49,29 @@
   {
     checks.${system} = let
       pkgs = nixpkgs.legacyPackages.${system};
+      strictClashPackage = (self.nixosConfigurations.lfour.extendModules {
+        modules = [ ({ lib, ... }: {
+          my.proxy.profileRefreshPolicy = lib.mkForce "strict";
+          my.proxy.subscriptionAudit = lib.mkForce "warn";
+          my.proxy.subscriptionAuditAllowedHosts = lib.mkForce { };
+        }) ];
+      }).config.programs.clash-verge.package;
+      refreshClashPackage = (self.nixosConfigurations.lfour.extendModules {
+        modules = [ ({ lib, ... }: {
+          my.proxy.profileRefreshPolicy = lib.mkForce "auto";
+          my.proxy.subscriptionAudit = lib.mkForce "enforce";
+          my.proxy.subscriptionAuditServerCidrs = [ "100.67.0.1/32" ];
+          my.proxy.subscriptionAuditAllowedHosts = lib.mkForce {
+            "fallback.fixture.example" = [ "203.0.113.11" "203.0.113.10" ];
+            "fallback6.fixture.example" = [ "203.0.113.11" "2001:db8:ffff::10" ];
+            "fallback-mixed.fixture.example" = [ "203.0.113.10" "100.67.0.1" ];
+          };
+          my.proxy.subscriptionAuditProtectedRoutes = lib.mkForce {
+            "node.fixture.example" = "proxy";
+            "tun.fixture.example" = "direct";
+          };
+        }) ];
+      }).config.programs.clash-verge.package;
       strictDnsConfig = (self.nixosConfigurations.lfour.extendModules {
         modules = [ { my.proxy.dnsEncryption = "strict"; } ];
       }).config;
@@ -213,7 +236,7 @@
 
       browser-ech-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
-        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        clashPackage = strictClashPackage;
         ech = {
           http-proxy = self.nixosConfigurations.lfour.config.home-manager.users.lfour.programs.firefox.finalPackage;
           transparent = (self.nixosConfigurations.lfour.extendModules {
@@ -224,7 +247,7 @@
 
       browser-ech-uniform-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
-        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        clashPackage = strictClashPackage;
         uniformProxy = true;
         ech = {
           http-proxy = uniformProxyConfig.home-manager.users.lfour.programs.firefox.finalPackage;
@@ -261,41 +284,47 @@
       proxy-network-vm = import ./tests/network/integration/vm.nix {
         inherit pkgs;
         core = self.nixosConfigurations.lfour.config.programs.clash-verge.package.managedCore;
-        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        clashPackage = strictClashPackage;
+      };
+
+      proxy-refresh-vm = import ./tests/network/proxy/control-vm.nix {
+        inherit pkgs;
+        clashPackage = refreshClashPackage;
+        refresh = true;
       };
 
       proxy-control-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
-        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        clashPackage = strictClashPackage;
       };
 
       proxy-uniform-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
-        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        clashPackage = strictClashPackage;
         uniformProxy = true;
       };
 
       proxy-target-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
-        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        clashPackage = strictClashPackage;
         targetPolicy = true;
       };
 
       proxy-guest-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
-        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        clashPackage = strictClashPackage;
         guests = true;
       };
 
       proxy-dns-strict-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
-        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        clashPackage = strictClashPackage;
         strictDns = true;
       };
 
       proxy-egress-control-vm = import ./tests/network/proxy/control-vm.nix {
         inherit pkgs;
-        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        clashPackage = strictClashPackage;
         restricted = true;
       };
 
@@ -307,6 +336,17 @@
         touch "$out"
       '';
 
+      proxy-refresh = pkgs.runCommand "proxy-refresh-regressions" {
+        nativeBuildInputs = [ (pkgs.python3.withPackages (python: [ python.pyyaml ])) ];
+      } ''
+        export PYTHONDONTWRITEBYTECODE=1
+        python3 ${./tests/network/proxy/test_audit.py} ${./system/programs/clash/service/subscription_audit.py}
+        python3 ${./tests/network/proxy/test_subscription_check.py} ${./system/config/network/diagnostics/subscription_check.py}
+        python3 ${./tests/network/unit/test_state_views.py} ${./system/config/network/proxy/state.py}
+        python3 ${./tests/home/clash/test_refresh_notify.py} ${./home/config/clash/refresh_notify.py}
+        touch "$out"
+      '';
+
       proxy-control-config = let
         c = self.nixosConfigurations.lfour.config;
         small = self.checks.${system}.proxy-control-vm.config.nodes.machine;
@@ -315,8 +355,10 @@
       in assert builtins.isInt uid && uid > 0 && c.users.users.clash-core.uid == uid;
       assert pkgs.lib.count (u: u.uid == uid) (pkgs.lib.attrValues c.users.users) == 1;
       assert small.users.users.clash-core.uid == uid && broad.users.users.clash-core.uid == uid;
-      assert small.programs.clash-verge.package == c.programs.clash-verge.package;
-      assert broad.programs.clash-verge.package == c.programs.clash-verge.package;
+      assert small.programs.clash-verge.package == strictClashPackage;
+      assert strictClashPackage.managedCore == c.programs.clash-verge.package.managedCore;
+      assert strictClashPackage.managedService == c.programs.clash-verge.package.managedService;
+      assert broad.programs.clash-verge.package == strictClashPackage;
       assert small.systemd.services.clash-verge.serviceConfig.CapabilityBoundingSet
         == c.systemd.services.clash-verge.serviceConfig.CapabilityBoundingSet;
 

@@ -1,7 +1,10 @@
 { pkgs, config, ... }:
 
 let
+  statusPython = pkgs.python3.withPackages (p: [ p.pyyaml ]);
   settings = pkgs.writeText "proxy-inspect.json" (builtins.toJSON {
+    state_tool = "${../proxy/state.py}";
+    profiles = "${config.users.users.${config.my.machine.desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev/profiles.yaml";
     interfaces = [ config.my.machine.wired.name config.my.machine.wireless.name config.my.proxy.tunDev ];
     ip = "${pkgs.iproute2}/bin/ip";
     tc = "${pkgs.iproute2}/bin/tc";
@@ -36,13 +39,18 @@ let
 in
 {
   environment.systemPackages = [ (pkgs.writeShellScriptBin "proxy-status" ''
-    exec ${pkgs.python3}/bin/python3 ${../../../../home/config/clash/status.py} ${../proxy/state.py} \
+    exec ${statusPython}/bin/python3 ${../../../../home/config/clash/status.py} ${../proxy/state.py} \
+      --profiles ${config.users.users.${config.my.machine.desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev/profiles.yaml \
       --max-age ${toString config.my.proxy.stateMaxAgeSeconds} \
       --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} ${if config.my.proxy.proxyOnly then "--proxy-only" else ""} "$@"
   '') (pkgs.writeShellScriptBin "proxy-inspect" ''
-    exec ${pkgs.python3}/bin/python3 ${./inspect.py} ${settings} "$@"
+    exec ${statusPython}/bin/python3 ${./inspect.py} ${settings} "$@"
   '') (pkgs.writeShellScriptBin "proxy-policy" ''
-    exec ${pkgs.python3}/bin/python3 ${./inspect.py} ${settings} --policy-only
+    exec ${statusPython}/bin/python3 ${./inspect.py} ${settings} --policy-only
+  '') (pkgs.writeShellScriptBin "proxy-subscription" ''
+    exec ${statusPython}/bin/python3 ${./subscription_check.py} \
+      ${config.users.users.${config.my.machine.desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev/profiles.yaml \
+      --proxy http://127.0.0.1:${toString config.my.machine.ports.mihomoMixed} "$@"
   '') ];
   systemd.services.clash-verge.serviceConfig = { MemoryAccounting = true; };
   systemd.services.gost-relay.serviceConfig = { MemoryAccounting = true; };

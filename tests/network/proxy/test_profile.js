@@ -13,7 +13,8 @@ for (const test of JSON.parse(fs.readFileSync(process.argv[2], "utf8"))) {
   const context = vm.createContext({});
   new vm.Script(fs.readFileSync(test.script, "utf8")).runInContext(context);
   const policy = "selected/[group]";
-  const config = { rules: [
+  const config = { proxies: [{name: "Remote", type: "ss"}],
+    "proxy-groups": [{name: policy, type: "select", proxies: ["Remote"]}], rules: [
     ...probeDomains.map(domain => "DOMAIN-SUFFIX," + domain + ",DIRECT"),
     "DOMAIN-SUFFIX,msftconnecttest.com,DIRECT", "MATCH," + policy,
   ] };
@@ -44,7 +45,7 @@ for (const test of JSON.parse(fs.readFileSync(process.argv[2], "utf8"))) {
   const count = enhanced.rules.length;
   assert.equal(context.main(enhanced).rules.length, count, "repeated script run must be idempotent");
   const direct = { rules: ["MATCH,DIRECT"] };
-  if (test.expected.proxyOnly) assert.throws(() => context.main(direct));
+  if (test.expected.proxyOnly || test.expected.remoteOnlyCatchAll) assert.throws(() => context.main(direct));
   else assert.equal(context.main(direct).rules.length, 1, "DIRECT-only profiles remain observable failures");
   const tests = {
     "proxy-groups": [
@@ -108,10 +109,34 @@ for (const test of JSON.parse(fs.readFileSync(process.argv[2], "utf8"))) {
   }
   const provider = {"proxy-providers":{source:{type:"http", url:"https://fixture.example/proxies"}},
     proxies:[{name:"drop", "skip-cert-verify":true}],
-    "proxy-groups":[{name:"provider-group", proxies:["drop"], use:["source"]}]};
+    "proxy-groups":[{name:"provider-group", proxies:["drop"], use:["source"]}],
+    rules:["MATCH,provider-group"]};
   const pruned = context.main(provider);
   assert.equal(pruned.proxies.length,0);
   assert.equal(pruned["proxy-groups"][0].proxies.length,0);
   assert.equal(pruned["proxy-providers"].source.url,"https://fixture.example/proxies");
+  assert.doesNotThrow(() => context.main({proxies:[{name:"Remote",type:"ss"}],rules:["MATCH,Remote"]}));
+  const nested = {
+    proxies: [{name: "Remote", type: "ss"}, {name: "Local alias", type: "direct"}],
+    "proxy-groups": [
+      {name: "CatchAll", type: "select", proxies: ["DIRECT", "Choice"]},
+      {name: "Choice", type: "select", proxies: ["Local alias", "REJECT", "Remote"]},
+      {name: "Unrelated", type: "select", proxies: ["DIRECT", "Remote"]},
+    ],
+    rules: ["DOMAIN-SUFFIX,domestic.example,DIRECT", "FINAL,CatchAll"],
+  };
+  context.main(nested);
+  if (test.expected.remoteOnlyCatchAll) {
+    assert.deepEqual(Array.from(nested["proxy-groups"][0].proxies), ["Choice"]);
+    assert.deepEqual(Array.from(nested["proxy-groups"][1].proxies), ["Remote"]);
+    assert.throws(() => context.main({"proxy-groups": [
+      {name: "Empty", type: "select", proxies: ["DIRECT"]}], rules: ["MATCH,Empty"]}), /no remote members/);
+    assert.throws(() => context.main({"proxy-groups": [
+      {name: "Cycle", type: "select", proxies: ["Cycle"]}], rules: ["MATCH,Cycle"]}), /cycle/);
+  } else {
+    assert(nested["proxy-groups"][0].proxies.includes("DIRECT"));
+  }
+  assert(nested["proxy-groups"][2].proxies.includes("DIRECT"));
+  if (!test.expected.proxyOnly) assert(nested.rules.includes("DOMAIN-SUFFIX,domestic.example,DIRECT"));
   console.log(`${test.name}: rendered routing script passed`);
 }

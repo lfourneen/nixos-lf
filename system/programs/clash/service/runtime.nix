@@ -16,6 +16,9 @@ in
   # multi-user.target. Otherwise a failed launcher would restart forever at
   # boot while the intent is still direct.
   systemd.services.clash-verge.wantedBy = lib.mkForce [ ];
+  # proxy-mode publishes /run/proxy-mode/boot-id; the helper's
+  # ProtectProc=invisible view cannot read the kernel boot id itself.
+  systemd.services.clash-verge.after = lib.mkAfter [ "proxy-mode.service" ];
 
   systemd.services.clash-verge.serviceConfig = {
     StateDirectory = [ "clash-verge-service" ];
@@ -56,6 +59,34 @@ in
 
   systemd.tmpfiles.rules = [ "d /var/lib/clash-core 0750 clash-core clash-core -" ];
 
+  systemd.services.profile-refresh-verify = {
+    description = "Settle validated profile refreshes or restore the previous snapshot";
+    after = [ "proxy-mode.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${pkgs.python3}/bin/python3 ${./clash-verge-stage.py} verify-refresh ${config.programs.clash-verge.package.stageSettings} ${config.programs.clash-verge.package}/bin/verge-mihomo";
+      UMask = "0077";
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectControlGroups = true;
+      RestrictAddressFamilies = [ "AF_UNIX" ];
+      TimeoutStartSec = "90s";
+    };
+  };
+
+  systemd.timers.profile-refresh-verify = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "10s";
+      OnUnitActiveSec = "10s";
+      AccuracySec = "1s";
+    };
+  };
+
   # Keep the managed dual-stack TUN present even when the core starts on an
   # IPv4-only uplink. The helper's spawned core inherits this environment.
   systemd.services.clash-verge.environment = lib.optionalAttrs
@@ -65,5 +96,6 @@ in
         (builtins.toJSON config.my.proxy.managedProfile);
       # The helper may only exec this launcher, never a stale package path.
       LF_CLASH_CORE_PATH = "${config.programs.clash-verge.package}/bin/verge-mihomo";
+      LF_CLASH_GUI_CONFIG = "${config.users.users.${desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml";
     };
 }

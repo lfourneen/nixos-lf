@@ -3,9 +3,11 @@
 let
   parts = builtins.match "([0-9]+)\\.([0-9]+)\\.([0-9]+)\\.([0-9]+)/([0-9]+)" config.my.proxy.fakeIpRange;
   nums = if parts == null then [ ] else map lib.toInt parts;
+
   valid = parts != null && lib.length nums == 5
     && lib.all (n: n >= 0 && n <= 255) (lib.take 4 nums)
     && builtins.elemAt nums 4 >= 8 && builtins.elemAt nums 4 <= 30;
+
   prefix = builtins.elemAt nums 4;
   pow2 = n: lib.foldl' (v: _: v * 2) 1 (lib.range 1 n);
   address = lib.foldl' (v: n: v * 256 + n) 0 (lib.take 4 nums);
@@ -102,6 +104,7 @@ in
       in addresses.ipv4 ++ addresses.ipv6;
     description = "Internal literal-IP and approved internal-name targets allowed through core DIRECT for host HTTP/CONNECT/SOCKS/REDIR/TUN inlets. Empty disables this access inside the core. proxyOnly still refuses application DIRECT; A portal passthrough and native firewall grants are independent. Metadata and unsafe/synthetic targets remain refused.";
   };
+
   options.my.proxy.remoteTargetGrants = lib.mkOption {
     default = [ ];
     description = "Explicit internal targets at a remote proxy, scoped to the actual leaf name, inlet, TCP/UDP, canonical CIDR and destination ports. No grant by default; metadata and unsafe/synthetic targets cannot be granted.";
@@ -115,10 +118,58 @@ in
       };
     });
   };
+
   options.my.proxy.nat64Prefixes = lib.mkOption {
     type = lib.types.listOf lib.types.str;
     default = [ "64:ff9b::/96" ];
     description = "Known RFC 6052 translation prefixes (/32, /40, /48, /56, /64 or /96). Embedded non-public IPv4 is refused, including literal targets. Declare network-specific prefixes explicitly; arbitrary unknown translators cannot be detected.";
+  };
+
+  options.my.proxy.profileRefreshPolicy = lib.mkOption {
+    type = lib.types.enum [ "strict" "auto" ];
+    default = "strict";
+    description = "strict: configuration changes still require clash-on authorization (current behavior). auto: refreshes that pass validation are imported automatically; a failed validation keeps the previous snapshot.";
+  };
+
+  options.my.proxy.remoteOnlyCatchAll = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Remove non-proxy members from the final catch-all group and its referenced groups in the GUI Merge script. Explicit DIRECT rules remain unchanged. Empty or cyclic catch-all groups are refused; dynamic provider routing still requires the offline audit to establish its route.";
+  };
+
+  options.my.proxy.subscriptionAudit = lib.mkOption {
+    type = lib.types.enum [ "off" "warn" "enforce" ];
+    default = "warn";
+    description = "Offline content audit for imported profiles. off disables only the additional audit: -t, the managed profile and digest checks always apply. warn records and notifies content risks; enforce additionally refuses deny verdicts and protected-route unknowns.";
+  };
+
+  options.my.proxy.sensitiveDomains = lib.mkOption {
+    type = lib.types.listOf (lib.types.strMatching "([A-Za-z0-9_-]+\\.)*[A-Za-z0-9_-]+");
+    default = [ ];
+    description = "Bare domain suffixes whose proven DIRECT->proxy/reject transition blocks an imported profile. Empty by default; only declare domains whose routing you have already decided.";
+  };
+
+  options.my.proxy.subscriptionAuditAllowedHosts = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.oneOf [ lib.types.str (lib.types.listOf lib.types.str) ]);
+    default = { };
+    description = "Root-approved hosts mappings in imported subscriptions. Each supplied key and value must match this allowlist; omitted entries are allowed. An empty allowlist refuses all subscription hosts overrides under enforce, including the first import.";
+  };
+
+  options.my.proxy.subscriptionAuditServerCidrs = lib.mkOption {
+    type = lib.types.listOf lib.types.str;
+    default = [ ];
+    description = "Explicit non-public proxy-server CIDRs permitted by the offline audit. Empty by default. Multicast server addresses are always refused; this does not grant application target access.";
+  };
+
+  options.my.proxy.subscriptionAuditProtectedRoutes = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.enum [ "direct" "proxy" "reject" ]);
+    default = let
+      host = url: let found = builtins.match "https?://([^/:]+).*" url;
+        in if found == null then null else lib.toLower (builtins.head found);
+      names = lib.filter (value: value != null)
+        (map host (config.my.proxy.nodeProbeUrls ++ [ config.my.proxy.delayTestUrl ]));
+    in lib.genAttrs (lib.unique (names ++ config.my.proxy.tunProbeNames)) (_: "proxy");
+    description = "Root-approved route classes for protected exact domains. Health and delay-test domains default to proxy; declare subscription/update hosts and any intentional alternatives here. Indeterminate routes are refused by enforce.";
   };
 
   options.my.proxy.subscriptionTrust = lib.mkOption {
@@ -169,47 +220,56 @@ in
     default = "mixed";
     description = "Explicit TUN stack; mixed remains the measured baseline, mips is opt-in.";
   };
+
   options.my.proxy.tunMtu = lib.mkOption {
     type = lib.types.ints.between 1280 9000;
     default = 1500;
     description = "TUN MTU. Change only after PMTU measurements.";
   };
+
   options.my.proxy.tunCongestionControl = lib.mkOption {
     type = lib.types.enum [ "cubic" "reno" "bbr" "bbr3" ];
     default = "cubic";
     description = "Mihomo mips-stack TCP congestion controller; separate from host TCP.";
   };
+
   options.my.proxy.tunIpv6Address = lib.mkOption {
     type = lib.types.str;
     default = "fdfe:dcba:9876::1/126";
     description = "Stable IPv6 TUN address, including on IPv4-only uplinks.";
   };
+
   options.my.proxy.healthBudgetSeconds = lib.mkOption {
     type = lib.types.ints.between 8 30;
     default = 12;
     description = "Total deadline for a selected-node health probe, across all targets.";
   };
+
   options.my.proxy.healthRequestTimeoutSeconds = lib.mkOption {
     type = lib.types.ints.between 1 10;
     default = 5;
     description = "Maximum seconds for each real HTTP health request, capped by the shared probe deadline.";
   };
+
   options.my.proxy.guestInterfaces = lib.mkOption {
     type = lib.types.nonEmptyListOf lib.types.str;
     default = [ config.my.machine.vmBridge config.my.machine.waydroidBridge ]
       ++ lib.optionals config.my.hardening.hotspot.enable [ config.my.machine.hotspot.interface ];
     description = "All routed guest ingress interfaces; policy applies before NAT and conntrack accepts.";
   };
+
   options.my.proxy.transparentGuestInterfaces = lib.mkOption {
     type = lib.types.listOf lib.types.str;
     default = [ ];
     description = "Opt-in IPv4 guest TPROXY interfaces, permitted only in healthy proxy mode.";
   };
+
   options.my.proxy.splitDnsProfileUuids = lib.mkOption {
     type = lib.types.listOf lib.types.str;
     default = [ ];
     description = "NetworkManager Wi-Fi profile UUIDs allowed explicit split DNS to private/ULA upstreams excluded by the shared direct-egress routing policy. Leases bind the active connection and interface; public DNS upstreams are unsupported.";
   };
+
   options.my.proxy.plaintextBootBudgetSeconds = lib.mkOption {
     type = lib.types.nullOr lib.types.ints.positive;
     default = null;
@@ -221,21 +281,25 @@ in
     default = "direct";
     description = "Optional fail-closed boot intent, installed before physical networking.";
   };
+
   options.my.proxy.proxyOnly = lib.mkOption {
     type = lib.types.bool;
     default = false;
     description = "Opt-in uniform proxy routing in B and core refusal of application DIRECT/COMPATIBLE dials. False preserves subscription Rule splitting plus the known probe-domain overrides. Does not change the default Mode-A boot or its portal access.";
   };
+
   options.my.proxy.stateMaxAgeSeconds = lib.mkOption {
     type = lib.types.ints.between 90 300;
     default = 120;
     description = "Maximum age of a successful supervisor/consumer observation.";
   };
+
   options.my.proxy.verificationMaxAgeSeconds = lib.mkOption {
     type = lib.types.ints.between 390 1800;
     default = 420;
     description = "Verifier freshness: allows the 300s timer, 30s accuracy and bounded 60s execution.";
   };
+
   options.my.proxy.resolvedPolicySettings = lib.mkOption {
     type = lib.types.path;
     internal = true;
@@ -252,6 +316,7 @@ in
     default = "https://www.gstatic.com/generate_204";
     description = "HTTPS default for unset GUI delay tests and missing or HTTP node/provider health-check URLs.";
   };
+
   # Single source of truth for TUN mode; home/config/clash/cvr-merge.nix reads it
   # via osConfig so the clash Merge template can't drift out of sync.
   options.my.proxy.tunMode = lib.mkOption {

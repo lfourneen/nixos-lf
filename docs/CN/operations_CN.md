@@ -38,7 +38,7 @@ sudo tailscale ping <手机的-tailnet-名称或-IP>
 
 可选受限 B、Unbound DoT 开关和时间目标限制见[直连例外](egress_CN.md)。受限 B 保留协商后的 Sunshine 媒体；C 始终切断远控。
 
-升级 Tailscale 时运行 `tailscale-transport`、`proxy-rules`、`proxy-egress-rules`、`proxy-tailscale-vm` 和 `proxy-egress-vm`；正常系统构建也强制执行源码约定检查。`0x80000` 来自 Tailscale 上游 Linux socket 标记，切换网络不变，升级时复核。无法打标或强制 bind-to-device 时，B 不会重新放行全部 root UDP；应诊断标记/权限，必要时明确切到 A。
+升级 Tailscale 时运行 `tailscale-transport`、`proxy-rules`、`proxy-egress-rules`、`proxy-tailscale-vm` 和 `proxy-egress-vm`；正常系统构建也强制执行源码约定检查。`0x80000` 来自 Tailscale 上游 Linux socket 标记，切换网络不变，升级时检查。无法打标或强制 bind-to-device 时，B 不会重新放行全部 root UDP；应诊断标记/权限，必要时明确切到 A。
 
 `proxy-policy` 同时显示原生 UID/接口/CIDR 授权、核心 DIRECT 范围、远程目标授权和订阅信任。这些权限相互独立：原生 restricted 与宽泛核心 DIRECT 范围并用时，连接本地代理入口的客户端仍可使用核心授权。限制宿主应用访问内网时，应同时审阅 `directEgress.mode="restricted"` 和 `localTargetCidrs=[]`，再声明必需授权。专用访客账户保留独立边界。
 
@@ -58,6 +58,12 @@ sudo tailscale ping <手机的-tailnet-名称或-IP>
 | `/run/netsec/alerts/*.json` | 各 owner 告警；`/run/netsec/failed` 汇总 owner |
 | `/run/proxy-mode/intent`、`core-seen` | 单次开机意图和崩溃检测标记 |
 | `/run/proxy-mode/authorized-config`、`config-digest`、`authorize-window` | root 私有快照授权与一次性导入凭据 |
+| `/run/proxy-mode/profile-refresh.json` | 最近刷新结果、digest、固定原因、脱敏审计计数和 20 条历史，权限 0644 |
+| `/run/proxy-mode/profile-refresh-pin.json` | 被拒候选 digest 与一小时 TTL，权限 0644 |
+| `/run/proxy-mode/profile-refresh-verifying.json` | root 私有待验证事务及上一快照路径 |
+| `/run/proxy-mode/profile-refresh-settled.json`、`profile-refresh-commit.json`、`profile-refresh-restart.json` | root 私有 settled 授权、提交中断恢复和待完成内核恢复 |
+| `/run/proxy-mode/effective-config.json`、`boot-id` | 绑定共享 boot identity 的 effective YAML 摘要；`effective-config-sha256` 是兼容镜像 |
+| `/run/proxy-mode/health-failure.json` | 最近失败探针的固定原因、分层耗时、boot identity 与快照摘要 |
 
 消费者读取原子 JSON，独立 `status`、`reason`、`version`、`result`、`verified-version` 是兼容镜像。仅原因变化更新 `revision`；内核策略提交更新 `policy_version`，`version` 是其别名。跨新代次的检查结果丢弃。
 
@@ -81,6 +87,24 @@ cat /var/lib/dns-upstream/history.log
 ```
 
 部分日志和授权文件需要 sudo。诊断输出中应去掉快照、订阅配置等敏感内容。
+
+### 刷新状态
+
+`proxy-status` 的 `Auto update` 显示更新调度，`Profile refresh` 和 `Update result` 显示最近刷新，`Profile vs runtime` 比较 GUI 与已导入快照的摘要。`proxy-policy` 包含 `profile_refresh`，`proxy-inspect` 提供最多 20 条脱敏刷新历史。
+
+`verifying` 表示已导入快照正在等待健康结果；`fallback` 表示候选被拒绝，旧授权快照保留；`rolled_back` 表示已恢复快照授权并请求 helper 重启。核心是否恢复须查看网络就绪字段。摘要不同只表示内容不同，不能据此判断哪个文件更新。
+
+切换订阅仍使用同一份 root 策略。新的 hosts 覆盖须匹配 `subscriptionAuditAllowedHosts`，切换动作本身不会扩大该权限。探测目标和预期路由均可配置；受保护路由仍无法确定时，`enforce` 保留旧快照，应先根据审计分类定位约束，再决定策略。
+
+用户通知 timer 每五分钟读取本地文件，将刷新失败、内容审计结果、更新逾期、内容差异和订阅 stale 合并为每轮一条消息。刷新失败按结果与完整摘要去重，逾期和内容差异按状态迁移提醒，stale 每天最多提醒一次。去重状态私有存于 `$XDG_STATE_HOME/clash-verge/refresh-notified.json`，发送成功后才推进；timer 不下载订阅。
+
+### 订阅连通性
+
+显式运行 `proxy-subscription --check --json` 检查当前订阅。命令从 GUI 索引读取地址，报告 HTTP 状态、传输路径、耗时、字节数、HTTPS 和重定向次数。提供 `--etag` 时发送条件 GET，没有 validator 时发送普通 GET。
+
+检查先使用当前网络策略允许的直连路径，传输失败后尝试配置的 mixed 端口。403 等完整 HTTP 响应直接报告，不再通过代理重试。命令不写 profile、不导入配置，也不推进更新时间。
+
+总超时默认 15 秒，覆盖域名解析、两条传输路径、重定向和正文读取；`--timeout` 支持 1–120 秒。响应上限为 8 MiB，最多允许三次同源重定向，跨源跳转和 HTTPS 降级均拒绝。输出不包含 URL、响应正文和 validator 原文。`proxy-inspect --deep` 另提供服务重启次数和固定 journal 查询命令，供有权限的操作者排障。
 
 ## 协调与防火墙恢复
 

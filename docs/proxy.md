@@ -20,19 +20,49 @@ The helper enforces fixed execution paths and file-operation rules at its privil
 
 An explicitly enabled IPv4 guest TPROXY inlet binds `0.0.0.0:7896`; the ordinary mixed/DNS/controller endpoints remain local under `allow-lan=false`. The packaged listener handles this bind separately and selects IPv4 sockets. Its TCP/UDP UID and service cgroup are checked before B; guest interface/source authorization remains in the firewall. Later core auto-redirect preserves the owned guest mark instead of replacing its transparent socket. See [guest networking](network.md#guests-and-containers).
 
-## Authorizing a configuration
+## Configuration imports
 
-`proxy-control preflight` checks the desktop profile, required assets and the managed parser without changing network intent. `clash-on` requires this preparation to succeed before opening an import session. Missing inputs can be prepared in deliberately selected A; an unsuccessful check preserves the requested mode.
+`proxy-control preflight` checks the desktop profile, required assets and the managed parser without changing network intent. `clash-on` requires this preparation to succeed, records proxy intent and enters C before starting the helper. It clears refresh pins and pending health checks, preserves intact snapshot authority, and opens a single-use import window for 300 seconds. A failed import consumes the window.
 
-`clash-on` records proxy intent, enters C and starts a new import session. It clears previous authorization and opens one **single-use, 300-second** window. The GUI supplies the effective configuration; the packaged launcher imports it under a shared authorization lock before starting the core. A failed import consumes the window too. Run `clash-on` again after correcting inputs.
+[clash-verge-stage.py](../system/programs/clash/service/clash-verge-stage.py) accepts bounded regular files owned by the desktop user, rejects symlinks and detects concurrent input changes. It copies YAML and geodata into a root-owned snapshot, normalizes the controller location and runs `-t` as `clash-core` without capabilities. Snapshot directories use 0750 and files use 0640. Authority records and parser diagnostics remain private to root.
 
-[clash-verge-stage.py](../system/programs/clash/service/clash-verge-stage.py) opens desktop-owned, bounded regular inputs without following symlinks, copies YAML and geodata into a root-owned snapshot and detects concurrent input changes. It normalizes the controller location and runs the core's `-t` validation as `clash-core` without capabilities. Snapshot directories use 0750 and files 0640, readable by the core group. Authority records and validation/helper logs are root-only.
+The snapshot digest covers YAML, geodata bytes and absent optional assets. Assets include `Country.mmdb`, `GeoIP.dat`, `GeoSite.dat`, `ASN.mmdb` and `BundleMRS.7z`. Legacy country-database names are normalized. `cache.db` and the `proxies/` provider cache point to separate writable core state and are outside this digest.
 
-The digest covers the effective YAML, geodata bytes and absent optional assets. Canonical assets include `Country.mmdb`, `GeoIP.dat`, `GeoSite.dat` and optional `ASN.mmdb`/`BundleMRS.7z`; supported legacy country-database names are normalized. `cache.db` points to separate writable core state and is outside the digest.
+### Refresh policies
 
-Ordinary restarts require matching GUI YAML and intact snapshot hashes, then reuse the authorized databases. GUI database updates do not replace the running authorization. Import new YAML/geodata with another `clash-on`. Managed geodata downloads are disabled, including replacement attempts for missing or invalid databases. Snapshots survive helper restarts; health checks also verify their digest. `clash-off` clears boot-scoped authorization and requests direct mode.
+`my.proxy.profileRefreshPolicy` defaults to `strict`. A changed GUI YAML requires another `clash-on` window. With `auto`, changed YAML can be imported while proxy intent remains active, after the same input, parser, content-audit and digest checks. The host configuration selects `auto`.
 
-Each import authorizes the YAML and assets selected for that session. The desktop account and its selected subscription/configuration sources form the input trust boundary.
+Unchanged YAML follows the ordinary restart path and reuses the authorized geodata. GUI database updates alone do not trigger an import. Managed geodata downloads remain disabled, including replacement of a missing or corrupt database. `clash-off` revokes authorization and requests direct mode; GUI updates cannot restart the core while intent is direct.
+
+A validated candidate enters `verifying`. `profile-refresh-verify.timer` checks every ten seconds and requires at least 60 seconds of observation before accepting a fresh health result for that candidate digest. Success records `accepted` and establishes the settled baseline. Consecutive imports during observation retain that baseline. Failure restores it and its authority, restarts the helper and records `rolled_back`. If no settled baseline exists, the failure is recorded as `refused` and the health gate continues protecting the host. Use `proxy-status` to confirm service recovery; the helper unit being active alone does not prove core readiness.
+
+Candidate read or validation failures under `auto` preserve an intact authorized snapshot, record `fallback` and start the core from that snapshot. Without a valid fallback, startup fails with exit 78. The launcher always runs the effective snapshot. Rejected candidate digests are pinned for one hour, so ordinary restarts reuse the rejection without extending its lifetime. `clash-on` and `clash-off` clear the pin and pending health check.
+
+`/run/proxy-mode/profile-refresh.json` is published atomically with mode 0644. It contains the policy, latest result, candidate and previous digests, fixed failure reason, snapshot time, last acceptance time, content-audit categories and up to 20 history entries. Displayed digests use 12 characters. The record excludes subscription URLs, credentials, node names, private paths and raw parser output.
+
+### Content audit
+
+`my.proxy.subscriptionAudit` supports `off`, `warn` and `enforce`, with `warn` as the module default. The host configuration selects `enforce`. The worker runs offline as `clash-core`, without capabilities, after `-t` and before snapshot commit. `off` disables only this additional check; the managed parser and digest checks always apply.
+
+The audit checks node server addresses, unauthorized `skip-cert-verify`, empty groups, invalid group references, YAML key structure, hosts mappings and provider configuration changes. Historical comparisons use the last settled YAML. Mutable provider contents retain the separate trust model described below. Named TLS exceptions in `my.proxy.insecureProxyExceptions` remain valid. Intentional non-public node endpoints require `my.proxy.subscriptionAuditServerCidrs`; this audit exception grants no application access, and multicast endpoints remain refused.
+
+`my.proxy.remoteOnlyCatchAll` defaults to `false` and is enabled on this host. The Merge script follows the final catch-all policy and its group references, removing DIRECT and other non-proxy members. It supports arbitrary subscription group names and refuses empty or cyclic groups. Shared groups lose those manual choices; explicit DIRECT rules and unrelated groups remain available. Dynamic provider routing still requires a conclusive audit under `enforce`.
+
+The constraint applies when the GUI generates YAML. Reapply the current profile after changing Merge policy to regenerate it before requesting a fresh import.
+
+Hosts mappings require an explicit root allowlist on every import, including the first. Each supplied name and value must match `my.proxy.subscriptionAuditAllowedHosts`. Entries may be omitted. The default empty allowlist permits no subscription hosts overrides.
+
+```nix
+my.proxy.subscriptionAuditAllowedHosts = {
+  "service.internal" = "192.168.1.10";
+};
+```
+
+`my.proxy.sensitiveDomains` enables targeted checks for user-selected domain suffixes and defaults to an empty list. The checker supports ordered `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD` and `MATCH` rules with statically resolvable groups. It identifies proven DIRECT-to-proxy or DIRECT-to-reject changes. Mixed routes below a suffix conservatively produce `unknown`, as can GEOSITE, GEOIP, logical rules and dynamic groups; this is not a complete Mihomo routing evaluator. Infrastructure targets are not automatically added to this list.
+
+`my.proxy.subscriptionAuditProtectedRoutes` declares the expected `direct`, `proxy` or `reject` route for exact domains. Health and delay-test domains default to `proxy`. Declare subscription and update domains here with their intended routes. Indeterminate rules or groups cannot establish compliance.
+
+`enforce` rejects deny results and unknown routing for sensitive domains or protected targets, using `blocked by audit` or `audit indeterminate`. A worker failure also prevents acceptance under `enforce`. `warn` records findings and continues the import. Structural warnings cover large rule or node count changes, concentration on one host, new plaintext credential nodes and broad geographic routing changes. Public findings contain fixed categories and counts.
 
 ## Managed profile and controller
 
@@ -47,7 +77,7 @@ The root policy also supplies the shared domain-filter store path, additions and
 | GET / HEAD / OPTIONS | Allowed, including GUI delay tests |
 | PUT / DELETE `/proxies/<name>` | Select or release a proxy choice |
 | DELETE `/connections` or `/connections/<id>` | Close connections |
-| PATCH `/configs` | Only `mode=rule` or `mode=global` (or no change) |
+| PATCH `/configs` | Only `mode=rule`, `mode=global` or no change |
 | Other writes | Forbidden by default |
 
 Configuration loads, rule disabling, provider/geodata/storage changes, restart and upgrade APIs are forbidden. PATCH validates canonical upstream field names and duplicate keys before applying the same decoded schema. New controller write endpoints require an explicit policy decision when upgrading the core.
@@ -77,7 +107,7 @@ With `true`, the generated profile routes application destinations reaching the 
 
 Deploy the generation and import/restart the managed core for this policy to take effect. It increases subscription traffic, including domestic traffic. `bootMode`, A's portal access, root UDP, multicast and private host paths outside the core are independent choices.
 
-`proxy-control-vm` retains default Rule coverage; `proxy-uniform-vm` exercises the production helper/core with `proxyOnly=true`, including fresh TCP/UDP DIRECT refusal and real dual-stack paths. UDP selects a leaf per association, so a DIRECT-refusal test starts a new association; a reused remote leaf remains a proxy path. Browser checks also include both routing policies. See the [component upgrade workflow](maintenance.md#component-review-gate) before changing upstream sources or patches.
+`proxy-control-vm` retains default Rule coverage; `proxy-uniform-vm` exercises the production helper/core with `proxyOnly=true`, including fresh TCP/UDP DIRECT refusal and real dual-stack paths. UDP selects a leaf per association, so a DIRECT-refusal test starts a new association; a reused remote leaf remains a proxy path. Browser checks also include both routing policies. See the [component upgrade workflow](maintenance.md#source-compatibility-checks) before changing upstream sources or patches.
 
 ## Domain targets
 
@@ -112,7 +142,7 @@ my.proxy.remoteTargetGrants = [{
 }];
 ```
 
-The grant authorizes the IP as interpreted by that node. It grants no remote DNS lookup and no other node, inlet, transport or port. For a name, also declare its internal suffix and provide an answer through authorized hosts or the core's resolver. A grant matches the configured leaf name; it does not authenticate a remote server. Review authorized profile/provider sources and avoid reusing a granted name for another node. Inlets describe what the core actually receives: Gost's forwarded CONNECT is `HTTPS`, including traffic relayed from its transparent inlet. They do not authenticate an application or preserve its original UID.
+The grant authorizes the IP as interpreted by that node. It grants no remote DNS lookup and no other node, inlet, transport or port. For a name, also declare its internal suffix and provide an answer through authorized hosts or the core's resolver. A grant matches the configured leaf name; it does not authenticate a remote server. Use trusted profile/provider sources and avoid reusing a granted name for another node. Inlets describe what the core actually receives: Gost's forwarded CONNECT is `HTTPS`, including traffic relayed from its transparent inlet. They do not authenticate an application or preserve its original UID.
 
 Each new destination in a reused UDP association is validated and pinned against the association's actual leaf. Cached mappings retain that provenance and recheck the current inlet, destination port and egress grants on every packet; changing ports cannot reuse a narrower grant. Established TCP connections are not retroactively inspected. Rebuild and deliberately import/restart the core when changing policy.
 

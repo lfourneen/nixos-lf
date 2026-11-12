@@ -6,6 +6,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -92,6 +94,32 @@ class GuiProcessTests(unittest.TestCase):
         record["start"] += "-different"
         self.assertTrue(gui.stop([record], grace=0))
         self.assertIsNone(child.poll())
+
+    def test_parallel_launches_hold_lock_until_gui_is_observable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            expected = str(root / 'clash-verge')
+            count = root / 'normalizations'
+            defaults = root / 'defaults'
+            defaults.write_text(f"#!{sys.executable}\nimport time\nwith open({str(count)!r}, 'a') as f: f.write('edit\\n')\ntime.sleep(.25)\n")
+            defaults.chmod(0o700)
+            command = root / 'gui'
+            command.write_text(f"#!{sys.executable}\nimport os,sys\nos.execv(sys.executable, [{expected!r}, '-c', 'import time;time.sleep(1.5)'])\n")
+            command.chmod(0o700)
+            def observe():
+                return [record for record in gui.processes() if record['argv0'] == expected]
+            results = []
+            def run():
+                try:
+                    results.append(gui.launch(expected, str(command), str(defaults), 'unused', observe=observe))
+                except Exception as error:
+                    results.append(type(error).__name__)
+            with patch.dict(os.environ, {'XDG_STATE_HOME': directory}):
+                threads = [threading.Thread(target=run) for _ in range(2)]
+                for thread in threads: thread.start()
+                for thread in threads: thread.join(timeout=6)
+            self.assertEqual(results, [0, 0])
+            self.assertEqual(count.read_text(), 'edit\n')
 
 
 if __name__ == "__main__":

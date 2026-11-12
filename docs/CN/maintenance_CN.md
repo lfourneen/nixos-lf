@@ -27,7 +27,7 @@ Go patcher 在 `buildGoModule` 填充 `vendor/` 后的 `postConfigure` 执行；
 | Unbound / Chrony / 网络 | [default.nix](../../system/config/network/network.nix)、[time.nix](../../system/config/network/time.nix)、[网络模块](../../system/config/network) | 声明策略和仓库自有协调器；没有本地 Unbound/Chrony 源码补丁 |
 | 链路身份 | [default.nix](../../system/config/network/identity/default.nix)、[link_identity.py](../../system/config/network/identity/link_identity.py)、[partition.nix](../../system/hardware/partition.nix) | 协调 profile 身份、私有迁移/恢复、原生有线生命周期与 DHCPv6 共存；无上游源码 patch |
 | 防火墙生命周期 | [default.nix](../../system/config/network/network.nix)、[coordinator.nix](../../system/config/network/proxy/coordinator.nix)、[bootstrap.nix](../../system/config/network/firewall/bootstrap.nix) | 精确表归属、持锁原子替换、失败保留和显式表迁移 |
-| Tailscale 传输 | [transport.nix](../../system/config/network/tailscale/transport.nix)、[tailscale_contract.py](../../system/config/network/tailscale/tailscale_contract.py) | 正常系统构建强制检查上游 socket mark 约定；升级复核 mark/后备/socket 变化并跑真实 CLI VM；没有 Tailscale 源码补丁 |
+| Tailscale 传输 | [transport.nix](../../system/config/network/tailscale/transport.nix)、[tailscale_contract.py](../../system/config/network/tailscale/tailscale_contract.py) | 正常系统构建强制检查上游 socket mark 约定；升级时检查 mark/后备/socket 变化并跑真实 CLI VM；没有 Tailscale 源码补丁 |
 | 直连例外 | [options.nix](../../system/config/network/options.nix)、[default.nix](../../system/config/network/network.nix)、[egress_policy.py](../../system/config/network/firewall/egress_policy.py) | 主体/socket 身份、NAT 前授权、规范 CIDR 校验、时间/DoT 范围及 root/GUI 共享私网排除；比较兼容和受限模式 |
 | 访客信任 | [policy.nix](../../system/config/network/guests/policy.nix)、[guest_policy.py](../../system/config/network/guests/guest_policy.py)、[socket-guest.nix](../../system/config/network/dns/socket-guest.nix)、[default.nix](../../system/programs/virtualisation/default.nix) | 接口/源角色、规范授权、主/委派 UID 归属、NAT 前真实地址 DNS、双向撤销及 rootless 启动器 |
 | Sunshine | [sunshine.nix](../../system/programs/sunshine.nix) | 随图形会话提供 Desktop，管理仅本机、关闭 UPnP；保留 CUDA，以禁止本地编译的方式验证所配置 CUDA 缓存中的精确包 |
@@ -72,9 +72,17 @@ Root 策略来自 [profile.nix](../../system/config/network/proxy/profile.nix)�
 
 GUI `.unwrapped` 有意复用上游并断言相等。自定义位于独立 Rust helper、安装的 wrapper 和运行脚本。检查 Nixpkgs helper derivation 和继承补丁；覆盖 `postPatch` 或复制错 helper 会丢失集成行为。
 
-Helper patch 涉及 `src/core/manager.rs`、`logger.rs`、`reconcile.rs`。升级时枚举所有执行、log writer、socket chmod/unlink 和已存进程恢复入口。受管执行须解析到 `LF_CLASH_CORE_PATH`，文件/祖先 root 所有，允许 root 所有 sticky store 祖先。日志始终使用私有服务目录，客户端路径/PID 不得转为 root 文件或进程操作。
+Helper patch 涉及 `src/core/manager.rs`、`server.rs`、`logger.rs`、`reconcile.rs`。升级时枚举所有执行、log writer、socket chmod/unlink 和已存进程恢复入口。受管执行须解析到 `LF_CLASH_CORE_PATH`，文件/祖先 root 所有，允许 root 所有 sticky store 祖先。日志始终使用私有服务目录，客户端路径/PID 不得转为 root 文件或进程操作。
+
+共同启动路径要求子进程存活，且固定控制 socket 在 15 秒内可连接。候选解析和附加审计共享 11 秒准备预算，为核心启动或回退预留时间；受管 IPC handler 的预算为 20 秒。取消或就绪超时会结束本次启动的进程组，包括校验进程，避免超时后继续提交配置。修改 helper 或 IPC 依赖时须保留这一关系。
+
+预构建 GUI 保留上游 IPC 客户端及较短的请求超时。Helper 串行处理启动，对相同请求复用最近 30 秒内完成的结果。重试签名包含固定 GUI 文件的身份与变化时间；复用成功还要求原 PID 仍在运行且固定 socket 可连接。输入变化、显式授权或核心已停止时须重新启动，使 GUI 的传输重试不会反复重启核心，也无需重新构建 GUI。
 
 [runtime.nix](../../system/programs/clash/service/runtime.nix)、[identity.nix](../../system/programs/clash/service/identity.nix)、launcher 和 stage 工具须同步。顶层 runtime 组须匹配 systemd，避免重启递归改所有权。可写核心缓存由独立 tmpfiles 创建，不加入 root helper 的 `StateDirectory`。快照跨 helper 重启保留，授权/验证日志私有，并从真实 helper 启动的核心读取五类 capability 集。
+
+启动默认值 helper 还负责规范化 `profiles.yaml`：只把已存在的整数 `update_interval` 从 1–1439 提升到 1440，不改 `allow_auto_update`、local profile、注释和未知字段；在 GUI 已停止的前提下持每用户锁执行。外层启动器持续持锁，直到规范化完成且 GUI 进程可观察，绝不创建缺失的 `option` 或 interval。
+
+`clash-verge-stage.py` 负责候选检查、快照授权和健康接受；`profile-refresh-verify.timer` 每十秒运行。模式监督器发布 `/run/proxy-mode/boot-id`，`refresh.nix` 定义五分钟用户通知 timer。审计 worker 和状态工具使用由 Nix 显式提供的 PyYAML。worker 保持非特权身份，输出固定 JSON schema 和原因词表；`subscriptionAuditAllowedHosts` 从 root 配置传入，不能由订阅内容推导权限。
 
 当前 Nixpkgs 以 `.verge-mihomo-wrapped` 暴露底层核心，包将公开 `verge-mihomo` 替换为授权启动器。GUI/打包更新需检查 wrapper 布局、`clash-on/off` 使用的 GUI 进程身份和旧同用户 singleton 清理，防止保留旧包路径。HTTPS delay 默认通过可写偏好设置，不重新编译 GUI。
 
@@ -86,7 +94,7 @@ Unbound 使用未改源码的 `pkgs.unbound-with-systemd`。未来 override 必�
 
 Firefox 在打包层加入不可变 policy、AutoConfig、字体、preflight 和外层隔离。最终包/wrapper 和偏好语义由 `browser-privacy` 检查，覆盖最终启动器、桌面/MIME、policy lock、DoH/代理值、沙箱环境及旧 profile/进程。
 
-用 `browser-sandbox-vm` 检查真实 Wayland 浏览器、系统 CA 的 TLS 接受及不可信/域名不匹配证书拒绝、父进程文件/设备/socket 限制、音频、门户身份与文档授权、精确 profile 的链接复用、代次拒绝、重启及代理故障。依赖或内核升级时复核 bubblewrap、xdg-dbus-proxy、Landlock ABI、seccomp 和 xdg-desktop-portal 身份协议，保留应用专用文档视图及宿主实例记录。设备选择检查须拒绝普通文件和无关 GPU 的 primary 节点；NVIDIA 权限跟随声明的驱动选择，也可单独关闭。同时核对解析符号链接后的 NixOS CA bundle 可读且 `/etc/static` 仍隐藏。系统信任测试使用全新浏览器 profile，由 NSS/p11-kit 从系统 CA bundle 读取信任。默认 HTTP 和可选透明路径还需在外层隔离内运行 `browser-ech-vm`，复核所选 Firefox 的 CONNECT 门、原生 type-65 API 和 NSS 重试/证书行为。自动化的原生 DNS 测试开关只放在临时 profile，区分认证后不带 ECH 重试与证书验证失败。[浏览器手册](browser_CN.md#ech-发现与代理兼容)介绍这些路径；本地 CA 与密钥只属于隔离 fixture。
+用 `browser-sandbox-vm` 检查真实 Wayland 浏览器、系统 CA 的 TLS 接受及不可信/域名不匹配证书拒绝、父进程文件/设备/socket 限制、音频、门户身份与文档授权、精确 profile 的链接复用、代次拒绝、重启及代理故障。依赖或内核升级时检查 bubblewrap、xdg-dbus-proxy、Landlock ABI、seccomp 和 xdg-desktop-portal 身份协议，保留应用专用文档视图及宿主实例记录。设备选择检查须拒绝普通文件和无关 GPU 的 primary 节点；NVIDIA 权限跟随声明的驱动选择，也可单独关闭。同时核对解析符号链接后的 NixOS CA bundle 可读且 `/etc/static` 仍隐藏。系统信任测试使用全新浏览器 profile，由 NSS/p11-kit 从系统 CA bundle 读取信任。默认 HTTP 和可选透明路径还需在外层隔离内运行 `browser-ech-vm`，检查所选 Firefox 的 CONNECT 门、原生 type-65 API 和 NSS 重试/证书行为。自动化的原生 DNS 测试开关只放在临时 profile，区分认证后不带 ECH 重试与证书验证失败。[浏览器手册](browser_CN.md#ech-发现与代理兼容)介绍这些路径；本地 CA 与密钥只属于隔离 fixture。
 
 `dnsEncryption="strict"` 在协调器、broker 和静态防火墙中必须一致：不能自动或强制回退，不授予明文租约，不安装后备集合放行规则。保留已批准 split DNS、MagicDNS 和字面门户访问；两种传输策略都要验证，默认恢复预算仍是独立行为。
 
@@ -108,9 +116,9 @@ NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWi
 
 ## 升级流程
 
-### 按组件触发复核
+### 源码兼容性检查
 
-[sources.json](../../system/config/network/maintenance/sources.json) 按组件记录维护入口、不变量和回归检查。[default.nix](../../system/config/network/maintenance/default.nix) 对实际选定包的源码、可用的 vendored 依赖摘要及主要 Nixpkgs 打包文件生成指纹。正常系统构建要求这些输入匹配已复核基线；即使版本号未变，源码或 recipe 改变仍须复核。Mihomo 变化也会选中其 vendored sing-tun 和 SOCKS 组件。
+[sources.json](../../system/config/network/maintenance/sources.json) 按组件记录维护入口、不变量和回归检查。[default.nix](../../system/config/network/maintenance/default.nix) 对实际选定包的源码、可用的 vendored 依赖摘要及主要 Nixpkgs 打包文件生成指纹。正常系统构建要求这些输入匹配配置的源码基线；即使版本号未变，源码或 recipe 改变仍须检查兼容性。Mihomo 变化也会选中其 vendored sing-tun 和 SOCKS 组件。
 
 在仓库中生成当前输入清单并查看计划：
 
@@ -129,16 +137,16 @@ jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json 
   | xargs -r nix build --no-link
 ```
 
-先复核上游与打包差异并完成组件检查，再修改对应基线条目，随后运行 `proxy-upgrade-review` 并构建候选系统。计划工具不会更新基线。Schema 要求各组件保留最小源码与回归覆盖，flake 也检查所列检查是否存在。
+先比较上游源码与打包配置并完成组件检查，再修改对应基线条目，随后运行 `proxy-upgrade-review` 并构建候选系统。计划工具不会更新基线。Schema 要求各组件保留最小源码与回归覆盖，flake 也检查所列检查是否存在。
 
-该门检查源码版本与指纹；精确补丁锚点、软件包测试及内核/浏览器集成测试检查对应行为。Recipe 指纹只覆盖主要软件包表达式，不覆盖完整传递构建闭包；仍需复核 lock 差异中的相关变化，包括部署内核和图形栈。增加补丁、依赖或入口时同步更新组件清单。
+该门检查源码版本与指纹；精确补丁锚点、软件包测试及内核/浏览器集成测试检查对应行为。Recipe 指纹只覆盖主要软件包表达式，不覆盖完整传递构建闭包；仍需检查 lock 差异中的相关变化，包括部署内核和图形栈。增加补丁、依赖或入口时同步更新组件清单。
 
-### 复核与验证顺序
+### 升级步骤
 
 1. 确认所属 flake input，在仓库更新目标 input，比较 lock、Nixpkgs 包表达式、源码和 vendor 变化，保留可用 generation。
 2. 比较上述全部受影响入口，重定位本地行为或在保留回归覆盖后移除冗余修复；保持精确锚点，文件移动时更新 fileset/构建阶段。
 3. 约定变化时同步 root policy、Merge、health/controller、监听身份和 VM fixture；小控制 VM 继续使用生产身份和包。
-4. 修改完成后统一运行相关集合，构建候选系统而不激活，通过后再部署。激活后重启旧浏览器，主动 `clash-off` → `clash-on` 导入，再检查就绪和真实流量。
+4. 修改完成后统一运行相关集合。刷新、审计和启动默认值涉及 `proxy-refresh`、`proxy-control`、`proxy-gui`、`proxy-control-vm` 和 `proxy-refresh-vm`。构建候选系统而不激活，通过后再部署。激活后重启旧浏览器，主动 `clash-off` → `clash-on` 导入，再检查就绪和真实流量。
 5. 更新清单、版本及相关手册，使其与最终实现一致。
 
 ## 验证
@@ -150,7 +158,9 @@ jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json 
 | 检查 | 范围 |
 |---|---|
 | `proxy-control` | 临时文件验证快照授权、过期、重启、恶意输入和权限 |
-| `proxy-upgrade-review` | 所选源码/依赖/recipe 基线、组件覆盖、检查名称及复核门回归；输入复核门也接入正常系统构建 |
+| `proxy-refresh` | 离线审计、有界 HTTP 检查、本地更新状态和通知去重 |
+| `proxy-refresh-vm` | 真实 auto/enforce helper 与核心：健康接受、坏候选回退、pin 重启、回滚及 desired-state 恢复 |
+| `proxy-upgrade-review` | 所选源码/依赖/recipe 基线、组件覆盖、检查名称及源码兼容性检查；输入检查也接入正常系统构建 |
 | `network-identity-config` | 身份迁移边界、实际 nmcli 解析/主机名恢复、有线变体、服务范围及持久化；正常系统构建也校验目标 |
 | `network-identity-vm` | 真实有线/Wi-Fi DHCPv6 共存、新双栈身份报文、UUID/epoch/随机轮换、稳定/固定/硬件行为、profile 优先级、恢复及宿主密钥保留 |
 | `proxy-regressions` | 健康、状态、规则、DNS 租约、预算及监督器 |
@@ -165,7 +175,7 @@ jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json 
 | `proxy-egress-config` | 规范 CIDR 与授权/时间目标范围；接入正常系统构建 |
 | `proxy-egress-vm` | Tailscale VM 的受限策略版本；双栈私网/多播/DNS/DoT/NTS、UID/接口/端口拒绝、已有连接撤权与 C |
 | `proxy-egress-control-vm` | 真实生产 TUN/NAT 之前的受限策略，包含私网允许与拒绝 |
-| `tailscale-transport` | 所选上游 Linux bypass 常量与已审查的 magicsock/STUN socket 打标路径；正常系统构建也强制执行 |
+| `tailscale-transport` | 所选上游 Linux bypass 常量与预期的 magicsock/STUN socket 打标路径；正常系统构建也强制执行 |
 | `proxy-tailscale-vm` | 所选真实 Tailscale CLI、隔离双栈 STUN、双上行、socket/packet/UID 约束、B/C 恢复及远控端口策略 |
 | `proxy-control-config` | 生产/测试身份、helper 能力与监听一致 |
 | `proxy-core` | 定制核心构建和 parser/router/目标/direct/UDP/DNS/SOCKS Go 测试 |

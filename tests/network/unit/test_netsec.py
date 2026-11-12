@@ -348,14 +348,14 @@ class HealthTests(unittest.TestCase):
                                            "www.gstatic.com", 15010), "group[node]")
 
     def test_nested_and_unusual_policy_names(self):
-        graph = {"DIRECT-中转[fast]": {"type": "Selector", "now": "nested/name"},
+        graph = {"DIRECT-relay[fast]": {"type": "Selector", "now": "nested/name"},
                  "nested/name": {"type": "Selector", "now": "node"}, "node": {"type": "Shadowsocks"}}
-        self.assertEqual(health.effective_policy("DIRECT-中转[fast][node]", graph),
-                         ("DIRECT-中转[fast]", "node"))
+        self.assertEqual(health.effective_policy("DIRECT-relay[fast][node]", graph),
+                         ("DIRECT-relay[fast]", "node"))
         graph["nested/name"]["now"] = "DIRECT"
         graph["DIRECT"] = {"type": "Direct"}
         with self.assertRaises(health.ProbeFailure) as error:
-            health.effective_policy("DIRECT-中转[fast][DIRECT]", graph)
+            health.effective_policy("DIRECT-relay[fast][DIRECT]", graph)
         self.assertEqual(error.exception.layer, "route")
 
     def test_cyclic_and_unselected_groups_fail_closed(self):
@@ -982,6 +982,8 @@ class StateTests(unittest.TestCase):
     def test_freshness_and_both_modes_require_current_verification(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / 'proxy-mode').mkdir(exist_ok=True)
+            (root / 'proxy-mode/boot-id').write_text(Path('/proc/sys/kernel/random/boot_id').read_text())
             def write(path, value):
                 target = root / path; target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(json.dumps(value))
@@ -1005,6 +1007,8 @@ class StateTests(unittest.TestCase):
     def test_bounded_plaintext_window_is_readiness_not_a_blackout(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / 'proxy-mode').mkdir(exist_ok=True)
+            (root / 'proxy-mode/boot-id').write_text(Path('/proc/sys/kernel/random/boot_id').read_text())
             def write(path, value):
                 target = root / path; target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(json.dumps(value))
@@ -1035,6 +1039,8 @@ class StateTests(unittest.TestCase):
     def test_verification_requires_same_boot_and_its_own_freshness(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / 'proxy-mode').mkdir(exist_ok=True)
+            (root / 'proxy-mode/boot-id').write_text(Path('/proc/sys/kernel/random/boot_id').read_text())
             documents = {"proxy-mode/state.json": {"mode": "proxy", "policy_version": 1},
                          "proxy-mode/heartbeat.json": {"mode": "proxy"},
                          "gost-relay/state.json": {"mode": "proxy"},
@@ -1063,6 +1069,8 @@ class StateTests(unittest.TestCase):
     def test_alert_recovery_does_not_clear_another_owner(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / 'proxy-mode').mkdir(exist_ok=True)
+            (root / 'proxy-mode/boot-id').write_text(Path('/proc/sys/kernel/random/boot_id').read_text())
             alerts.update(root, "dns-policy.service", "failed")
             alerts.update(root, "nftables-verify", "mismatch")
             alerts.update(root, "nftables-verify")

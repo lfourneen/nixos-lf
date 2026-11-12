@@ -1,7 +1,10 @@
 """Finish an old packaged GUI before launching the current one, as its own user."""
+import fcntl
 import os
 from pathlib import Path
 import signal
+import stat
+import subprocess
 import sys
 import time
 
@@ -61,7 +64,47 @@ def prepare(expected, observe=processes, grace=10):
         raise RuntimeError("another old Clash GUI appeared during launch")
 
 
+def launch(expected, command, defaults, delay, args=(), observe=processes):
+    directory = Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'clash-verge'
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(directory / 'launch.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    child = None
+    try:
+        with os.fdopen(fd) as lock:
+            info = os.fstat(lock.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                raise RuntimeError('invalid GUI launch lock')
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            prepare(expected, observe=observe)
+            if not observe():
+                if subprocess.run([defaults, delay], check=False).returncode:
+                    print('Clash Verge: GUI defaults could not be normalized', file=sys.stderr)
+            child = subprocess.Popen([command, *args])
+            # Keep the lock across the gap between normalization and exec. Once
+            # the GUI is visible, subsequent launchers observe it and skip edits.
+            deadline = time.monotonic() + 15
+            while child.poll() is None and not observe():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('GUI process did not become observable')
+                time.sleep(0.05)
+        return child.wait()
+    finally:
+        if child is not None and child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+
+
 def main():
+    if len(sys.argv) >= 6 and sys.argv[1] == '--launch':
+        try:
+            return launch(*sys.argv[2:6], args=sys.argv[6:])
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            print('Clash Verge: GUI launch failed', file=sys.stderr)
+            return 1
     if len(sys.argv) != 2:
         raise SystemExit("usage: clash-verge-gui-prepare EXPECTED_ARGV0 | --running | --stop")
     try:

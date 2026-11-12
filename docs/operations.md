@@ -38,9 +38,9 @@ sudo tailscale ping <phone-tailnet-name-or-IP>
 
 For the optional restricted B policy, Unbound DoT switch and time destination pins, see [Direct egress](egress.md). Restricted B retains negotiated Sunshine media; C always cuts remote control.
 
-On Tailscale upgrades, run `tailscale-transport`, `proxy-rules`, `proxy-egress-rules`, `proxy-tailscale-vm` and `proxy-egress-vm`. The source contract check is also required by normal system builds. `0x80000` is Tailscale's upstream Linux socket mark, stable across network changes but reviewed on upgrades. If the mark is unavailable or bind-to-device is forced, B does not reopen all-root UDP: diagnose marking/permissions and use intentional A if needed.
+On Tailscale upgrades, run `tailscale-transport`, `proxy-rules`, `proxy-egress-rules`, `proxy-tailscale-vm` and `proxy-egress-vm`. The source contract check is also required by normal system builds. `0x80000` is Tailscale's upstream Linux socket mark, stable across network changes but checked on upgrades. If the mark is unavailable or bind-to-device is forced, B does not reopen all-root UDP: diagnose marking/permissions and use intentional A if needed.
 
-`proxy-policy` shows native UID/interface/CIDR grants together with core DIRECT ranges, remote target grants and subscription trust. These are independent permission planes. A restricted native policy combined with broad core DIRECT ranges still allows clients reaching that local proxy inlet to use those core ranges. For host application LAN restriction, review both `directEgress.mode="restricted"` and `localTargetCidrs=[]`, then declare the required grants. Dedicated guest accounts retain their separate boundary.
+`proxy-policy` shows native UID/interface/CIDR grants together with core DIRECT ranges, remote target grants and subscription trust. These are independent permission planes. A restricted native policy combined with broad core DIRECT ranges still allows clients reaching that local proxy inlet to use those core ranges. For host application LAN restriction, configure both `directEgress.mode="restricted"` and `localTargetCidrs=[]`, then declare the required grants. Dedicated guest accounts retain their separate boundary.
 
 `proxy-inspect` reports command-failure categories and exit codes without exposing arbitrary service stderr.
 
@@ -58,8 +58,14 @@ On Tailscale upgrades, run `tailscale-transport`, `proxy-rules`, `proxy-egress-r
 | `/run/netsec/alerts/*.json` | Per-owner alarms; `/run/netsec/failed` lists owners |
 | `/run/proxy-mode/intent`, `core-seen` | Boot-scoped operator intent and crash-detection marker |
 | `/run/proxy-mode/authorized-config`, `config-digest`, `authorize-window` | Root-only snapshot authority and single-use import grant |
+| `/run/proxy-mode/profile-refresh.json` | Last refresh result, digests, fixed reason, sanitized audit counts and 20-entry history; mode 0644 |
+| `/run/proxy-mode/profile-refresh-pin.json` | Rejected candidate digest and one-hour TTL; mode 0644 |
+| `/run/proxy-mode/profile-refresh-verifying.json` | Root-only pending transaction with the previous snapshot path |
+| `/run/proxy-mode/profile-refresh-settled.json`, `profile-refresh-commit.json`, `profile-refresh-restart.json` | Root-only settled authority, interrupted commit recovery and pending core recovery |
+| `/run/proxy-mode/effective-config.json`, `boot-id` | Normalized effective YAML digest bound to the shared boot identity; `effective-config-sha256` is a compatibility mirror |
+| `/run/proxy-mode/health-failure.json` | Last failed probe with fixed reason, layer timings, boot identity and snapshot digest |
 
-Atomic JSON is the consumer interface. Separate `status`, `reason`, `version`, `result` and `verified-version` files are compatibility mirrors. Reason-only updates change `revision`; kernel-policy commits change `policy_version` (`version` is its alias). Results spanning a newer generation are discarded.
+Atomic JSON is the consumer interface. Separate `status`, `reason`, `version`, `result` and `verified-version` files are compatibility mirrors. Reason-only updates change `revision`; kernel-policy commits change `policy_version`, also exposed as `version`. Results spanning a newer generation are discarded.
 
 Readiness requires current-generation mode, DNS, broker and relay observations, no active alarm and fresh verification. Broker state must be `applied`; `suspended`/`revoked` and DNS `degraded-dot-only` are not ready. Consumer freshness defaults to 120 seconds; verifier freshness defaults to 420 seconds, covering its five-minute timer and bounded execution. Boot identity and monotonic timestamps reject cross-boot, future and stale records.
 
@@ -82,9 +88,27 @@ cat /var/lib/dns-upstream/history.log
 
 Some service logs and authority files require sudo. Do not publish snapshots or subscription-bearing configuration as diagnostic output.
 
+### Refresh status
+
+`proxy-status` reports the update schedule in `Auto update`, the latest refresh in `Profile refresh` and `Update result`, and the GUI-to-snapshot digest comparison in `Profile vs runtime`. `proxy-policy` includes `profile_refresh`. `proxy-inspect` exposes up to 20 sanitized refresh history entries.
+
+`verifying` means the imported snapshot is awaiting its health result. `fallback` means the candidate was rejected and the prior authorized snapshot was retained. `rolled_back` means snapshot authority was restored and a helper restart was requested. Check the network readiness fields to confirm that the core recovered. A digest difference describes different content; it does not establish which file is newer.
+
+Subscription changes use the same root policy. New hosts overrides need matching `subscriptionAuditAllowedHosts` entries; switching a subscription does not expand that permission. Probe targets and expected routes are configurable. If protected routes remain indeterminate, `enforce` retains the prior snapshot; use the audit categories to identify the constraint before changing policy.
+
+The user notification timer reads local files every five minutes. It combines refresh failures, content-audit findings, overdue updates, content drift and stale subscriptions into one message per round. Refresh failures are deduplicated by full result and digest; overdue and drift reminders follow state transitions; stale reminders are limited to once per day. Deduplication state is stored privately in `$XDG_STATE_HOME/clash-verge/refresh-notified.json` and advances only after delivery succeeds. The timer does not fetch subscriptions.
+
+### Subscription reachability
+
+Run `proxy-subscription --check --json` to check the current subscription explicitly. The command reads the URL from the GUI index and reports HTTP status, transport, elapsed time, bytes, HTTPS and redirect count. Supply `--etag` to send a conditional GET; without a validator it sends an ordinary GET.
+
+The check first uses the direct path permitted by the current network policy and tries the configured mixed port after a transport failure. A complete HTTP response such as 403 is reported without a proxy retry. The command does not write profiles, import configuration or advance update timestamps.
+
+The total deadline defaults to 15 seconds and covers name resolution, both transport attempts, redirects and body reads. `--timeout` accepts 1–120 seconds. Responses are limited to 8 MiB and three same-origin redirects; cross-origin redirects and HTTPS downgrades are refused. Output excludes URLs, response bodies and validator contents. `proxy-inspect --deep` adds service restart counts and a fixed journal query for privileged troubleshooting.
+
 ## Coordination and firewall repair
 
-Socket-directory events, TUN link monitoring, nft events, NetworkManager dispatch and dhcpcd hooks wake the supervisors. Adaptive polling backs them up (two seconds during transitions, capped at five seconds in enforced modes and 60 seconds in direct mode); the mode supervisor has a 90-second watchdog. A cancelled probe does not count as a failed observation.
+Socket-directory events, TUN link monitoring, nft events, NetworkManager dispatch and dhcpcd hooks wake the supervisors. Adaptive polling backs them up: two seconds during transitions, capped at five seconds in enforced modes and 60 seconds in direct mode. The mode supervisor has a 90-second watchdog. A cancelled probe does not count as a failed observation.
 
 Build-time [expected rules](../system/config/network/proxy/coordinator.nix) are generated with the same nft implementation inside an LKL userspace kernel. The verifier compares owned tables, hooks, priorities, policies and full ordered expressions. Handles, counters, set-element order and tightly bounded authorized DNS leases are normalized. Read/parse errors are failures, never empty successes. A correctly installed C passes even with no core.
 
@@ -133,7 +157,7 @@ Proxy intent or a running core installs C first; the supervisor opens B after he
 
 TUN defaults: `Mihomo`, table 2022, rule priority 9000, internal marks 8227/8228, fallback priority 32768, file descriptor 0. Parser, template and health share these values. `tunMode=false` selects HTTP-only/redir-host operation, dropping the requirement for a TUN. Fake-IP network is derived from `fakeIpRange`; avoid independent edits to consumers.
 
-For core access to a local/internal service, [target authorization](proxy.md#domain-targets) separates local DIRECT CIDRs from remote node grants. An internal suffix only permits a locally resolved private answer; it does not authorize node-side resolution or dialing. Remote grants use the actual leaf name and core inlet (Gost CONNECT arrives as `HTTPS`), transport and destination ports. Rebuild and deliberately import/restart the managed core after changing these options. A retains literal portal access; C remains blocked. Native [direct-egress grants](egress.md) are independent.
+For core access to a local/internal service, [target authorization](proxy.md#domain-targets) separates local DIRECT CIDRs from remote node grants. An internal suffix only permits a locally resolved private answer; it does not authorize node-side resolution or dialing. Remote grants use the actual leaf name, core inlet, transport and destination ports. Gost CONNECT arrives as `HTTPS`. Rebuild and deliberately import/restart the managed core after changing these options. A retains literal portal access; C remains blocked. Native [direct-egress grants](egress.md) are independent.
 
 For separate guest trust classes, select a development bridge explicitly and grant only the needed private service to other guests. A host-socket backend additionally needs its own fixed account; choose a free UID and nonoverlapping subordinate ranges:
 

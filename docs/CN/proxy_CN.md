@@ -20,19 +20,49 @@ Helper 在特权边界执行固定路径和文件操作约束。核心持有宿�
 
 显式启用的 IPv4 访客 TPROXY 入口绑定 `0.0.0.0:7896`；普通 mixed/DNS/controller 端点在 `allow-lan=false` 下仍仅本机。打包监听器单独处理该绑定并选择 IPv4 socket，进入 B 前检查 TCP/UDP 的 UID 与服务 cgroup；访客接口/源地址授权仍由防火墙负责。核心后续 auto-redirect 保留自有访客 mark 对应的透明 socket。见[访客网络](network_CN.md#访客与容器)。
 
-## 配置授权
+## 配置导入
 
-`proxy-control preflight` 检查桌面配置、必需资源和受管解析约束，不改变网络意图。`clash-on` 以预检成功为导入前提；缺失输入可在明确选择的 A 中准备，预检失败保留当前模式。
+`proxy-control preflight` 检查桌面配置、必需资源和受管解析约束，不改变网络意图。`clash-on` 以预检成功为前提，写入代理意图，进入 C 后启动 helper。它清除刷新 pin 和待健康检查记录，保留完整的快照授权，并打开一次性 300 秒导入窗口。失败也会消费该窗口。
 
-`clash-on` 写入代理意图，进入 C 并开始新导入会话：清除旧授权，打开**一次性 300 秒**窗口。GUI 提供生效配置，打包启动器在共享授权锁下导入后再启动核心。失败也消费窗口，修正输入后需重新 `clash-on`。
+[clash-verge-stage.py](../../system/programs/clash/service/clash-verge-stage.py) 接受桌面用户所有、大小受限的普通文件，拒绝符号链接并检测并发变化。它复制 YAML 和 geodata 到 root 所有的快照，规范控制口位置，以无 capabilities 的 `clash-core` 执行 `-t`。快照目录使用 0750，文件使用 0640；授权记录和原始解析诊断仅 root 可读。
 
-[clash-verge-stage.py](../../system/programs/clash/service/clash-verge-stage.py) 只接受桌面用户所有、大小受限的普通输入文件，不跟随 symlink，复制 YAML/geodata 到 root 所有的快照并检测并发变化。它规范控制口位置，以无能力的 `clash-core` 执行核心 `-t` 验证。目录 0750、文件 0640，core 组可读；授权记录、验证/helper 日志仅 root 可读写。
+快照摘要覆盖 YAML、geodata 字节和可选资源缺失状态。资源包括 `Country.mmdb`、`GeoIP.dat`、`GeoSite.dat`、`ASN.mmdb` 和 `BundleMRS.7z`，旧 country 数据库名字会规范化。`cache.db` 和 `proxies/` provider 缓存指向独立可写状态，不纳入该摘要。
 
-摘要覆盖生效 YAML、geodata 字节及可选文件缺失状态。规范资源包括 `Country.mmdb`、`GeoIP.dat`、`GeoSite.dat`，以及可选 `ASN.mmdb`/`BundleMRS.7z`；支持的旧 country 数据库名字会规范化。`cache.db` 指向独立可写状态，不纳入摘要。
+### 刷新策略
 
-普通重启要求 GUI YAML 匹配且快照摘要完整，复用已授权数据库；GUI 更新数据库不会替换该授权。导入新 YAML/geodata 需要再次 `clash-on`。受管 geodata 下载禁用，缺失或损坏数据库也不能自动替换。快照跨 helper 重启保留，健康检查复核摘要；`clash-off` 清除单次开机授权并请求直连。
+`my.proxy.profileRefreshPolicy` 默认为 `strict`，GUI YAML 变化需要新的 `clash-on` 窗口。设为 `auto` 后，只要代理意图仍然有效，变化的 YAML 可在通过相同的输入、解析、内容审计和摘要检查后自动导入。本机配置使用 `auto`。
 
-每次导入授权该会话选中的 YAML 和资源；桌面账户及其选择的订阅、配置来源构成输入信任边界。
+YAML 未变化时走普通重启流程，复用已授权 geodata。GUI 单独更新数据库不会触发导入。受管 geodata 下载关闭，缺失或损坏数据库也不能自行替换。`clash-off` 撤销授权并请求直连；直连意图下，GUI 更新不能重新启动核心。
+
+通过校验的候选进入 `verifying`。`profile-refresh-verify.timer` 每十秒检查，至少观察 60 秒后，才接受与该候选摘要对应的新鲜健康结果。通过后记录 `accepted`，建立 settled 基线；观察期内连续导入仍保留该基线。失败则恢复基线及授权，重启 helper，并记录 `rolled_back`。没有 settled 基线时记录 `refused`，健康门继续保护宿主。服务恢复以 `proxy-status` 为准，helper unit active 本身不代表核心已就绪。
+
+`auto` 下候选读取或校验失败时，保留完整且仍获授权的旧快照，记录 `fallback`，并用该快照启动核心。没有有效回退对象时以 exit 78 拒绝启动。启动器始终运行 effective 快照。被拒候选的摘要 pin 保留一小时，普通重启不会重复校验，也不续期；`clash-on` 和 `clash-off` 清除 pin 及待健康检查记录。
+
+`/run/proxy-mode/profile-refresh.json` 以 0644 原子发布，包含策略、最近结果、候选与上一摘要、固定失败原因、快照时间、上次接受时间、内容审计分类，以及最多 20 条历史。显示的摘要截断为 12 位。记录不包含订阅 URL、凭据、节点名、私有路径或原始解析输出。
+
+### 内容审计
+
+`my.proxy.subscriptionAudit` 支持 `off`、`warn` 和 `enforce`，模块默认 `warn`，本机配置使用 `enforce`。worker 在 `-t` 与快照提交之间离线运行，身份为无 capabilities 的 `clash-core`。`off` 只关闭附加检查，受管解析器与摘要检查始终有效。
+
+检查范围包括节点 server 地址、未获授权的 `skip-cert-verify`、空组、无效组引用、YAML 键结构、hosts 映射和 provider 配置变化。历史比较使用最近 settled 的 YAML；可变 provider 内容仍遵循下文的独立信任模型。`my.proxy.insecureProxyExceptions` 中的具名 TLS 例外保留。有意使用非公网节点端点时须声明 `my.proxy.subscriptionAuditServerCidrs`，该审计例外不授予应用访问权限，组播端点仍被拒绝。
+
+`my.proxy.remoteOnlyCatchAll` 默认关闭，本机启用。Merge 脚本沿最终兜底策略及其代理组引用，移除 DIRECT 等非代理成员，支持任意订阅分组名，拒绝空组和循环引用。这些共享分组不再提供对应的手动选择；显式 DIRECT 规则和无关分组保留。动态 provider 路由在 `enforce` 下仍须得到确定的审计结论。
+
+该约束在 GUI 生成 YAML 时应用。修改 Merge 策略后，应重新应用当前 profile，生成对应 YAML，再请求新导入。
+
+每次导入都检查 root 显式 hosts 白名单，首次导入也不例外。候选提供的名称和值须匹配 `my.proxy.subscriptionAuditAllowedHosts`，允许省略白名单中的条目。默认空白名单不允许订阅覆盖 hosts。
+
+```nix
+my.proxy.subscriptionAuditAllowedHosts = {
+  "service.internal" = "192.168.1.10";
+};
+```
+
+`my.proxy.sensitiveDomains` 为用户选定的域名后缀启用定向检查，默认为空。检查器支持有序的 `DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`MATCH` 规则及可静态确定的代理组，识别可证明的 DIRECT 到代理或拒绝变化。同一后缀下混合路由保守返回 `unknown`，GEOSITE、GEOIP、逻辑规则和动态组也可能无法确定；检查器不等同完整的 Mihomo 路由求值。基础设施目标不会自动加入此列表。
+
+`my.proxy.subscriptionAuditProtectedRoutes` 为精确域名声明预期的 `direct`、`proxy` 或 `reject` 路由。健康和延迟探测域名默认为 `proxy`；订阅和更新域名须在此声明各自预期路由。无法确定的规则或代理组不能证明候选符合要求。
+
+`enforce` 阻断 deny，以及敏感域或受保护目标路由无法确定的候选，原因分别为 `blocked by audit` 或 `audit indeterminate`。worker 自身失败也不能在 `enforce` 下通过。`warn` 记录结果并继续导入。结构性警告覆盖规则或节点数量大幅变化、单一 host 集中、新增明文凭据节点和大类地理路由变化。公开结果只包含固定分类与计数。
 
 ## 受管 profile 与控制 API
 
@@ -77,7 +107,7 @@ my.proxy.proxyOnly = false; # 默认保留订阅 Rule 分流。
 
 部署 Nix generation 并导入/重启受管核心后生效，会增加包括国内流量在内的订阅消耗。`bootMode`、A 的门户访问、root UDP、组播及核心外宿主私网路径独立控制。
 
-`proxy-control-vm` 保留默认 Rule 覆盖，`proxy-uniform-vm` 使用生产 helper/核心和 `proxyOnly=true`，检查全新 TCP/UDP 的 DIRECT 拒绝与真实双栈路径。UDP 在 association 内固定叶子，因此 DIRECT 拒绝测试使用新 association；复用远程叶子仍属于代理路径。浏览器检查同样覆盖两种路由策略。修改上游源码或补丁前，参照[按组件升级的复核流程](maintenance_CN.md#按组件触发复核)。
+`proxy-control-vm` 保留默认 Rule 覆盖，`proxy-uniform-vm` 使用生产 helper/核心和 `proxyOnly=true`，检查全新 TCP/UDP 的 DIRECT 拒绝与真实双栈路径。UDP 在 association 内固定叶子，因此 DIRECT 拒绝测试使用新 association；复用远程叶子仍属于代理路径。浏览器检查同样覆盖两种路由策略。修改上游源码或补丁前，参照[源码兼容性检查](maintenance_CN.md#源码兼容性检查)。
 
 ## 域名目标
 
@@ -130,6 +160,6 @@ fake-IP 池只表示路由身份，不能成为实际出站目标。必须先通
 
 ## Gost 生命周期
 
-[default.nix](../../system/programs/gost/default.nix) 遵循模式原子状态，绑定前回收旧进程，不使用 `SO_REUSEPORT`，每端点要求唯一监听，并限制文件描述符、内存和任务数。B 信任监督器健康结论并复核 mixed 监听身份；以被动 socket 观测代替连接透明入口，自连接检测作为后备。
+[default.nix](../../system/programs/gost/default.nix) 遵循模式原子状态，绑定前回收旧进程，不使用 `SO_REUSEPORT`，每端点要求唯一监听，并限制文件描述符、内存和任务数。B 信任监督器健康结论并检查 mixed 监听身份；以被动 socket 观测代替连接透明入口，自连接检测作为后备。
 
 Relay 兼容带有效端口的裸数字 IPv6 CONNECT，保留 Go HTTP framing 和缓冲中的隧道数据。建议客户端使用标准 `[IPv6]:port`。Gost 通过 store 绝对路径运行，不放进系统 PATH 或 initrd。源码及打包自定义见[维护手册](maintenance_CN.md)。

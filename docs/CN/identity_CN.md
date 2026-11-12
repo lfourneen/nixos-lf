@@ -99,4 +99,4 @@ my.hardening.wired.persistDhcpIdentity = true;
 
 重连后检查实际 MAC、IPv4/IPv6 获取和门户授权，再检查[网络就绪状态](operations_CN.md#状态与定位)。C 仍阻断应用出站；有意进行门户恢复时使用既有[离线恢复流程](operations_CN.md#离线恢复)。
 
-`network-identity-config` 检查默认值、有线变体、持久化和实际选定的 nmcli 解析器。`network-identity-vm` 使用真实 dhcpcd、NetworkManager 与模拟无线电，观察每次激活的新双栈 DHCP 交换，验证轮换、profile 优先级和恢复。NetworkManager、systemd、dhcpcd 升级会选择[维护流程](maintenance_CN.md#按组件触发复核)中的 `link-identity` 组件。
+`network-identity-config` 检查默认值、有线变体、持久化和实际选定的 nmcli 解析器。`network-identity-vm` 使用真实 dhcpcd、NetworkManager 与模拟无线电，观察每次激活的新双栈 DHCP 交换，验证轮换、profile 优先级和恢复。NetworkManager、systemd、dhcpcd 升级会选择[维护流程](maintenance_CN.md#源码兼容性检查)中的 `link-identity` 组件。

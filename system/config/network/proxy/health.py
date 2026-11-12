@@ -370,6 +370,27 @@ def main():
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         result.update(detail=f"probe error: {type(error).__name__}")
     result.update(duration_ms=round((time.monotonic() - probe.start) * 1000), layers=probe.timings)
+    if os.geteuid() == 0 and not result['ok'] and result.get('reason') != 'interrupted':
+        # Keep the last failure even after a later probe succeeds. Raw details,
+        # targets, policy chains and parser output stay out of this record.
+        record = {key: result[key] for key in ('ok', 'reason', 'duration_ms', 'layers')}
+        record['at'] = time.time()
+        path = None
+        try:
+            runtime = Path(settings['runtime'])
+            record['boot_id'] = (runtime / 'boot-id').read_text().strip()
+            record['digest'] = Path(settings['digest_file']).read_text().strip()
+            with tempfile.NamedTemporaryFile(mode='w', prefix='.health-failure-', dir=runtime, delete=False) as stream:
+                path = Path(stream.name)
+                json.dump(record, stream)
+            path.chmod(0o644)
+            path.replace(runtime / 'health-failure.json')
+        except (OSError, KeyError):
+            # Failure to persist diagnostics cannot turn a failed probe into ok.
+            pass
+        finally:
+            if path is not None:
+                path.unlink(missing_ok=True)
     print(json.dumps(result, separators=(",", ":")))
     return 0 if result["ok"] else 1
 

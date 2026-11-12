@@ -209,15 +209,17 @@
       ],
       "checks": [
         "proxy-control",
+        "proxy-refresh",
         "proxy-control-config",
         "proxy-gui",
         "proxy-profile",
         "proxy-control-vm",
+        "proxy-refresh-vm",
         "proxy-validation-tools",
         "proxy-regressions"
       ],
       "entrypoints": [
-        "helper src/core/manager.rs, logger.rs and reconcile.rs",
+        "helper src/core/manager.rs, server.rs, logger.rs and reconcile.rs",
         "Nixpkgs GUI/helper packaging and inherited patches",
         "Installed GUI/public core wrapper, stage snapshot and service runtime"
       ],

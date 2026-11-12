@@ -271,6 +271,9 @@ let
     atomic_write() {
       printf '%s\n' "$2" > "$1.$$" && mv -f "$1.$$" "$1"
     }
+    # Publish before mode decisions or helper startup, outside the helper's
+    # restricted /proc view. A missing identity must not be silently invented.
+    ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/clash-verge-stage.py} initialize-boot /run/proxy-mode || exit 1
     lock_state() { $FLOCK -x -w 10 9 || exit 1; }
     unlock_state() { $FLOCK -u 9; }
     read_intent() { $CAT "$INTENT" 2>/dev/null || echo auto; }
@@ -483,6 +486,9 @@ NFT_OFF
     }
     health_ok() {
       local output=/run/proxy-mode/health.$$.json next_fast=$SECONDS
+      local health_digest health_at
+      health_digest=$($CAT /run/proxy-mode/config-digest 2>/dev/null || true)
+      health_at=$(${pkgs.coreutils}/bin/date +%s)
       health_gate=obs
       $SETSID "$HEALTH" "$HEALTH_SCRIPT" "$HEALTH_SETTINGS" > "$output" 9>&- &
       health_pid=$!
@@ -515,7 +521,11 @@ NFT_OFF
       if ! $JQ -e 'has("ok") and has("duration_ms")' "$output" >/dev/null 2>&1; then
         rm -f "$output"; return 1
       fi
-      mv -f "$output" /run/proxy-mode/health.json
+      $JQ --arg digest "$health_digest" --argjson at "$health_at" \
+        --arg boot "$($CAT /run/proxy-mode/boot-id)" \
+        '. + {digest:$digest, at:$at, boot_id:$boot}' "$output" > "$output.stamped"
+      mv -f "$output.stamped" /run/proxy-mode/health.json
+      rm -f "$output"
       health_gate=$($JQ -r '.reason' /run/proxy-mode/health.json)
       $JQ -e '.ok == true' /run/proxy-mode/health.json >/dev/null
     }
@@ -858,7 +868,11 @@ NFT_OFF
             systemctl stop clash-verge.service
             exec 9>/run/proxy-mode/authorization.lock
             flock -x -w 30 9
-            rm -f /run/proxy-mode/authorized-config /run/proxy-mode/config-digest
+            ${pkgs.python3}/bin/python3 -c 'import importlib.util; s=importlib.util.spec_from_file_location("stage", "${../../../programs/clash/service/clash-verge-stage.py}"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.clear_refresh("/run/proxy-mode", "/run/clash-verge-rev")'
+            # The helper runs with ProtectProc=invisible and cannot read
+            # /proc/sys/kernel/random/boot_id. Publish the identity from this
+            # unrestricted context before any launcher can stage a profile.
+            ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/clash-verge-stage.py} initialize-boot /run/proxy-mode
             (umask 077; : > /run/proxy-mode/authorize-window)
             flock -u 9
             systemctl start clash-verge.service
@@ -871,7 +885,8 @@ NFT_OFF
             exec 9>/run/proxy-mode/authorization.lock
             flock -x -w 30 9
             rm -f /run/proxy-mode/authorized-config /run/proxy-mode/config-digest \
-              /run/proxy-mode/authorize-window ${frontSock}
+              /run/proxy-mode/authorize-window /run/proxy-mode/effective-config-sha256 /run/proxy-mode/effective-config.json ${frontSock}
+            ${pkgs.python3}/bin/python3 -c 'import importlib.util; s=importlib.util.spec_from_file_location("stage", "${../../../programs/clash/service/clash-verge-stage.py}"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.clear_refresh("/run/proxy-mode", "/run/clash-verge-rev")'
             flock -u 9
             if [ -f /run/clash-verge-rev/forwarder.pid ]; then
               forwarder_pid=$(cat /run/clash-verge-rev/forwarder.pid 2>/dev/null || true)

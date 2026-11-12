@@ -76,6 +76,57 @@ async function main() {
     run();
     assert.equal(parse().default_latency_test, expected);
 
+    // Profile interval normalization: only existing remote integers 1..1439 rise.
+    const profiles = path.join(path.dirname(settings), "profiles.yaml");
+    const parseFile = (file) => {
+      const result = spawnSync(yq, ["-o=json", ".", file], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    const profileText = [
+      "# keep this comment",
+      "current: a",
+      "items:",
+      "- {uid: a, type: remote, updated: 1, option: {update_interval: 1, allow_auto_update: false, merge: m}}",
+      "- {uid: b, type: remote, option: {update_interval: 60}}",
+      "- {uid: c, type: remote, option: {update_interval: 1439}}",
+      "- {uid: d, type: remote, option: {update_interval: 0}}",
+      "- {uid: e, type: remote}",
+      "- {uid: f, type: remote, option: {update_interval: 1440}}",
+      "- {uid: g, type: remote, option: {update_interval: 4320}}",
+      "- {uid: h, type: local, option: {update_interval: 5}}",
+      "- {uid: i, type: remote, option: {update_interval: \"60\"}}",
+      "- {uid: j, type: remote, option: {merge: m}}",
+    ].join("\n") + "\n";
+    fs.writeFileSync(profiles, profileText, { mode: 0o640 });
+    run();
+    const items = Object.fromEntries(parseFile(profiles).items.map(item => [item.uid, item]));
+    assert.equal(items.a.option.update_interval, 1440);
+    assert.equal(items.b.option.update_interval, 1440);
+    assert.equal(items.c.option.update_interval, 1440);
+    assert.equal(items.d.option.update_interval, 0);
+    assert.equal(items.e.option, undefined, "do not create a missing option");
+    assert.equal(items.f.option.update_interval, 1440);
+    assert.equal(items.g.option.update_interval, 4320);
+    assert.equal(items.h.option.update_interval, 5, "local profiles are untouched");
+    assert.equal(items.i.option.update_interval, "60", "non-integer intervals are untouched");
+    assert.equal(items.j.option.update_interval, undefined, "missing interval is not created");
+    assert.equal(items.a.option.allow_auto_update, false);
+    assert.equal(items.b.option.allow_auto_update, undefined, "auto-update flags are untouched");
+    assert(fs.readFileSync(profiles, "utf8").includes("# keep this comment"));
+    assert.equal(fs.statSync(profiles).mode & 0o777, 0o640);
+    const profileOnce = fs.readFileSync(profiles, "utf8");
+    run();
+    assert.equal(fs.readFileSync(profiles, "utf8"), profileOnce, "profile normalization is idempotent");
+    for (const original of ["- unexpected sequence\n", "items: nope\n",
+                            "items:\n- {type: remote, option: 3}\n"]) {
+      fs.writeFileSync(profiles, original);
+      run(false);
+      assert.equal(fs.readFileSync(profiles, "utf8"), original, "invalid profile index is preserved");
+    }
+    fs.unlinkSync(profiles);
+    run();
+
     // Also honor the standard HOME fallback when XDG_DATA_HOME is empty.
     const fallback = path.join(root, ".local/share/io.github.clash-verge-rev.clash-verge-rev/verge.yaml");
     fs.mkdirSync(path.dirname(fallback), { recursive: true });

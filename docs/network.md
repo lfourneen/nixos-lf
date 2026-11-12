@@ -21,13 +21,13 @@ Proxy-aware applications    Public TCP without proxy settings    TUN / fake-IP
                                     uplink
 ```
 
-The listeners are local. Environment variables (both cases), GSettings and Flatpak overrides point proxy-aware applications at `127.0.0.1:33332`. Gost forwards both inlets to `127.0.0.1:7897` in B, passes traffic directly in A and closes its listeners in C or unknown state. Explicit client connections to the transparent port `33333` are rejected before NAT; only redirected flows should enter it.
+The listeners are local. Uppercase and lowercase environment variables, GSettings and Flatpak overrides point proxy-aware applications at `127.0.0.1:33332`. Gost forwards both inlets to `127.0.0.1:7897` in B, passes traffic directly in A and closes its listeners in C or unknown state. Explicit client connections to the transparent port `33333` are rejected before NAT; only redirected flows should enter it.
 
 `user.slice` reserves the fixed proxy and local DNS ports through `SocketBindDeny`, covering TCP/UDP and IPv4/IPv6. Desktop sessions and user managers inherit this restriction; other development ports remain available. `ip_local_reserved_ports` excludes these ports from automatic allocation, including `bind(0)` and implicit client binds. Loopback proxy replies require the expected socket UID: root/Gost for Gost ports and root/clash-core for core ports. Readiness checks use the listener address, UID and cgroup.
 
 Port reservation uses systemd's cgroup `bind4`/`bind6` hooks and requires kernel cgroup-BPF support. Its scope is processes in `user.slice`; untrusted system services need equivalent restrictions in their own slices. Root and managed service identities are trusted. Reply-UID checks authenticate the responding socket, while bind restrictions prevent delivery to an unauthorized UDP listener. See [systemd's bind policy](https://www.freedesktop.org/software/systemd/man/260/systemd.resource-control.html#SocketBindAllow=bind-rule).
 
-Mihomo marks its outbound sockets with `6666` (`0x1a0a`); the exception requires both socket and packet marks plus socket UID root or `clash-core`. Rule routing can choose DIRECT under the default `my.proxy.proxyOnly=false`. The optional [uniform proxy policy](proxy.md#routing-policy) refuses application DIRECT inside the core. Private-network and infrastructure paths outside the core have their own firewall rules. Inside the core, literal and resolved private targets have separate [local DIRECT and remote-leaf authorization](proxy.md#domain-targets); node selection follows subscription rules, while access to internal targets requires a matching target grant.
+Mihomo marks its outbound sockets with `6666` / `0x1a0a`; the exception requires both socket and packet marks plus socket UID root or `clash-core`. Rule routing can choose DIRECT under the default `my.proxy.proxyOnly=false`. The optional [uniform proxy policy](proxy.md#routing-policy) refuses application DIRECT inside the core. Private-network and infrastructure paths outside the core have their own firewall rules. Inside the core, literal and resolved private targets have separate [local DIRECT and remote-leaf authorization](proxy.md#domain-targets); node selection follows subscription rules, while access to internal targets requires a matching target grant.
 
 [DNS](dns.md) runs alongside this path: resolved → dnsmasq → Mihomo or Unbound. [Firefox](browser.md) defaults to the same Gost HTTP inlet; its optional transparent path uses native DNS and host sockets under this TUN/firewall policy, allowing HTTPS-RR/ECH discovery. Its parent and descendants run in an [outer filesystem and desktop-interface sandbox](browser.md#outer-sandbox), retaining the desktop UID and this host network policy.
 
@@ -73,7 +73,7 @@ Ordinary operation preserves `inet filter`, `ip proxymode_nat` and `ip6 proxymod
 | Prerouting `-199` | Guest source, private-target and gateway-service checks |
 | Output `-199` | Track restricted socket guest accounts; limit dnsmasq upstream DNS to installed destination leases; strict mode cuts the core's external port 53 except MagicDNS |
 | Output `-198` | Reserve internal DNS ports, authenticate DNS/proxy replies, track ordinary application connections and recheck guest host-service replies |
-| Output `-197` | C guard, after conntrack (`-200`) and before auto-redirect (`-150`) |
+| Output `-197` | C guard, after conntrack at `-200` and before auto-redirect at `-150` |
 | Output `-196` | Restrict independent DNS-over-TLS/QUIC on port 853 |
 | Output `-195` | B optional private/multicast grants and optional Unbound DoT cut, before NAT/TUN |
 | Output `-194` | Optional Chrony original-target CIDR bounds in A/B |
@@ -83,9 +83,9 @@ Ordinary operation preserves `inet filter`, `ip proxymode_nat` and `ip6 proxymod
 
 NAT priorities order rule lookups within the kernel’s shared destination-NAT hook; the socket guest DNS filter at `-90` checks the actual rewritten target after that hook.
 
-In B, public host TCP is redirected, fake-IP traffic retains its core path, and other public uplink traffic is dropped after the explicit exceptions. These include marked core sockets, UID-scoped Unbound DoT and Chrony NTS/NTP, narrow DHCP, multicast and default private egress. Tailscale UDP requires UID 0, a physical uplink, and both socket `SO_MARK` and packet mark equal to the upstream Linux bypass mark (`0x80000`). Peer/STUN ports remain dynamic; unmarked root UDP has no blanket exception. Root and the managed core are trusted network administrators with permission to set socket marks and change firewall rules. The current LKL kernel supports `socket mark`, but not `socket cgroupv2`.
+In B, public host TCP is redirected, fake-IP traffic retains its core path, and other public uplink traffic is dropped after the explicit exceptions. These include marked core sockets, UID-scoped Unbound DoT and Chrony NTS/NTP, narrow DHCP, multicast and default private egress. Tailscale UDP requires UID 0, a physical uplink, and both socket `SO_MARK` and packet mark equal to the upstream Linux bypass mark `0x80000`. Peer/STUN ports remain dynamic; unmarked root UDP has no blanket exception. Root and the managed core are trusted network administrators with permission to set socket marks and change firewall rules. The current LKL kernel supports `socket mark`, but not `socket cgroupv2`.
 
-[transport.nix](../system/config/network/tailscale/transport.nix) treats the mark as an upstream constant, not a configurable local allocation. Normal system builds check the selected Tailscale source for its value and the reviewed magicsock/STUN marking paths. Network changes do not change the constant; upgrades require this check and `proxy-tailscale-vm`, which exercises the real selected CLI with isolated dual-stack STUN peers. Falling back to `SO_BINDTODEVICE` does not silently reopen unmarked root UDP.
+[transport.nix](../system/config/network/tailscale/transport.nix) treats the mark as an upstream constant, not a configurable local allocation. Normal system builds check the selected Tailscale source for its value and the expected magicsock/STUN marking paths. Network changes do not change the constant; upgrades require this check and `proxy-tailscale-vm`, which exercises the real selected CLI with isolated dual-stack STUN peers. Falling back to `SO_BINDTODEVICE` does not silently reopen unmarked root UDP.
 
 The [direct-egress ledger](egress.md) records every actor, target, port and mode. Optional restricted B grants use interface/UID/CIDR/ports and cut revoked established host-initiated flows before TUN/NAT. Unbound is limited to configured DoT targets even in A; its B exception can be disabled. Chrony can pin destination CIDRs in A/B. Defaults preserve LAN and changing NTS addresses.
 
@@ -115,7 +115,7 @@ Tailscale accepts neither DNS, subnet routes nor an exit node automatically. Onl
 
 | Class | Identity | Private destinations | Public destinations |
 |---|---|---|---|
-| Restricted bridge / hotspot (default) | Exact ingress interface and declared source CIDR | Explicit interface/CIDR/TCP or UDP port grants | A allows IPv4; B requires explicit IPv4 TPROXY selection; C refuses |
+| Restricted bridge / hotspot, default | Exact ingress interface and declared source CIDR | Explicit interface/CIDR/TCP or UDP port grants | A allows IPv4; B requires explicit IPv4 TPROXY selection; C refuses |
 | Trusted development bridge | Same interface/source checks; explicit `trust="trusted"` | Private routing allowed, with unsafe targets still refused | Same public policy as restricted bridges |
 | Restricted host-socket backend | Dedicated fixed UID and all its delegated subordinate UIDs | Explicit account/original-output-interface/CIDR/port grants | Host A/B/C policy; C cuts tracked replies too |
 | Desktop-owned passt / rootless Docker | Shared desktop UID | Host policy | Host policy |

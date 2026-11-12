@@ -1,7 +1,7 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false }:
 
 let
-  dataplane = !(restricted || strictDns || targetPolicy || guests || uniformProxy || ech != null);
+  dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || ech != null);
   echFixture = pkgs.runCommand "ech-origin-fixture" { nativeBuildInputs = [ pkgs.go ]; } ''
     export GOCACHE="$TMPDIR/go-cache"
     export GO111MODULE=off
@@ -12,7 +12,7 @@ let
 
 in
 pkgs.testers.runNixOSTest {
-  name = if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
@@ -58,6 +58,8 @@ pkgs.testers.runNixOSTest {
       package = clashPackage;
     };
 
+    my.proxy.profileRefreshPolicy = if refresh then "auto" else "strict";
+    my.proxy.subscriptionAudit = if refresh then "enforce" else "warn";
     my.proxy.nodeProbeUrls = [ "http://node.fixture.example:8080/" ];
     my.proxy.tunProbeName = "tun.fixture.example";
     my.proxy.dnsEncryption = if strictDns then "strict" else "opportunistic";
@@ -103,6 +105,7 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-tail.py".source = ../tailscale/tailscale_fixture.py;
     environment.etc."netsec-integration-policy.json".text = builtins.toJSON config.my.proxy.managedProfile;
     environment.etc."netsec-control.py".source = ./control_fixture.py;
+    environment.etc."netsec-refresh.py".source = ./refresh_fixture.py;
     environment.etc."netsec-dataplane.py".source = ./dataplane_fixture.py;
     environment.etc."network-benchmark.py".source = ../../../scripts/network-benchmark.py;
     environment.etc."netsec-target.py" = lib.mkIf targetPolicy { source = ./target_fixture.py; };
@@ -263,6 +266,11 @@ pkgs.testers.runNixOSTest {
     wait_proxy()
     machine.succeed("setpriv --reuid=1000 --clear-groups proxy-status --json | jq -e '(.ready | type) == \"boolean\" and .mode == \"proxy\"'")
     machine.succeed("setpriv --reuid=1000 --clear-groups proxy-status --no-color | grep -q 'Network status'")
+    ${pkgs.lib.optionalString (refresh || dataplane) ''
+    with subtest("managed profile refresh and core recovery"):
+        print(machine.succeed("python3 -u /etc/netsec-refresh.py ${if refresh then "auto" else "strict"}", timeout=450))
+        wait_proxy()
+    ''}
     ${pkgs.lib.optionalString dataplane ''
     with subtest("provider cache writes and rejected refresh preserve working inline routing"):
         machine.succeed("python3 /etc/netsec-control.py provider-cache-boundary")

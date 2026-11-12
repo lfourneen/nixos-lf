@@ -38,7 +38,7 @@ Network access keeps the desktop UID and the existing A/B/C rules, including Gos
 
 The default `my.firefox.networkPath="http-proxy"` locks HTTP/HTTPS to Gost at `127.0.0.1:33332`, with empty bypass/PAC/SOCKS settings, localhost proxying enabled and direct failover disabled. A passes through, B reaches Mihomo's routing policy, C closes the application path. The optional transparent path below uses native sockets under the same host policy. Browser privacy does not change `bootMode` or `proxyOnly`. In B, local-service targets reaching the core need [local DIRECT or scoped remote-node authorization](proxy.md#domain-targets); literal private IPs do not automatically authorize a node-side dial. A keeps its literal portal path.
 
-WebRTC and HTTP/3 are disabled, keeping web traffic on TCP. DoH is disabled and locked (`network.trr.mode=5`), so browser-originated DNS uses the managed system resolver. Explicit HTTP proxy requests can delegate target resolution to Gost/Mihomo; the core applies the same domain snapshot, additions and exceptions before DNS responses and application dials. DNSSEC and encryption depend on the selected resolver path and `dnsEncryption`, as described in [DNS](dns.md). Captive-portal detection and NetworkManager connectivity checks remain enabled; local HTTP remains available under HTTPS-First.
+WebRTC and HTTP/3 are disabled, keeping web traffic on TCP. DoH is disabled and locked at `network.trr.mode=5`, so browser-originated DNS uses the managed system resolver. Explicit HTTP proxy requests can delegate target resolution to Gost/Mihomo; the core applies the same domain snapshot, additions and exceptions before DNS responses and application dials. DNSSEC and encryption depend on the selected resolver path and `dnsEncryption`, as described in [DNS](dns.md). Captive-portal detection and NetworkManager connectivity checks remain enabled; local HTTP remains available under HTTPS-First.
 
 ## ECH discovery and proxy compatibility
 
@@ -48,7 +48,7 @@ ECH encrypts the inner TLS ClientHello, including the origin SNI. In this config
 
 | `my.firefox.networkPath` | Name discovery and transport | ECH behavior |
 |---|---|---|
-| `"http-proxy"` (default) | Locked Gost HTTP proxy; target resolution may be delegated to the core | The pinned Firefox 159.0.1 excludes HTTPS CONNECT from HTTPS-RR discovery. GREASE remains enabled; HTTPS-RR discovery uses the transparent path below |
+| `"http-proxy"`, default | Locked Gost HTTP proxy; target resolution may be delegated to the core | The pinned Firefox 159.0.1 excludes HTTPS CONNECT from HTTPS-RR discovery. GREASE remains enabled; HTTPS-RR discovery uses the transparent path below |
 | `"transparent"` | System DNS and native HTTPS-RR queries; A uses direct sockets, B uses the host TUN/firewall path | NSS can use the returned ECHConfig and perform a real ECH handshake with a compatible origin |
 
 Firefox's [connection gate](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/netwerk/protocol/http/nsHttpChannel.cpp) checks both the proxy DNS strategy and `UsingConnect()`. Changing DNS transport alone does not change this gate. This package keeps the test-only `force_use_https_rr` override disabled; the transparent option uses the packaged browser without a Gecko source patch.
@@ -96,7 +96,7 @@ An explicit HTTP proxy can see CONNECT targets, including when another client su
 
 `browser-ech-vm` runs the selected production Firefox packages inside the outer sandbox with the real helper/core with a local DNS fixture, temporary CA, ECH server and a different address for the cover name. It distinguishes accepted ECH from ordinary TLS/GREASE, key retry, authenticated retry without ECH, untrusted rejection and certificate failure. It checks that cover SNI does not retarget the connection and retains A portal/C launch checks. It uses fresh profiles and never attaches to a personal browser.
 
-Run `browser-ech-vm` and `browser-ech-uniform-vm` alongside `browser-sandbox-vm`, `browser-privacy`, `proxy-core` and `proxy-profile` after browser or core changes. Both routing policies exercise actual locked preferences and both browser network paths. Review the browser's CONNECT gate, native resolver and retry handling together with the core's fake-IP service-record handling. Use the [component review gate](maintenance.md#component-review-gate) and keep these path descriptions aligned with the selected versions.
+Run `browser-ech-vm` and `browser-ech-uniform-vm` alongside `browser-sandbox-vm`, `browser-privacy`, `proxy-core` and `proxy-profile` after browser or core changes. Both routing policies exercise actual locked preferences and both browser network paths. Check the browser's CONNECT gate, native resolver and retry handling together with the core's fake-IP service-record handling. Use the [source compatibility checks](maintenance.md#source-compatibility-checks) and keep these path descriptions aligned with the selected versions.
 
 ## Privacy settings
 

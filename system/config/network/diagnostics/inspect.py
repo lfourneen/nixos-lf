@@ -2,6 +2,7 @@
 
 import json
 import argparse
+import importlib.util
 from pathlib import Path
 import subprocess
 import sys
@@ -47,10 +48,16 @@ def main():
     parser.add_argument("settings")
     parser.add_argument("--sample-seconds", type=int, choices=range(1, 61))
     parser.add_argument("--policy-only", action="store_true")
+    parser.add_argument("--deep", action="store_true")
     args = parser.parse_args()
     settings = read_json(args.settings)
+    spec = importlib.util.spec_from_file_location('network_state', settings['state_tool'])
+    state = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(state)
     if args.policy_only:
-        print(json.dumps(settings['policy'], ensure_ascii=False, indent=2))
+        policy = dict(settings['policy'])
+        policy['profile_refresh'] = state.profile_refresh(history=True)
+        print(json.dumps(policy, ensure_ascii=False, indent=2))
         return
     service_args = [settings["systemctl"], "show", "clash-verge.service", "gost-relay.service",
                     "proxy-mode.service", "dns-upstream.service", "-p", "Id", "-p", "CPUUsageNSec",
@@ -70,11 +77,20 @@ def main():
     for name, path in {"policy": "/run/proxy-mode/state.json", "health": "/run/proxy-mode/health.json",
                        "heartbeat": "/run/proxy-mode/heartbeat.json", "dns": "/run/dns-upstream/state.json",
                        "verification": "/run/netsec/state.json", "relay": "/run/gost-relay/state.json",
-                       "dns_permissions": "/run/dns-policy/state.json"}.items():
+                       "dns_permissions": "/run/dns-policy/state.json",
+                       "health_failure": "/run/proxy-mode/health-failure.json"}.items():
         result[name] = read_json(path)
     if args.sample_seconds:
         time.sleep(max(0, args.sample_seconds - (time.monotonic() - started)))
     result["services"] = command(service_args)
+    result["profile_refresh"] = state.profile_refresh(history=True)
+    if args.deep:
+        result['core_recovery'] = {
+            'service': command([settings['systemctl'], 'show', 'clash-verge.service', '-p', 'NRestarts']),
+            'logs': 'sudo journalctl -b -u clash-verge.service -u profile-refresh-verify.service -n 60'}
+    if settings.get("profiles"):
+        result["auto_update"] = state.auto_update(settings["profiles"])
+        result["profile_vs_runtime"] = state.profile_vs_runtime(settings["profiles"])
     result["alerts"] = [read_json(path) for path in sorted(Path("/run/netsec/alerts").glob("*.json"))]
     if first and first["available"] and result["services"]["available"]:
         def samples(value):

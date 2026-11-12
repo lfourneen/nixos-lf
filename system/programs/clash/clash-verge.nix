@@ -10,7 +10,7 @@ let
   # Set the writable GUI preference without rebuilding the Rust application.
   guiDefaults = pkgs.writeShellApplication {
     name = "clash-verge-defaults";
-    runtimeInputs = [ pkgs.yq-go pkgs.coreutils pkgs.procps ];
+    runtimeInputs = [ pkgs.yq-go pkgs.coreutils pkgs.python3 pkgs.util-linux ];
     text = builtins.readFile ./gui/clash-verge-defaults.sh;
   };
 
@@ -31,6 +31,21 @@ let
     desktop_uid = desktopUid;
     runtime = "/run/clash-verge-rev";
     state = "/run/proxy-mode";
+    refresh_policy = config.my.proxy.profileRefreshPolicy;
+    systemctl = "${pkgs.systemd}/bin/systemctl";
+    audit_policy = config.my.proxy.subscriptionAudit;
+    audit_python = "${pkgs.python3.withPackages (p: [ p.pyyaml ])}/bin/python3";
+    audit_tool = "${./service/subscription_audit.py}";
+
+    audit_settings = pkgs.writeText "subscription-audit-settings.json" (builtins.toJSON {
+      insecure_exceptions = config.my.proxy.insecureProxyExceptions;
+      subscription_trust = config.my.proxy.subscriptionTrust;
+      sensitive_domains = config.my.proxy.sensitiveDomains;
+      allowed_hosts = config.my.proxy.subscriptionAuditAllowedHosts;
+      allowed_server_cidrs = config.my.proxy.subscriptionAuditServerCidrs;
+      protected_routes = config.my.proxy.subscriptionAuditProtectedRoutes;
+    });
+
     data = "/var/lib/clash-core";
     setpriv = "${pkgs.util-linux}/bin/setpriv";
     yq = "${pkgs.yq-go}/bin/yq";
@@ -112,6 +127,7 @@ let
 in
 {
   imports = [ ./service/runtime.nix ];
+
   # Service mode drops the core to its pinned UID; the firewall permits its mark.
   # Source patches enforce the managed profile and correct nftables interval
   # endpoints and SOCKS address parsing. Exact anchors reject incompatible
@@ -137,9 +153,9 @@ in
         # nested shell otherwise changes argv[0] to .clash-verge-launcher.
         substituteInPlace "$out/bin/.clash-verge-launcher" \
           --replace-fail 'exec -a "$0"' "exec -a \"$out/bin/clash-verge\""
-        makeWrapper "$out/bin/.clash-verge-launcher" "$out/bin/clash-verge" \
-          --run "${guiProcess}/bin/clash-verge-gui-prepare \"$out/bin/clash-verge\" || exit 1" \
-          --run ${lib.escapeShellArg ''${guiDefaults}/bin/clash-verge-defaults ${lib.escapeShellArg config.my.proxy.delayTestUrl} || echo "Clash Verge: could not set the default delay-test URL" >&2''}
+        makeWrapper "${guiProcess}/bin/clash-verge-gui-prepare" "$out/bin/clash-verge" \
+          --add-flags "--launch $out/bin/clash-verge $out/bin/.clash-verge-launcher ${guiDefaults}/bin/clash-verge-defaults" \
+          --add-flags ${lib.escapeShellArg (lib.escapeShellArg config.my.proxy.delayTestUrl)}
       '';
       passthru = (old.passthru or { }) // {
         inherit managedCore guiDefaultsCheck stageSettings;

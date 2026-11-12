@@ -38,7 +38,7 @@ Firefox 是原生 Nix 包。[firefox.nix](../../home/programs/firefox/firefox.ni
 
 默认 `my.firefox.networkPath="http-proxy"` 将 HTTP/HTTPS 锁定为 Gost `127.0.0.1:33332`，bypass/PAC/SOCKS 为空，localhost 也走代理，禁用直连 failover。A 直通，B 进入 Mihomo 路由，C 关闭应用路径。下方可选透明路径使用原生 socket，并遵循同一套宿主策略。隐私设置不改变 `bootMode` 或 `proxyOnly`。
 
-WebRTC 和 HTTP/3 禁用，使网页传输使用 TCP。DoH 禁用并锁定（`network.trr.mode=5`），浏览器自身 DNS 走系统解析器。显式 HTTP 代理可委托 Gost/Mihomo 解析目标；核心在 DNS 应答及应用拨号前执行同一份域名快照、附加名单与例外。DNSSEC 和加密取决于解析路径及 `dnsEncryption`，见 [DNS](dns_CN.md)。门户检测与 NetworkManager 连通性检查保留，HTTPS-First 仍允许本地 HTTP。
+WebRTC 和 HTTP/3 禁用，使网页传输使用 TCP。DoH 禁用并锁定为 `network.trr.mode=5`，浏览器自身 DNS 走系统解析器。显式 HTTP 代理可委托 Gost/Mihomo 解析目标；核心在 DNS 应答及应用拨号前执行同一份域名快照、附加名单与例外。DNSSEC 和加密取决于解析路径及 `dnsEncryption`，见 [DNS](dns_CN.md)。门户检测与 NetworkManager 连通性检查保留，HTTPS-First 仍允许本地 HTTP。
 
 在 B，到达核心的本地服务目标需[本地 DIRECT 或限定远程节点的授权](proxy_CN.md#域名目标)；字面私网 IP 不会自动获得节点侧拨号权限，A 仍保留字面门户路径。
 
@@ -50,7 +50,7 @@ ECH 加密 TLS ClientHello 的内部内容，包括站点 SNI。本配置由浏�
 
 | `my.firefox.networkPath` | 名称发现与传输 | ECH 行为 |
 |---|---|---|
-| `"http-proxy"`（默认） | 锁定 Gost HTTP 代理，目标解析可委托核心 | 锁定的 Firefox 159.0.1 将 HTTPS CONNECT 排除在 HTTPS-RR 发现之外；保留 GREASE，HTTPS-RR 发现使用下方透明路径 |
+| `"http-proxy"`，默认 | 锁定 Gost HTTP 代理，目标解析可委托核心 | 锁定的 Firefox 159.0.1 将 HTTPS CONNECT 排除在 HTTPS-RR 发现之外；保留 GREASE，HTTPS-RR 发现使用下方透明路径 |
 | `"transparent"` | 系统 DNS 与原生 HTTPS-RR 查询；A 使用直连 socket，B 使用宿主 TUN/防火墙路径 | NSS 可使用返回的 ECHConfig，与支持的站点进行真实 ECH 握手 |
 
 Firefox 的[连接门](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/netwerk/protocol/http/nsHttpChannel.cpp)同时检查代理 DNS 策略和 `UsingConnect()`，单改 DNS 传输不会改变这个门。本包禁用仅供测试的 `force_use_https_rr` override，透明选项复用打包浏览器，不修改 Gecko 源码。
@@ -82,7 +82,7 @@ Firefox/NSS 构造加密 ClientHello
 
 Unix 浏览器通过[原生解析 API](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/netwerk/dns/PlatformDNSUnix.cpp)查询 type 65。浏览器 DoH 保持关闭并锁定；现有解析链路已能传递 HTTPS DNS 消息，无须另开本地 DoH 入口。
 
-核心保留地址记录的 fake-IP 行为，同时让 HTTPS 和 SVCB 记录经过正常解析器。共享过滤先执行，阻断域返回本地 NXDOMAIN，不交付 ECHConfig。记录参数（含 ECH public name）返回浏览器，核心不使用浏览器的 ECHConfig，也不终止站点 TLS。A 的 DNSSEC、B 的加密传输、已批准 split DNS 和 MagicDNS 保留[各自边界](dns_CN.md#各路径的责任)。
+核心保留地址记录的 fake-IP 行为，同时让 HTTPS 和 SVCB 记录经过正常解析器。共享过滤先执行，阻断域返回本地 NXDOMAIN，不交付 ECHConfig。记录参数连同 ECH public name 返回浏览器，核心不使用浏览器的 ECHConfig，也不终止站点 TLS。A 的 DNSSEC、B 的加密传输、已批准 split DNS 和 MagicDNS 保留[各自边界](dns_CN.md#各路径的责任)。
 
 NSS 选择配置、构造 ClientHelloInner/Outer、验证证书并处理已认证的重试配置。GREASE 与 `ECHAccepted` 是不同观测：普通 TLS 可以携带 GREASE，而服务端仍报告未接受 ECH。
 
@@ -98,7 +98,7 @@ NSS 选择配置、构造 ClientHelloInner/Outer、验证证书并处理已认�
 
 `browser-ech-vm` 在外层沙箱中运行所选生产 Firefox 包及真实 helper/核心，配合本地 DNS、临时 CA、ECH 服务端及另一个地址上的掩护名陷阱。它区分已接受 ECH、普通 TLS/GREASE、密钥重试、认证后不带 ECH 重试、不可信拒绝和证书失败，检查掩护 SNI 不改变拨号目标，并保留 A 门户/C 启动检查；只使用全新 profile，不连接个人浏览器。
 
-浏览器或核心变更后，将 `browser-ech-vm`、`browser-ech-uniform-vm` 与 `browser-sandbox-vm`、`browser-privacy`、`proxy-core`、`proxy-profile` 一同运行。两种路由策略都检查真实锁定偏好与两条浏览器网络路径。复核范围包括浏览器的 CONNECT 门、原生解析、重试处理，以及核心 fake-IP 下的服务记录处理；使用[按组件触发的复核门](maintenance_CN.md#按组件触发复核)，并同步所选版本的路径说明。
+浏览器或核心变更后，将 `browser-ech-vm`、`browser-ech-uniform-vm` 与 `browser-sandbox-vm`、`browser-privacy`、`proxy-core`、`proxy-profile` 一同运行。两种路由策略都检查真实锁定偏好与两条浏览器网络路径。检查范围包括浏览器的 CONNECT 门、原生解析、重试处理，以及核心 fake-IP 下的服务记录处理；使用[源码兼容性检查](maintenance_CN.md#源码兼容性检查)，并同步所选版本的路径说明。
 
 ## 隐私设置
 

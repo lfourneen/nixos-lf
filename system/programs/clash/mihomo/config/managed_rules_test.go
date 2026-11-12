@@ -22,7 +22,7 @@ func TestLFManagedRuleInvariants(t *testing.T) {
 		{"match direct", []string{"MATCH,DIRECT"}, "unconditional DIRECT"},
 		{"match direct spaced", []string{"MATCH, DIRECT"}, "unconditional DIRECT"},
 		{"final direct", []string{"FINAL,DIRECT"}, "unconditional DIRECT"},
-		{"match proxy", []string{"MATCH,🐟漏网之鱼"}, ""},
+		{"match proxy", []string{"MATCH,CatchAll"}, ""},
 		{"conditional direct", []string{"GEOIP,CN,DIRECT", "MATCH,Proxy"}, ""},
 		{"conditional plus match direct", []string{"DOMAIN-SUFFIX,example.com,DIRECT", "MATCH,DIRECT"}, "unconditional DIRECT"},
 		{"empty", nil, ""},

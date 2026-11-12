@@ -32,6 +32,7 @@ let
         targets = osConfig.my.proxy.managedProfile.lf-private-targets;
         insecureExceptions = proxy.insecureProxyExceptions;
         proxyOnly = proxy.proxyOnly;
+        remoteOnlyCatchAll = proxy.remoteOnlyCatchAll;
         routeExclude = osConfig.my.proxy.managedProfile."tun.route-exclude-address" or [ ];
         fakeIpFilter = osConfig.my.proxy.managedDns.fake-ip-filter;
         privateRoutes = osConfig.my.hardening.directEgress.privateRoutes;
@@ -43,6 +44,7 @@ let
 
   manifest = pkgs.writeText "proxy-profile-tests.json" (builtins.toJSON (map render [
     { name = "default"; }
+    { name = "subscription-groups"; overrides.remoteOnlyCatchAll = false; }
     { name = "tls-exception"; overrides = { insecureProxyExceptions = [ "allowed-insecure" ]; }; }
     { name = "uniform-proxy"; baseConfig = uniformProxyConfig; }
     { name = "restricted-host"; baseConfig = restrictedConfig; }

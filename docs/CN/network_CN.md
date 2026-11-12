@@ -27,7 +27,7 @@
 
 端口保留依赖 systemd 的 cgroup `bind4`/`bind6` hook 及内核 cgroup-BPF 支持，作用范围是 `user.slice` 中的进程；不可信系统服务需要在所属 slice 配置同等限制。Root 和受管服务身份属于信任边界。应答 UID 检查确认响应 socket 的身份，绑定限制阻止数据交给未授权的 UDP 监听者。机制见 [systemd 绑定策略](https://www.freedesktop.org/software/systemd/man/260/systemd.resource-control.html#SocketBindAllow=bind-rule)。
 
-Mihomo 为出站 socket 设置 `6666`（`0x1a0a`）mark；核心例外同时要求 socket 与 packet mark，并核对 socket UID 为 root 或 `clash-core`。默认 `my.proxy.proxyOnly=false` 时 Rule 可选 DIRECT；可选的[统一代理策略](proxy_CN.md#路由策略)在核心内拒绝应用 DIRECT。核心以外的私网和基础设施路径仍由各自规则控制。
+Mihomo 为出站 socket 设置 `6666` / `0x1a0a` mark；核心例外同时要求 socket 与 packet mark，并核对 socket UID 为 root 或 `clash-core`。默认 `my.proxy.proxyOnly=false` 时 Rule 可选 DIRECT；可选的[统一代理策略](proxy_CN.md#路由策略)在核心内拒绝应用 DIRECT。核心以外的私网和基础设施路径仍由各自规则控制。
 
 [DNS](dns_CN.md) 是并行链路：resolved → dnsmasq → Mihomo 或 Unbound。[Firefox](browser_CN.md) 默认使用相同的 Gost HTTP 入口；可选透明路径使用原生 DNS 和宿主 socket，受本套 TUN/防火墙约束，支持 HTTPS-RR/ECH 发现。父进程及其后代运行于[外层文件系统与桌面接口沙箱](browser_CN.md#外层沙箱)，保留桌面 UID 和本套宿主网络策略。
 
@@ -74,20 +74,20 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 | Prerouting `-201` | 重定向前限制访客公网目的地 |
 | Prerouting `-199` | 访客源地址、私网目标和网关服务检查 |
 | Output `-199` | 跟踪受限 socket 访客账户；将 dnsmasq 上游 DNS 限定到目的地租约；严格模式阻断核心外部 53，仅保留 MagicDNS |
-| Output `-198` | 保留内部 DNS 端口、检查 DNS/代理应答身份、跟踪普通应用连接并复核访客宿主服务回包 |
-| Output `-197` | C guard，位于 conntrack（`-200`）之后、auto-redirect（`-150`）之前 |
+| Output `-198` | 保留内部 DNS 端口、检查 DNS/代理应答身份、跟踪普通应用连接并检查访客宿主服务回包 |
+| Output `-197` | C guard，位于 conntrack `-200` 之后、auto-redirect `-150` 之前 |
 | Output `-196` | 限制独立使用 853 端口的 DoT/DoQ |
 | Output `-195` | B 可选私网/多播授权与 Unbound DoT 关闭，位于 NAT/TUN 前 |
 | Output `-194` | A/B 可选 Chrony 原始目标 CIDR 限制 |
 | Output NAT `-190`、filter `-90` | 将受限 socket 访客 DNS 强制送至 1056，并拒绝旧解析器关联 |
-| Input `-2`、forward `-1` | 按当前授权复核受限 socket / 转发访客回包 |
+| Input `-2`、forward `-1` | 按当前授权检查受限 socket / 转发访客回包 |
 | Input `-1` | C 在 established 放行前切断已解密 tailnet 数据及已跟踪宿主/访客应用回包 |
 
 NAT 优先级排列内核共享 destination-NAT hook 中的规则查找顺序；socket 访客 DNS 的 `-90` filter 在该 hook 之后检查实际改写后的目标。
 
-B 重定向宿主公网 TCP，fake-IP 保留核心路径，其余公网出站在明确例外后丢弃。例外包括核心 mark、按 UID 限定的 Unbound DoT 与 Chrony NTS/NTP、窄 DHCP、组播和默认私网访问。Tailscale UDP 例外要求 UID 0、物理上行口，且 socket 的 `SO_MARK` 与 packet mark 都等于上游 Linux bypass mark（`0x80000`）。保留动态 peer/STUN 端口，未打标 root UDP 按普通规则处理。Root 和受管核心是可信网络管理主体，具有设置 socket mark 和修改防火墙的权限。当前 LKL 内核支持 `socket mark`，不支持 `socket cgroupv2`。
+B 重定向宿主公网 TCP，fake-IP 保留核心路径，其余公网出站在明确例外后丢弃。例外包括核心 mark、按 UID 限定的 Unbound DoT 与 Chrony NTS/NTP、窄 DHCP、组播和默认私网访问。Tailscale UDP 例外要求 UID 0、物理上行口，且 socket 的 `SO_MARK` 与 packet mark 都等于上游 Linux bypass mark `0x80000`。保留动态 peer/STUN 端口，未打标 root UDP 按普通规则处理。Root 和受管核心是可信网络管理主体，具有设置 socket mark 和修改防火墙的权限。当前 LKL 内核支持 `socket mark`，不支持 `socket cgroupv2`。
 
-[transport.nix](../../system/config/network/tailscale/transport.nix) 将该 mark 作为上游常量，而非可自行分配的配置。正常系统构建会核对所选 Tailscale 源码的常量及已审查的 magicsock/STUN 打标路径。切换网络不会改变常量；升级时须通过该检查与 `proxy-tailscale-vm`，后者用所选真实 CLI 和隔离的双栈 STUN peer 验证。退回 `SO_BINDTODEVICE` 不会静默重新放行未打标 root UDP。
+[transport.nix](../../system/config/network/tailscale/transport.nix) 将该 mark 作为上游常量，而非可自行分配的配置。正常系统构建会核对所选 Tailscale 源码的常量及预期的 magicsock/STUN 打标路径。切换网络不会改变常量；升级时须通过该检查与 `proxy-tailscale-vm`，后者用所选真实 CLI 和隔离的双栈 STUN peer 验证。退回 `SO_BINDTODEVICE` 不会静默重新放行未打标 root UDP。
 
 [直连例外清单](egress_CN.md)逐项记录主体、目标、端口和模式。可选受限 B 按接口/UID/CIDR/端口授权，在 TUN/NAT 前切断撤权后的已有宿主主动连接。Unbound 即使在 A 也只能使用声明的 DoT 目标，B 的此项例外可关闭；Chrony 可在 A/B 固定目标 CIDR。默认保留 LAN 与 NTS 地址变化兼容性。
 
@@ -117,14 +117,14 @@ Tailscale 不自动接受 DNS、子网路由或出口节点；只有已认证 ta
 
 | 类别 | 身份依据 | 私网目标 | 公网目标 |
 |---|---|---|---|
-| 受限桥接 / 热点（默认） | 精确入口接口与声明的源 CIDR | 明确的接口/CIDR/TCP 或 UDP 端口授权 | A 允许 IPv4；B 须显式选择 IPv4 TPROXY；C 拒绝 |
+| 受限桥接 / 热点，默认 | 精确入口接口与声明的源 CIDR | 明确的接口/CIDR/TCP 或 UDP 端口授权 | A 允许 IPv4；B 须显式选择 IPv4 TPROXY；C 拒绝 |
 | 可信开发桥 | 相同的接口/源地址检查，显式 `trust="trusted"` | 允许私网路由，仍拒绝不安全目标 | 与受限桥相同 |
 | 受限宿主 socket 后端 | 独立固定 UID 及其全部委派 subordinate UID | 明确的账户/原始出口接口/CIDR/端口授权 | 宿主 A/B/C 策略；C 也切断已跟踪回包 |
 | 桌面账户的 passt / rootless Docker | 共用桌面 UID | 宿主策略 | 宿主策略 |
 
 `my.proxy.guestInterfaces` 默认包含 `virbr0`、`waydroid0`；独立 AP 在热点启用后加入。`my.hardening.guestNetworks.<接口>` 声明信任级别、规范且互不重叠的 `sourceCidrs`、网关地址及宿主服务端口。内建角色默认使用 machine 中的 IPv4 子网/网关。IPv6 需要显式 ULA 源子网；所有模式均拒绝访客 IPv6 公网。Wi-Fi 客户端上行不能作为访客角色。创建 AP、DHCP 服务和网桥与安装防火墙策略仍是独立步骤。
 
-所有角色（包括热点）的私网转发默认受限。`guestPrivateExceptions` 按精确入口接口、私网目标 CIDR、TCP/UDP 端口授权。开发网络可显式设 `trust="trusted"` 放行私网路由，但不会开放任意宿主服务或公网 B/C 转发。兼容选项 `guestPrivateEgress=true` 仅信任未明确设置 `trust` 的 libvirt/Waydroid 角色，逐接口选择优先。
+所有角色的私网转发默认受限，热点也遵循此限制。`guestPrivateExceptions` 按精确入口接口、私网目标 CIDR、TCP/UDP 端口授权。开发网络可显式设 `trust="trusted"` 放行私网路由，但不会开放任意宿主服务或公网 B/C 转发。兼容选项 `guestPrivateEgress=true` 仅信任未明确设置 `trust` 的 libvirt/Waydroid 角色，逐接口选择优先。
 
 网关 DHCP/DNS 与宿主 loopback 解析器分开。`hostTcpPorts` / `hostUdpPorts` 仅在该角色声明的网关地址开放服务；旧 libvirt `guestHostServices` 与端口清单汇入同一策略。源检查先于重定向，宿主访问检查先于 established 入站放行，当前授权同时约束既有转发连接的双向流量及宿主服务回包。因此撤销也会切断服务端主动推送。不同信任级别需要独立网桥：此策略识别网络，不隔离同桥二层流量，也不认证具体访客。
 

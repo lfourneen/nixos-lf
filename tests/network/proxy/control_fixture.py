@@ -92,6 +92,9 @@ def check():
                                           '@127.0.0.1', '-p', '1053', 'tun.fixture.example', 'A'], text=True)
         assert '198.18.' in result, result
     effective = Path('/run/clash-verge-rev/effective')
+    assert Path('/run/clash-verge-rev').stat().st_mode & 0o777 == 0o755
+    assert subprocess.run(['setpriv', '--reuid=1000', '--clear-groups', 'test', '-w',
+                           '/run/clash-verge-rev']).returncode != 0
     assert effective.stat().st_uid == 0 and effective.stat().st_mode & 0o777 == 0o750
     assert (effective / 'clash-verge.yaml').stat().st_mode & 0o777 == 0o640
     # The core must not be able to replace the snapshot it was authorized with.

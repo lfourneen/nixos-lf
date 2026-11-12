@@ -1,3 +1,6 @@
 {
-  imports = [ ./cvr-merge.nix ];
+  imports = [
+    ./cvr-merge.nix
+    ./refresh.nix
+  ];
 }

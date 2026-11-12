@@ -250,6 +250,7 @@ in
       const FORCED_PROXY_DOMAINS = ${forcedProxyDomainsJs};
       const DELAY_TEST_URL = ${builtins.toJSON osConfig.my.proxy.delayTestUrl};
       const PROXY_ONLY = ${lib.boolToString osConfig.my.proxy.proxyOnly};
+      const REMOTE_ONLY_CATCH_ALL = ${lib.boolToString osConfig.my.proxy.remoteOnlyCatchAll};
       // Same source of truth as the core's managed policy: the merge filter
       // deletes an insecure leaf only when this list does not name it.
       const INSECURE_PROXY_EXCEPTIONS = ${builtins.toJSON osConfig.my.proxy.insecureProxyExceptions};
@@ -340,11 +341,44 @@ in
       function catchAllPolicy(rules) {
         for (let i = rules.length - 1; i >= 0; i--) {
           const r = rules[i];
-          if (typeof r === "string" && r.slice(0, 6) === "MATCH,") {
-            return r.slice(6).trim();
+          if (typeof r !== "string") continue;
+          const parts = r.split(",").map(part => part.trim());
+          if (parts.length === 2 && ["MATCH", "FINAL"].includes(parts[0].toUpperCase())) {
+            return parts[1];
           }
         }
         return null;
+      }
+
+      function constrainCatchAll(config, policy) {
+        const nonProxy = new Set(["DIRECT", "COMPATIBLE", "REJECT", "REJECT-DROP", "PASS", "GLOBAL"]);
+        const nonProxyTypes = new Set(["direct", "compatible", "reject", "reject-drop", "pass", "dns"]);
+        const groups = new Map((config["proxy-groups"] || []).map(group => [group.name, group]));
+        const nodes = new Map((config.proxies || []).map(node => [node.name, node]));
+        const done = new Set(), active = new Set();
+        function visit(name) {
+          if (nonProxy.has(name)) return false;
+          if (nodes.has(name)) {
+            return !nonProxyTypes.has(String(nodes.get(name).type).toLowerCase());
+          }
+          if (done.has(name)) return true;
+          if (active.has(name)) throw new Error("Catch-all proxy group contains a cycle");
+          const group = groups.get(name);
+          if (!group) throw new Error("Catch-all proxy group has an invalid reference");
+          active.add(name);
+          if (group.proxies != null) {
+            if (!Array.isArray(group.proxies)) throw new Error("Catch-all proxy group has invalid members");
+            group.proxies = group.proxies.filter(visit);
+          }
+          if (!(group.proxies && group.proxies.length) && !(group.use && group.use.length) &&
+              !group["include-all"] && !group["include-all-proxies"] && !group["include-all-providers"]) {
+            throw new Error("Catch-all proxy group has no remote members");
+          }
+          active.delete(name);
+          done.add(name);
+          return true;
+        }
+        if (!visit(policy)) throw new Error("Catch-all policy must select a remote proxy");
       }
 
       function main(config) {
@@ -361,6 +395,10 @@ in
         const rules = config && config.rules;
         if (Array.isArray(rules) && rules.length) {
           const policy = catchAllPolicy(rules);
+          if (REMOTE_ONLY_CATCH_ALL) {
+            if (!policy) throw new Error("Catch-all proxy policy is missing");
+            constrainCatchAll(config, policy);
+          }
           if (PROXY_ONLY) {
             if (!policy || ["DIRECT", "COMPATIBLE", "REJECT", "REJECT-DROP", "PASS"].includes(policy)) {
               throw new Error("Strict routing needs a proxy catch-all policy");

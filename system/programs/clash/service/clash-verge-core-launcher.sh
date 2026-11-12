@@ -6,8 +6,8 @@
 #   * read-only modes pass through (the GUI uses them for diagnostics);
 #   * a real start requires EUID 0, an explicit clash-on intent, a configuration
 #     owned by the desktop user under the GUI data directory, a successful parse
-#     as the unprivileged core user, and a digest authorized by this clash-on
-#     session;
+#     as the unprivileged core user, and a digest authorized by the configured
+#     refresh policy or this clash-on session;
 #   * the core then runs as @clashCore@ with only CAP_NET_ADMIN and CAP_NET_RAW,
 #     never as root and never with the desktop user's identity.
 
@@ -70,7 +70,7 @@ done
 [ "$(cat "$intent_file" 2>/dev/null || true)" = proxy ] \
   || die "start Clash with clash-on; the core is not authorized in Mode A"
 
-# Runtime snapshots survive helper restarts; only clash-on imports new inputs.
+# Runtime snapshots survive helper restarts; stage enforces the refresh policy.
 # The service user can write caches, but cannot replace configuration/geodata.
 # Match RuntimeDirectory's group: changing it to root would make systemd
 # recursively re-own the preserved snapshots on the next helper restart.
