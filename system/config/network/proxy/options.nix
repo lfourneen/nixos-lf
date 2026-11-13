@@ -38,6 +38,18 @@ in
     message = "my.proxy.blockedDomainExceptions entries must be bare domain names (no scheme, path or wildcard).";
   }];
 
+  options.my.proxy.controlledSources = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Accept only root-registered, controlled subscription generations; ignore GUI candidates. Register privately using clash-source before enabling proxy intent.";
+  };
+
+  options.my.proxy.strictBrowser = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Provide a remote-only browser inlet and a B-only Unix relay for an isolated browser network namespace.";
+  };
+
   options.my.proxy.blockedDomains = lib.mkOption {
     type = lib.types.listOf lib.types.str;
     default = [ ];
@@ -317,6 +329,15 @@ in
     description = "HTTPS default for unset GUI delay tests and missing or HTTP node/provider health-check URLs.";
   };
 
+  # Split-routing checks embed these names, so GEOIP,CN would send them direct
+  # and expose the real client address. The controlled renderer and the GUI
+  # Merge template prepend them with the subscription's catch-all group.
+  options.my.proxy.probeDomains = lib.mkOption {
+    type = lib.types.listOf (lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]");
+    default = import ./probe-domains.nix;
+    description = "Domain suffixes forced through the catch-all proxy group before subscription rules.";
+  };
+
   # Single source of truth for TUN mode; home/config/clash/cvr-merge.nix reads it
   # via osConfig so the clash Merge template can't drift out of sync.
   options.my.proxy.tunMode = lib.mkOption {
@@ -371,4 +392,3 @@ in
     description = "Name used for proxy-mode's TUN self-test; must not match a fake-ip-filter entry.";
   };
 }
-

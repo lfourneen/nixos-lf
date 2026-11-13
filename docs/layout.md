@@ -2,6 +2,8 @@
 
 English | [简体中文](CN/layout_CN.md) | [Documentation](README.md)
 
+`tests/checks.nix` owns check definitions and test configurations; the root `flake.nix` imports it. `system/programs/clash/service/source_worker.py`, `source_broker.py` and `source.nix` own controlled sources; `strict-browser.nix` and `home/programs/firefox/network.py` connect the strict browsing path.
+
 ## System and desktop responsibilities
 
 | Directory | Responsibility |
@@ -47,4 +49,4 @@ Gost uses `patches/`, `src/` and `tests/` under its own program directory. Its d
 | [`tests/home/firefox/`](../tests/home/firefox) | Browser policy, runtime, sandbox and ECH fixtures |
 | [`tests/deployment/`](../tests/deployment) | Deployment-copy checks |
 
-`flake.nix` connects these sources to `checks.x86_64-linux.*`. Nix tests pass source paths explicitly when scripts execute as standalone store files; local Python tests locate the repository from their feature directory.
+`tests/checks.nix`, imported by `flake.nix`, connects these sources to `checks.x86_64-linux.*`. Nix tests pass source paths explicitly when scripts execute as standalone store files; local Python tests locate the repository from their feature directory.

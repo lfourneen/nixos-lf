@@ -1,4 +1,5 @@
 """Local HTTPS origins and a closed CONNECT relay for the sandbox trust test."""
+from socketserver import BaseRequestHandler, ThreadingTCPServer
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import select
@@ -22,7 +23,7 @@ def start(directory):
             pass
 
     origins = {}
-    for name in ("trusted", "untrusted"):
+    for name in ("trusted", "untrusted", "expired"):
         origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(directory / (name + ".pem"), directory / (name + ".key"))
@@ -30,6 +31,16 @@ def start(directory):
         origins[name + ".sandbox.fixture.test"] = origin
         threading.Thread(target=origin.serve_forever, daemon=True).start()
     origins["wrong.sandbox.fixture.test"] = origins["trusted.sandbox.fixture.test"]
+
+    plaintext = ThreadingHTTPServer(('127.0.0.1', 0), Origin)
+    origins['plaintext.sandbox.fixture.test'] = plaintext
+    threading.Thread(target=plaintext.serve_forever, daemon=True).start()
+    class Truncate(BaseRequestHandler):
+        def handle(self):
+            self.request.recv(4096)
+    truncated = ThreadingTCPServer(('127.0.0.1', 0), Truncate)
+    origins['truncated.sandbox.fixture.test'] = truncated
+    threading.Thread(target=truncated.serve_forever, daemon=True).start()
 
     class Relay(BaseHTTPRequestHandler):
         def do_CONNECT(self):

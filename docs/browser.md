@@ -6,13 +6,13 @@ English | [简体中文](CN/browser_CN.md) | [Documentation](README.md)
 
 Firefox is a native Nix package. [firefox.nix](../home/programs/firefox/firefox.nix) binds the binary, enterprise policies, AutoConfig and fixed fonts into one immutable store closure; Home Manager owns the separate `~/.config/mozilla/firefox/lfour` profile. Updates follow the locked Nixpkgs input and a rebuilt generation, with Firefox's binary updater disabled. Existing Flatpak profiles are not imported or deleted.
 
-The public launcher runs [guard.py](../home/programs/firefox/guard.py) before opening the explicit managed profile. In B it requires fresh same-generation mode/DNS/relay/verification state, passive listener identity checks and live API invariants through the desktop's GUI forwarder. The root supervisor verifies the private configuration snapshot and internal controller; the browser uses its published readiness without reading those private files. A permits opening a literal HTTP captive portal without working public DNS. C, unknown and `unenforced` refuse launch. A second state read rejects a transition during preflight; the relay and kernel policy handle changes after launch.
+The public launcher runs [guard.py](../home/programs/firefox/guard.py) before opening the explicit managed profile. In B it requires fresh same-generation mode/DNS/relay/verification state, passive listener identity checks and live API invariants through the desktop's GUI forwarder. The root supervisor verifies the private configuration snapshot and internal controller; the browser uses its published readiness without reading those private files. Daily Firefox admits A and healthy B; identity requires healthy B, and the portal entry admits only explicit A. C, unknown and `unenforced` refuse launch. A second state read rejects a transition during preflight; the relay and kernel policy handle changes after launch.
 
 The launcher checks fonts under strict privacy and starts the browser in the outer sandbox described below. Host-side instance records use process start times and package identity to reject reuse of an older package; namespace PIDs in stale profile locks do not identify desktop processes. Desktop/MIME entries use it; former Zen/Chrome entry IDs redirect to Firefox. Policy changes require a full browser restart. `firefox --check` inspects prerequisites without creating the profile or opening a window.
 
 ## Outer sandbox
 
-[sandbox.py](../home/programs/firefox/sandbox.py) retains the desktop UID and host network namespace while bubblewrap creates separate mount, user, PID, IPC and UTS namespaces. The browser sees a synthetic home and a private `/tmp` and `/dev`. Capabilities are dropped, inherited environment variables are replaced by an allow-list, and Gecko's content-process sandbox remains enabled. The native Firefox binary is reused; the Nix wrapper and small [scope helper](../home/programs/firefox/scope.c) supply the outer policy without a Gecko source patch.
+[sandbox.py](../home/programs/firefox/sandbox.py) retains the desktop UID; strict browsers also get an isolated network namespace, while bubblewrap creates separate mount, user, PID, IPC and UTS namespaces. The browser sees a synthetic home and a private `/tmp` and `/dev`. Capabilities are dropped, inherited environment variables are replaced by an allow-list, and Gecko's content-process sandbox remains enabled. The native Firefox binary is reused; the Nix wrapper and small [scope helper](../home/programs/firefox/scope.c) supply the outer policy without a Gecko source patch.
 
 | Resource | Browser access |
 |---|---|
@@ -32,13 +32,23 @@ The bus proxy runs in its own minimal mount namespace. Read-only `/.flatpak-info
 
 The normal launcher can open another link in the running browser through its exact profile-specific D-Bus name. Generation records and a host launch lock stay outside the browser mounts. Close all old windows before opening a rebuilt package; the managed profile persists across that restart. `firefox --check` also checks the private runtime directory, desktop sockets and Landlock support without opening a window.
 
-Network access keeps the desktop UID and the existing A/B/C rules, including Gost `33332`, system DNS and the optional native ECH path. The outer policy does not authenticate the browser to a proxy port or separate it from other local TCP services. Wayland, audio, Downloads, the profile and explicitly selected documents are deliberate permissions. Other programs already running unconfined as the desktop user remain trusted and can invoke the package-private binary themselves.
+## Network policy and identities
 
-## Network policy
+`my.firefox.dailyRequireProxy` defaults to `false`, independently of `my.proxy.strictBrowser`. The default daily browser uses Gost `33332`: A is direct access with the local network's public IP; healthy B uses the core's subscription routing, which can include DIRECT. A failed proxy does not select A automatically. The outer filesystem sandbox, TLS and privacy settings apply in both modes. The old `my.firefox.requireProxy` option is a compatibility alias for the daily option only.
 
-The default `my.firefox.networkPath="http-proxy"` locks HTTP/HTTPS to Gost at `127.0.0.1:33332`, with empty bypass/PAC/SOCKS settings, localhost proxying enabled and direct failover disabled. A passes through, B reaches Mihomo's routing policy, C closes the application path. The optional transparent path below uses native sockets under the same host policy. Browser privacy does not change `bootMode` or `proxyOnly`. In B, local-service targets reaching the core need [local DIRECT or scoped remote-node authorization](proxy.md#domain-targets); literal private IPs do not automatically authorize a node-side dial. A keeps its literal portal path.
+`firefox-identity` always requires the strict inlet enabled by `my.proxy.strictBrowser=true`; setting `dailyRequireProxy=true` also selects it for the daily browser. Each strict browser has loopback networking only, with an in-namespace HTTP relay at `127.0.0.1:18080` connected to the systemd-created Unix socket. `clash-strict.socket` installs `/run/clash-strict/proxy.sock` for the desktop user; `--check` and launch both validate its presence, type and ownership. The host relay accepts streams only while shared readiness reports healthy B and aborts existing streams on lost readiness. Its 100 ms poll is an additional bound after the shared state changes, not a zero-delay failure detector. The relay authenticates the established server socket UID before forwarding browser bytes, and A/C cut strict-inlet traffic in the nft transaction. No arbitrary host TCP service, native DNS, LAN or direct Internet socket is reachable from that namespace.
 
-WebRTC and HTTP/3 are disabled, keeping web traffic on TCP. DoH is disabled and locked at `network.trr.mode=5`, so browser-originated DNS uses the managed system resolver. Explicit HTTP proxy requests can delegate target resolution to Gost/Mihomo; the core applies the same domain snapshot, additions and exceptions before DNS responses and application dials. DNSSEC and encryption depend on the selected resolver path and `dnsEncryption`, as described in [DNS](dns.md). Captive-portal detection and NetworkManager connectivity checks remain enabled; local HTTP remains available under HTTPS-First.
+The core’s pinned `lf-strict` inlet uses the dedicated remote-node group and rejects actual DIRECT/COMPATIBLE leaves and private targets, including after GUI group or Global selection. The ordinary desktop retains Rule routing. Socket-queued bytes and data already at a remote peer cannot be recalled. Other unconfined processes sharing the desktop UID remain trusted and can invoke the package-private binary.
+
+The daily browser can instead select the transparent ECH path with `dailyRequireProxy=false`; it retains host A/B/C networking and has no private network namespace. This choice does not change identity or portal networking.
+
+Daily Firefox and `firefox-identity` enforce HTTPS-only, reject certificate/security-warning bypass and lock phishing, malware and download protection. The identity package installs no extensions and uses separate profile/cache/download/document-portal identity. No existing cookies, accounts or bookmarks are copied. Safe Browsing updates and reputation queries may disclose query/download metadata; see [Mozilla’s protection explanation](https://support.mozilla.org/en-US/kb/how-does-phishing-and-malware-protection-work). A valid certificate does not authenticate a site’s business identity. HTTPS-only retains browser exception semantics; it is not a promise that all possible HTTP bytes are prohibited.
+
+`firefox-portal URL` accepts one literal-IP HTTP(S) address on port 80/443 in explicit A. Its separate temporary profile has no extensions or existing credentials; its network namespace can reach only a single-address relay. It expires after 15 minutes. The daily browser disables its automatic plaintext captive-portal probe; system NetworkManager connectivity detection remains separate. It does not silently change profiles or bypass policy when a portal appears.
+
+Use the daily profile for ordinary browsing and `firefox-identity` for selected accounts. Keeping a profile separate reduces state mixing but does not anonymize a logged-in account or defeat flow correlation. Anonymous activity needs a separately selected supported anonymity client and its own update/exit assessment; no Tor client or multihop claim is enabled by these entries.
+
+WebRTC, HTTP/3 and browser DoH remain disabled. Explicit proxy name resolution happens at the core and uses the common suffix/target checks; DNSSEC and encrypted transport retain their separate [DNS boundaries](dns.md).
 
 ## ECH discovery and proxy compatibility
 
@@ -48,7 +58,7 @@ ECH encrypts the inner TLS ClientHello, including the origin SNI. In this config
 
 | `my.firefox.networkPath` | Name discovery and transport | ECH behavior |
 |---|---|---|
-| `"http-proxy"`, default | Locked Gost HTTP proxy; target resolution may be delegated to the core | The pinned Firefox 159.0.1 excludes HTTPS CONNECT from HTTPS-RR discovery. GREASE remains enabled; HTTPS-RR discovery uses the transparent path below |
+| `"http-proxy"`, default | Strict local relay or compatibility Gost HTTP proxy; target resolution is delegated to the core | The pinned Firefox 159.0.1 excludes HTTPS CONNECT from HTTPS-RR discovery. GREASE remains enabled; HTTPS-RR discovery uses the transparent path below |
 | `"transparent"` | System DNS and native HTTPS-RR queries; A uses direct sockets, B uses the host TUN/firewall path | NSS can use the returned ECHConfig and perform a real ECH handshake with a compatible origin |
 
 Firefox's [connection gate](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/netwerk/protocol/http/nsHttpChannel.cpp) checks both the proxy DNS strategy and `UsingConnect()`. Changing DNS transport alone does not change this gate. This package keeps the test-only `force_use_https_rr` override disabled; the transparent option uses the packaged browser without a Gecko source patch.
@@ -57,6 +67,7 @@ Select it explicitly in the system configuration:
 
 ```nix
 my.proxy.tunMode = true;
+home-manager.users.lfour.my.firefox.dailyRequireProxy = false;
 home-manager.users.lfour.my.firefox.networkPath = "transparent";
 ```
 

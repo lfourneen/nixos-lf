@@ -13,6 +13,16 @@
       "qq_group_allowed_users" = {};
       "hermes_soul" = { sopsFile = ../secrets/soul.yaml; key = "soul"; };
       "sandbox" = { sopsFile = ../secrets/skill.yaml; };
+
+      # Private source catalog: proxy_source contains a JSON {"sources":[...]}
+      # string; legacy single-source JSON remains supported. review/register
+      # --id selects one definition; registered copies live in /var/lib/clash-source.
+      "proxy_source" = {
+        sopsFile = ../secrets/proxy.yaml;
+        owner = "root";
+        group = "root";
+        mode = "0400";
+      };
     };
 
     templates."hermes.env" = {

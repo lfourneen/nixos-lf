@@ -66,6 +66,8 @@ def stamp(at):
 
 def auto_update_text(value):
     state = value.get('state')
+    if state == 'controlled':
+        return 'root source timer · every 30m · GUI schedule is display-only'
     if state == 'ok':
         return (f"every {value['interval']}m · last fetch {stamp(value['updated'])}"
                 f" · next ~{stamp(value['next_due'])}")
@@ -94,7 +96,8 @@ def update_result_text(value):
 
 def runtime_text(value):
     state = value.get('state')
-    return {'in sync': 'in sync',
+    return {'display-only': 'GUI is display-only · controlled source is authoritative',
+            'in sync': 'in sync',
             'differs': 'differs · GUI and authorized snapshot contain different YAML'}.get(
                 state, 'unknown')
 
@@ -120,6 +123,11 @@ def rows(state):
     auto = state.get('auto_update') or {}
     if auto:
         yield 'Auto update', auto_update_text(auto)
+    trust = state.get('source_trust', {})
+    yield 'Source provenance', trust.get('provenance', 'unknown')
+    if trust.get('source_id'):
+        yield 'Active source', trust['source_id']
+    yield 'Upstream signature', 'not verified · health is availability evidence'
     if state.get('profile_refresh'):
         findings = state['profile_refresh'].get('audit')
         if findings and findings.get('verdict') != 'pass':
@@ -193,7 +201,7 @@ def rows(state):
             yield 'Helper logs', 'sudo journalctl -b -u clash-verge.service -n 60'
             yield 'Core logs', 'sudo tail -n 60 /var/lib/clash-verge-service/logs/service_latest.log'
     if preflight and not preflight.get('ready'):
-        yield 'Preparation action', 'Regenerate the GUI profile and run proxy-control preflight; parser details: sudo cat /run/proxy-mode/preflight.log'
+        yield 'Preparation action', 'Check controlled source registration (or legacy GUI profile), then run proxy-control preflight; parser details: sudo cat /run/proxy-mode/preflight.log'
 
 
 def render(state, columns=88, color=False, plain=False):
@@ -234,15 +242,20 @@ def main():
     parser.add_argument('--plain', action='store_true')
     parser.add_argument('--no-color', action='store_true')
     parser.add_argument('--proxy-only', action='store_true')
+    parser.add_argument('--controlled-source', action='store_true')
     parser.add_argument('--profiles', default=os.path.expanduser('~/.local/share/io.github.clash-verge-rev.clash-verge-rev/profiles.yaml'))
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location('network_state', args.state_tool)
     source = importlib.util.module_from_spec(spec); spec.loader.exec_module(source)
     state = source.readiness(target='auto', maximum=args.max_age, verification_maximum=args.verification_max_age)
     state['proxy_only'] = args.proxy_only
-    state['subscription_health'] = source.subscription_health(args.profiles, state.get('profile_refresh'))
+    state['subscription_health'] = source.subscription_health(
+        '/nonexistent/controlled-source-profiles' if args.controlled_source else args.profiles, state.get('profile_refresh'))
     state['auto_update'] = source.auto_update(args.profiles)
     state['profile_vs_runtime'] = source.profile_vs_runtime(args.profiles)
+    if args.controlled_source:
+        state['auto_update'] = {'state': 'controlled'}
+        state['profile_vs_runtime'] = {'state': 'display-only'}
     if args.json:
         print(json.dumps(state, ensure_ascii=False))
     else:

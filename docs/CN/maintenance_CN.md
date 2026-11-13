@@ -2,6 +2,8 @@
 
 [English](../maintenance.md) | 简体中文 | [文档目录](README_CN.md)
 
+检查定义集中在 [`tests/checks.nix`](../../tests/checks.nix)，`flake.nix` 只导入。受控来源对应 `proxy-source`、`proxy-isolation-vm`，并与 `proxy-control`、`proxy-refresh`、真实控制/刷新 VM 联合验证；严格浏览还要运行 `browser-privacy`、`browser-sandbox-vm`、strict DNS VM、`proxy-strict-rules-vm` 与 `proxy-core`。strict-rules VM 安装生产严格 socket，并将本机 strictBrowser=true 的 A/C/B 规则与真实内核比较，另注入漂移验证差异诊断。新隔离 VM 使用真实 TLS、broker、快照、核心和网络命名空间；其中小型就绪夹具只用于 relay 撤权测试，不能替代完整协调器 A/B/C VM。源码入口和 check 选择登记在 `sources.json` 的 controlled-source、browser-isolation 组件。
+
 ## 构建接入
 
 版本由 [flake.lock](../../flake.lock) 决定，不跟随桌面自更新。稳定 Nixpkgs 提供 Gost、dnsmasq、Unbound、Firefox；unstable 提供 Mihomo、Clash Verge GUI 及独立打包的 helper。当前锁定组合为 Mihomo 1.19.33、vendored MetaCubeX sing-tun 0.4.28、Gost 3.3.2、GUI 2.5.2、helper 2.3.3、dnsmasq 2.93、Unbound 1.26.2。GUI/helper/core 版本相互独立。

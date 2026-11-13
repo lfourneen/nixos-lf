@@ -4,6 +4,8 @@
 
 B 允许受管路径和下表的例外，核心按订阅 Rule 选择 DIRECT 或代理节点。A 继续提供明确选择的直连。C 阻断普通应用出口及已解密 tailnet 入站，包括远控和已有连接，不继承 B 的可选直连授权。
 
+严格浏览器的网络命名空间没有宿主 IP 路径，仅通过专用 Unix relay 进入 `lf-strict`。A/C 在原子规则事务中拒绝核心 `7898` 的收发，B 才开放；转发首个浏览器请求前核对已建立服务端 socket 的核心 UID，避免只查询 listener 的竞态。实际叶子拒绝 DIRECT 与私网目标。此约束适用于受管浏览器入口，普通桌面及其它应用保持下述规则。
+
 ## 例外清单
 
 UID、接口和端口来自 [machine.nix](../../system/config/machine.nix)、服务账户及 [options.nix](../../system/config/network/options.nix)。下表描述宿主 output；访客转发和宿主入站单独授权。

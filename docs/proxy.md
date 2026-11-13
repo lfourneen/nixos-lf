@@ -2,6 +2,35 @@
 
 English | [简体中文](CN/proxy_CN.md) | [Documentation](README.md)
 
+## Controlled subscription sources
+
+The host selects `controlledSources=true`, `subscriptionTrust="fixed"`, `profileRefreshPolicy="auto"` and blocking content audit. The reusable module retains the legacy GUI import path when controlled sources are disabled; the GUI-specific import and mutable-provider descriptions below apply to that compatibility path.
+
+`clash-source` is a root-only broker with multiple registered sources and one selected source. Each source has its own subscription, providers, revision, semantic approval and settled baseline. `use <id>` selects an existing registration; the GUI can select only a root-approved `gui-profile` UID mapping. Unknown mappings leave the selection unchanged. GUI URLs, YAML, scripts, caches and geodata never grant source authority. A fixed unprivileged worker fetches the selected HTTPS subscription and separately registered HTTP providers, pins public endpoint addresses, and renders a deterministic profile. The immutable Nix policy supplies listeners, DNS and TUN settings. Provider payloads become inline nodes; geodata comes from locked Nix packages.
+
+The Sops `proxy_source` string can hold `{"sources":[...]}` for all definitions. `review/register FILE --id ID` selects one entry; an unqualified review lists the catalog, while registration refuses an ambiguous multi-entry choice. Legacy single-source JSON remains accepted. IDs and GUI mappings must be unique. Only the selected entry contributes to its registration digest; adding another definition neither changes that digest nor approves the new source. Removing a catalog entry does not revoke its registered copy.
+
+Downloads enforce normal TLS hostname verification, pinned public socket addresses, exact approved HTTPS redirects, 8 MiB per response, a 32 MiB combined budget and a worker deadline. The default User-Agent is `clash.meta`; each endpoint may register a single-line ASCII `user-agent` of at most 256 characters. Custom UA and credentials are removed permanently after a cross-origin redirect. YAML aliases and duplicate keys are refused. Node domains are pinned while retaining their TLS identity. Unresolvable nodes may be dropped up to `max(1, node_count // 5)`; non-public answers and rule-referenced empty groups still refuse the candidate.
+
+The renderer supports `select`, `url-test` and `fallback` groups with explicit members or registered provider references. It validates fields individually: HTTPS `url`, integer `interval` of 1–86400 seconds, `tolerance` of 0–60000 ms, `timeout` of 100–60000 ms, `max-failed-times` of 1–100, boolean `lazy` and HTTP `expected-status` expressions. Unsupported fields, `load-balance`, dynamic filters, `rule-providers`, provider filters/overrides and unsupported transports are refused. Supported nodes are SS, VMess, VLESS, Trojan, Hysteria2, TUIC, HTTP and SOCKS5. Plaintext remote HTTP/SOCKS authentication remains refused. Compatibility does not weaken the content audit.
+
+A private manifest binds the source ID and revision, response hashes, transformer, policy, rendered YAML, dropped-node count and geodata. The snapshot digest includes that manifest. Registrations, candidates and approvals live under root-private `/var/lib/clash-source/sources/<id>`; `selected` is an atomic pointer protected by the shared `source.lock`. Existing single-source state is copied into this layout on the next broker operation before selection is published. Per-source `approved/` snapshots survive switching and reboot. Fetch failure preserves the selection; parser/audit/health failure preserves the previous authorized runtime snapshot. The requested selection can therefore differ from `proxy-status`'s `Active source` until validation completes. Applying a candidate restarts the core and can briefly enter C; an incompatible fallback leaves C in effect.
+
+Same-name identity, transport and credential changes are compared against that source's own settled baseline, including after switching away and back. Validated DNS rotation with the same logical server identity remains automatic. Sensitive routes are compared in both directions. Exact approval binds candidate, baseline, revision, policy and one-hour expiry; it cannot waive certificate, hosts, private-target or malformed-input failures. See [source registration](operations.md#source-registration).
+
+## Visibility and trust
+
+| Participant | Information it can observe |
+|---|---|
+| Browser and destination | Application content; the destination also knows accounts/cookies and exit address |
+| Local HTTP proxy/core | CONNECT names, DNS and routing metadata; plaintext HTTP content |
+| Access network / DNS service | Transport addresses and timing; the resolver knows queries it answers |
+| Entry/exit operators | Their adjacent addresses and flow timing; an exit sees destination metadata and plaintext HTTP |
+| Colluding operators | Additional correlations; local health probes cannot establish their honesty |
+
+Status reports `controlled-fetch`, `legacy-unverified` or unknown provenance separately from mode, routing and availability. Upstream signatures remain unverified. TLS protects authenticated content, while ECH and separate profiles do not hide accounts, destination IPs or timing. An operator can still log or collude.
+
+
 ## Components and identities
 
 | Component | Default endpoint / state | Identity |
@@ -20,7 +49,7 @@ The helper enforces fixed execution paths and file-operation rules at its privil
 
 An explicitly enabled IPv4 guest TPROXY inlet binds `0.0.0.0:7896`; the ordinary mixed/DNS/controller endpoints remain local under `allow-lan=false`. The packaged listener handles this bind separately and selects IPv4 sockets. Its TCP/UDP UID and service cgroup are checked before B; guest interface/source authorization remains in the firewall. Later core auto-redirect preserves the owned guest mark instead of replacing its transparent socket. See [guest networking](network.md#guests-and-containers).
 
-## Configuration imports
+## Compatibility GUI imports
 
 `proxy-control preflight` checks the desktop profile, required assets and the managed parser without changing network intent. `clash-on` requires this preparation to succeed, records proxy intent and enters C before starting the helper. It clears refresh pins and pending health checks, preserves intact snapshot authority, and opens a single-use import window for 300 seconds. A failed import consumes the window.
 
@@ -82,7 +111,7 @@ The root policy also supplies the shared domain-filter store path, additions and
 
 Configuration loads, rule disabling, provider/geodata/storage changes, restart and upgrade APIs are forbidden. PATCH validates canonical upstream field names and duplicate keys before applying the same decoded schema. New controller write endpoints require an explicit policy decision when upgrading the core.
 
-## Subscription trust
+## Subscription trust in compatibility mode
 
 `my.proxy.subscriptionTrust="source"` accepts proxy providers as trusted, mutable sources. `"fixed"` refuses providers so inline node contents belong to the authorized YAML snapshot. `proxy-control preflight` reports inline-node and provider counts, source hosts and requested certificate exceptions without subscription URLs or credentials.
 
@@ -101,7 +130,7 @@ my.proxy.proxyOnly = false; # Default: subscription Rule routing.
 # my.proxy.proxyOnly = true; # Use the subscription's final proxy catch-all.
 ```
 
-The default preserves domestic DIRECT and prepends proxy rules for the configured probe/download domains. Other destinations follow the subscription rules. Health probes use the configured sample targets.
+The default preserves domestic DIRECT and prepends proxy rules for the configured probe/download domains and the registered IP-echo/split-routing domains (`my.proxy.probeDomains`), so a routing check does not see a direct connection. Other destinations follow the subscription rules. Health probes use the configured sample targets.
 
 With `true`, the generated profile routes application destinations reaching the core through the subscription's final proxy MATCH policy. It requires a usable proxy catch-all and overrides geographic/process splitting and profile REJECT rules. It also refuses application DIRECT/COMPATIBLE TCP/UDP dials inside the core, including direct leaves behind groups and renamed adapters. Rule-routed DNS is covered; explicit bootstrap/endpoint-resolution infrastructure and `#DIRECT` MagicDNS remain exempt.
 

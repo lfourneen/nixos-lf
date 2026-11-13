@@ -2,6 +2,35 @@
 
 [English](../proxy.md) | 简体中文 | [文档目录](README_CN.md)
 
+## 受控订阅来源
+
+本机选择 `controlledSources=true`、`subscriptionTrust="fixed"`、`profileRefreshPolicy="auto"` 和阻断式内容审计。可复用模块在关闭受控来源时保留旧 GUI 导入方式；下文 GUI 导入和可变 provider 的说明属于该兼容路径。
+
+`clash-source` 是仅供 root 操作的 broker，可登记多个来源，同时选择一个。各来源分别保留订阅、provider、版本、语义批准及 settled 基线。`use <id>` 选择已登记来源；GUI 只能选择 root 批准的 `gui-profile` UID 映射，未知映射保持当前选择。GUI URL、YAML、脚本、缓存和 geodata 均不授予来源权限。固定的非特权 worker 获取选中的 HTTPS 订阅和单独登记的 HTTP provider，固定公网端点地址，确定性生成配置。不可变 Nix 策略提供监听、DNS 和 TUN，provider 载荷展开为内联节点，geodata 来自锁定 Nix 软件包。
+
+Sops 的 `proxy_source` 字符串可用 `{"sources":[...]}` 保存所有来源定义。`review/register FILE --id ID` 选择一条，不指定 ID 的 review 列出清单，register 则拒绝含多条时的歧义选择；旧单来源 JSON 仍兼容。ID 和 GUI 映射必须唯一。登记摘要只覆盖所选条目，追加定义不会改变该摘要，也不会自动授权新来源；删除清单条目不撤销其已登记副本。
+
+下载要求正常 TLS 主机名校验、固定公网 socket 地址、精确批准的 HTTPS 跳转，每响应最多 8 MiB、合计 32 MiB，并受 worker 时限约束。默认 User-Agent 为 `clash.meta`，每个端点可登记最长 256 字符、单行 ASCII 的 `user-agent`。跨 origin 后永久清除自定义 UA 和凭据。拒绝 YAML 别名及重复键。节点域名固定地址并保留 TLS 身份；解析失败最多丢弃 `max(1, node_count // 5)` 个节点，非公网答案及被规则引用的空组仍拒绝候选。
+
+渲染器支持 `select`、`url-test`、`fallback`，成员须显式指定或引用已登记 provider。字段逐项校验：HTTPS `url`、1–86400 秒的整数 `interval`、0–60000 ms 的 `tolerance`、100–60000 ms 的 `timeout`、1–100 的 `max-failed-times`、布尔 `lazy` 及 HTTP `expected-status` 表达式。不支持的字段、`load-balance`、动态 filter、`rule-providers`、provider filter/override 和不支持的传输均拒绝。支持 SS、VMess、VLESS、Trojan、Hysteria2、TUIC、HTTP、SOCKS5 节点；远程 HTTP/SOCKS 明文认证仍拒绝，兼容性扩展不放宽内容审计。
+
+私有 manifest 绑定来源 ID、版本、响应摘要、转换器、策略、生成 YAML、丢弃计数及 geodata，快照摘要覆盖 manifest。登记、候选及批准位于 root 私有 `/var/lib/clash-source/sources/<id>`，`selected` 是受公共 `source.lock` 保护的原子指针。旧单来源状态在下一次 broker 操作时复制到此布局，再发布选择。各来源 `approved/` 快照跨切换和重启保留。下载失败保留原选择；解析、审计或健康失败保留此前授权的运行快照。因此，验证完成前，请求的选择可能与 `proxy-status` 的 `Active source` 不同。应用候选会重启核心，可能短暂进入 C；旧回退不兼容时保持 C。
+
+同名身份、传输和认证变化与该来源自己的 settled 基线比较，切走再切回也保留比较依据。逻辑服务器身份不变的已验证 DNS 轮换可自动处理；敏感路由比较覆盖两个方向。精确批准绑定候选、基线、版本、策略及一小时有效期，不豁免证书、hosts、私网目标或格式错误。见[来源登记](operations_CN.md#来源登记)。
+
+## 可见信息与信任
+
+| 参与方 | 能观察的信息 |
+|---|---|
+| 浏览器与目标网站 | 应用内容；网站还知道账号、Cookie 和出口地址 |
+| 本机 HTTP 代理/核心 | CONNECT 名称、DNS 和路由信息；明文 HTTP 内容 |
+| 接入网络/DNS 服务商 | 传输地址与时间特征；解析器知道自己处理的查询 |
+| 入口/出口运营方 | 相邻地址与流量时间；出口知道目标信息及明文 HTTP |
+| 串通的运营方 | 更多关联信息；本机健康探测不能证明其诚实 |
+
+状态将 `controlled-fetch`、`legacy-unverified` 或未知来源与模式、路由和可用性分开，上游签名仍未验证。TLS 保护认证后的内容；ECH 和独立 profile 不隐藏账号、目标 IP 或时间特征，也不能禁止运营方记录或串通。
+
+
 ## 组件与身份
 
 | 组件 | 默认端点 / 状态 | 身份 |
@@ -20,7 +49,7 @@ Helper 在特权边界执行固定路径和文件操作约束。核心持有宿�
 
 显式启用的 IPv4 访客 TPROXY 入口绑定 `0.0.0.0:7896`；普通 mixed/DNS/controller 端点在 `allow-lan=false` 下仍仅本机。打包监听器单独处理该绑定并选择 IPv4 socket，进入 B 前检查 TCP/UDP 的 UID 与服务 cgroup；访客接口/源地址授权仍由防火墙负责。核心后续 auto-redirect 保留自有访客 mark 对应的透明 socket。见[访客网络](network_CN.md#访客与容器)。
 
-## 配置导入
+## 兼容 GUI 配置导入
 
 `proxy-control preflight` 检查桌面配置、必需资源和受管解析约束，不改变网络意图。`clash-on` 以预检成功为前提，写入代理意图，进入 C 后启动 helper。它清除刷新 pin 和待健康检查记录，保留完整的快照授权，并打开一次性 300 秒导入窗口。失败也会消费该窗口。
 
@@ -82,7 +111,7 @@ my.proxy.subscriptionAuditAllowedHosts = {
 
 Root 策略同时指定共享域名过滤文件、附加名单与例外。核心在 hosts/缓存/fake-IP 前检查 DNS，在 TCP/UDP 拨号前检查应用目标，使 HTTP/SOCKS 代解析使用与系统 DNS 相同的名单。内部引导解析查询也经过过滤，但其传输与目标验证范围独立；split DNS、原生 MagicDNS 和字面 IP 边界见 [DNS](dns_CN.md)。
 
-## 订阅信任
+## 兼容模式的订阅信任
 
 `my.proxy.subscriptionTrust="source"` 将 proxy provider 视为可信的可更新来源；`"fixed"` 禁止 provider，使内联节点内容纳入授权 YAML 快照。`proxy-control preflight` 显示内联节点数、provider 数、来源主机和申请的证书例外数量，不输出订阅 URL 或凭据。
 
@@ -101,7 +130,7 @@ my.proxy.proxyOnly = false; # 默认保留订阅 Rule 分流。
 # my.proxy.proxyOnly = true; # 使用订阅最终代理 MATCH。
 ```
 
-默认保留国内 DIRECT，并为配置的探针/下载域前置代理规则；其它目标按订阅规则选路。健康探测使用配置的样本目标。
+默认保留国内 DIRECT，并为配置的探针/下载域以及登记的 IP 探测/分流检测域名（`my.proxy.probeDomains`）前置代理规则，避免检测站看到直连地址；其它目标按订阅规则选路。健康探测使用配置的样本目标。
 
 `true` 将进入核心的应用流量统一交给订阅最终代理 MATCH，要求存在可用代理兜底，覆盖地理/进程分流及 profile REJECT。核心同时拒绝应用 DIRECT/COMPATIBLE TCP/UDP，包括组内 direct 叶子和改名适配器。按规则路由的 DNS 也受约束；显式引导/端点解析和 `#DIRECT` MagicDNS 仍豁免。
 

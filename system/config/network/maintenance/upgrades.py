@@ -13,6 +13,8 @@ import sys
 
 # Minimum behavioral obligations cannot be removed by shortening a JSON list.
 REQUIRED = {
+    'controlled-source': {'proxy-source', 'proxy-source-config', 'proxy-isolation-vm', 'proxy-control', 'proxy-refresh', 'proxy-core'},
+    'browser-isolation': {'proxy-source', 'proxy-source-config', 'proxy-isolation-vm', 'browser-privacy', 'browser-sandbox-vm', 'proxy-core'},
     'mihomo': {'proxy-core', 'proxy-profile', 'proxy-control-vm', 'proxy-uniform-vm',
                'proxy-target-vm', 'proxy-guest-vm', 'proxy-dns-strict-vm', 'proxy-network-vm',
                'browser-ech-vm', 'browser-ech-uniform-vm'},
@@ -28,6 +30,8 @@ REQUIRED = {
     'link-identity': {'network-identity-config', 'network-identity-vm', 'proxy-control-vm', 'proxy-network-vm'},
 }
 SOURCE_GROUPS = {
+    'controlled-source': {'mihomo', 'helper'},
+    'browser-isolation': {'firefox', 'bubblewrap', 'systemd', 'mihomo', 'dbusProxy', 'seccomp'},
     'mihomo': {'mihomo'}, 'sing-tun': {'mihomo'}, 'socks': {'mihomo'},
     'gost': {'gost'}, 'clash': {'helper', 'gui'},
     'dns': {'dnsmasq', 'unbound', 'chrony'},

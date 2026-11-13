@@ -2,6 +2,8 @@
 
 [English](../layout.md) | 简体中文 | [文档目录](README_CN.md)
 
+`tests/checks.nix` 维护 checks 定义和测试配置，根 `flake.nix` 仅导入。`system/programs/clash/service/source_worker.py`、`source_broker.py` 和 `source.nix` 管理受控来源；`strict-browser.nix` 与 `home/programs/firefox/network.py` 连接严格浏览网络路径。
+
 ## 系统与桌面职责
 
 | 目录 | 职责 |
@@ -47,4 +49,4 @@ Gost 在自己的程序目录内使用 `patches/`、`src/` 和 `tests/`，默认
 | [`tests/home/firefox/`](../../tests/home/firefox) | 浏览器策略、运行时、沙箱和 ECH fixture |
 | [`tests/deployment/`](../../tests/deployment) | 部署复制检查 |
 
-`flake.nix` 将这些源码接入 `checks.x86_64-linux.*`。脚本作为独立 store 文件运行时，由 Nix 测试显式传入源码路径；本地 Python 测试从所属功能目录定位仓库。
+`tests/checks.nix` 经 `flake.nix` 导入，将这些源码接入 `checks.x86_64-linux.*`。脚本作为独立 store 文件运行时，由 Nix 测试显式传入源码路径；本地 Python 测试从所属功能目录定位仓库。

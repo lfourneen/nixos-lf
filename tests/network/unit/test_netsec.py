@@ -1146,6 +1146,26 @@ def policy_document():
 
 
 class RulesTests(unittest.TestCase):
+    def test_flush_folding_and_first_rule_difference_are_explicit(self):
+        static = policy_document()
+        chain = {'family': 'inet', 'table': 'lf_filter', 'name': 'lf_strict_reply_guard'}
+        rule = {'family': 'inet', 'table': 'lf_filter', 'chain': chain['name'], 'expr': [{'drop': None}]}
+        static['nftables'] += [{'chain': chain}, {'rule': rule}]
+        echoed = copy.deepcopy(static)
+        replacement = dict(rule, expr=[{'accept': None}])
+        echoed['nftables'].append({'rule': replacement})
+        with tempfile.TemporaryDirectory() as directory:
+            fragment, output = Path(directory) / 'mode.nft', Path(directory) / 'expected.json'
+            fragment.write_text('flush chain inet lf_filter lf_strict_reply_guard\n')
+            rules.fold_mode(static, echoed, fragment, output)
+            expected = json.loads(output.read_text())
+            actual = copy.deepcopy(static)
+            actual['nftables'][-1] = {'rule': replacement}
+            rules.compare(expected, actual)
+            actual['nftables'][-1] = {'rule': rule}
+            with self.assertRaisesRegex(ValueError, r'lf_strict_reply_guard rule\[0\].*expected=.*actual='):
+                rules.compare(expected, actual)
+
     def test_conntrack_protocol_echo_and_live_forms_are_equivalent(self):
         def match(value):
             return {"match": {"op": "==", "left": {"ct": {"key": "protocol"}}, "right": value}}

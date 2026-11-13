@@ -2,6 +2,8 @@
 
 English | [简体中文](CN/dns_CN.md) | [Documentation](README.md)
 
+The host selects `dnsEncryption="strict"` in `host.nix`. Opportunistic leases and recovery budgets described below remain module compatibility behavior. Strict grants no public plaintext recovery or runtime force-plaintext override. DoT failure leaves cached/local answers; a literal-IP portal uses its separate entry. An older recovery generation requires deliberate selection rather than automatic downgrade.
+
 ## Resolver chain
 
 ```text

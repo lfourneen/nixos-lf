@@ -27,21 +27,27 @@ let
   '';
 
   # Parse each complete mode with the same nft implementation in an isolated
-  # userspace kernel. `-e` echoes the applied objects so the JSON carries the
-  # rules (a bare `list ruleset` inside the same batch would not); unwrap turns
-  # the echo into `list ruleset` shape, so it compares with the live snapshot.
+  # userspace kernel. `-e` echoes applied objects (a bare `list ruleset` inside
+  # the same batch would not). That echo still carries rules a fragment later
+  # removes with `flush chain`, so rules.py folds the flush targets against a
+  # static-only run before publishing the expected document; otherwise a chain
+  # that is static in Mode A but emptied by the B/C fragment could never compare
+  # equal to the live dump.
   expectedRules = pkgs.runCommand "lf-expected-rules" { } ''
     mkdir -p "$out"
+    cat ${staticRules} > static.nft
+    LD_PRELOAD="${pkgs.lklWithFirewall.lib}/lib/liblkl-hijack.so" ${pkgs.nftables}/bin/nft -e -j -f static.nft > "$out/static.raw.json"
     for mode in direct proxy blocked; do
       cat ${staticRules} > rules.nft
+      fragment=/dev/null
       case "$mode" in
-        proxy) cat ${rules} >> rules.nft ;;
-        blocked) cat ${blockedRules} >> rules.nft ;;
+        proxy) cat ${rules} >> rules.nft; fragment=${rules} ;;
+        blocked) cat ${blockedRules} >> rules.nft; fragment=${blockedRules} ;;
       esac
       LD_PRELOAD="${pkgs.lklWithFirewall.lib}/lib/liblkl-hijack.so" ${pkgs.nftables}/bin/nft -e -j -f rules.nft > "$out/$mode.raw.json"
-      ${rulesCheck} unwrap "$out/$mode.raw.json" "$out/$mode.json"
-      rm -f "$out/$mode.raw.json"
+      ${rulesCheck} expected "$out/static.raw.json" "$out/$mode.raw.json" "$fragment" "$out/$mode.json"
     done
+    rm -f "$out"/*.raw.json static.nft rules.nft
   '';
 
   m = config.my.machine;
@@ -698,7 +704,11 @@ NFT_OFF
             if rules_on_blocked; then applied=1; fi
             ;;
           direct)
-            if rules_off; then applied=1; fi
+            # Direct is the static policy, not "whatever is left after a
+            # teardown": `rules_off` flushes chains that also carry static
+            # rules (lf_host_egress_guard), so the verified document would
+            # never match. Reinstall the static text and compare it instead.
+            if load_complete direct; then applied=1; fi
             ;;
         esac
         # Any apply (even a failed one) may have changed the kernel; the next
@@ -876,6 +886,10 @@ NFT_OFF
             (umask 077; : > /run/proxy-mode/authorize-window)
             flock -u 9
             systemctl start clash-verge.service
+            ${lib.optionalString config.my.proxy.controlledSources ''
+            ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/clash-verge-stage.py} start-source \
+              ${config.programs.clash-verge.package.stageSettings} ${config.programs.clash-verge.package}/bin/verge-mihomo
+            ''}
           else
             ${modeScript} --request-direct
             if ! systemctl stop clash-verge.service; then

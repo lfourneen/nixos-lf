@@ -268,7 +268,15 @@ pkgs.testers.runNixOSTest {
     machine.succeed("setpriv --reuid=1000 --clear-groups proxy-status --no-color | grep -q 'Network status'")
     ${pkgs.lib.optionalString (refresh || dataplane) ''
     with subtest("managed profile refresh and core recovery"):
-        print(machine.succeed("python3 -u /etc/netsec-refresh.py ${if refresh then "auto" else "strict"}", timeout=450))
+        try:
+            print(machine.succeed("python3 -u /etc/netsec-refresh.py ${if refresh then "auto" else "strict"}", timeout=450))
+        except Exception:
+            # All data in this VM is synthetic. Retain authority, process and
+            # private launcher evidence when recovery fails, before teardown.
+            print(machine.execute("cat /run/proxy-mode/state.json /run/proxy-mode/health.json /run/proxy-mode/profile-refresh.json /run/proxy-mode/profile-refresh-restart.json"))
+            print(machine.execute("tail -n 100 /var/lib/clash-verge-service/logs/service_latest.log"))
+            print(machine.execute("ps -eo pid,ppid,stat,wchan:32,args"))
+            raise
         wait_proxy()
     ''}
     ${pkgs.lib.optionalString dataplane ''

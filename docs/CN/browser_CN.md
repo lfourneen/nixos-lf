@@ -6,13 +6,13 @@
 
 Firefox 是原生 Nix 包。[firefox.nix](../../home/programs/firefox/firefox.nix) 将二进制、enterprise policies、AutoConfig 和固定字体绑定在不可变 store closure 中，Home Manager 管理独立的 `~/.config/mozilla/firefox/lfour` profile。更新跟随锁定的 Nixpkgs 和重建 generation，浏览器二进制自更新禁用；旧 Flatpak profile 不自动导入或删除。
 
-公开启动器先运行 [guard.py](../../home/programs/firefox/guard.py)，再打开指定 profile。B 要求新鲜、同代次的模式/DNS/relay/验证状态、被动监听身份检查，并通过桌面 GUI 前向 socket 核对实时 API 不变量。私有配置快照及内部控制口由 root 监督器验证，浏览器使用其发布的就绪结果，不读取私有文件。A 允许在公共 DNS 尚不可用时打开字面 HTTP 门户。C、未知和 `unenforced` 拒绝启动；二次状态读取拒绝预检中途的切换，启动后的变化由 relay 和内核策略控制。
+公开启动器先运行 [guard.py](../../home/programs/firefox/guard.py)，再打开指定 profile。B 要求新鲜、同代次的模式/DNS/relay/验证状态、被动监听身份检查，并通过桌面 GUI 前向 socket 核对实时 API 不变量。私有配置快照及内部控制口由 root 监督器验证，浏览器使用其发布的就绪结果，不读取私有文件。日常 Firefox 允许 A 和健康 B；身份入口要求健康 B，门户入口仅允许显式 A。C、未知和 `unenforced` 拒绝启动；二次状态读取拒绝预检中途的切换，启动后的变化由 relay 和内核策略控制。
 
 启动器在严格隐私下检查字体，然后在下述外层沙箱中运行浏览器。宿主实例记录结合进程启动时间与包身份拒绝复用旧包；陈旧 profile 锁中的命名空间 PID 不作为桌面进程身份。桌面/MIME 入口均使用它，原 Zen/Chrome ID 转向 Firefox。策略更新后需完整重启浏览器。`firefox --check` 仅检查前提，不创建 profile 或开窗口。
 
 ## 外层沙箱
 
-[sandbox.py](../../home/programs/firefox/sandbox.py) 保留桌面 UID 和宿主网络命名空间，由 bubblewrap 创建独立的挂载、用户、PID、IPC 和 UTS 命名空间。浏览器只看到合成主目录及私有 `/tmp`、`/dev`，清空 capabilities，以白名单重建环境，同时保留 Gecko 内容进程沙箱。复用原生 Firefox 二进制，由 Nix 包装和小型 [scope 辅助程序](../../home/programs/firefox/scope.c) 提供外层策略，不修改 Gecko 源码。
+[sandbox.py](../../home/programs/firefox/sandbox.py) 保留桌面 UID；严格浏览器另有独立网络命名空间，由 bubblewrap 创建独立的挂载、用户、PID、IPC 和 UTS 命名空间。浏览器只看到合成主目录及私有 `/tmp`、`/dev`，清空 capabilities，以白名单重建环境，同时保留 Gecko 内容进程沙箱。复用原生 Firefox 二进制，由 Nix 包装和小型 [scope 辅助程序](../../home/programs/firefox/scope.c) 提供外层策略，不修改 Gecko 源码。
 
 | 资源 | 浏览器权限 |
 |---|---|
@@ -34,13 +34,23 @@ Firefox 是原生 Nix 包。[firefox.nix](../../home/programs/firefox/firefox.ni
 
 网络继续使用桌面 UID 及已有 A/B/C 规则，包括 Gost `33332`、系统 DNS 和可选的原生 ECH 路径。外层策略不为代理端口认证浏览器，也不隔离其它本地 TCP 服务。Wayland、音频、Downloads、profile 和用户选择的文档是明确开放的权限。已在桌面 UID 下无隔离运行的其它程序仍属于信任基础，可以自行调用包内私有二进制。
 
-## 网络策略
+## 网络策略与身份
 
-默认 `my.firefox.networkPath="http-proxy"` 将 HTTP/HTTPS 锁定为 Gost `127.0.0.1:33332`，bypass/PAC/SOCKS 为空，localhost 也走代理，禁用直连 failover。A 直通，B 进入 Mihomo 路由，C 关闭应用路径。下方可选透明路径使用原生 socket，并遵循同一套宿主策略。隐私设置不改变 `bootMode` 或 `proxyOnly`。
+`my.firefox.dailyRequireProxy` 默认为 `false`，与 `my.proxy.strictBrowser` 独立。默认日常浏览器使用 Gost `33332`：A 直连，使用本地网络的公网 IP；健康 B 经核心按订阅规则分流，可能包含 DIRECT。代理失败不会自动选择 A，两种模式均保留外层文件沙箱、TLS 和隐私设置。旧选项 `my.firefox.requireProxy` 仅作为日常选项的兼容别名。
 
-WebRTC 和 HTTP/3 禁用，使网页传输使用 TCP。DoH 禁用并锁定为 `network.trr.mode=5`，浏览器自身 DNS 走系统解析器。显式 HTTP 代理可委托 Gost/Mihomo 解析目标；核心在 DNS 应答及应用拨号前执行同一份域名快照、附加名单与例外。DNSSEC 和加密取决于解析路径及 `dnsEncryption`，见 [DNS](dns_CN.md)。门户检测与 NetworkManager 连通性检查保留，HTTPS-First 仍允许本地 HTTP。
+`firefox-identity` 始终要求 `my.proxy.strictBrowser=true` 提供的严格入口；将 `dailyRequireProxy=true` 也会为日常浏览器选择该入口。严格浏览器只有 loopback 网络，命名空间内 `127.0.0.1:18080` 的 HTTP relay 连接 systemd 创建的 Unix socket。`clash-strict.socket` 为桌面用户安装 `/run/clash-strict/proxy.sock`，`--check` 与启动均校验其存在、类型及所有权。宿主 relay 仅在共享就绪状态为健康 B 时接受连接，失去就绪后终止已有流。100 ms 轮询是在共享状态变化之后的额外上界，不代表瞬时发现故障。relay 在转发浏览器字节前核对已建立服务端 socket 的 UID，A/C 还在 nft 事务中切断严格入口流量。此命名空间不能访问任意宿主 TCP、本机 DNS、LAN 或直连公网 socket。
 
-在 B，到达核心的本地服务目标需[本地 DIRECT 或限定远程节点的授权](proxy_CN.md#域名目标)；字面私网 IP 不会自动获得节点侧拨号权限，A 仍保留字面门户路径。
+核心固定 `lf-strict` 入口，使用专用远程节点组，在实际叶子处拒绝 DIRECT/COMPATIBLE 和私网目标，GUI 选组或 Global 变化也不解除约束；普通桌面仍保留 Rule 路由。已排入 socket 或已发送到远端的数据无法撤回。相同桌面 UID 的其它未隔离进程仍受信任，可以自行调用包内私有二进制。
+
+日常浏览器可在 `dailyRequireProxy=false` 时选择透明 ECH 路径，使用宿主 A/B/C 网络，不具备独立网络命名空间。该选择不改变身份及门户入口的网络方式。
+
+日常 Firefox 与 `firefox-identity` 启用 HTTPS-only、禁止绕过证书/安全警告，并锁定反钓鱼、恶意软件和下载保护。身份包无扩展，profile、缓存、下载及文档门户身份独立，不复制已有 Cookie、账号或书签。Safe Browsing 更新和信誉查询可能披露查询/下载元信息，见 [Mozilla 保护说明](https://support.mozilla.org/en-US/kb/how-does-phishing-and-malware-protection-work)。合法证书不认证站点业务身份；HTTPS-only 仍有浏览器例外语义，不能宣称禁止所有可能的 HTTP 字节。
+
+`firefox-portal URL` 仅在显式 A 接受一个字面 IP、80/443 端口的 HTTP(S) 地址。它使用独立临时 profile，无扩展、无已有凭据，独立网络命名空间只能连接单地址 relay，15 分钟后终止。日常浏览器关闭自身自动明文门户探测，系统 NetworkManager 连通性检测保持独立；遇到门户不会自动换 profile 或绕过策略。
+
+普通浏览使用日常 profile，选定账号使用 `firefox-identity`；独立 profile 减少状态混用，但不能让已登录账号匿名或阻止流量关联。匿名活动还需独立选择受支持的匿名客户端，评估更新及出口策略；这些入口没有启用 Tor 或多跳保证。
+
+WebRTC、HTTP/3 和浏览器 DoH 仍关闭。显式代理的域名解析由核心处理，经过共享后缀/目标检查；DNSSEC 与加密传输保留各自的 [DNS 边界](dns_CN.md)。
 
 ## ECH 发现与代理兼容
 
@@ -50,7 +60,7 @@ ECH 加密 TLS ClientHello 的内部内容，包括站点 SNI。本配置由浏�
 
 | `my.firefox.networkPath` | 名称发现与传输 | ECH 行为 |
 |---|---|---|
-| `"http-proxy"`，默认 | 锁定 Gost HTTP 代理，目标解析可委托核心 | 锁定的 Firefox 159.0.1 将 HTTPS CONNECT 排除在 HTTPS-RR 发现之外；保留 GREASE，HTTPS-RR 发现使用下方透明路径 |
+| `"http-proxy"`，默认 | 严格本地 relay 或兼容 Gost HTTP 代理，目标解析委托核心 | 锁定的 Firefox 159.0.1 将 HTTPS CONNECT 排除在 HTTPS-RR 发现之外；保留 GREASE，HTTPS-RR 发现使用下方透明路径 |
 | `"transparent"` | 系统 DNS 与原生 HTTPS-RR 查询；A 使用直连 socket，B 使用宿主 TUN/防火墙路径 | NSS 可使用返回的 ECHConfig，与支持的站点进行真实 ECH 握手 |
 
 Firefox 的[连接门](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/netwerk/protocol/http/nsHttpChannel.cpp)同时检查代理 DNS 策略和 `UsingConnect()`，单改 DNS 传输不会改变这个门。本包禁用仅供测试的 `force_use_https_rr` override，透明选项复用打包浏览器，不修改 Gecko 源码。
@@ -59,6 +69,7 @@ Firefox 的[连接门](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_1
 
 ```nix
 my.proxy.tunMode = true;
+home-manager.users.lfour.my.firefox.dailyRequireProxy = false;
 home-manager.users.lfour.my.firefox.networkPath = "transparent";
 ```
 

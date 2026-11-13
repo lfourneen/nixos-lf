@@ -1,6 +1,7 @@
 """Authorization/permission regressions using real files, without root or VM."""
 
 import importlib.util
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,18 @@ spec.loader.exec_module(stage)
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_busy_source_fetch_does_not_block_the_verifier_or_operator(self):
+        with (self.root / 'source.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            with stage.source_lock({'source_root': str(self.root)}, blocking=False) as acquired:
+                self.assertFalse(acquired)
+            stage.verify_refresh(dict(self.settings, source_root=str(self.root)),
+                                 restart=lambda: self.fail('busy fetch must defer verification'))
+            with (self.state / 'operator.lock').open('a') as operator:
+                fcntl.flock(operator, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with stage.source_lock({'source_root': str(self.root)}, blocking=False) as acquired:
+            self.assertTrue(acquired)
+
     def setUp(self):
         read = Path.read_text
         def boot_identity(path, *args, **kwargs):

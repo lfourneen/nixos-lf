@@ -14,7 +14,9 @@ let
     desktopUid = config.users.users.${config.my.machine.desktopUser}.uid;
     compatPrefs = compatHome.programs.firefox.finalPackage.netsec.prefs;
     policies = home.programs.firefox.policies;
-    relayPort = config.my.machine.ports.gostHttp;
+    relayPort = if home.my.firefox.dailyRequireProxy then 18080 else config.my.machine.ports.gostHttp;
+    tlsDirectory = import ./tls-fixture.nix { inherit pkgs; };
+    certutil = "${pkgs.nssTools}/bin/certutil";
     desktop = home.xdg.dataFile."applications/firefox.desktop".source;
 
     aliases = map (id: home.xdg.dataFile."applications/${id}.desktop".source)

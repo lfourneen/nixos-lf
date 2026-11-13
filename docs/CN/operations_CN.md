@@ -2,11 +2,77 @@
 
 [English](../operations.md) | 简体中文 | [文档目录](README_CN.md)
 
+## 来源登记
+
+来源清单保存在 Sops 加密的 [system/secrets/proxy.yaml](../../system/secrets/proxy.yaml)，激活时渲染为 root 私有 `/run/secrets/proxy_source`（0400）。在 Sops 编辑器中，`proxy_source` 是包含 sources 数组的 JSON 字符串：
+
+```yaml
+proxy_source: |-
+  {
+    "sources": [
+      {
+        "id": "primary",
+        "subscription": {"url": "https://subscription-a.example.invalid/config"},
+        "providers": {}
+      },
+      {
+        "id": "secondary",
+        "subscription": {"url": "https://subscription-b.example.invalid/config"},
+        "providers": {}
+      }
+    ]
+  }
+```
+
+每个 root 批准的来源分别拥有一个主 `subscription` 和可选 HTTP provider。新增订阅应登记为另一个 ID，无须由第一条订阅声明为 provider。同一来源内部的 provider 仍须匹配其主 YAML 中的名称和 URL。`redirects` 最多列四个精确 HTTPS 目标。默认 UA 为 `clash.meta`，端点可增加 `"user-agent":"clash.meta"`。每条来源的可选字段 `"gui-profile":"REMOTE_PROFILE_UID"` 绑定 GUI profile 的精确 UID，而非显示名称；从本地 `profiles.yaml` 审核该 UID，映射不导入其中的 URL 或 YAML。
+
+运行 `sops system/secrets/proxy.yaml`，每新增一条订阅，就在 `sources` 中追加一个对象。ID 必须唯一，清单支持 1–256 条来源；旧的单来源 JSON 对象仍兼容。部署并激活修改后的配置后，`/run/secrets/proxy_source` 才会包含新清单；仅编辑仓库不会更新该运行文件或任何登记。按 ID 审核并登记：
+
+```sh
+sudo clash-source review /run/secrets/proxy_source --id primary
+sudo clash-source register /run/secrets/proxy_source --id primary --digest REVIEWED_DIGEST --previous none
+sudo systemctl start clash-source-refresh.service
+clash-on
+```
+
+不带 `--id` 的 `review FILE` 列出全部条目的摘要及上一登记版本，不输出端点或凭据。含多条来源的清单必须指定 `--id` 才能登记，批准一条不会授权其它条目。版本摘要只覆盖该条来源，新增或修改别的来源不会改变它。
+
+`review` 返回该 ID 的上一版本；更新已有登记时用它替换 `none`。旧版本或候选摘要不匹配则拒绝登记。更新只撤销该来源的下载指针和语义批准，保留 settled 审计基线。首次登记成为当前选择，其后登记只加入可选来源，不改变选择。旧单来源状态在下一次 broker 命令时迁移。
+
+新增 `secondary` 时，使用它自己的审核摘要登记一次。以下命令假定更新后的清单已经部署：
+
+```sh
+sudo clash-source review /run/secrets/proxy_source --id secondary
+sudo clash-source register /run/secrets/proxy_source --id secondary --digest REVIEWED_DIGEST --previous none
+sudo clash-source list
+sudo clash-source use secondary
+```
+
+后续切换只需 `sudo clash-source use primary` 或 `sudo clash-source use secondary`，不必重新登记。从加密清单删除条目不会撤销已有登记，应使用下述显式 `revoke` 命令。
+
+`list` 输出请求的选择、各登记版本和 settled 摘要，不输出端点或凭据。`use` 先获取新来源，再原子选择并排队运行刷新服务；可加 `--revision REVIEWED_DIGEST` 拒绝已变化的登记。获取失败保持原选择，公共锁串行化登记、选择及 staging。解析、审计和健康校验仍控制生效，此前授权的运行配置继续作为回退。`proxy-status` 的 `Active source` 是实际运行来源，验证或回退期间可能与请求不同；切回时使用该来源保留的审计基线。删除非选中来源及其专属状态可用 `sudo clash-source revoke secondary`，撤销当前选择前须先选另一个来源。显式停止代理意图可立即停用正在运行的回退。迁移时复制的旧文件作为 root 私有备份保留，不由该命令删除。
+
+`clash-source-select.path` 监听 GUI 的 `profiles.yaml`，切换到已映射 UID 会请求对应的登记来源。未知 profile 不改变选择；修改 GUI URL、YAML 或脚本不授予新权限。GUI 选择与实际来源不同时，检查 `journalctl -u clash-source-select -u clash-source-refresh`。A 中选择或获取不会请求 B，需要显式运行 `clash-on`。
+
+`clash-source refresh` 只准备候选；system service 在代理意图有效时还重启受管 helper/核心，timer 每 30 分钟执行。worker 失败区分 `fetch`、`parse`、`render`、`pin-addresses`，内容审计结果另见 `proxy-status`。解析失败最多丢弃 `max(1, node_count // 5)` 个节点，私网答案仍拒绝候选。下载、解析和审计失败保留有效的运行回退，没有回退则保持 C。若 C 阻止来源恢复，须主动选 A 获取已登记来源，再请求 B；DNS 不自动降级。
+
+确需变更节点身份等语义时，审核私有来源差异及已脱敏的候选/settled 摘要，仅批准需要的分类：
+
+```sh
+sudo clash-source approve --digest CANDIDATE_DIGEST --baseline SOURCE_SETTLED_DIGEST --categories node_identity
+sudo systemctl start clash-source-refresh.service
+```
+
+用 `sudo clash-source list` 查看选中来源的基线摘要。支持 `node_identity`、`node_authentication`、`node_transport`、`sensitive_route`；批准一小时后失效，提交后消费，不跳过静态安全检查。观察期后检查 `proxy-status` 和真实 B 就绪状态。
+
+门户登录先显式切 A，再用实际字面地址运行 `firefox-portal http://192.168.1.1/`。此入口使用全新数据、无扩展、单 IP 的 80/443 relay，15 分钟后终止；跳转到另一地址会失败，审核后显式为新地址另开会话。关闭后清理数据；日常 Firefox 可留在 A 使用；身份 Firefox 须恢复 B 后再启动。应保留可离线启动的 generation 与登记密钥备份；该命令不会创建恢复 generation 或更改 DNS 回退策略。
+
+
 ## 模式切换
 
 使用 Nushell 的 `clash-on`、`clash-off`，它们记录特权意图，管理 GUI/helper 并等待一致状态。关闭 GUI 不会清除代理意图；核心停止后因此进入 C。
 
-底层系统命令为 `sudo proxy-control on`、`sudo proxy-control off`。`on` 打开一次性配置导入窗口并启动 helper，GUI 仍需提供配置并启动核心；`off` 清除授权并停止 helper。桌面命令额外处理 GUI 进程。A 中仅启动 `clash-verge` 不会授权核心。
+底层系统命令为 `sudo proxy-control on`、`sudo proxy-control off`。`on` 打开一次性配置导入窗口并启动 helper，受控来源本机由登记候选启动核心，兼容模式仍由 GUI 提供配置并启动核心；`off` 清除授权并停止 helper。桌面命令额外处理 GUI 进程。A 中仅启动 `clash-verge` 不会授权核心。
 
 ```sh
 proxy-control preflight

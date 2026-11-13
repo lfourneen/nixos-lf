@@ -20,6 +20,16 @@ NORMALIZED = 'external-controller-unix: /run/clash-verge-rev/core/mihomo.sock\nm
 
 
 class StateTests(unittest.TestCase):
+    def test_active_source_is_bound_to_boot_and_sanitized(self):
+        record = {'boot_id': BOOT, 'provenance': 'controlled-fetch',
+                  'source_id': 'secondary', 'revision': 'a' * 64}
+        path = self.root / 'proxy-mode/source.json'
+        path.write_text(json.dumps(record))
+        self.assertEqual(state.source_trust(self.root, BOOT)['source_id'], 'secondary')
+        path.write_text(json.dumps(dict(record, source_id='https://private.invalid/token')))
+        self.assertEqual(state.source_trust(self.root, BOOT)['source_id'], '')
+        self.assertNotIn('source_id', state.source_trust(self.root, 'other-boot'))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

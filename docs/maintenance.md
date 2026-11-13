@@ -2,6 +2,8 @@
 
 English | [简体中文](CN/maintenance_CN.md) | [Documentation](README.md)
 
+Check definitions live in [`tests/checks.nix`](../tests/checks.nix), imported by `flake.nix`. Controlled sources add `proxy-source` and `proxy-isolation-vm`, alongside `proxy-control`, `proxy-refresh` and real control/refresh VMs. Strict browsing also needs `browser-privacy`, `browser-sandbox-vm`, strict DNS VM, `proxy-strict-rules-vm` and `proxy-core`. The strict-rules VM installs the production strict socket and compares the host’s strictBrowser=true A/C/B rules against the live kernel, including a deliberate drift diagnostic. The isolation VM uses real TLS, broker, snapshots, core and network namespaces; its small readiness fixture only tests relay revocation and does not replace complete supervisor A/B/C VMs. The controlled-source and browser-isolation components in `sources.json` select these checks.
+
 ## Build integration
 
 Package versions come from [flake.lock](../flake.lock), not the desktop updater. Stable Nixpkgs supplies Gost, dnsmasq, Unbound and Firefox; unstable supplies Mihomo, the Clash Verge GUI and its separately packaged helper. The current locked set is Mihomo 1.19.33, vendored MetaCubeX sing-tun 0.4.28, Gost 3.3.2, Clash Verge GUI 2.5.2, helper 2.3.3, dnsmasq 2.93 and Unbound 1.26.2. GUI, helper and core versions are independent.

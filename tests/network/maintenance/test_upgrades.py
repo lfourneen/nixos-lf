@@ -25,7 +25,7 @@ class UpgradeTests(unittest.TestCase):
             selected = copy.deepcopy(review['sources'])
             selected['mihomo'][field] = '0' * 64
             result = upgrades.plan(review, selected)
-            self.assertEqual(result['changed'], ['mihomo', 'sing-tun', 'socks'])
+            self.assertEqual(result['changed'], ['browser-isolation', 'controlled-source', 'mihomo', 'sing-tun', 'socks'])
             self.assertIn('proxy-uniform-vm', result['checks'])
             self.assertIn('proxy-network-vm', result['checks'])
             self.assertIn('browser-ech-uniform-vm', result['checks'])
@@ -33,7 +33,7 @@ class UpgradeTests(unittest.TestCase):
     def test_browser_confinement_dependency_requires_actual_browser_tests(self):
         selected = copy.deepcopy(review['sources'])
         selected['dbusProxy']['version'] += '.changed'
-        self.assertEqual(upgrades.plan(review, selected)['changed'], ['firefox'])
+        self.assertEqual(upgrades.plan(review, selected)['changed'], ['browser-isolation', 'firefox'])
         self.assertIn('browser-sandbox-vm', upgrades.plan(review, selected)['checks'])
 
     def test_required_regression_or_input_cannot_be_removed(self):

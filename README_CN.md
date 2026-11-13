@@ -6,7 +6,7 @@
 
 ---
 
-## ⚠️ 注意 / 警告 ⚠️
+## 注意 / 警告
 
 > **请勿直接照搬此配置！**
 
@@ -29,6 +29,10 @@
 ---
 
 ## 网络文档
+
+> **使用本仓库前请先阅读 `docs/`。** 网络层是 fail-closed 的：DNS、nftables、A/B/C
+> 模式与受控订阅来源相互耦合。跳过[操作与诊断](docs/CN/operations_CN.md#来源登记)中的登记步骤，
+> Mode B 将无法进入，机器还可能失去 DNS 或完全无法联网。
 
 从 **[网络文档](docs/CN/README_CN.md)** 阅读架构、A/B/C 模式、DNS 和受管 Firefox；日常使用及恢复见 **[操作与诊断](docs/CN/operations_CN.md)**，组件自定义、升级方法和检查对应关系见 **[补丁维护](docs/CN/maintenance_CN.md)**。
 
@@ -141,7 +145,7 @@ age-keygen -o ~/.config/sops/age/keys.txt
 
 ```
 
-> ⚠️ **安全警告：** `keys.txt` 是你的私钥。切勿提交到 Git 或公开暴露！请备份到安全位置。
+> **安全警告：** `keys.txt` 是你的私钥。切勿提交到 Git 或公开暴露！请备份到安全位置。
 
 2. 从输出或文件中获取你的公钥：
 ```bash

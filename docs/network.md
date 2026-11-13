@@ -2,6 +2,8 @@
 
 English | [简体中文](CN/network_CN.md) | [Documentation](README.md)
 
+The host selects strict DNS and controlled sources. Daily Firefox follows the A/B/C table below through Gost; `firefox-identity` uses a private network namespace and a B-only remote inlet. A separate ephemeral browser handles A portal login. See [source registration](operations.md#source-registration). Reserved ports also include the strict core inlet `7898`.
+
 ## Traffic paths
 
 The host uses nftables to select direct access, a managed proxy path or blocking. Three application paths converge on Mihomo when proxy mode is healthy:
@@ -29,7 +31,7 @@ Port reservation uses systemd's cgroup `bind4`/`bind6` hooks and requires kernel
 
 Mihomo marks its outbound sockets with `6666` / `0x1a0a`; the exception requires both socket and packet marks plus socket UID root or `clash-core`. Rule routing can choose DIRECT under the default `my.proxy.proxyOnly=false`. The optional [uniform proxy policy](proxy.md#routing-policy) refuses application DIRECT inside the core. Private-network and infrastructure paths outside the core have their own firewall rules. Inside the core, literal and resolved private targets have separate [local DIRECT and remote-leaf authorization](proxy.md#domain-targets); node selection follows subscription rules, while access to internal targets requires a matching target grant.
 
-[DNS](dns.md) runs alongside this path: resolved → dnsmasq → Mihomo or Unbound. [Firefox](browser.md) defaults to the same Gost HTTP inlet; its optional transparent path uses native DNS and host sockets under this TUN/firewall policy, allowing HTTPS-RR/ECH discovery. Its parent and descendants run in an [outer filesystem and desktop-interface sandbox](browser.md#outer-sandbox), retaining the desktop UID and this host network policy.
+[DNS](dns.md) runs alongside this path: resolved → dnsmasq → Mihomo or Unbound. Daily [Firefox](browser.md) uses Gost; its optional transparent path uses native DNS and host sockets under this TUN/firewall policy, allowing HTTPS-RR/ECH discovery. The identity entry uses a dedicated Unix relay and strict core inlet. Both run in an [outer filesystem and desktop-interface sandbox](browser.md#outer-sandbox), retaining the desktop UID; strict entries additionally isolate IP networking.
 
 ## Modes and enforcement
 

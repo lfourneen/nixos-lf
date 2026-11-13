@@ -2,6 +2,8 @@
 
 [English](../network.md) | 简体中文 | [文档目录](README_CN.md)
 
+本机选择 strict DNS 和受控来源。日常 Firefox 经 Gost 遵循下表的 A/B/C；`firefox-identity` 在独立网络命名空间内仅通过 B 的专用入口访问远端，A 的门户使用独立临时浏览器。受控来源登记与更新见[操作手册](operations_CN.md#来源登记)，保留端口还包括核心严格入口 `7898`。
+
 ## 流量路径
 
 宿主通过 nftables 选择直连、受管代理或阻断。代理健康时，三类应用路径汇入 Mihomo：
@@ -29,7 +31,7 @@
 
 Mihomo 为出站 socket 设置 `6666` / `0x1a0a` mark；核心例外同时要求 socket 与 packet mark，并核对 socket UID 为 root 或 `clash-core`。默认 `my.proxy.proxyOnly=false` 时 Rule 可选 DIRECT；可选的[统一代理策略](proxy_CN.md#路由策略)在核心内拒绝应用 DIRECT。核心以外的私网和基础设施路径仍由各自规则控制。
 
-[DNS](dns_CN.md) 是并行链路：resolved → dnsmasq → Mihomo 或 Unbound。[Firefox](browser_CN.md) 默认使用相同的 Gost HTTP 入口；可选透明路径使用原生 DNS 和宿主 socket，受本套 TUN/防火墙约束，支持 HTTPS-RR/ECH 发现。父进程及其后代运行于[外层文件系统与桌面接口沙箱](browser_CN.md#外层沙箱)，保留桌面 UID 和本套宿主网络策略。
+[DNS](dns_CN.md) 与该路径并行：resolved → dnsmasq → Mihomo 或 Unbound。日常 [Firefox](browser_CN.md) 使用 Gost；可选透明路径使用本机 DNS 和宿主 socket，遵循相同 TUN/防火墙策略，支持 HTTPS-RR/ECH 发现。身份入口使用专用 Unix relay 与严格核心入口。两者均在[外层文件系统及桌面接口沙箱](browser_CN.md#外层沙箱)内运行，保留桌面 UID；严格入口额外隔离 IP 网络。
 
 核心内的字面或解析后私网目标按[本地 DIRECT 与远程叶节点](proxy_CN.md#域名目标)分别授权；订阅规则负责选择节点，节点侧内部目标由目标授权规则控制。
 

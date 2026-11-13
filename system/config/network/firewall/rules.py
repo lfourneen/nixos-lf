@@ -3,6 +3,7 @@
 import argparse
 import ipaddress
 import json
+from pathlib import Path
 import re
 import sys
 
@@ -10,7 +11,7 @@ import sys
 TABLES = {"lf_filter", "lf_nat", "lf_mangle", "lf_proxymode_nat"}
 DYNAMIC_CHAINS = {"proxymode_drops", "proxymode_tail", "proxymode_forward",
                   "lf_blocked_guard", "lf_guest_guard", "proxymode_tproxy",
-                  "lf_host_egress_guard", "lf_host_direct", "lf_tailnet_guard"}
+                  "lf_host_egress_guard", "lf_host_direct", "lf_tailnet_guard", "lf_strict_reply_guard"}
 LEASE_SETS = {"dns_plaintext4": 4, "dns_split4": 4, "dns_split6": 6}
 
 
@@ -138,7 +139,24 @@ def compare(expected, actual, static=False):
     for table in exp:
         for kind in ("objects", "rules"):
             if exp[table][kind] != live[table][kind]:
-                raise ValueError(f"{table[0]} {table[1]}: {kind} differ (including rule order/hook/policy)")
+                wanted, found = exp[table][kind], live[table][kind]
+                for name in sorted(wanted.keys() | found.keys()):
+                    if wanted.get(name) == found.get(name):
+                        continue
+                    left, right = wanted.get(name), found.get(name)
+                    location = str(name)
+                    if kind == 'rules':
+                        left, right = left or [], right or []
+                        for index in range(max(len(left), len(right))):
+                            a = left[index] if index < len(left) else None
+                            b = right[index] if index < len(right) else None
+                            if a != b:
+                                location += f' rule[{index}]'
+                                left, right = a, b
+                                break
+                    encode = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':'))[:2048]
+                    raise ValueError(f"{table[0]} {table[1]}: {kind} differ at {location}; "
+                                     f"expected={encode(left)} actual={encode(right)}")
 
 
 def unwrap(document):
@@ -146,9 +164,9 @@ def unwrap(document):
 
     `-e` wraps each applied object as {"add": {"rule": {...}}}; the live dump
     emits the bare {"rule": {...}}. Unwrapping makes the build-time expected
-    JSON comparable with the runtime `nft -j list ruleset` output. Non-applying
-    operations (flush/destroy of a fresh table) are not echoed and need no
-    handling.
+    JSON comparable with the runtime `nft -j list ruleset` output. Applying
+    operations are echoed, but `flush` is not; see fold_mode for chains a mode
+    fragment empties after the static rules were echoed.
     """
     result = []
     for entry in document.get("nftables", []):
@@ -163,9 +181,57 @@ def unwrap(document):
     return {"nftables": result}
 
 
+def chain_flushes(fragment):
+    """Chains a mode fragment empties after the static rules were echoed."""
+    targets, seen = [], set()
+    for line in Path(fragment).read_text().splitlines():
+        parts = line.split()
+        if len(parts) == 5 and parts[0] == "flush" and parts[1] == "chain":
+            key = (parts[2], parts[3], parts[4])
+            if key in seen:
+                raise ValueError("repeated chain flush")
+            seen.add(key)
+            targets.append(key)
+    return targets
+
+
+def fold_mode(static, mode, fragment, output):
+    """Fold the mode fragment's chain flushes into the echoed expected rules.
+
+    `nft -e -j` echoes rules that were added, not rules later removed by a
+    `flush chain`, so an echo still contains static rules that the live kernel
+    dropped. Remove exactly those leading rules for every flushed chain; any
+    later rules in that chain are the fragment's own additions.
+    """
+    base = unwrap(static)["nftables"]
+    live = unwrap(mode)["nftables"]
+    static_rules = {}
+    for entry in base:
+        rule = entry.get("rule")
+        if isinstance(rule, dict):
+            key = (rule.get("family"), rule.get("table"), rule.get("chain"))
+            static_rules.setdefault(key, []).append(rule)
+    positions = {}
+    for index, entry in enumerate(live):
+        rule = entry.get("rule")
+        if isinstance(rule, dict):
+            key = (rule.get("family"), rule.get("table"), rule.get("chain"))
+            positions.setdefault(key, []).append(index)
+    dropped = set()
+    for key in chain_flushes(fragment):
+        prefix = static_rules.get(key, [])
+        found = [live[index]["rule"] for index in positions.get(key, [])[:len(prefix)]]
+        if found != prefix:
+            raise ValueError("echo does not start with the static rules")
+        dropped.update(positions.get(key, [])[:len(prefix)])
+    with open(output, "w") as stream:
+        json.dump({"nftables": [entry for index, entry in enumerate(live) if index not in dropped]},
+                  stream, sort_keys=True, separators=(",", ":"))
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("compare", "compare-static", "address", "unwrap"))
+    parser.add_argument("command", choices=("compare", "compare-static", "address", "unwrap", "expected"))
     parser.add_argument("arguments", nargs="+")
     args = parser.parse_args()
     try:
@@ -180,6 +246,12 @@ def main():
                 document = json.load(stream)
             with open(args.arguments[1], "w") as stream:
                 json.dump(unwrap(document), stream, sort_keys=True, separators=(",", ":"))
+        elif args.command == "expected":
+            with open(args.arguments[0]) as stream:
+                static = json.load(stream)
+            with open(args.arguments[1]) as stream:
+                mode = json.load(stream)
+            fold_mode(static, mode, args.arguments[2], args.arguments[3])
         else:
             network = ipaddress.ip_network(args.arguments[0], strict=False)
             for line in sys.stdin:

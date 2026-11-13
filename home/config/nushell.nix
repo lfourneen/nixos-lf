@@ -251,11 +251,12 @@ in
       if $core != 0 {
         print $"(ansi red_bold)Proxy preparation or startup failed. See the status below.(ansi reset)"
         proxy-status
-        # A first run has no runtime profile yet: the launcher refuses before
-        # the GUI has written one. Open the GUI so it can materialize the
-        # profile, then let the operator rerun clash-on.
+        ${if osConfig.my.proxy.controlledSources then ''
+        print "Check root source registration and run sudo systemctl start clash-source-refresh.service before retrying."
+        '' else ''
         job spawn { ^clash-verge }
         print $"Run (ansi yellow_bold)clash-on(ansi reset) again after the GUI has written its profile."
+        ''}
         return
       }
       # Always pass through the current launcher: it preserves a current GUI

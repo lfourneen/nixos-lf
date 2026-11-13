@@ -6,7 +6,7 @@ A declarative NixOS system configuration using Nix flakes, featuring a customize
 
 ---
 
-## ⚠️ NOTICE / WARNING ⚠️
+## NOTICE / WARNING
 
 > **Do NOT blindly apply this configuration!**
 
@@ -29,6 +29,12 @@ A declarative NixOS system configuration using Nix flakes, featuring a customize
 ---
 
 ## Network documentation
+
+> **Read `docs/` before using this repository.** The network layer is
+> fail-closed and couples DNS, nftables, the A/B/C modes and the controlled
+> subscription source. Deploying it without the registration steps in the
+> [operations guide](docs/operations.md#source-registration) leaves Mode B
+> unreachable and can leave the machine without DNS or internet access.
 
 Start with the **[network documentation](docs/README.md)** for the architecture,
 A/B/C modes, DNS and managed Firefox. The **[operations guide](docs/operations.md)**
@@ -144,7 +150,7 @@ age-keygen -o ~/.config/sops/age/keys.txt
 
 ```
 
-> ⚠️ **Security Warning:** `keys.txt` is your private key. Never commit it to Git or expose it publicly! Store a backup in a secure location.
+> **Security Warning:** `keys.txt` is your private key. Never commit it to Git or expose it publicly! Store a backup in a secure location.
 
 2. Get your public key from the output or by inspecting the file:
 ```bash

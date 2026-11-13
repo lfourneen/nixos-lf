@@ -2,11 +2,77 @@
 
 English | [简体中文](CN/operations_CN.md) | [Documentation](README.md)
 
+## Source registration
+
+The private source catalog is the Sops-encrypted [system/secrets/proxy.yaml](../system/secrets/proxy.yaml), rendered at activation to root-private `/run/secrets/proxy_source` (mode 0400). In the Sops editor, `proxy_source` is a JSON string containing the sources array:
+
+```yaml
+proxy_source: |-
+  {
+    "sources": [
+      {
+        "id": "primary",
+        "subscription": {"url": "https://subscription-a.example.invalid/config"},
+        "providers": {}
+      },
+      {
+        "id": "secondary",
+        "subscription": {"url": "https://subscription-b.example.invalid/config"},
+        "providers": {}
+      }
+    ]
+  }
+```
+
+Each root-approved source has one main `subscription` and optional HTTP providers. Register additional subscriptions as separate IDs; they do not have to be declared as providers of the first subscription. Providers within one source must still match its main YAML's provider names and URLs. `redirects` may list at most four exact HTTPS destinations. The default UA is `clash.meta`; an endpoint may add `"user-agent":"clash.meta"`. An optional per-source `"gui-profile":"REMOTE_PROFILE_UID"` binds a GUI profile's exact UID, not its displayed name. Review that UID in the local `profiles.yaml`; the mapping does not import its URL or YAML.
+
+Run `sops system/secrets/proxy.yaml` and append another object to `sources` for each new subscription. IDs must be unique; the catalog accepts 1–256 sources. The legacy single-source JSON object remains supported. After deploying and activating the edited configuration, `/run/secrets/proxy_source` contains the catalog. Editing the checkout alone does not update that runtime file or any registration. Review and register the intended ID:
+
+```sh
+sudo clash-source review /run/secrets/proxy_source --id primary
+sudo clash-source register /run/secrets/proxy_source --id primary --digest REVIEWED_DIGEST --previous none
+sudo systemctl start clash-source-refresh.service
+clash-on
+```
+
+`review FILE` without `--id` lists every entry’s digest and previous registered revision, without endpoints or credentials. A catalog containing multiple entries requires `--id` for registration; approving one entry grants nothing to the others. The canonical revision covers that entry, so adding or editing another source does not change it.
+
+`review` returns the previous revision of that ID; use it instead of `none` when updating an existing registration. A mismatched revision or candidate digest refuses registration. Updating one source invalidates only its download pointer and semantic approval, retaining its settled audit baseline. The first registration becomes selected; later registrations remain available without changing the selection. Existing single-source state migrates on the next broker command.
+
+For a newly added `secondary`, review its own digest and register it once. These commands assume the updated catalog has already been deployed:
+
+```sh
+sudo clash-source review /run/secrets/proxy_source --id secondary
+sudo clash-source register /run/secrets/proxy_source --id secondary --digest REVIEWED_DIGEST --previous none
+sudo clash-source list
+sudo clash-source use secondary
+```
+
+Later switches use only `sudo clash-source use primary` or `sudo clash-source use secondary`; no re-registration is needed. Deleting an entry from the encrypted catalog does not revoke an existing registration. Use the explicit `revoke` command below.
+
+`list` reports the requested selection, registered revisions and each settled digest without endpoints or credentials. `use` fetches the new source before atomically selecting it and queues the refresh service; an optional `--revision REVIEWED_DIGEST` rejects a changed registration. Failed fetching leaves the prior selection intact. The shared lock serializes source registration, selection and staging. Parser, audit and health validation still gate activation; the previous authorized runtime remains a fallback. `proxy-status` shows `Active source`, which may differ from the request during validation or fallback. Switching back reuses that source's retained audit baseline. To remove an inactive registration and its per-source state, run `sudo clash-source revoke secondary`; select another source before revoking the selected one. Stopping proxy intent explicitly retires a running fallback immediately. Legacy files copied during migration remain as root-private backups and are outside this command.
+
+The `clash-source-select.path` unit watches the GUI's `profiles.yaml`. Switching to a mapped UID requests the corresponding registered source. Unknown profiles leave the selection unchanged; changing a GUI URL, YAML or script grants no additional authority. Inspect `journalctl -u clash-source-select -u clash-source-refresh` when the GUI selection and active source differ. In A, selection and fetching do not request B; use `clash-on` deliberately.
+
+`clash-source refresh` only prepares a candidate. The system service also restarts the managed helper/core while proxy intent is active; its timer runs every 30 minutes. Worker failures identify `fetch`, `parse`, `render` or `pin-addresses`; content-audit findings appear separately in `proxy-status`. Unresolvable nodes may be dropped up to `max(1, node_count // 5)`; private answers still refuse the candidate. Fetch/parse/audit failure preserves a valid runtime fallback; no fallback leaves C. If C prevents source recovery, deliberately select A, fetch the registered source, then request B. DNS does not downgrade automatically.
+
+For an intentional semantic change, inspect the private source diff and the sanitized candidate/settled digests, then approve only the required categories:
+
+```sh
+sudo clash-source approve --digest CANDIDATE_DIGEST --baseline SOURCE_SETTLED_DIGEST --categories node_identity
+sudo systemctl start clash-source-refresh.service
+```
+
+Read the selected source’s baseline digest from `sudo clash-source list`. Supported approval categories are `node_identity`, `node_authentication`, `node_transport`, `sensitive_route`. Approval expires after one hour, is consumed on commit and does not bypass static safety checks. Check `proxy-status` and actual B readiness after the observation window.
+
+For portal login, deliberately enter A and run `firefox-portal http://192.168.1.1/` with the actual literal portal address. It has fresh data, no extensions, a single-IP port-80/443 relay and a 15-minute lifetime. Redirects to another address fail; explicitly start another session for that address after reviewing it. Closing the session removes its data. Daily Firefox can stay in A; resume B before launching identity Firefox. Keep an offline bootable generation and registration-key backup; this command does not create a recovery generation or alter DNS fallback policy.
+
+
 ## Switching modes
 
 Use the Nushell commands `clash-on` and `clash-off`. They record privileged intent, manage the GUI/helper lifecycle and wait for coherent state. Closing the GUI alone leaves proxy intent active and therefore enters C when the core stops.
 
-`sudo proxy-control on` and `sudo proxy-control off` are the underlying system controls. `on` opens the single-use configuration-import window and starts the helper; the GUI still needs to supply/start the core. `off` clears authorization and stops the helper. The desktop commands also handle GUI processes. Starting only `clash-verge` in A does not authorize a core.
+`sudo proxy-control on` and `sudo proxy-control off` are the underlying system controls. `on` opens the single-use configuration-import window and starts the helper; the controlled-source host starts the core from its registered candidate; compatibility mode still lets the GUI supply/start it. `off` clears authorization and stops the helper. The desktop commands also handle GUI processes. Starting only `clash-verge` in A does not authorize a core.
 
 ```sh
 proxy-control preflight

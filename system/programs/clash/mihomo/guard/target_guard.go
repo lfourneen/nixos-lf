@@ -27,25 +27,27 @@ type targetGrant struct {
 }
 
 type policy struct {
-	SubscriptionTrust        string        `json:"subscription-trust"`
-	InsecureProxyExceptions  []string      `json:"insecure-proxy-exceptions"`
-	AllowDynamicRemoteGrants bool          `json:"allow-dynamic-remote-grants"`
-	ProxyOnly                bool          `json:"proxy-only"`
-	Prefixes                 []string      `json:"prefixes"`
-	AllowedDomains           []string      `json:"allowed-domains"`
-	MagicDNSSuffixFile       string        `json:"magic-dns-suffix-file"`
-	BlockedDomainsFile       string        `json:"blocked-domains-file"`
-	BlockedDomains           []string      `json:"blocked-domains"`
-	BlockExceptions          []string      `json:"blocked-domain-exceptions"`
-	LocalTargetCIDRs         []string      `json:"local-target-cidrs"`
-	RemoteTargetGrants       []targetGrant `json:"remote-target-grants"`
-	NAT64Prefixes            []string      `json:"nat64-prefixes"`
-	FakeIPPrefix             string        `json:"fake-ip-prefix"`
-	local                    []netip.Prefix
-	nat64                    []netip.Prefix
-	fake                     netip.Prefix
-	parsed                   []netip.Prefix
-	blockedNames             map[string]bool
+	SubscriptionTrust          string        `json:"subscription-trust"`
+	InsecureProxyExceptions    []string      `json:"insecure-proxy-exceptions"`
+	AllowDynamicRemoteGrants   bool          `json:"allow-dynamic-remote-grants"`
+	RejectPlaintextCredentials bool          `json:"reject-plaintext-credentials"`
+	StrictInlets               []string      `json:"strict-inlets"`
+	ProxyOnly                  bool          `json:"proxy-only"`
+	Prefixes                   []string      `json:"prefixes"`
+	AllowedDomains             []string      `json:"allowed-domains"`
+	MagicDNSSuffixFile         string        `json:"magic-dns-suffix-file"`
+	BlockedDomainsFile         string        `json:"blocked-domains-file"`
+	BlockedDomains             []string      `json:"blocked-domains"`
+	BlockExceptions            []string      `json:"blocked-domain-exceptions"`
+	LocalTargetCIDRs           []string      `json:"local-target-cidrs"`
+	RemoteTargetGrants         []targetGrant `json:"remote-target-grants"`
+	NAT64Prefixes              []string      `json:"nat64-prefixes"`
+	FakeIPPrefix               string        `json:"fake-ip-prefix"`
+	local                      []netip.Prefix
+	nat64                      []netip.Prefix
+	fake                       netip.Prefix
+	parsed                     []netip.Prefix
+	blockedNames               map[string]bool
 }
 
 var current atomic.Pointer[policy]
@@ -56,9 +58,18 @@ func Managed() bool { return current.Load() != nil }
 // Called by the DIRECT adapter before opening TCP or UDP sockets, including
 // named direct adapters and COMPATIBLE. A group selecting DIRECT cannot bypass
 // this check. Internal resolver/bootstrap metadata has a separate trust scope.
+func strictInlet(p *policy, m *C.Metadata) bool {
+	for _, name := range p.StrictInlets {
+		if name == m.InName {
+			return true
+		}
+	}
+	return false
+}
+
 func CheckDirect(metadata *C.Metadata) error {
 	p := current.Load()
-	if p != nil && p.ProxyOnly && (metadata.Type != C.INNER || metadata.LFRuleDNS) {
+	if p != nil && (p.ProxyOnly || strictInlet(p, metadata)) && (metadata.Type != C.INNER || metadata.LFRuleDNS) {
 		scope := "application"
 		if metadata.LFRuleDNS {
 			scope = "rule-routed DNS"
@@ -397,6 +408,9 @@ func CheckEgress(m *C.Metadata, direct bool, leaf string) error {
 		return fmt.Errorf("managed target guard: unsafe or unpinned target")
 	}
 	m.LFEgressDirect, m.LFEgressProxy = direct, leaf
+	if strictInlet(p, m) && p.blocked(ip) {
+		return fmt.Errorf("strict inlet refuses private targets")
+	}
 	if !p.blocked(ip) {
 		return nil
 	}
@@ -549,6 +563,13 @@ func CheckProxy(mapping map[string]any) error {
 		return nil
 	}
 	name, _ := mapping["name"].(string)
+	kind, _ := mapping["type"].(string)
+	tls, _ := mapping["tls"].(bool)
+	if p.RejectPlaintextCredentials && (kind == "http" || kind == "socks5") && !tls {
+		if mapping["username"] != nil && mapping["username"] != "" || mapping["password"] != nil && mapping["password"] != "" {
+			return fmt.Errorf("managed proxy refuses plaintext authentication")
+		}
+	}
 	for _, allowed := range p.InsecureProxyExceptions {
 		if name == allowed {
 			return nil

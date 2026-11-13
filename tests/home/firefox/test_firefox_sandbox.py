@@ -21,6 +21,20 @@ manifest = json.loads(Path("/etc/firefox-sandbox-test.json").read_text())
 settings = json.loads(Path(manifest["settings"]).read_text())
 sandbox = module("sandbox", settings["sandboxModule"])
 guard = module("guard", manifest["guard"])
+assert settings['requireProxy'] is False
+# The production daily configuration passes A preflight with the strict Unix
+# endpoint absent; the subsequent real Wayland launch exercises its mounts.
+assert not Path(settings['proxySocket']).exists()
+assert guard.prepare(settings, manifest['package'] + '/bin/.firefox-unchecked',
+    check=lambda **_: {'mode': 'direct', 'ready': False, 'policy_version': 1}, check_only=True) == []
+sandbox.prerequisites(settings)
+try:
+    guard.prepare(dict(settings, requireProxy=True), manifest['package'] + '/bin/.firefox-unchecked',
+        check=lambda **_: {'mode': 'direct', 'ready': False, 'policy_version': 1}, check_only=True)
+except ValueError as error:
+    assert 'healthy proxy Mode B' in str(error)
+else:
+    raise AssertionError('identity requirements admitted Mode A')
 binary = manifest["package"] + "/bin/.firefox-unchecked"
 profile = Path(settings["profile"])
 profile.mkdir(parents=True, exist_ok=True)
@@ -115,13 +129,20 @@ try:
     client.call("WebDriver:SetTimeouts", {"pageLoad": 15000})
     client.call("WebDriver:Navigate", {"url": "https://trusted.sandbox.fixture.test/"})
     assert client.execute("return document.body.innerText;") == "Firefox system trust fixture"
-    for host in ("untrusted.sandbox.fixture.test", "wrong.sandbox.fixture.test"):
+    for host in ("untrusted.sandbox.fixture.test", "wrong.sandbox.fixture.test", "expired.sandbox.fixture.test"):
         try:
             client.call("WebDriver:Navigate", {"url": "https://" + host + "/"})
         except AssertionError as error:
             assert error.args[0]["error"] == "insecure certificate", error
         else:
             raise AssertionError("invalid certificate was accepted: " + host)
+    for host in ('plaintext.sandbox.fixture.test', 'truncated.sandbox.fixture.test'):
+        try:
+            client.call("WebDriver:Navigate", {"url":"https://"+host+"/"})
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError('TLS stripping/truncation was accepted: ' + host)
     client.call("WebDriver:Navigate", {"url": "about:blank"})
     client.call("Marionette:SetContext", {"value": "chrome"})
     actual = client.call("WebDriver:ExecuteAsyncScript", {"script": """

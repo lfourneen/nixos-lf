@@ -58,12 +58,14 @@ def subscription_check(document, policy):
             'provider_contents': 'runtime-validation' if providers else 'none'}, issues
 
 
-def inspect(settings):
+def inspect_unlocked(settings):
     spec = importlib.util.spec_from_file_location('snapshot', settings['snapshot_tool'])
     snapshot = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(snapshot)
     issues = []
     try:
+        if settings.get('source_root'):
+            settings, _ = snapshot.source_input(settings)
         data = snapshot.config_input(settings, str(Path(settings['gui_data']) / 'clash-verge.yaml'))
         parse = [settings['yq'], '-o=json', '-I=0', '.', '-']
         if os.geteuid() == 0:
@@ -77,8 +79,8 @@ def inspect(settings):
         if not isinstance(document, dict):
             raise ValueError('profile is not a mapping')
     except (OSError, ValueError, subprocess.SubprocessError):
-        return {'ready': False, 'phase': 'prepare-profile', 'issues': ['GUI profile missing, unsafe or invalid'],
-                'next_action': 'Prepare the GUI profile in deliberately selected Mode A; then rerun clash-on.'}
+        return {'ready': False, 'phase': 'prepare-profile', 'issues': ['Registered source candidate or legacy GUI profile missing, unsafe or invalid'],
+                'next_action': 'Register and refresh the controlled source, or prepare the legacy GUI profile; rerun clash-on.'}
     names = {path.name.lower() for path in Path(settings['gui_data']).iterdir() if path.is_file()}
     rules = '\n'.join(str(rule) for rule in document.get('rules', []))
     for match, asset in [('GEOSITE,', 'GeoSite.dat'),
@@ -135,6 +137,19 @@ def inspect(settings):
             'warnings': ['Provider contents are validated at load/refresh. Named certificate exceptions also follow same-named provider replacements.']
                         if subscription['mutable_sources'] else [],
             'next_action': 'clash-on' if not issues else 'Check required assets and the root-only /run/proxy-mode/preflight.log; regenerate the GUI profile and rerun preflight.'}
+
+
+def inspect(settings):
+    spec = importlib.util.spec_from_file_location('snapshot_lock', settings['snapshot_tool'])
+    snapshot = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(snapshot)
+    try:
+        with snapshot.source_lock(settings):
+            return inspect_unlocked(settings)
+    except OSError:
+        return {'ready': False, 'phase': 'prepare-profile',
+                'issues': ['Controlled source has not been registered'],
+                'next_action': 'sudo clash-source review/register, then refresh'}
 
 
 def publish(result, settings):

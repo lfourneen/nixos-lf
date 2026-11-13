@@ -2,6 +2,10 @@
   # This host trusts its configured subscription sources. Reusable modules and
   # VM fixtures retain the strict option default.
   my.proxy.profileRefreshPolicy = "auto";
+  my.proxy.controlledSources = true;
+  my.proxy.strictBrowser = true;
+  my.proxy.subscriptionTrust = "fixed";
+  my.proxy.dnsEncryption = "strict";
 
   # Keep the offline content audit in blocking mode for this host. Reusable
   # modules and VM fixtures retain the warn default.

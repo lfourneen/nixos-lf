@@ -19,6 +19,7 @@ import socket
 import stat
 import subprocess
 import tempfile
+import time
 
 
 APP_ID = "org.nixos.ManagedFirefox"
@@ -45,6 +46,8 @@ def check_generation(settings, binary):
     if directory.exists():
         for path in directory.glob("*/generation.json"):
             state = json.loads(path.read_text())
+            if state.get("profile", settings["profile"]) != settings["profile"]:
+                continue
             if process_start(state["pid"]) != state["start"]:
                 continue
             if state["binary"] != str(binary):
@@ -65,6 +68,16 @@ def check_generation(settings, binary):
 
 
 def prerequisites(settings):
+    if settings.get("requireProxy"):
+        path = Path(settings['proxySocket'])
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            raise ValueError("strict proxy socket is unavailable; check clash-strict.socket and Mode B") from None
+        parent = path.parent.lstat()
+        if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or
+                not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 or parent.st_mode & 0o022):
+            raise ValueError("strict proxy endpoint has invalid ownership or permissions")
     runtime = Path(settings["runtime"])
     info = runtime.stat()
     if info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -152,9 +165,9 @@ def session(settings):
     portal = runtime / ".flatpak" / identifier
     portal.mkdir(mode=0o700, parents=True)
     metadata = instance / "info"
-    metadata.write_text(f"[Application]\nname={APP_ID}\n"
+    metadata.write_text(f"[Application]\nname={settings.get('appId', APP_ID)}\n"
                         f"[Instance]\ninstance-id={identifier}\n"
-                        "[Context]\nshared=network;\n")
+                        "[Context]\nshared=" + ("" if settings.get("requireProxy") or settings.get("portalOnly") else "network;") + "\n")
     # Activate the real document portal before binding its per-application view.
     # Never mount the global doc tree, which includes grants for other apps.
     try:
@@ -164,7 +177,7 @@ def session(settings):
                         "org.freedesktop.portal.Documents.GetMountPoint"],
                        env={**os.environ, "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + str(runtime / "bus")},
                        check=True, capture_output=True, timeout=20)
-        documents = runtime / "doc/by-app" / APP_ID
+        documents = runtime / "doc/by-app" / settings.get("appId", APP_ID)
         if not documents.is_dir():
             raise ValueError("the per-application document portal is unavailable")
         for name in ("profile", "cache", "downloads"):
@@ -197,6 +210,7 @@ def session(settings):
         proxy = subprocess.Popen(proxy_command, pass_fds=(child_control.fileno(),),
                                  stdin=subprocess.DEVNULL)
         child_control.close()
+        portal_proxy = None
         try:
             if not select.select([control], [], [], 10)[0] or not control.recv(1):
                 raise ValueError("filtered desktop bus failed to start")
@@ -216,6 +230,19 @@ def session(settings):
                          "/etc/localtime", "/etc/machine-id",
                          "/run/opengl-driver"):
                 command += ["--ro-bind-try", path, path]
+            if settings.get('portalOnly'):
+                path = instance / 'portal.sock'
+                portal_proxy = subprocess.Popen([settings['python'], '-I', settings['networkModule'], 'portal',
+                    '--socket', str(path), '--address', settings['portalAddress']],
+                    env={'PATH': settings['path']}, stdin=subprocess.DEVNULL)
+                deadline = time.monotonic() + 5
+                while not path.exists():
+                    if portal_proxy.poll() is not None or time.monotonic() > deadline:
+                        raise ValueError('portal proxy failed to start')
+                    time.sleep(0.02)
+                command += ['--unshare-net', '--ro-bind', str(path), '/run/strict-proxy.sock']
+            elif settings.get('requireProxy'):
+                command += ['--unshare-net', '--ro-bind', settings['proxySocket'], '/run/strict-proxy.sock']
             # Retain Gecko's own sandbox. NVIDIA access is separately selected
             # from the NixOS driver configuration; other devices stay hidden.
             for path in graphics_devices(settings.get("nvidiaAcceleration", False)):
@@ -231,6 +258,9 @@ def session(settings):
             yield command, instance, portal, proxy
         finally:
             control.close()
+            if portal_proxy is not None:
+                portal_proxy.terminate()
+                portal_proxy.wait(timeout=5)
             proxy.terminate()
             try:
                 proxy.wait(timeout=5)
@@ -267,6 +297,10 @@ def run_locked(settings, binary, command, launch_lock):
         read_gate, write_gate = os.pipe()
         browser = None
         try:
+            if settings.get('requireProxy') or settings.get('portalOnly'):
+                command = [settings['python'], '-I', settings['networkModule'], 'browser',
+                           '--socket', '/run/strict-proxy.sock', '--port', str(settings['proxyPort']), '--', *command]
+            started = time.monotonic()
             browser = subprocess.Popen(prefix + ["--info-fd", str(write_info),
                 "--block-fd", str(read_gate), "--", settings["scope"], *command],
                 pass_fds=(write_info, read_gate), stdin=subprocess.DEVNULL)
@@ -280,7 +314,7 @@ def run_locked(settings, binary, command, launch_lock):
                 read_info = None
                 info = json.load(stream)
             (portal / "bwrapinfo.json").write_text(json.dumps(info))
-            state = {"pid": os.getpid(), "start": process_start(os.getpid()), "binary": str(binary)}
+            state = {"pid": os.getpid(), "start": process_start(os.getpid()), "binary": str(binary), "profile":settings["profile"]}
             pending = instance / "generation.tmp"
             pending.write_text(json.dumps(state))
             pending.replace(instance / "generation.json")
@@ -292,6 +326,8 @@ def run_locked(settings, binary, command, launch_lock):
                 try:
                     return browser.wait(timeout=1)
                 except subprocess.TimeoutExpired:
+                    if settings.get('lifetime') and time.monotonic() - started >= settings['lifetime']:
+                        raise ValueError('temporary browser session expired')
                     if proxy.poll() is not None:
                         raise ValueError("filtered desktop bus exited")
         finally:

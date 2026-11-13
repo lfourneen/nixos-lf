@@ -70,6 +70,15 @@ class GraphicsDevicesTests(unittest.TestCase):
 
 
 class LaunchTests(unittest.TestCase):
+    def test_strict_socket_is_checked_before_reporting_prerequisites_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'missing.sock'
+            with self.assertRaisesRegex(ValueError, 'strict proxy socket is unavailable'):
+                sandbox.prerequisites({'requireProxy': True, 'proxySocket': str(path)})
+            path.touch()
+            with self.assertRaisesRegex(ValueError, 'invalid ownership or permissions'):
+                sandbox.prerequisites({'requireProxy': True, 'proxySocket': str(path)})
+
     def setUp(self):
         work = tempfile.TemporaryDirectory()
         self.addCleanup(work.cleanup)
@@ -197,6 +206,26 @@ class LaunchTests(unittest.TestCase):
         (self.profile / "lock").symlink_to("127.0.1.1:+" + str(os.getpid()))
         with self.assertRaisesRegex(ValueError, "close the existing Firefox"):
             guard.verify_running_generation(self.profile, "/current/bin/.firefox-unchecked")
+
+
+class StrictBrowserTests(unittest.TestCase):
+    def test_portal_requires_direct_mode_and_daily_profile_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = {'portalOnly':True, 'strictPrivacy':False, 'profile':directory,
+                        'maxAge':10, 'verificationMaxAge':10}
+            for mode in ('proxy', 'blocked', 'unknown'):
+                with self.assertRaises(ValueError):
+                    guard.prepare(settings, '/unused', check=lambda **_: {'mode':mode}, check_only=True)
+            self.assertEqual(guard.prepare(settings, '/unused',
+                check=lambda **_: {'mode':'direct'}, check_only=True), [])
+
+    def test_follow_system_guard_still_checks_current_proxy_health(self):
+        # Existing readiness/race tests cover the shared contract. Strict mode
+        # must additionally refuse A before touching the profile or desktop.
+        with tempfile.TemporaryDirectory() as directory:
+            settings = {'requireProxy':True, 'profile':directory, 'maxAge':10, 'verificationMaxAge':10}
+            with self.assertRaisesRegex(ValueError, 'requires healthy proxy'):
+                guard.prepare(settings, '/unused', check=lambda **_: {'mode':'direct'})
 
 
 if __name__ == "__main__":

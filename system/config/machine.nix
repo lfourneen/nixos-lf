@@ -78,6 +78,7 @@
       socketGuestDns = lib.mkOption { type = lib.types.port; default = 1056; };
       gostHttp = lib.mkOption { type = lib.types.port; default = 33332; };
       gostRedirect = lib.mkOption { type = lib.types.port; default = 33333; };
+      mihomoStrict = lib.mkOption { type = lib.types.port; default = 7898; };
       mihomoMixed = lib.mkOption { type = lib.types.port; default = 7897; };
       mihomoTproxy = lib.mkOption { type = lib.types.port; default = 7896; };
       dot = lib.mkOption { type = lib.types.port; default = 853; };

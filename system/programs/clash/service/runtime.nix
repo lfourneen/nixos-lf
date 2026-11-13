@@ -5,7 +5,12 @@ let
 
 in
 {
-  imports = [ ./identity.nix ];
+  imports = [
+    ./identity.nix
+    ./source.nix
+    ./strict-browser.nix
+  ];
+
   users.groups.clash-verge-control.members = [ desktopUser ];
 
   # Persist the helper's requested core state under ProtectSystem=strict. The
@@ -28,7 +33,7 @@ in
 
     # Do not let the root helper's StateDirectory recursively take ownership
     # of the core's cache at each restart. tmpfiles creates this path at boot.
-    ReadWritePaths = [ "/var/lib/clash-core" ];
+    ReadWritePaths = [ "/var/lib/clash-core" ] ++ lib.optional config.my.proxy.controlledSources "/var/lib/clash-source";
 
     # No runtime ReadWritePaths: /run is writable under ProtectSystem=strict,
     # and naming /run/user/<uid> would fail the unit at boot before the user
@@ -73,6 +78,7 @@ in
       ProtectKernelTunables = true;
       ProtectKernelModules = true;
       ProtectControlGroups = true;
+      ReadWritePaths = lib.optional config.my.proxy.controlledSources "/var/lib/clash-source";
       RestrictAddressFamilies = [ "AF_UNIX" ];
       TimeoutStartSec = "90s";
     };

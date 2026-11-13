@@ -90,6 +90,8 @@ in
     default = {
       lf-private-targets = {
         proxy-only = p.proxyOnly;
+        reject-plaintext-credentials = p.controlledSources;
+        strict-inlets = lib.optional p.strictBrowser "lf-strict";
         subscription-trust = p.subscriptionTrust;
         insecure-proxy-exceptions = p.insecureProxyExceptions;
         allow-dynamic-remote-grants = p.allowDynamicRemoteGrants;
@@ -105,7 +107,11 @@ in
         magic-dns-suffix-file = if config.my.hardening.tailscale.magicDns then "/run/netsec-tailnet/domain" else "";
       };
 
-      listeners = [ ];
+      listeners = lib.optional p.strictBrowser {
+        name = "lf-strict"; type = "mixed"; listen = "127.0.0.1";
+        port = m.ports.mihomoStrict; udp = false;
+      };
+
       tunnels = [ ];
       external-controller = "";
       external-controller-tls = "";
@@ -142,7 +148,8 @@ in
       # ECH's outer SNI is a cover name in both Rule and uniform proxy modes.
       # Fake-IP mappings and explicit proxy targets already supply the domain.
       "sniffer.enable" = false;
-    } // lib.mapAttrs' (key: value: lib.nameValuePair "dns.${key}" value) p.managedDns
+    } // lib.optionalAttrs p.controlledSources { "geodata-mode" = true; }
+      // lib.mapAttrs' (key: value: lib.nameValuePair "dns.${key}" value) p.managedDns
       // lib.genAttrs (map (key: "tun.${key}") emptyTunFields) (_: [ ])
       // lib.optionalAttrs p.tunMode (lib.mapAttrs' (key: value:
         lib.nameValuePair "tun.${key}" value) p.tunRouting // {

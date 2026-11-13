@@ -2,29 +2,7 @@
 
 let
   python = pkgs.python3.withPackages (p: [ p.pygobject3 ]);
-  tls = pkgs.runCommand "firefox-system-trust-fixture" {
-    nativeBuildInputs = [ pkgs.openssl ];
-  } ''
-    mkdir -p "$out"
-    cd "$out"
-    openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem \
-      -days 3650 -subj '/CN=Firefox sandbox system trust fixture' \
-      -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign'
-    openssl req -new -newkey rsa:2048 -nodes -keyout trusted.key -out trusted.csr \
-      -subj '/CN=trusted.sandbox.fixture.test'
-    cat > server.ext <<EOF
-    basicConstraints=critical,CA:FALSE
-    keyUsage=critical,digitalSignature,keyEncipherment
-    extendedKeyUsage=serverAuth
-    subjectAltName=DNS:trusted.sandbox.fixture.test
-    EOF
-    openssl x509 -req -in trusted.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
-      -out trusted.pem -days 3650 -extfile server.ext
-    openssl req -x509 -newkey rsa:2048 -nodes -keyout untrusted.key -out untrusted.pem \
-      -days 3650 -subj '/CN=untrusted.sandbox.fixture.test' \
-      -addext 'subjectAltName=DNS:untrusted.sandbox.fixture.test'
-    rm ca.key ca.srl trusted.csr server.ext
-  '';
+  tls = import ./tls-fixture.nix { inherit pkgs; };
 
   manifest = pkgs.writeText "firefox-sandbox-test.json" (builtins.toJSON {
     package = firefox;

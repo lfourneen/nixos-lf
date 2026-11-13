@@ -359,6 +359,64 @@
         "Wired randomization uses the native DHCP anonymity lifecycle; permanent NIC identification and DNS/firewall ownership remain unchanged.",
         "The non-root wired dhcpcd and NetworkManager Wi-Fi clients can simultaneously acquire DHCPv6 leases without a wildcard UDP 546 bind conflict."
       ]
+    },
+    "controlled-source": {
+      "sources": [
+        "mihomo",
+        "helper"
+      ],
+      "checks": [
+        "proxy-source",
+        "proxy-isolation-vm",
+        "proxy-control",
+        "proxy-refresh",
+        "proxy-control-vm",
+        "proxy-refresh-vm",
+        "proxy-core",
+        "proxy-source-config"
+      ],
+      "entrypoints": [
+        "system/programs/clash/service/source_worker.py",
+        "system/programs/clash/service/source_broker.py",
+        "system/programs/clash/service/clash-verge-stage.py"
+      ],
+      "invariants": [
+        "Only a root-registered source and deterministic conversion can publish controlled candidates; GUI files cannot authorize provenance.",
+        "Provider contents and responses belong to immutable snapshots; settled authority persists across boots.",
+        "Each registered source retains its own baseline and approvals; desktop selection accepts only root-approved GUI UID mappings.",
+        "Cross-origin credentials, private/translated targets, unsupported providers and semantic identity changes fail closed."
+      ]
+    },
+    "browser-isolation": {
+      "sources": [
+        "firefox",
+        "bubblewrap",
+        "systemd",
+        "mihomo",
+        "dbusProxy",
+        "seccomp"
+      ],
+      "checks": [
+        "proxy-source",
+        "proxy-isolation-vm",
+        "browser-privacy",
+        "browser-sandbox-vm",
+        "proxy-dns-strict-vm",
+        "proxy-strict-rules-vm",
+        "proxy-core",
+        "proxy-source-config"
+      ],
+      "entrypoints": [
+        "home/programs/firefox/network.py",
+        "home/programs/firefox/sandbox.py",
+        "system/programs/clash/service/strict-browser.nix"
+      ],
+      "invariants": [
+        "Strict browser namespaces have no host IP path; the Unix relay never has a direct mode.",
+        "Daily Firefox defaults to A/B Gost routing; identity remains B-only independently of the daily option, and the strict socket unit is installed.",
+        "Strict inlet leaf checks reject DIRECT and private targets even after runtime selection changes.",
+        "HTTPS-only, certificate and Safe Browsing policy locks apply to daily and identity packages; the explicit portal has separate ephemeral storage."
+      ]
     }
   }
 }

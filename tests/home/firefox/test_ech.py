@@ -89,9 +89,13 @@ results = {}
 
 if sys.argv[1:] == ["portal"]:
     with browser("transparent") as client:
-        client.call("WebDriver:Navigate", {"url": "http://100.67.0.1:8080/"})
-        assert client.execute("return document.body.innerText.length;") > 0
-    print("Transparent Firefox reached the literal HTTP portal in A")
+        try:
+            client.call("WebDriver:Navigate", {"url": "http://100.67.0.1:8080/"})
+        except AssertionError as error:
+            assert 'httpsonlyerror' in str(error), error
+        else:
+            raise AssertionError('daily browser silently accepted a plaintext portal')
+    print("Daily transparent Firefox refused plaintext portal in A; use the separate portal entry")
     raise SystemExit(0)
 
 

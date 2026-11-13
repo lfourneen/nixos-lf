@@ -2,6 +2,8 @@
 
 [English](../dns.md) | 简体中文 | [文档目录](README_CN.md)
 
+本机在 `host.nix` 选择 `dnsEncryption="strict"`；下文 opportunistic 租约及恢复额度属于模块兼容策略。strict 不授予公共明文恢复，也不接受运行时 force-plaintext。DoT 故障时保留缓存/本地回答；字面 IP 门户使用独立入口。备用旧 generation 必须显式选择，不能自动降低策略。
+
 ## 解析链路
 
 ```text

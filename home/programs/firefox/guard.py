@@ -10,6 +10,9 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
+import ipaddress
+from urllib.parse import urlsplit
 
 
 def verify_core(settings):
@@ -110,6 +113,10 @@ def prepare(settings, binary, values=(), check=None, check_core=None, check_font
                   verification_maximum=settings["verificationMaxAge"])
     verdict = check(**kwargs)
     mode = verdict.get("mode", "unknown")
+    if settings.get("requireProxy") and mode != "proxy":
+        raise ValueError("this browser requires healthy proxy Mode B")
+    if settings.get("portalOnly") and mode != "direct":
+        raise ValueError("the portal browser is available only in explicit Mode A")
     if mode not in {"direct", "proxy"}:
         raise ValueError("network policy is " + mode + "; use clash-on/clash-off")
     if mode == "proxy" and not verdict.get("ready"):
@@ -142,13 +149,28 @@ def main():
             raise ValueError("run Firefox as the desktop user")
         settings = json.loads(Path(sys.argv[1]).read_text())
         check_only = sys.argv[3:] == ["--check"]
+        temporary = None
+        if settings.get('ephemeral'):
+            if len(sys.argv[3:]) != 1:
+                raise ValueError('portal browser requires one explicit literal-IP HTTP(S) URL')
+            target = urlsplit(sys.argv[3])
+            if target.scheme not in ('http', 'https') or target.username or target.password or target.port not in (None, 80, 443):
+                raise ValueError('portal requires a plain HTTP(S) address on port 80/443')
+            address = str(ipaddress.ip_address(target.hostname))
+            temporary = tempfile.TemporaryDirectory(prefix='firefox-portal-', dir=settings['runtime'])
+            settings = dict(settings, profile=temporary.name + '/profile', cache=temporary.name + '/cache',
+                            downloads=temporary.name + '/downloads', lifetime=900, portalAddress=address)
         command = prepare(settings, sys.argv[2], () if check_only else sys.argv[3:],
                           check_only=check_only)
         if check_only:
             outer_sandbox(settings).prerequisites(settings)
             print("Firefox fonts, network and outer sandbox prerequisites verified")
             return 0
-        return outer_sandbox(settings).run(settings, sys.argv[2], command)
+        try:
+            return outer_sandbox(settings).run(settings, sys.argv[2], command)
+        finally:
+            if temporary:
+                temporary.cleanup()
     except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError) as error:
         print("Firefox launch refused: " + str(error), file=sys.stderr)
         return 1

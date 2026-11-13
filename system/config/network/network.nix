@@ -100,7 +100,7 @@ let
   # identities (0x47500000 + UID) and from routing/socket marks.
   appConnmark = "0x4c460001";
   reservedListenerPorts = map toString [
-    port.mihomoMixed port.mihomoDns port.mihomoTproxy
+    port.mihomoMixed port.mihomoStrict port.mihomoDns port.mihomoTproxy
     port.gostHttp port.gostRedirect port.dnsmasq port.unbound port.socketGuestDns
   ];
   coreSocket = "meta skuid { 0, ${toString m.uids.clashCore} } socket mark ${coreMark} meta mark ${coreMark}";
@@ -243,6 +243,11 @@ let
     ''}
   '';
 
+  # B empties this reply guard. C restores it in its atomic fragment so reply
+  # revocation also holds when transitioning directly from B without a reload.
+  strictReplyRule = lib.optionalString config.my.proxy.strictBrowser
+    ''iifname "lo" tcp sport ${toString port.mihomoStrict} counter drop'';
+
   # Fragment proxy-mode.service applies while Clash runs: LAN/multicast stay
   # link-local, and the tail also covers interfaces not pinned in network.links.
   proxyModeRules = lib.optionalString proxyKillSwitch ''
@@ -254,6 +259,7 @@ let
     # Leaving Mode C: the guard must be empty or its drop would refuse everything.
     flush chain inet lf_filter lf_blocked_guard
     flush chain inet lf_filter lf_tailnet_guard
+    flush chain inet lf_filter lf_strict_reply_guard
     ${hostDirectGuard}
     flush set inet lf_filter dns_plaintext4
     ${guestGuard "proxy"}
@@ -339,6 +345,10 @@ let
     flush chain inet lf_filter lf_host_egress_guard
     flush chain inet lf_filter lf_host_direct
     flush chain inet lf_filter lf_tailnet_guard
+    flush chain inet lf_filter lf_strict_reply_guard
+    ${lib.optionalString config.my.proxy.strictBrowser ''
+    add rule inet lf_filter lf_strict_reply_guard ${strictReplyRule}
+    ''}
     ${lib.optionalString config.services.tailscale.enable ''
     add rule inet lf_filter lf_tailnet_guard iifname "${config.services.tailscale.interfaceName}" counter drop
     ''}
@@ -350,7 +360,7 @@ let
     add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply iifname != "lo" counter drop
     add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply ct original ip daddr != 127.0.0.0/8 counter drop
     add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply ct original ip6 daddr != ::1 counter drop
-    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply meta l4proto { tcp, udp } ct original proto-dst { ${toString port.mihomoMixed}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
+    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply meta l4proto { tcp, udp } ct original proto-dst { ${toString port.mihomoMixed}, ${toString port.mihomoStrict}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
     flush set inet lf_filter dns_plaintext4
     ${guestGuard "blocked"}
     ${lib.optionalString vmTproxy "flush chain ip lf_mangle proxymode_tproxy"}
@@ -364,8 +374,8 @@ let
     # straight through Mode C. Root is allowed because proxy-mode's own node
     # probe dials the mixed port. The managed core rejects extra protocol
     # listeners at its final parser and at controller PATCH, before creation.
-    add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip daddr 127.0.0.0/8 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoDns}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
-    add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip6 daddr ::1 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoDns}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
+    add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip daddr 127.0.0.0/8 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoStrict}, ${toString port.mihomoDns}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
+    add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip6 daddr ::1 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoStrict}, ${toString port.mihomoDns}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
     # Local IPC (and the local resolver) keeps working.
     add rule inet lf_filter lf_blocked_guard ip daddr 127.0.0.0/8 accept
     add rule inet lf_filter lf_blocked_guard ip6 daddr ::1 accept
@@ -939,7 +949,7 @@ in
         chain lf_local_proxy_guard {
           type filter hook output priority -198; policy accept;
           oifname "lo" meta l4proto { tcp, udp } th sport { ${toString port.gostHttp}, ${toString port.gostRedirect} } meta skuid != { 0, ${toString m.uids.gost} } counter drop
-          oifname "lo" meta l4proto { tcp, udp } th sport { ${toString port.mihomoMixed}, ${toString port.mihomoTproxy} } meta skuid != { 0, ${toString m.uids.clashCore} } counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport { ${toString port.mihomoMixed}, ${toString port.mihomoStrict}, ${toString port.mihomoTproxy} } meta skuid != { 0, ${toString m.uids.clashCore} } counter drop
         }
         chain lf_app_track {
           # After conntrack and guest identity assignment, before any DNAT.
@@ -1044,6 +1054,13 @@ in
         # before sing-tun/Gost can replace them. C runs earlier and flushes B.
         chain lf_host_egress_guard {
           type filter hook output priority -195; policy accept;
+          ${lib.optionalString config.my.proxy.strictBrowser ''
+          oifname "lo" tcp dport ${toString port.mihomoStrict} counter drop
+          ''}
+        }
+        chain lf_strict_reply_guard {
+          type filter hook input priority -2; policy accept;
+          ${strictReplyRule}
         }
         chain lf_host_direct { }
         # Cut decrypted tailnet traffic in C before established input accepts,

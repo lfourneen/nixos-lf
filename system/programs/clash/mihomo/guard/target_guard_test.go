@@ -447,3 +447,40 @@ func TestProviderNodesRequireCertificateExceptions(t *testing.T) {
 		t.Fatal("exception crossed node names")
 	}
 }
+
+func TestStrictInletRejectsDirectAndPrivate(t *testing.T) {
+	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8", "192.168.0.0/16"},
+		"strict-inlets": []string{"lf-strict"}, "local-target-cidrs": []string{"192.168.0.0/16"}})
+	for _, network := range []C.NetWork{C.TCP, C.UDP} {
+		strict := &C.Metadata{Type: C.HTTP, NetWork: network, InName: "lf-strict", DstIP: netip.MustParseAddr("1.1.1.1"), DstPort: 443}
+		if CheckDirect(strict) == nil || CheckEgress(strict, true, "renamed-direct") == nil {
+			t.Fatal("strict DIRECT accepted")
+		}
+		if err := CheckEgress(strict, false, "remote"); err != nil {
+			t.Fatal(err)
+		}
+		strict.DstIP, strict.LFLocalTarget = netip.MustParseAddr("192.168.1.1"), true
+		if CheckEgress(strict, false, "remote") == nil {
+			t.Fatal("strict private target accepted")
+		}
+		ordinary := &C.Metadata{Type: C.HTTP, NetWork: network, DstIP: netip.MustParseAddr("1.1.1.1")}
+		if err := CheckDirect(ordinary); err != nil {
+			t.Fatal("ordinary Rule routing changed", err)
+		}
+	}
+}
+
+func TestPlaintextCredentialsCannotUseCertificateException(t *testing.T) {
+	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"},
+		"reject-plaintext-credentials": true, "insecure-proxy-exceptions": []string{"test"}})
+	for _, kind := range []string{"http", "socks5"} {
+		node := map[string]any{"name": "test", "type": kind, "username": "fixture", "password": "dummy"}
+		if CheckProxy(node) == nil {
+			t.Fatal("plaintext authentication accepted")
+		}
+		node["tls"] = true
+		if err := CheckProxy(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

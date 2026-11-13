@@ -1,6 +1,14 @@
 { lib, osConfig ? { }, ... }:
 
 {
+  imports = [ (lib.mkRenamedOptionModule [ "my" "firefox" "requireProxy" ] [ "my" "firefox" "dailyRequireProxy" ]) ];
+
+  options.my.firefox.dailyRequireProxy = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Run Firefox without host IP networking, using only the B-only remote proxy Unix relay. Refuses A/C and DIRECT selections.";
+  };
+
   options.my.firefox.nvidiaAcceleration = lib.mkOption {
     type = lib.types.bool;
     default = osConfig.hardware.nvidia.enabled or false;

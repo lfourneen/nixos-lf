@@ -7,6 +7,8 @@ and font configuration are unchanged. Never attach to a personal browser.
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import io
+import ssl
+import select
 import json
 import os
 from pathlib import Path
@@ -80,7 +82,7 @@ with zipfile.ZipFile(io.BytesIO(archive_bytes + archive_bytes[offset:offset + si
 guard.verify_fonts(settings)
 
 PAGE = r"""<!doctype html><meta charset=utf-8><title>Offline privacy fixture</title>
-<img src="http://media.example.invalid/pixel.png" alt="">
+<img src="https://media.example.invalid/pixel.png" alt="">
 <script>
 const c=document.createElement('canvas');c.width=64;c.height=64;
 const ctx=c.getContext('2d');ctx.fillStyle='rgb(17,83,149)';ctx.fillRect(0,0,64,64);
@@ -95,10 +97,11 @@ requests = []
 referers = {}
 
 
-class Proxy(BaseHTTPRequestHandler):
+class Origin(BaseHTTPRequestHandler):
     def do_GET(self):
-        requests.append(self.path)
-        referers[self.path] = self.headers.get("Referer")
+        url = "https://" + self.headers["Host"] + self.path
+        requests.append(url)
+        referers[url] = self.headers.get("Referer")
         body = PAGE.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -106,10 +109,36 @@ class Proxy(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_CONNECT(self):
-        # No forwarding: background extension/update traffic cannot leave the fixture.
-        self.send_error(502)
+    def log_message(self, *args):
+        pass
 
+
+origin = ThreadingHTTPServer(('127.0.0.1', 0), Origin)
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(Path(manifest['tlsDirectory']) / 'trusted.pem', Path(manifest['tlsDirectory']) / 'trusted.key')
+origin.socket = context.wrap_socket(origin.socket, server_side=True)
+threading.Thread(target=origin.serve_forever, daemon=True).start()
+
+class Proxy(BaseHTTPRequestHandler):
+    def do_CONNECT(self):
+        if self.path not in ('privacy-fixture.invalid:443', 'media.example.invalid:443'):
+            self.send_error(502)
+            return
+        with socket.create_connection(origin.server_address, timeout=5) as peer:
+            self.send_response(200)
+            self.end_headers()
+            while True:
+                ready, _, _ = select.select([self.connection, peer], [], [], 10)
+                if not ready:
+                    return
+                for source in ready:
+                    data = source.recv(65536)
+                    if not data:
+                        return
+                    (peer if source is self.connection else self.connection).sendall(data)
+    def do_GET(self):
+        requests.append('PLAINTEXT:' + self.path)
+        self.send_error(502)
     def log_message(self, *args):
         pass
 
@@ -126,6 +155,9 @@ record = dict(package=str(package), headless=True, echHandshakeTested=False)
 with tempfile.TemporaryDirectory() as work:
     profile = Path(work) / "profile"
     profile.mkdir(mode=0o700)
+    subprocess.run([manifest['certutil'], '-N', '--empty-password', '-d', 'sql:' + str(profile)], check=True)
+    subprocess.run([manifest['certutil'], '-A', '-n', 'fixture', '-t', 'C,,', '-d', 'sql:' + str(profile),
+                    '-i', str(Path(manifest['tlsDirectory']) / 'ca.pem')], check=True)
     # Home Manager pins MOZ_APP_DATA to the real home. Relocate only that
     # directory in a temporary copy of the library wrapper; the executed Nix
     # runtime and all policies/AutoConfig remain the production artifacts.
@@ -175,22 +207,22 @@ return prefs;
             record["activePolicies"] = client.execute("return Object.keys(Services.policies.getActivePolicies());")
             assert set(policies) <= set(record["activePolicies"]), set(policies) - set(record["activePolicies"])
             client.call("Marionette:SetContext", {"value": "content"})
-            client.call("WebDriver:Navigate", {"url": "http://privacy-fixture.invalid/"})
+            client.call("WebDriver:Navigate", {"url": "https://privacy-fixture.invalid/"})
             record["web"] = client.execute("return JSON.parse(window.result);")
             assert record["web"]["changed"] > 0, record["web"]
             assert record["web"]["timezone"] in {"UTC", "Atlantic/Reykjavik"}
             assert record["web"]["webRTC"] == "undefined"
             assert not record["web"]["webgl"] and not record["web"]["webgpu"]
-            assert "http://privacy-fixture.invalid/" in requests, requests
-            media = "http://media.example.invalid/pixel.png"
+            assert "https://privacy-fixture.invalid/" in requests, requests
+            media = "https://media.example.invalid/pixel.png"
             assert media in referers, referers
-            expect = "http://privacy-fixture.invalid/" \
+            expect = "https://privacy-fixture.invalid/" \
                 if manifest["prefs"]["network.http.referer.XOriginPolicy"] == 0 else None
             assert referers[media] == expect, referers
-            # A literal HTTP portal and loopback address must also use the relay.
-            for url in ("http://192.168.1.1/portal", "http://127.0.0.1/relay-check"):
-                client.call("WebDriver:Navigate", {"url": url})
-                assert url in requests, requests
+            assert not any(url.startswith('PLAINTEXT:') for url in requests), requests
+            # The daily profile upgrades HTTP; portal access has its own entry.
+            client.call("WebDriver:Navigate", {"url": "http://privacy-fixture.invalid/"})
+            assert not any(url.startswith('PLAINTEXT:') for url in requests), requests
             # Closing the relay must cause an error, never a direct connection
             # even to a live loopback HTTP destination.
             server.shutdown()

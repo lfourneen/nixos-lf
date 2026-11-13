@@ -2,7 +2,8 @@
 
 let
   # Browser traffic follows the same gost relay as the rest of the session.
-  relay = "127.0.0.1:${toString osConfig.my.machine.ports.gostHttp}";
+  requireProxy = config.my.firefox.dailyRequireProxy;
+  relay = "127.0.0.1:${if requireProxy then "18080" else toString osConfig.my.machine.ports.gostHttp}";
   strictPrivacy = true;
   compat = config.my.firefox.videoSiteCompat;
   transparent = config.my.firefox.networkPath == "transparent";
@@ -70,10 +71,16 @@ let
     "browser.display.use_document_fonts" = 1;
     "browser.contentblocking.category" = "strict";
     "network.cookie.cookieBehavior" = 5;
-    "dom.security.https_only_mode" = false;
-    "dom.security.https_only_mode_pbm" = false;
+    "dom.security.https_only_mode" = true;
+    "dom.security.https_only_mode_pbm" = true;
     "dom.security.https_only_mode.upgrade_local" = false;
-    "dom.security.https_first" = true;
+    "dom.security.https_first" = false;
+    "dom.security.https_only_mode_send_http_background_request" = false;
+    "browser.safebrowsing.phishing.enabled" = true;
+    "browser.safebrowsing.malware.enabled" = true;
+    "browser.safebrowsing.downloads.enabled" = true;
+    "browser.safebrowsing.downloads.remote.enabled" = true;
+    "network.IDN_show_punycode" = true;
     "dom.security.https_first_for_local_addresses" = false;
     "webgl.disabled" = strictPrivacy;
     "dom.webgpu.enabled" = false;
@@ -144,6 +151,7 @@ let
     "browser.ipProtection.enabled" = false;
     "browser.ipProtection.autoStartEnabled" = false;
     "network.connectivity-service.enabled" = false;
+    "network.captive-portal-service.enabled" = false;
     "pdfjs.enableScripting" = false;
     "dom.battery.enabled" = false;
     "device.sensors.enabled" = false;
@@ -173,6 +181,8 @@ let
     DisableFirefoxStudies = true;
     DisableEncryptedClientHello = false;
     DisableFirefoxAccounts = true;
+    HttpsOnlyMode = "force_enabled";
+    DisableSecurityBypass = { InvalidCertificate = true; SafeBrowsing = true; };
 
     EnableTrackingProtection = {
       Value = true;
@@ -201,7 +211,7 @@ let
     DisableFormHistory = true;
     SearchSuggestEnabled = false;
     SearchEngines.Default = "Google";
-    CaptivePortal = true;
+    CaptivePortal = false;
     NetworkPrediction = false;
     DontCheckDefaultBrowser = true;
     OverrideFirstRunPage = "";
@@ -223,8 +233,12 @@ let
     };
   };
 
-  settings = pkgs.writeText "firefox-launch.json" (builtins.toJSON {
-    inherit profile strictPrivacy fonts;
+  settingsData = {
+    inherit profile strictPrivacy fonts requireProxy;
+    python = "${pkgs.python3}/bin/python3";
+    networkModule = ./network.py;
+    proxySocket = "/run/clash-strict/proxy.sock";
+    proxyPort = 18080;
     networkPath = config.my.firefox.networkPath;
     nvidiaAcceleration = config.my.firefox.nvidiaAcceleration;
     fontDirectories = map (p: "${p}/share/fonts") fontPackages;
@@ -245,7 +259,59 @@ let
     cache = "${config.xdg.cacheHome}/firefox-managed";
     downloads = "${config.home.homeDirectory}/Downloads";
     path = lib.makeBinPath [ pkgs.coreutils ];
+  };
+
+  settings = pkgs.writeText "firefox-launch.json" (builtins.toJSON settingsData);
+
+  # A separate package/policy and storage identity; no extensions, cookie or
+  # downloaded files are inherited from the daily browser.
+  isolatedBrowser = name: portal: let
+    isolatedSettings = pkgs.writeText "firefox-${name}.json" (builtins.toJSON (settingsData // {
+      profile = "${config.programs.firefox.configPath}/${name}";
+      cache = "${config.xdg.cacheHome}/firefox-${name}";
+      downloads = "${config.home.homeDirectory}/Downloads/${name}";
+      appId = "org.nixos.ManagedFirefox.${name}";
+      requireProxy = !portal;
+      portalOnly = portal;
+      ephemeral = portal;
+    }));
+
+    isolatedPrefs = prefs // lib.optionalAttrs portal {
+      "dom.security.https_only_mode" = false;
+      "dom.security.https_only_mode_pbm" = false;
+    };
+
+    isolated = (pkgs.firefox.override {
+      extraPrefs = lib.concatStringsSep "\n" (lib.mapAttrsToList
+        (key: value: "lockPref(${builtins.toJSON key}, ${builtins.toJSON value});") isolatedPrefs);
+      extraPolicies = policies // {
+        ExtensionSettings = { "*".installation_mode = "blocked"; };
+        Proxy = { Mode = "manual"; Locked = true; HTTPProxy = "127.0.0.1:18080"; SSLProxy = "127.0.0.1:18080"; UseHTTPProxyForAllProtocols = true; Passthrough = ""; };
+      } // lib.optionalAttrs portal {
+        HttpsOnlyMode = "disallowed";
+        Proxy = { Mode = "manual"; Locked = true; HTTPProxy = "127.0.0.1:18080"; SSLProxy = "127.0.0.1:18080"; UseHTTPProxyForAllProtocols = true; Passthrough = ""; };
+        CaptivePortal = false;
+      };
+    }).overrideAttrs (old: {
+      buildCommand = old.buildCommand + ''
+        mv "$out/bin/firefox" "$out/bin/.firefox-unchecked"
+        cat > "$out/bin/firefox" <<EOF
+        #!${pkgs.runtimeShell}
+        exec ${pkgs.python3}/bin/python3 -I ${./guard.py} ${isolatedSettings} "$out/bin/.firefox-unchecked" "\$@"
+        EOF
+        chmod +x "$out/bin/firefox"
+      '';
+    });
+
+  in
+  (pkgs.writeShellScriptBin "firefox-${name}" ''
+    exec ${isolated}/bin/firefox "$@"
+  '').overrideAttrs (old: {
+    passthru = (old.passthru or {}) // { netsec.settings = isolatedSettings; };
   });
+
+
+  identityBrowser = isolatedBrowser "identity" false;
 
   desktop = pkgs.makeDesktopItem {
     name = "firefox";
@@ -261,13 +327,30 @@ let
     };
   };
 
+  identityDesktop = pkgs.makeDesktopItem {
+    name = "firefox-identity";
+    desktopName = "Firefox Identity";
+    comment = "Isolated Firefox profile with remote-only egress; requires healthy Mode B";
+    exec = "${identityBrowser}/bin/firefox-identity %U";
+    icon = "firefox";
+    categories = [ "Network" "WebBrowser" ];
+    mimeTypes = [ "text/html" "x-scheme-handler/http" "x-scheme-handler/https" ];
+    startupWMClass = "firefox";
+    actions = {
+      new-window = { name = "New Window"; exec = "${identityBrowser}/bin/firefox-identity --new-window %U"; };
+      new-private-window = { name = "New Private Window"; exec = "${identityBrowser}/bin/firefox-identity --private-window %U"; };
+    };
+  };
+
 in
 {
   imports = [ ./options.nix ];
   assertions = [{
-    assertion = !transparent || osConfig.my.proxy.tunMode;
+    assertion = (!transparent || osConfig.my.proxy.tunMode) && (!requireProxy || (!transparent && osConfig.my.proxy.strictBrowser));
     message = "Firefox transparent networking requires my.proxy.tunMode=true.";
   }];
+
+  home.packages = [ identityBrowser identityDesktop (isolatedBrowser "portal" true) ];
 
   programs.firefox = {
     enable = true;

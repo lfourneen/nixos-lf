@@ -34,6 +34,23 @@ class AuditTests(unittest.TestCase):
         result = self.check(document())
         self.assertEqual((result['verdict'], result['deny'], result['warn']), ('pass', {}, {}))
 
+    def test_strict_semantic_changes_and_both_route_directions(self):
+        original = document()
+        for change, category in [({'server': '8.8.8.8'}, 'node_identity'),
+                                 ({'password': 'new-fixture'}, 'node_authentication'),
+                                 ({'tls': True}, 'node_transport')]:
+            node = dict(NODE, **change)
+            self.assertIn(category, self.check(document(nodes=[node]), original, strict_semantics=True)['deny'])
+        plain = dict(NODE, type='http', username='fixture', password='dummy')
+        self.assertIn('plaintext_credentials', self.check(document(nodes=[plain]), strict_semantics=True)['deny'])
+        old = document(rules=['DOMAIN,account.example,Proxy', 'MATCH,Proxy'])
+        new = document(rules=['DOMAIN,account.example,DIRECT', 'MATCH,Proxy'])
+        self.assertIn('sensitive_route', self.check(new, old, strict_semantics=True, sensitive_domains=['account.example'])['deny'])
+        # Pinned IP rotation is safe when the registered logical identity stays.
+        before = dict(NODE, server='1.1.1.1', **{'lf-source-server':'proxy.example'})
+        after = dict(before, server='8.8.8.8')
+        self.assertNotIn('node_identity', self.check(document(nodes=[after]), document(nodes=[before]), strict_semantics=True)['deny'])
+
     def test_private_and_reserved_servers_are_denied(self):
         for server in ('192.168.1.10', '127.0.0.1', '169.254.1.1', '100.64.0.1', '::1',
                        '224.0.0.1', 'ff02::1'):

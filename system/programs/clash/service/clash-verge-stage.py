@@ -12,6 +12,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+from contextlib import contextmanager
 import re
 import shutil
 import socket
@@ -29,7 +30,7 @@ ASSETS = {
     'ASN.mmdb': ('asn.mmdb',),
     'BundleMRS.7z': ('bundlemrs.7z',),
 }
-FILES = ('clash-verge.yaml', *ASSETS)
+FILES = ('clash-verge.yaml', 'source-manifest.json', *ASSETS)
 MAX_BYTES = 256 * 1024 * 1024
 
 
@@ -208,7 +209,7 @@ AUDIT_CATEGORIES = frozenset((
     'yaml_structure', 'private_server', 'certificate', 'empty_nodes', 'group_reference',
     'hosts_override', 'provider_change', 'rule_provider_change', 'sensitive_route',
     'protected_route', 'route_unknown', 'rule_volume', 'node_volume', 'host_concentration',
-    'plaintext_credentials', 'broad_route', 'audit_error'))
+    'plaintext_credentials', 'node_identity', 'node_authentication', 'node_transport', 'broad_route', 'audit_error'))
 
 
 def boot_id(state=Path('/run/proxy-mode')):
@@ -342,6 +343,57 @@ def run_audit(settings, directory, baseline):
     return value
 
 
+def source_directory(settings, identity=None):
+    root = Path(settings['source_root'])
+    if identity is not None:
+        if not isinstance(identity, str) or not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', identity):
+            raise ValueError('source identity')
+        target = root / 'sources' / identity
+    elif (root / 'selected').is_symlink():
+        target = (root / 'selected').resolve(strict=True)
+    else:
+        return root  # Existing single-source installations migrate on broker use.
+    if target.parent != root / 'sources' or not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', target.name) or target.is_symlink():
+        raise ValueError('source selection')
+    info = target.stat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+        raise ValueError('source directory permissions')
+    if json.loads(read_input(target, 'registry.json', 0)).get('id') != target.name:
+        raise ValueError('source identity')
+    return target
+
+
+def apply_semantic_approval(settings, findings, candidate, baseline):
+    if not settings.get('source_root') or not findings:
+        return findings, False
+    root = source_directory(settings)
+    try:
+        path = root / 'approval.json'
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+            return findings, False
+        value = json.loads(read_input(root, 'approval.json', 0))
+        if (value.get('candidate') != candidate or value.get('baseline') != baseline or
+                value.get('revision') != hashlib.sha256(read_input(root, 'registry.json', 0)).hexdigest() or
+                value.get('policy') != hashlib.sha256(Path(settings['managed_policy']).read_bytes()).hexdigest() or
+                not 0 <= value.get('expires', 0) - time.time() <= 3600):
+            return findings, False
+        allowed = {'node_identity', 'node_authentication', 'node_transport', 'sensitive_route'}
+        categories = set(value['categories'])
+        if not categories or not categories <= allowed:
+            return findings, False
+        approved = json.loads(json.dumps(findings))
+        for category in categories:
+            count = approved['deny'].pop(category, 0)
+            if count:
+                approved['warn'][category] = count
+        approved['verdict'] = ('deny' if approved['deny'] else 'unknown' if approved['unknown']
+                               else 'warn' if approved['warn'] else 'pass')
+        return approved, True
+    except (OSError, ValueError, TypeError, KeyError):
+        return findings, False
+
+
 def atomic_text(path, text, mode=0o644):
     temporary = path.with_name(path.name + '.new')
     temporary.unlink(missing_ok=True)
@@ -356,6 +408,13 @@ def publish_effective(runtime, state):
     except OSError:
         return
     atomic_text(Path(state) / 'effective-config-sha256', hashlib.sha256(data).hexdigest() + '\n')
+    source = read_record(Path(runtime) / 'effective/source-manifest.json')
+    atomic_record(Path(state) / 'source.json', dict(boot_id=boot_id(state),
+        provenance='controlled-fetch' if source.get('schema') == 1 else 'legacy-unverified',
+        source_id=source.get('source_id', ''),
+        revision=source.get('revision', ''), response_count=len(source.get('responses', {})),
+        snapshot=snapshot_digest(Path(runtime) / 'effective'),
+        upstream_signature='not-verified'))
     atomic_record(Path(state) / 'effective-config.json',
                   dict(boot_id=boot_id(state), yaml_digest=hashlib.sha256(data).hexdigest()))
 
@@ -427,7 +486,7 @@ def checked_snapshot(runtime, value):
     return directory
 
 
-def remember_settled(runtime, state, value, snapshot_at):
+def remember_settled(runtime, state, value, snapshot_at, settings=None):
     directory = checked_snapshot(runtime, value)
     # Separate root-owned authority for an older settled snapshot; the main
     # authority always describes the currently selected effective snapshot.
@@ -436,6 +495,73 @@ def remember_settled(runtime, state, value, snapshot_at):
     verify(directory, authority, authority)
     atomic_record(state / 'profile-refresh-settled.json',
                   dict(boot_id=boot_id(state), digest=value, snapshot_at=snapshot_at), mode=0o600)
+    if settings and settings.get('source_root'):
+        manifest = read_record(directory / 'source-manifest.json')
+        # A health observation can finish after the desktop selected another
+        # source. Persist against the snapshot identity, never the selection.
+        base = source_directory(settings)
+        if base.name != manifest.get('source_id') and base != Path(settings['source_root']):
+            base = source_directory(settings, manifest.get('source_id'))
+        if manifest.get('revision') != hashlib.sha256(read_input(base, 'registry.json', 0)).hexdigest():
+            return  # Registration revoked this candidate while it was observed.
+        root = base / 'approved'
+        root.mkdir(mode=0o700, exist_ok=True)
+        destination = root / value
+        if not destination.exists():
+            pending = Path(tempfile.mkdtemp(prefix='.pending-', dir=root))
+            try:
+                for name in FILES:
+                    if (directory / name).exists():
+                        write_private(pending / name, read_input(directory, name, 0), 0, mode=0o600)
+                if snapshot_digest(pending) != value:
+                    raise ValueError('persistent snapshot mismatch')
+                pending.rename(destination)
+            finally:
+                if pending.exists():
+                    shutil.rmtree(pending)
+        atomic_record(root / 'settled.json', dict(digest=value, snapshot_at=snapshot_at), mode=0o600)
+        for old in root.iterdir():
+            if old.is_dir() and old != destination:
+                shutil.rmtree(old)
+
+
+def source_baseline(settings, runtime, gid):
+    root = source_directory(settings) / 'approved'
+    record = read_record(root / 'settled.json')
+    value = record.get('digest')
+    if value is None:
+        return None, '', 0
+    if not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value):
+        raise ValueError('invalid persistent snapshot identity')
+    source = root / value
+    if source.is_symlink() or snapshot_digest(source) != value:
+        raise ValueError('persistent snapshot mismatch')
+    manifest = read_record(source / 'source-manifest.json')
+    registry = json.loads(read_input(root.parent, 'registry.json', 0))
+    if manifest.get('source_id') != registry['id']:
+        raise ValueError('persistent source identity')
+    destination = runtime / 'snapshots' / value
+    private_dir(destination, gid)
+    for name in FILES:
+        if (source / name).exists() and not (destination / name).exists():
+            write_private(destination / name, read_input(source, name, 0), gid)
+    provider_cache(destination, settings['data'])
+    if not (destination / 'cache.db').exists():
+        (destination / 'cache.db').symlink_to(Path(settings['data']) / 'cache.db')
+    if snapshot_digest(destination) != value:
+        raise ValueError('restored snapshot mismatch')
+    return destination, value, record['snapshot_at']
+
+
+def restore_persistent(settings, runtime, state, gid):
+    if not settings.get('source_root') or (runtime / 'effective').exists() or (state / 'authorized-config').exists():
+        return
+    destination, value, stamp = source_baseline(settings, runtime, gid)
+    if destination is None:
+        return
+    switch_snapshot(runtime, state, destination, value)
+    remember_settled(runtime, state, value, stamp)
+
 
 
 def settled_snapshot(runtime, state, current):
@@ -508,7 +634,45 @@ def commit_snapshot(runtime, state, target, record, kind='import'):
     complete_commit(runtime, state)
 
 
+@contextmanager
+def source_lock(settings, blocking=True):
+    root = settings.get('source_root')
+    if root:
+        with (Path(root) / 'source.lock').open('a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_SH | (0 if blocking else fcntl.LOCK_NB))
+            except BlockingIOError:
+                if blocking:
+                    raise
+                yield False
+                return
+            yield True
+    else:
+        yield True
+
+
+def source_input(settings):
+    root = source_directory(settings)
+    directory = (root / 'current').resolve(strict=True)
+    if directory.parent != root / 'generations' or not re.fullmatch('[0-9a-f]{64}', directory.name):
+        raise ValueError('unregistered source generation')
+    info = directory.stat()
+    if info.st_uid != 0 or info.st_mode & 0o077:
+        raise ValueError('source generation permissions')
+    registry = read_input(root, 'registry.json', 0)
+    manifest = json.loads(read_input(directory, 'source-manifest.json', 0))
+    if (manifest.get('revision') != hashlib.sha256(registry).hexdigest() or
+            manifest.get('source_id') != json.loads(registry)['id']):
+        raise ValueError('source revision revoked')
+    return dict(settings, gui_data=str(directory), desktop_uid=0), str(directory / 'clash-verge.yaml')
+
+
 def stage(settings, config, validate):
+    with source_lock(settings):
+        return stage_locked(settings, config, validate)
+
+
+def stage_locked(settings, config, validate):
     runtime, state = Path(settings['runtime']), Path(settings['state'])
     gid = settings['core_gid']
     policy = settings.get('refresh_policy', 'strict')
@@ -523,6 +687,7 @@ def stage(settings, config, validate):
         if (state / 'intent').read_text().strip() != 'proxy':
             raise ValueError('start Clash with clash-on; proxy intent is required')
         complete_commit(runtime, state)
+        restore_persistent(settings, runtime, state, gid)
         window = state / 'authorize-window'
         authorized = False
         try:
@@ -548,8 +713,11 @@ def stage(settings, config, validate):
         validated = False
         restarting = False
         findings = None
+        used_approval = False
         phase = 'input unreadable'
         try:
+            if settings.get('source_root'):
+                settings, config = source_input(settings)
             # Keep a fingerprint even when UTF-8/controller normalization fails.
             relative = Path(os.path.abspath(config)).relative_to(settings['gui_data'])
             raw = read_input(settings['gui_data'], relative, settings['desktop_uid'])
@@ -563,7 +731,10 @@ def stage(settings, config, validate):
             phase = 'configuration invalid'
             candidate_config = config_input(settings, config, raw)
             if not authorized and previous is not None:
-                if candidate_config == (effective / 'clash-verge.yaml').read_bytes():
+                if candidate_config == (effective / 'clash-verge.yaml').read_bytes() and (
+                        not settings.get('source_root') or
+                        read_input(settings['gui_data'], 'source-manifest.json', 0) ==
+                        (effective / 'source-manifest.json').read_bytes()):
                     restarting = True
                     provider_cache(effective, settings['data'])
                     validate(effective)
@@ -581,6 +752,9 @@ def stage(settings, config, validate):
             private_dir(candidate, gid)
             write_private(candidate / 'clash-verge.yaml', candidate_config, gid)
             phase = 'input unreadable'
+            if settings.get('source_root'):
+                write_private(candidate / 'source-manifest.json',
+                              read_input(settings['gui_data'], 'source-manifest.json', 0), gid)
             names = os.listdir(settings['gui_data'])
             for target, aliases in ASSETS.items():
                 matches = [name for name in names if name.lower() in aliases]
@@ -592,7 +766,8 @@ def stage(settings, config, validate):
             (candidate / 'cache.db').symlink_to(Path(settings['data']) / 'cache.db')
             provider_cache(candidate, settings['data'])
             candidate_digest = snapshot_digest(candidate)
-            if not authorized and policy == 'auto' and pinned(state, candidate_digest):
+            if not authorized and policy == 'auto' and pinned(state, candidate_digest) and not (
+                    settings.get('source_root') and (source_directory(settings) / 'approval.json').exists()):
                 # Preserve rolled_back and the original sanitized rejection on
                 # GUI/helper restarts; do not extend the pin's TTL.
                 verify(effective, digest, auth)
@@ -607,7 +782,11 @@ def stage(settings, config, validate):
             destination = snapshots / candidate_digest
             if destination.exists() and snapshot_digest(destination) != candidate_digest:
                 raise RefreshError('snapshot mismatch')
-            findings = run_audit(settings, candidate, settled)
+            baseline, baseline_digest = settled, settled_digest
+            if settings.get('source_root'):
+                baseline, baseline_digest, _ = source_baseline(settings, runtime, gid)
+            findings = run_audit(settings, candidate, baseline)
+            findings, used_approval = apply_semantic_approval(settings, findings, candidate_digest, baseline_digest)
             if findings is not None and settings.get('audit_policy') == 'enforce':
                 deny = findings.get('deny') or {}
                 unknown = findings.get('unknown') or {}
@@ -660,6 +839,8 @@ def stage(settings, config, validate):
                                previous=str(settled) if settled else None,
                                previous_snapshot_at=settled_at, monotonic_seconds=time.monotonic())
             commit_snapshot(runtime, state, candidate_digest, transaction)
+            if used_approval:
+                (source_directory(settings) / 'approval.json').unlink(missing_ok=True)
             prune_snapshots(snapshots, {destination, settled})
         finally:
             if candidate is not None and candidate.exists():
@@ -672,32 +853,37 @@ def verify_refresh(settings, restart=None):
     pending_path = state / 'profile-refresh-verifying.json'
     with (state / 'operator.lock').open('a') as operator:
         fcntl.flock(operator, fcntl.LOCK_EX)
-        with (state / 'authorization.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            complete_commit(runtime, state)
-            recovery = state / 'profile-refresh-restart.json'
-            record = read_record(pending_path)
-            if recovery.exists():
-                record = None
-            elif not record or record.get('boot_id') != boot_id(state):
+        # Never hold the operator lock waiting for a network fetch: off must
+        # remain available. The next timer round retries a busy source store.
+        with source_lock(settings, blocking=False) as acquired:
+            if not acquired:
                 return
-            if record and time.monotonic() - record['monotonic_seconds'] < 60:
-                return
-            if (state / 'intent').read_text().strip() != 'proxy':
-                clear_refresh(state, runtime)
-                return
-            if not record:
-                # The authority restore committed, but a previous restart was
-                # interrupted or failed. Retain this marker until recovery.
-                recovery_record = read_record(recovery)
-                if recovery_record.get('boot_id') != boot_id(state):
-                    raise ValueError('invalid core recovery record')
-                if verify(runtime / 'effective', state / 'config-digest', state / 'authorized-config') != recovery_record.get('digest'):
-                    raise ValueError('core recovery authority changed')
-            else:
-                verify_pending_refresh(settings, record)
-                if not recovery.exists():
+            with (state / 'authorization.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                complete_commit(runtime, state)
+                recovery = state / 'profile-refresh-restart.json'
+                record = read_record(pending_path)
+                if recovery.exists():
+                    record = None
+                elif not record or record.get('boot_id') != boot_id(state):
                     return
+                if record and time.monotonic() - record['monotonic_seconds'] < 60:
+                    return
+                if (state / 'intent').read_text().strip() != 'proxy':
+                    clear_refresh(state, runtime)
+                    return
+                if not record:
+                    # The authority restore committed, but a previous restart was
+                    # interrupted or failed. Retain this marker until recovery.
+                    recovery_record = read_record(recovery)
+                    if recovery_record.get('boot_id') != boot_id(state):
+                        raise ValueError('invalid core recovery record')
+                    if verify(runtime / 'effective', state / 'config-digest', state / 'authorized-config') != recovery_record.get('digest'):
+                        raise ValueError('core recovery authority changed')
+                else:
+                    verify_pending_refresh(settings, record)
+                    if not recovery.exists():
+                        return
         if restart is None:
             restart_core(settings)
         else:
@@ -721,7 +907,7 @@ def verify_pending_refresh(settings, record):
                and time.time() - health['at'] <= 60)
     previous = Path(record['previous']) if record.get('previous') else None
     if healthy:
-        remember_settled(runtime, state, current, record['snapshot_at'])
+        remember_settled(runtime, state, current, record['snapshot_at'], settings)
         audit(state, 'accepted', record['policy'], current, record['previous_digest'],
               snapshot_at=record['snapshot_at'], findings=record.get('audit'))
         pending_path.unlink()
@@ -769,8 +955,9 @@ def service_request(settings, method, endpoint, payload=None, timeout=15):
         connection.close()
 
 
-def restart_core(settings):
-    subprocess.run([settings['systemctl'], 'restart', 'clash-verge.service'], check=True, timeout=30)
+def restart_core(settings, restart=True):
+    if restart:
+        subprocess.run([settings['systemctl'], 'restart', 'clash-verge.service'], check=True, timeout=30)
     deadline = time.monotonic() + 18
     # A missing or stale desired-state must not leave only the helper running.
     # The IPC request uses fixed root-supplied paths, never a GUI-supplied core.
@@ -819,6 +1006,19 @@ def main():
         return
     settings = json.loads(Path(sys.argv[2]).read_text())
     settings['core_gid'] = grp.getgrnam('clash-core').gr_gid
+    if sys.argv[1] == 'start-source':
+        settings['launcher'] = sys.argv[3]
+        if (Path(settings['state']) / 'intent').read_text().strip() != 'proxy':
+            raise ValueError('proxy intent required')
+        restart_core(settings, restart=False)
+        return
+    if sys.argv[1] == 'restart-source':
+        settings['launcher'] = sys.argv[3]
+        with (Path(settings['state']) / 'operator.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if (Path(settings['state']) / 'intent').read_text().strip() == 'proxy':
+                restart_core(settings)
+        return
     if sys.argv[1] == 'verify-refresh':
         settings['launcher'] = sys.argv[3]
         verify_refresh(settings)

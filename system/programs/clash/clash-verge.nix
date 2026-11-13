@@ -28,6 +28,7 @@ let
 
   stageSettings = pkgs.writeText "clash-stage-settings.json" (builtins.toJSON {
     gui_data = guiData;
+    source_root = if config.my.proxy.controlledSources then "/var/lib/clash-source" else null;
     desktop_uid = desktopUid;
     runtime = "/run/clash-verge-rev";
     state = "/run/proxy-mode";
@@ -38,6 +39,7 @@ let
     audit_tool = "${./service/subscription_audit.py}";
 
     audit_settings = pkgs.writeText "subscription-audit-settings.json" (builtins.toJSON {
+      strict_semantics = config.my.proxy.controlledSources;
       insecure_exceptions = config.my.proxy.insecureProxyExceptions;
       subscription_trust = config.my.proxy.subscriptionTrust;
       sensitive_domains = config.my.proxy.sensitiveDomains;

@@ -4,6 +4,8 @@ English | [简体中文](CN/egress_CN.md) | [Documentation](README.md)
 
 B enforces a managed path plus the exceptions below; subscription Rule routing may still choose DIRECT. A remains deliberate direct access. C blocks ordinary application egress and decrypted tailnet input, including remote desktop and established connections, and never inherits B's optional grants.
 
+Strict browser namespaces have no host IP path and reach only `lf-strict` through a dedicated Unix relay. A/C refuse traffic to/from core port `7898` in the atomic policy transaction; B opens it. The relay checks the established server socket’s core UID before forwarding the first browser bytes, avoiding a listener-only race. Actual leaf checks reject DIRECT and private targets. This applies to managed browser entries; ordinary desktop and other applications retain the ledger below.
+
 ## Exception ledger
 
 UIDs, interfaces and ports come from [machine.nix](../system/config/machine.nix), service accounts and [options.nix](../system/config/network/options.nix). This table describes host output; guest forwarding and host input have separate policies.

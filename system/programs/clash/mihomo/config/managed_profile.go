@@ -195,6 +195,22 @@ func lfManagedProfileDefaults(raw *RawConfig) error {
 	if err != nil || policy == nil {
 		return err
 	}
+	if value, ok := policy["geodata-mode"].(bool); ok {
+		raw.GeodataMode = value
+	}
+	// Adopt only the known old empty-listener form. Foreign listeners still
+	// fail exact policy validation, and PATCH never performs this upgrade.
+	if len(raw.Listeners) == 0 {
+		if value, ok := policy["listeners"]; ok {
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				return err
+			}
+			if err = json.Unmarshal(encoded, &raw.Listeners); err != nil {
+				return err
+			}
+		}
+	}
 	if value, ok := policy["geo-auto-update"].(bool); ok {
 		// The core runs as a service identity; it must not download geodata on
 		// its own schedule. PATCH cannot reach this field anyway, but a cached

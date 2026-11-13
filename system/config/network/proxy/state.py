@@ -35,7 +35,7 @@ AUDIT_CATEGORIES = frozenset((
     'yaml_structure', 'private_server', 'certificate', 'empty_nodes', 'group_reference',
     'hosts_override', 'provider_change', 'rule_provider_change', 'sensitive_route',
     'protected_route', 'route_unknown', 'rule_volume', 'node_volume', 'host_concentration',
-    'plaintext_credentials', 'broad_route', 'audit_error'))
+    'plaintext_credentials', 'node_identity', 'node_authentication', 'node_transport', 'broad_route', 'audit_error'))
 
 
 def boot_identity(root=Path('/run')):
@@ -70,6 +70,18 @@ def clean_audit(value):
             kept[str(key)] = count
         result[field] = kept
     return result
+
+
+def source_trust(root, boot):
+    value = read(Path(root) / 'proxy-mode/source.json')
+    if value.get('boot_id') != boot or value.get('provenance') not in ('controlled-fetch', 'legacy-unverified'):
+        return {'provenance': 'unknown', 'upstream_signature': 'not-verified'}
+    revision = value.get('revision', '')
+    source_id = value.get('source_id', '')
+    return {'provenance': value['provenance'],
+            'source_id': source_id if isinstance(source_id, str) and re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', source_id) else '',
+            'revision': revision[:12] if isinstance(revision, str) and re.fullmatch('[0-9a-f]{64}', revision) else '',
+            'upstream_signature': 'not-verified'}
 
 
 def clean_refresh(value, now, maximum, full_digests=False):
@@ -351,6 +363,7 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
             "last_preflight": preflight,
             "last_proxy_health": read(root / 'proxy-mode/health.json'),
             "profile_refresh": profile_refresh(root, boot=boot_id),
+            "source_trust": source_trust(root, boot_id),
             "phase": "ready" if not reasons else
                      "unenforced" if policy.get("mode") == "unenforced" else
                      "protected" if policy.get("mode") == "blocked" else "pending",

@@ -39,7 +39,8 @@
       "/var/lib/unbound"
       "/var/lib/upower"
       "/var/log"
-    ] ++ lib.optional config.my.hardening.wired.persistDhcpIdentity "/var/lib/dhcpcd";
+    ] ++ lib.optional config.my.proxy.controlledSources { directory = "/var/lib/clash-source"; mode = "0700"; }
+      ++ lib.optional config.my.hardening.wired.persistDhcpIdentity "/var/lib/dhcpcd";
 
     files = [
       "/etc/machine-id"

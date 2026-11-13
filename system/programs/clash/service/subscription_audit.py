@@ -114,6 +114,8 @@ def route(document, host, suffix=False):
             return 'unknown'
         parts = [s.strip() for s in rule.split(',')]
         kind = parts[0].upper()
+        if kind == 'IN-NAME' and len(parts) == 3 and parts[1] == 'lf-strict':
+            continue
         if kind in ('MATCH', 'FINAL') and len(parts) == 2:
             return proven(parts[1])
         if kind not in ('DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD') or len(parts) != 3:
@@ -152,6 +154,18 @@ def audit(candidate, baseline=None, settings=None):
         exceptions = set(settings.get('insecure_exceptions', []))
         allowed = [ipaddress.ip_network(n) for n in settings.get('allowed_server_cidrs', [])]
         for node in nodes.values():
+            old = old_nodes.get(node.get('name'))
+            if settings.get('strict_semantics'):
+                if node.get('type') in ('http', 'socks5') and not node.get('tls') and (node.get('username') or node.get('password')):
+                    deny['plaintext_credentials'] += 1
+                if old:
+                    if (old.get('lf-source-server', old.get('server')) != node.get('lf-source-server', node.get('server')) or
+                            any(old.get(k) != node.get(k) for k in ('type', 'port', 'servername', 'sni', 'public-key'))):
+                        deny['node_identity'] += 1
+                    if any(old.get(k) != node.get(k) for k in ('password', 'username', 'uuid', 'private-key', 'token')):
+                        deny['node_authentication'] += 1
+                    if any(old.get(k) != node.get(k) for k in ('tls', 'network', 'plugin', 'plugin-opts', 'ws-opts', 'grpc-opts', 'reality-opts')):
+                        deny['node_transport'] += 1
             server = node.get('server')
             if isinstance(server, str):
                 try:
@@ -222,7 +236,7 @@ def audit(candidate, baseline=None, settings=None):
                 uncertain.add(domain)
             elif domain in protected and after != protected[domain]:
                 deny['protected_route'] += 1
-            elif baseline is not None and before == 'direct' and after in ('proxy', 'reject'):
+            elif baseline is not None and before != after and (settings.get('strict_semantics') or before == 'direct'):
                 deny['sensitive_route'] += 1
         for domain in sensitive:
             if domain not in uncertain and (route(candidate, domain, suffix=True) == 'unknown' or (
