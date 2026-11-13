@@ -5,14 +5,15 @@
 
 ## TUI 和 DSH 的来源
 
-- TUI：GitHub `v0.19.0` Linux standalone release 中已编译的 JavaScript 和原生依赖，
+- TUI：GitHub `v0.20.0` Linux standalone release 中已编译的 JavaScript 和原生依赖，
   校验 SHA-256 后解包，不运行 npm install、TypeScript 编译或源码构建。
-- DSH：现有 `pkgs.dsh`，来自 flake 锁定的 `llm-agents`，目前为 `0.2.2-rc.1`。
+- DSH：现有 `pkgs.dsh`，来自 flake 锁定的 `llm-agents`，目前为 `0.2.2-rc.2`。
   更新 `llm-agents` 后随系统更新，不在启动时联网追踪 npm latest。
-- 便携包内旧的 DSH `0.2.0-rc.2` 及其 `@deepseek-ai/*` 依赖被替换为原生 DSH
-  的链接，TUI 与宿主共用 Cordis、Loader 和 DSH 服务。构建时检查宿主 peer 版本范围
-  和 Cordis 实例，避免混用两套框架。
-- Node 和 pnpm 由 Nix 提供。FHS 环境为运行时安装的插件及原生扩展提供常见 Linux 路径。
+- 便携包自带的 DSH 及其 `@deepseek-ai/*` 依赖被替换为原生 DSH 的链接，TUI 与宿主
+  共用 Cordis、Loader 和 DSH 服务。构建时检查宿主 peer 版本范围和 Cordis 实例，
+  避免混用两套框架。
+- Node 和 pnpm 由 Nix 提供。DSH `0.2.2` 要求 Node `>=24.9`，FHS 使用 nixpkgs 的
+  `nodejs_24`。FHS 环境为运行时安装的插件及原生扩展提供常见 Linux 路径。
 
 启动使用上游支持的 `dsh --profile dsh-tui` 路径，由原生 DSH 的包装器提供其 Loader
 所需的 Node 参数，避免 TUI 的直接入口丢失这些参数后再回退启动。
@@ -95,8 +96,8 @@ TUI 与原生 DSH 由 Nix 管理，`dsh-tui update` 和程序内 `/update` 不�
 
 上游依据（固定到此次打包版本）：
 
-- [v0.19.0 release](https://github.com/ccch1mneyyy/dsh-TUI/releases/tag/v0.19.0)
-- [上游安装与 profile 机制](https://github.com/ccch1mneyyy/dsh-TUI/blob/v0.19.0/docs/getting-started.md)
-- [standalone 初始化代码](https://github.com/ccch1mneyyy/dsh-TUI/blob/v0.19.0/standalone/entry.mjs)
-- [插件安装与生命周期](https://github.com/ccch1mneyyy/dsh-TUI/blob/v0.19.0/docs/plugins.md)
-- [插件形态与适配契约](https://github.com/ccch1mneyyy/dsh-TUI/blob/v0.19.0/tui-profile/docs/plugin-admission-and-development.md)
+- [v0.20.0 release](https://github.com/ccch1mneyyy/dsh-TUI/releases/tag/v0.20.0)
+- [上游安装与 profile 机制](https://github.com/ccch1mneyyy/dsh-TUI/blob/v0.20.0/docs/getting-started.md)
+- [standalone 初始化代码](https://github.com/ccch1mneyyy/dsh-TUI/blob/v0.20.0/standalone/entry.mjs)
+- [插件安装与生命周期](https://github.com/ccch1mneyyy/dsh-TUI/blob/v0.20.0/docs/plugins.md)
+- [插件形态与适配契约](https://github.com/ccch1mneyyy/dsh-TUI/blob/v0.20.0/tui-profile/docs/plugin-admission-and-development.md)

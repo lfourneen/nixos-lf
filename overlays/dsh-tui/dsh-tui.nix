@@ -2,18 +2,18 @@
 
 let
   pname = "dsh-tui";
-  version = "0.19.0";
+  version = "0.20.0";
   # Use the same native upstream host as environment.systemPackages.dsh
   # (currently supplied by the llm-agents input), including its dependencies.
   host = "${pkgs.dsh}/lib/node_modules/@deepseek-ai/dsh";
   releases = {
     x86_64-linux = {
       arch = "x64";
-      hash = "sha256-x2UUwemAVDhi8eo6WYSTxCBIaUcYV6+BO2vwbhqibdw=";
+      hash = "sha256-ikng2JXrRY4VHRW2NWr/uH/nr/PEg9PWgLXp11b/0hQ=";
     };
     aarch64-linux = {
       arch = "arm64";
-      hash = "sha256-BqT/nWLJXzxm9KqemYxz3F3I3n9annSLUfdzj2wi2jY=";
+      hash = "sha256-0FM56TmCd3QZd9uWsiwUpJwjqyuuBt6EofhmjuQ9vCY=";
     };
   };
   release = releases.${pkgs.stdenv.hostPlatform.system};
