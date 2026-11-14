@@ -115,7 +115,7 @@ sudo tailscale ping <手机的-tailnet-名称或-IP>
 | 文件 | 含义 |
 |---|---|
 | `/run/proxy-mode/state.json` | 原子模式、原因、策略代次、revision 和更新时间 |
-| `/run/proxy-mode/health.json` | 探针结论与分层耗时 |
+| `/run/proxy-mode/health.json` | 探针覆盖范围、结论与分层耗时 |
 | `/run/proxy-mode/heartbeat.json` | 最近成功监督轮次 |
 | `/run/netsec/state.json` | 验证结论、所验证代次与新鲜度 |
 | `/run/dns-upstream/state.json` | DNS 模式/原因、加密策略、会话、预算、截止和 override |
@@ -153,6 +153,28 @@ cat /var/lib/dns-upstream/history.log
 ```
 
 部分日志和授权文件需要 sudo。诊断输出中应去掉快照、订阅配置等敏感内容。
+
+### 拒绝计数器
+
+运行 `sudo proxy-inspect --drops`，读取 `inet lf_filter` 中已有拒绝计数器的精简 JSON 视图。普通 `proxy-inspect` 也在 `drops` 字段提供同一视图。命令只读本地状态和 nftables，不改规则、不清零计数、不发送探测。
+
+```sh
+sudo proxy-inspect --drops | jq '{available,error,policy,state_consistent,groups:[.groups[] | select((.packets // 0) > 0)]}'
+```
+
+每组给出稳定的 `reason`、`role`、所在 `chain` 及已计数的包数/字节数。路由访客角色使用配置的接口名。policy 记录包含所观测模式、转换原因和代次；`state_consistent=false` 表示状态不可读或采集期间发生变化。此视图不证明就绪。
+
+| 原因 | 计数的拒绝 |
+|---|---|
+| `mode-c-output`、`mode-c-input` | C 的输出或回复/入站 guard |
+| `guest-source-policy` | 访客源地址超出声明范围，包括未声明的地址族 |
+| `guest-target-policy` | 路由访客的受保护或不支持目标 |
+| `dns-client-policy` | 应用访问内部解析器入口 |
+| `dns-listener-identity`、`proxy-listener-identity` | 未授权本地 socket UID 的回复 |
+
+计数仅覆盖列出链中带 counter 的 drop。`uncounted_rules` 给出选中但没有计数器的 drop 数；`installed=false` 且计数为 null 表示链不存在。零计数不证明入口已启用或健康。读取/解析失败返回 `available=false`、固定错误类别和空 groups，`--drops` 退出 1；缺少 nftables 所需权限时为 `permission-denied`。
+
+计数从各条规则最近一次安装或 flush 开始，重载、修复和模式变化可能重置部分计数。比较快照时须结合该生命周期和策略代次；历史总量不能把某次连接及其原始/NAT 目标归因到当前模式。输出组数由配置角色固定，不含逐包日志、目标地址或原始规则；流量增大只改变数字总量。
 
 ### 刷新状态
 

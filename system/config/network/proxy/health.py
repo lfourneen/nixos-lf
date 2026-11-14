@@ -362,9 +362,14 @@ def main():
     with open(sys.argv[1]) as stream:
         settings = json.load(stream)
     probe = Probe(settings)
-    result = {"ok": False, "reason": "obs"}
+    fast = "--fast" in sys.argv[2:]
+    result = {"ok": False, "reason": "obs", "scope": {
+        "listener_transports": ["tcp", "udp"],
+        "requests": [] if fast else ["mixed-tcp"] + (["fake-ip-tcp"] if settings.get("require_tun") else []),
+        "udp_data_plane": "not-probed",
+    }}
     try:
-        result.update(ok=True, reason="", fingerprint=probe.run(fast="--fast" in sys.argv[2:]))
+        result.update(ok=True, reason="", fingerprint=probe.run(fast=fast))
     except ProbeFailure as error:
         result.update(reason=error.layer, detail=error.detail)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:

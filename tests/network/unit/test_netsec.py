@@ -168,6 +168,27 @@ class GuestPolicyTests(unittest.TestCase):
 
 
 class HealthTests(unittest.TestCase):
+    def test_health_json_never_claims_udp_data_plane_proof(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = Path(temporary) / 'settings.json'
+            for fast, tun_enabled in ((False, True), (False, False), (True, True)):
+                settings.write_text(json.dumps({'require_tun': tun_enabled, 'budget_seconds': 12}))
+                for failure in (None, health.ProbeFailure('obs', 'fixture outage')):
+                    with self.subTest(fast=fast, tun=tun_enabled, failure=bool(failure)):
+                        output = io.StringIO()
+                        with patch.object(health.sys, 'argv', ['health', str(settings)] + (['--fast'] if fast else [])), \
+                             patch.object(health.signal, 'signal'), \
+                             patch.object(health.Probe, 'run', return_value='fixture', side_effect=failure), \
+                             contextlib.redirect_stdout(output):
+                            code = health.main()
+                        result = json.loads(output.getvalue())
+                        self.assertEqual(code, 1 if failure else 0)
+                        self.assertEqual(result['ok'], not bool(failure))
+                        self.assertEqual(result['scope']['listener_transports'], ['tcp', 'udp'])
+                        self.assertEqual(result['scope']['udp_data_plane'], 'not-probed')
+                        self.assertEqual(result['scope']['requests'], [] if fast else
+                                         ['mixed-tcp'] + (['fake-ip-tcp'] if tun_enabled else []))
+
     def test_tun_routing_fields_are_part_of_the_health_contract(self):
         fields = {"iproute2-rule-index": 9000, "auto-redirect-input-mark": 8227,
                   "auto-redirect-output-mark": 8228,
@@ -1474,6 +1495,91 @@ class RecoveryAndDiagnosticsTests(unittest.TestCase):
             result = state.readiness(root, 'auto', now=100, boot_id='fixture')
             self.assertEqual(result['target'], 'direct')
             self.assertIn('phase', result)
+
+    def drop_snapshot(self, rules):
+        return {'nftables': [{'table': {'family': 'inet', 'name': 'lf_filter'}}] + [
+            {'rule': {'family': 'inet', 'table': 'lf_filter', 'chain': chain,
+                      'expr': expressions, 'comment': 'private subscription: must not escape'}}
+            for chain, expressions in rules]}
+
+    def test_drop_summary_separates_roles_verdicts_and_identity(self):
+        inspect = module('inspect')
+        settings = {'policy': {'guests': {'interfaces': ['virbr0', 'ap0']}}}
+        def match(field):
+            return {'match': {'op': '!=', 'left': {'payload': {'protocol': 'th', 'field': field}}, 'right': 53}}
+        def counted(count, verdict='drop'):
+            return [{'counter': {'packets': count, 'bytes': count * 100}}, {verdict: None}]
+        document = self.drop_snapshot([
+            ('lf_blocked_guard', counted(4)), ('lf_blocked_guard', counted(999, 'accept')),
+            ('lf_blocked_guard', [{'drop': None}]),
+            ('lf_guest_from_1', [match('saddr'), *counted(2)]),
+            ('lf_guest_from_1', [match('daddr'), *counted(3)]),
+            ('lf_local_dns_guard', [match('sport'), *counted(5)]),
+            ('lf_local_dns_guard', [match('dport'), *counted(6)]),
+            ('lf_local_proxy_guard', counted(7)), ('foreign_secret_chain', counted(888))])
+        groups = inspect.summarize_drops(document, settings)
+        indexed = {group['reason']: group for group in groups if group['installed']}
+        self.assertEqual(indexed['mode-c-output']['packets'], 4)
+        self.assertEqual(indexed['mode-c-output']['uncounted_rules'], 1)
+        for reason, count in [('guest-source-policy', 2), ('guest-target-policy', 3),
+                              ('dns-listener-identity', 5), ('dns-client-policy', 6),
+                              ('proxy-listener-identity', 7)]:
+            self.assertEqual(indexed[reason]['packets'], count)
+        self.assertEqual(indexed['guest-target-policy']['role'], 'ap0')
+        absent = next(group for group in groups if group['reason'] == 'socket-guest-target-policy')
+        self.assertFalse(absent['installed'])
+        self.assertIsNone(absent['packets'])
+        ordinary = json.dumps(groups)
+        self.assertNotIn('private subscription', ordinary)
+        self.assertNotIn('foreign_secret_chain', ordinary)
+        document['nftables'][1]['rule']['expr'][0]['counter']['packets'] = 10**18
+        flooded = inspect.summarize_drops(document, settings)
+        self.assertEqual(len(flooded), len(groups))
+        self.assertLess(len(json.dumps(flooded)) - len(ordinary), 25)
+        # An undeclared source family is refused by nfproto without a saddr
+        # expression. It must not be misreported as a destination refusal.
+        document = self.drop_snapshot([('lf_guest_from_0', [
+            {'match': {'left': {'meta': {'key': 'nfproto'}}, 'op': '==', 'right': 'ipv6'}},
+            *counted(9)])])
+        source = next(group for group in inspect.summarize_drops(document, settings)
+                      if group['reason'] == 'guest-source-policy' and group['role'] == 'virbr0')
+        self.assertEqual(source['packets'], 9)
+
+    def test_drop_collection_never_reports_failed_or_malformed_reads_as_zero(self):
+        inspect = module('inspect')
+        settings = {'nft': '/fixture/nft', 'policy': {'guests': {'interfaces': []}}}
+        policy = {'mode': 'blocked', 'reason': 'no-tun', 'policy_version': 7, 'revision': 9, 'boot_id': 'fixture'}
+        failures = [dict(available=False, error=error, output='', returncode=1)
+                    for error in ('permission-denied', 'timeout', 'command-missing')]
+        failures += [dict(available=True, error=None, output=output, returncode=0)
+                     for output in ('not-json private data', '{"nftables":[]}', '{"nftables":null}',
+                                    json.dumps(self.drop_snapshot([('lf_blocked_guard', [
+                                        {'counter': {'packets': -1, 'bytes': 0}}, {'drop': None}])])))]
+        for snapshot in failures:
+            with self.subTest(error=snapshot['error'], output=snapshot['output']), \
+                 patch.object(inspect, 'command', return_value=snapshot) as command, \
+                 patch.object(inspect, 'read_json', return_value=policy):
+                result = inspect.collect_drops(settings)
+                self.assertFalse(result['available'])
+                self.assertEqual(result['groups'], [])
+                self.assertEqual(result['error'], snapshot['error'] or 'invalid-snapshot')
+                self.assertNotIn('private data', json.dumps(result))
+                command.assert_called_once_with(['/fixture/nft', '-j', 'list', 'table', 'inet', 'lf_filter'])
+
+    def test_drop_collection_marks_mode_races_and_unknown_state(self):
+        inspect = module('inspect')
+        settings = {'nft': '/fixture/nft', 'policy': {'guests': {'interfaces': []}}}
+        policy = {'mode': 'blocked', 'reason': 'no-tun', 'policy_version': 7, 'revision': 9}
+        snapshot = dict(available=True, error=None, output=json.dumps(self.drop_snapshot([])), returncode=0)
+        for before, after, expected in [(policy, policy, True), (policy, policy | {'revision': 10}, False),
+                                         (policy, policy | {'mode': 'proxy'}, False), (None, None, False)]:
+            with patch.object(inspect, 'command', return_value=snapshot), \
+                 patch.object(inspect, 'read_json', side_effect=[before, after]):
+                result = inspect.collect_drops(settings)
+            self.assertTrue(result['available'])
+            self.assertEqual(result['state_consistent'], expected)
+            self.assertEqual(result['policy'], after and {key: after.get(key) for key in
+                             ('mode', 'reason', 'policy_version', 'revision', 'boot_id')})
 
 
 

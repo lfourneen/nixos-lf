@@ -110,6 +110,8 @@ NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWi
 
 修改 nftables、systemd 加载或协调逻辑时，运行 `proxy-firewall-vm`、相关完整规则变体、`proxy-control-vm` 和 `proxy-network-vm`。专用 VM 检查 A/C 表归属、外部集合与有序规则、失败事务、锁竞争及迁移目标名称复用。控制 VM 检查真实 helper/核心、TUN 表保留、C 阻断与 B 恢复；完整网络 VM 保留首次加载和漂移恢复覆盖。
 
+[拒绝汇总](operations_CN.md#拒绝计数器)在 [inspect.py](../../system/config/network/diagnostics/inspect.py) 中把已有链和 nft JSON 表达式映射为原因/角色分组。修改链名、访客接口顺序或源地址/端口表达式时须保持该映射一致。修改汇总后运行 `proxy-regressions`、`proxy-control-vm` 和 `proxy-guest-vm`；权限/解析错误须区别于零计数，诊断保持独立于策略执行。
+
 ## 链路身份
 
 [default.nix](../../system/config/network/identity/default.nix) 和 [link_identity.py](../../system/config/network/identity/link_identity.py) 使用上游 NetworkManager/systemd/dhcpcd 接口，没有源码补丁。升级时核对实际 nmcli 属性名及枚举格式、两个主机名开关、stable-id 替换量、DHCP 标识和 IPv6 地址生成。保留仅含身份字段的备份白名单、私有状态、断开/自动连接守卫及拒绝覆盖手工修改的行为；重建不自动应用 profile 目标。

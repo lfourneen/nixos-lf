@@ -107,6 +107,14 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-control.py".source = ./control_fixture.py;
     environment.etc."netsec-refresh.py".source = ./refresh_fixture.py;
     environment.etc."netsec-dataplane.py".source = ./dataplane_fixture.py;
+    environment.etc."netsec-resilience.py" = lib.mkIf dataplane { source = ./resilience_fixture.py; };
+    environment.etc."netsec-health.py" = lib.mkIf dataplane { source = ../../../system/config/network/proxy/health.py; };
+    environment.etc."netsec-health.json" = lib.mkIf dataplane { source = config.my.proxy.healthSettings; };
+    environment.etc."netsec-lifecycle.py" = lib.mkIf dataplane { source = ../integration/lifecycle_fixture.py; };
+    environment.etc."netsec-nm-wake" = lib.mkIf dataplane {
+      source = (lib.findFirst (hook: lib.hasSuffix "-nm-proxy-net-wake" (toString hook.source))
+        (throw "production NM wake hook not found") config.networking.networkmanager.dispatcherScripts).source;
+    };
     environment.etc."network-benchmark.py".source = ../../../scripts/network-benchmark.py;
     environment.etc."netsec-target.py" = lib.mkIf targetPolicy { source = ./target_fixture.py; };
     environment.etc."netsec-launcher".text = "${clashPackage}/bin/verge-mihomo";
@@ -125,11 +133,24 @@ pkgs.testers.runNixOSTest {
     environment.systemPackages = [
       (pkgs.python3.withPackages (p: [ p.pyyaml ]))
       pkgs.curl pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.nftables pkgs.util-linux
-    ] ++ lib.optionals (ech != null) [ pkgs.nssTools ];
+    ] ++ lib.optionals (ech != null) [ pkgs.nssTools ]
+      ++ lib.optionals dataplane [ pkgs.conntrack-tools ];
     virtualisation.memorySize = if ech != null then 3072 else 1024;
   };
 
   testScript = ''
+    import json
+
+    def drop_view():
+        value = json.loads(machine.succeed("proxy-inspect --drops"))
+        assert value["available"] and value["state_consistent"], value
+        return value
+
+    def drop_packets(value, reason):
+        groups = [group for group in value["groups"] if group["reason"] == reason]
+        assert len(groups) == 1 and groups[0]["installed"], groups
+        return groups[0]["packets"]
+
     def wait_proxy():
         try:
             machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = proxy && test $(jq -r .mode /run/dns-upstream/state.json) = proxy && python3 /etc/netsec-control.py check", timeout=90)
@@ -235,16 +256,23 @@ pkgs.testers.runNixOSTest {
         machine.wait_for_file("/tmp/impostor-ready", timeout=10)
         machine.succeed("setpriv --reuid=1000 --clear-groups python3 /etc/netsec-dataplane.py exchange 127.0.0.1 33332 tcp; test -s /tmp/impostor-received")
         machine.succeed("nft -f /tmp/proxy-guard.nft; rm /tmp/impostor-received")
+        identity_before = drop_packets(drop_view(), "proxy-listener-identity")
         # A VM-only redirect exercises the transparent reply before reverse NAT.
         machine.succeed("nft add table inet test_redirect; nft 'add chain inet test_redirect output { type nat hook output priority -100; policy accept; }'; nft 'add rule inet test_redirect output oifname lo meta l4proto { tcp, udp } th dport 18092 redirect to :33333'")
         for address in ("127.0.0.1", "::1"):
             for port in (33332, 7897, 7896, 18092):
                 for protocol in ("tcp", "udp"):
                     machine.fail(f"setpriv --reuid=1000 --clear-groups python3 /etc/netsec-dataplane.py exchange {address} {port} {protocol}")
+        assert drop_packets(drop_view(), "proxy-listener-identity") > identity_before
+        machine.succeed("proxy-inspect --drops >/tmp/drop-identity.json")
+        machine.copy_from_vm("/tmp/drop-identity.json")
         machine.succeed("test ! -e /tmp/impostor-received; systemctl stop port-impostor; nft delete table inet test_redirect; systemctl start gost-relay.service proxy-mode.service")
     ''}
 
     ${pkgs.lib.optionalString dataplane ''
+    with subtest("NM callbacks return while their wake target waits for network-online"):
+        machine.succeed("python3 /etc/netsec-lifecycle.py /etc/netsec-nm-wake", timeout=90)
+        machine.succeed("jq -e '.mode == \"direct\"' /run/proxy-mode/state.json")
     with subtest("read-only preflight and controlled direct baseline"):
         machine.succeed("python3 /etc/netsec-control.py preflight-rejection")
         machine.succeed("mv /home/lfour/.local/share/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml /tmp/preflight-profile.yaml")
@@ -298,6 +326,14 @@ pkgs.testers.runNixOSTest {
         machine.copy_from_vm("/tmp/baseline-snapshot.json")
         machine.succeed("proxy-inspect --sample-seconds 5 >/tmp/baseline-services.json")
         machine.copy_from_vm("/tmp/baseline-services.json")
+    with subtest("bounded single-UID pressure and conntrack exhaustion never select direct"):
+        try:
+            print(machine.succeed("python3 -u /etc/netsec-resilience.py pressure", timeout=240))
+        except Exception:
+            print(machine.execute("cat /tmp/load-*.json; cat /run/proxy-mode/state.json /run/proxy-mode/health.json; journalctl -u pressure-syn -u pressure-slow -u pressure-udp -u pressure-dns -u pressure-conntrack --no-pager -n 40"))
+            raise
+        wait_proxy()
+        machine.copy_from_vm("/tmp/pressure-report.json")
     with subtest("validated TCP candidates survive an unreachable first address"):
         import json, time
         machine.succeed("ip -n outside addr add 203.0.113.11/32 dev peer0; ip -n outside -6 addr add 2001:db8:ffff::10/128 dev peer0 nodad")
@@ -332,6 +368,9 @@ pkgs.testers.runNixOSTest {
             machine.wait_until_succeeds(f"test -f /tmp/receive-{label}.json && test $(jq -r .count /tmp/receive-{label}.json) -ge 5", timeout=20)
         def counts():
             return {label: json.loads(machine.succeed(f"cat /tmp/receive-{label}.json"))["count"] for label, _, _ in streams}
+        with subtest("TCP remains healthy during UDP, IPv6-only and SOCKS-reply outages"):
+            print(machine.succeed("python3 -u /etc/netsec-resilience.py outages", timeout=120))
+            machine.copy_from_vm("/tmp/udp-diagnostics.json")
         # Only the health HTTP target fails. The real proxy node and its UDP
         # paths remain alive; the coordinator must enter C on its own.
         machine.succeed("systemctl stop control-http-8080.service")
@@ -378,8 +417,20 @@ pkgs.testers.runNixOSTest {
     ''}
     ${pkgs.lib.optionalString guests ''
     machine.succeed("python3 /etc/netsec-guests.py proxy")
+    machine.copy_from_vm("/run/netsec-guests/drop-observations.json")
     machine.succeed("systemctl unmask --runtime proxy-mode.service; systemctl start proxy-mode.service")
     wait_proxy()
+    with subtest("DNS client refusal has a bounded passive diagnostic"):
+        dns_before = drop_view()
+        machine.fail("python3 /etc/netsec-dns.py query 127.0.0.1 1053 --uid 1000")
+        machine.succeed("setpriv --reuid=1000 --clear-groups python3 /etc/netsec-guests.py dns-refusal-burst")
+        dns_after = drop_view()
+        assert dns_after["policy"]["mode"] == "proxy", dns_after
+        assert drop_packets(dns_after, "dns-client-policy") >= drop_packets(dns_before, "dns-client-policy") + 2048
+        assert len(dns_after["groups"]) == len(dns_before["groups"])
+        assert len(json.dumps(dns_after)) < len(json.dumps(dns_before)) + 256
+        machine.succeed("proxy-inspect --drops >/tmp/drop-dns.json")
+        machine.copy_from_vm("/tmp/drop-dns.json")
     ''}
     ${pkgs.lib.optionalString targetPolicy ''
     machine.succeed("python3 /etc/netsec-target.py check")
@@ -440,6 +491,50 @@ pkgs.testers.runNixOSTest {
         print(machine.execute("ip rule show; ip -6 rule show; ip route get 203.0.113.10 mark 0x80000; nft list chain inet lf_filter proxymode_drops; cat /tmp/tail-trace.log; ip netns exec outside ss -uln"))
         raise
     machine.succeed("systemctl stop tail-trace.service; nft delete table inet tail_trace")
+    ${pkgs.lib.optionalString dataplane ''
+    with subtest("missing managed TUN blocks a live core and recovers without changing intent"):
+        # Keep the real core and its TUN FD alive. Hiding the configured name
+        # isolates missing-interface handling from the existing core-gone case.
+        # SIGSTOP prevents the core racing our deliberate link manipulation.
+        core_pid = machine.succeed("pgrep -u clash-core -f '/[.]verge-mihomo-wrapped'").strip()
+        assert core_pid.isdigit(), core_pid
+        machine.succeed("systemd-run --unit=tun-loss-http6 ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-integration.py http6")
+        try:
+            machine.wait_until_succeeds("ip netns exec outside ss -6lnt | grep -q ':8080 '", timeout=15)
+        except Exception:
+            print(machine.execute("systemctl status tun-loss-http6.service --no-pager; journalctl -u tun-loss-http6.service --no-pager -n 30; ip netns exec outside ss -6lnt"))
+            raise
+        def tun_loss_requests():
+            fake = machine.succeed("dig +short @127.0.0.1 -p 1053 node.fixture.example A").strip()
+            assert fake.startswith("198.18."), fake
+            requests = [f"setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 3 http://{address}:8080/"
+                        for address in ("203.0.113.10", "[2001:db8:dead::1]", fake, "100.67.0.1")]
+            requests.append("setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 3 http://node.fixture.example:8080/")
+            return requests
+        requests = tun_loss_requests()
+        # Every denied probe must first reach a live origin in healthy B.
+        for command in requests:
+            machine.succeed(command + " >/dev/null")
+        machine.succeed(f"kill -STOP {core_pid}; ip link set dev Mihomo down; ip link set dev Mihomo name lost-tun")
+        try:
+            machine.fail("ip link show dev Mihomo")
+            machine.wait_until_succeeds("jq -e '.mode == \"blocked\" and .reason == \"no-tun\"' /run/proxy-mode/state.json", timeout=45)
+            machine.succeed(f"kill -0 {core_pid}; grep -qx proxy /run/proxy-mode/intent")
+            for command in requests:
+                machine.fail(command)
+        finally:
+            machine.succeed(f"ip link set dev lost-tun name Mihomo; ip link set dev Mihomo up; kill -CONT {core_pid}")
+        # Link-down removes kernel routes. Renaming/up alone is insufficient;
+        # retain C until the production helper rebuilds the core's TUN/routes.
+        machine.succeed("jq -e '.mode == \"blocked\"' /run/proxy-mode/state.json; systemctl restart clash-verge.service", timeout=45)
+        wait_proxy()
+        machine.succeed("grep -qx proxy /run/proxy-mode/intent")
+        assert machine.succeed("pgrep -u clash-core -f '/[.]verge-mihomo-wrapped'").strip() != core_pid
+        # A restarted core may allocate a fresh fake-IP for the same domain.
+        for command in tun_loss_requests():
+            machine.succeed(command + " >/dev/null")
+        machine.succeed("systemctl stop tun-loss-http6.service")
+    ''}
     # Force a guarded recovery; the DNS/TUN probe and response sockets are now
     # owned by the actual service UID, never an independently tested setpriv.
     machine.succeed("${clashPackage.managedCore}/bin/mihomo -v; systemctl reload nftables.service")
@@ -451,7 +546,25 @@ pkgs.testers.runNixOSTest {
     machine.succeed("jq -e '.mode == \"blocked\"' /run/proxy-mode/state.json; nft list chain inet lf_filter lf_blocked_guard | grep -q drop; nft -s -j list table inet mihomo >/tmp/mihomo-after.json; cmp /tmp/mihomo-before.json /tmp/mihomo-after.json; python3 /etc/netsec-control.py check")
     for family, name in [("inet", "filter"), ("ip", "proxymode_nat"), ("ip6", "proxymode_nat")]:
         machine.fail(f"nft list table {family} {name}")
+    ${pkgs.lib.optionalString (dataplane || guests) ''
+    blocked_before = drop_view()
+    assert blocked_before["policy"]["mode"] == "blocked", blocked_before
+    ''}
     machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:7897 -fsS --max-time 2 http://a.ok.blocked.fixture.test:8080/")
+    ${pkgs.lib.optionalString (dataplane || guests) ''
+    with subtest("C diagnostics and denied inspection never change firewall decisions"):
+        blocked_after = drop_view()
+        assert drop_packets(blocked_after, "mode-c-output") > drop_packets(blocked_before, "mode-c-output")
+        rules_before = json.loads(machine.succeed("nft -s -j list table inet lf_filter"))
+        code, output = machine.execute("setpriv --reuid=1000 --clear-groups proxy-inspect --drops")
+        denied = json.loads(output)
+        assert code == 1 and not denied["available"] and denied["error"] == "permission-denied", denied
+        assert denied["groups"] == [], denied
+        assert json.loads(machine.succeed("nft -s -j list table inet lf_filter")) == rules_before
+        machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 2 http://203.0.113.10:8080/")
+        machine.succeed("proxy-inspect --drops >/tmp/drop-blocked.json")
+        machine.copy_from_vm("/tmp/drop-blocked.json")
+    ''}
     machine.succeed("systemctl start proxy-mode.service")
     wait_proxy()
 

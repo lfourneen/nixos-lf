@@ -43,14 +43,128 @@ def read_json(path):
         return None
 
 
+def drop_groups(settings):
+    # These are policy categories, not per-flow attribution. Reuse anonymous
+    # counters on existing drops; never depend on handles or include accepts.
+    groups = [
+        ('lf_blocked_guard', 'mode-c-output', 'host-output-and-guest-replies'),
+        ('lf_tailnet_guard', 'mode-c-input', 'host-input-and-tailnet'),
+        ('lf_strict_reply_guard', 'strict-reply-policy', 'strict-browser'),
+        ('lf_guest_guard', 'guest-mode-policy', 'routed-guests'),
+        ('proxymode_forward', 'guest-forward-policy', 'routed-guests'),
+        ('proxymode_drops', 'host-uplink-policy', 'host-output'),
+        ('proxymode_tail', 'host-interface-policy', 'host-output'),
+        ('lf_host_direct', 'host-private-policy', 'host-output'),
+        ('dns_egress', 'dns-lease-policy', 'dnsmasq'),
+        ('lf_dns_guard', 'dns-plaintext-policy', 'core'),
+        ('lf_dns_egress_guard', 'dns-encrypted-policy', 'host-output'),
+        ('lf_local_dns_guard', 'dns-client-policy', 'host-applications'),
+        ('lf_local_dns_guard', 'dns-listener-identity', 'local-dns-listeners'),
+        ('lf_local_dns_guard', 'dns-local-policy', 'local-dns'),
+        ('lf_local_proxy_guard', 'proxy-listener-identity', 'local-proxy-listeners'),
+        ('lf_socket_guest_private', 'socket-guest-target-policy', 'socket-guests'),
+        ('lf_socket_guest_dns_guard', 'socket-guest-dns-policy', 'socket-guests'),
+        ('lf_socket_guest_dns_after_nat', 'socket-guest-dns-path', 'socket-guests'),
+    ]
+    for index, interface in enumerate(settings['policy']['guests']['interfaces']):
+        groups.extend((f'lf_guest_{suffix}_{index}', reason, interface) for suffix, reason in (
+            ('from', 'guest-source-policy'), ('from', 'guest-target-policy'),
+            ('host', 'guest-host-service-policy'), ('return', 'guest-reply-target-policy'),
+            ('to', 'guest-reply-identity'), ('host_reply', 'guest-host-reply-policy')))
+    return groups
+
+
+def summarize_drops(document, settings):
+    entries = document['nftables']
+    if not isinstance(entries, list) or not any(
+        entry.get('table', {}).get('family') == 'inet' and entry['table'].get('name') == 'lf_filter'
+        for entry in entries
+    ):
+        raise ValueError('invalid nft snapshot')
+    groups = {(chain, reason): dict(chain=chain, reason=reason, role=role, installed=False,
+              counter_rules=0, uncounted_rules=0, packets=0, bytes=0)
+              for chain, reason, role in drop_groups(settings)}
+    by_chain = {}
+    for chain, reason in groups:
+        by_chain.setdefault(chain, []).append(reason)
+    for entry in entries:
+        chain = entry.get('chain', {})
+        rule = entry.get('rule', {})
+        record = chain or rule
+        name = record.get('name') if chain else record.get('chain')
+        if record.get('family') != 'inet' or record.get('table') != 'lf_filter' or name not in by_chain:
+            continue
+        for reason in by_chain[name]:
+            groups[name, reason]['installed'] = True
+        expressions = rule.get('expr', [])
+        if not any('drop' in expression for expression in expressions):
+            continue
+        fields = {expression.get('match', {}).get('left', {}).get('payload', {}).get('field')
+                  for expression in expressions if isinstance(expression.get('match', {}).get('left', {}), dict)}
+        if name == 'lf_local_dns_guard':
+            reason = ('dns-listener-identity' if 'sport' in fields else
+                      'dns-client-policy' if 'dport' in fields else 'dns-local-policy')
+        elif name.startswith('lf_guest_from_'):
+            missing_source_family = any(expression.get('match', {}).get('left', {}).get('meta', {}).get('key') == 'nfproto'
+                for expression in expressions if isinstance(expression.get('match', {}).get('left', {}), dict))
+            reason = 'guest-source-policy' if 'saddr' in fields or missing_source_family else 'guest-target-policy'
+        else:
+            reason = by_chain[name][0]
+        group = groups[name, reason]
+        counters = [expression['counter'] for expression in expressions if 'counter' in expression]
+        group['uncounted_rules'] += int(not counters)
+        group['counter_rules'] += int(bool(counters))
+        for counter in counters:
+            for key in ('packets', 'bytes'):
+                value = counter[key]
+                if type(value) is not int or value < 0:
+                    raise ValueError('invalid counter')
+                group[key] += value
+    for group in groups.values():
+        if not group['installed']:
+            group.update(packets=None, bytes=None)
+    return list(groups.values())
+
+
+def collect_drops(settings):
+    path = '/run/proxy-mode/state.json'
+    before = read_json(path)
+    snapshot = command([settings['nft'], '-j', 'list', 'table', 'inet', 'lf_filter'])
+    after = read_json(path)
+    fields = ('mode', 'reason', 'policy_version', 'revision', 'boot_id')
+    policy = {key: after.get(key) for key in fields} if isinstance(after, dict) else None
+    result = dict(available=False, error=snapshot['error'], policy=policy,
+                  state_consistent=isinstance(before, dict) and isinstance(after, dict)
+                  and before.get('mode') in {'direct', 'proxy', 'blocked'}
+                  and all(before.get(key) == after.get(key) for key in fields),
+                  scope='aggregate-drop-counters', groups=[])
+    if snapshot['available']:
+        try:
+            if len(snapshot['output']) > 2 * 1024 * 1024:
+                raise ValueError('oversized nft snapshot')
+            result['groups'] = summarize_drops(json.loads(snapshot['output']), settings)
+            result.update(available=True, error=None)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            result['error'] = 'invalid-snapshot'
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("settings")
     parser.add_argument("--sample-seconds", type=int, choices=range(1, 61))
-    parser.add_argument("--policy-only", action="store_true")
+    view = parser.add_mutually_exclusive_group()
+    view.add_argument("--policy-only", action="store_true")
+    view.add_argument("--drops", action="store_true")
     parser.add_argument("--deep", action="store_true")
     args = parser.parse_args()
     settings = read_json(args.settings)
+    if args.drops:
+        if args.sample_seconds or args.deep:
+            parser.error('--drops cannot be combined with --sample-seconds or --deep')
+        result = collect_drops(settings)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result['available'] else 1
     spec = importlib.util.spec_from_file_location('network_state', settings['state_tool'])
     state = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(state)
@@ -83,6 +197,7 @@ def main():
     if args.sample_seconds:
         time.sleep(max(0, args.sample_seconds - (time.monotonic() - started)))
     result["services"] = command(service_args)
+    result["drops"] = collect_drops(settings)
     result["profile_refresh"] = state.profile_refresh(history=True)
     if args.deep:
         result['core_recovery'] = {
@@ -113,4 +228,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

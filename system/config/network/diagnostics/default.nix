@@ -9,6 +9,7 @@ let
     ip = "${pkgs.iproute2}/bin/ip";
     tc = "${pkgs.iproute2}/bin/tc";
     ethtool = "${pkgs.ethtool}/bin/ethtool";
+    nft = "${pkgs.nftables}/bin/nft";
     systemctl = "${pkgs.systemd}/bin/systemctl";
 
     policy = {

@@ -281,6 +281,36 @@ def counter(chain):
                for item in document['nftables'] for expression in item.get('rule', {}).get('expr', []))
 
 
+def diagnostic_packets(reason, role):
+    view = json.loads(run('proxy-inspect', '--drops'))
+    assert view['available'] and view['state_consistent'], view
+    groups = [group for group in view['groups'] if group['reason'] == reason and group['role'] == role]
+    assert len(groups) == 1 and groups[0]['installed'], groups
+    observation = {'reason': reason, 'role': role, 'policy': view['policy'], 'packets': groups[0]['packets']}
+    path = ROOT / 'drop-observations.json'
+    observations = json.loads(path.read_text()) if path.exists() else []
+    observations.append(observation)
+    path.write_text(json.dumps(observations))
+    return observation['packets']
+
+
+def dns_refusal_burst():
+    assert os.getuid() == 1000
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as stream:
+        stream.bind(('127.0.0.1', 0))
+        for _ in range(2048):
+            try:
+                stream.sendto(b'bounded-refused-dns', ('127.0.0.1', 1053))
+            except PermissionError:
+                pass
+        stream.settimeout(.3)
+        try:
+            stream.recv(4096)
+        except socket.timeout:
+            return
+        raise AssertionError('internal DNS inlet answered an unauthorized caller')
+
+
 def stale_dns_client():
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as stream:
         stream.settimeout(2)
@@ -327,9 +357,13 @@ def direct():
         iface = role['interface']; device = 'gclient'+str(index)
         ns(iface, config['python'], SCRIPT, 'probe', config['public4'], '8080', 'tcp', 'yes', 'http')
         allowed = iface != 'ap0'
+        if not allowed:
+            private_before = diagnostic_packets('guest-target-policy', iface)
         for target in (config['private4'], config['private6']):
             for transport, port in (('tcp', 18081), ('udp', 18082)):
                 ns(iface, config['python'], SCRIPT, 'probe', target, port, transport, 'yes' if allowed else 'no')
+        if not allowed:
+            assert diagnostic_packets('guest-target-policy', iface) > private_before
         ns(iface, config['python'], SCRIPT, 'probe', config['public6'], '18081', 'tcp', 'no')
         # All three roles keep DHCP/DNS, without granting arbitrary host ports.
         for gateway in role['gateway4'] + role['gateway6']:
@@ -413,8 +447,10 @@ def proxy():
     # A spoofed source in the trusted network cannot borrow that network's role.
     ns('waydroid0', 'ip', 'addr', 'add', '192.168.122.77/32', 'dev', 'gclient1')
     before = counter('lf_guest_from_1')
+    source_before = diagnostic_packets('guest-source-policy', 'waydroid0')
     ns('waydroid0', config['python'], SCRIPT, 'probe-source', config['private4'], '192.168.122.77')
     assert counter('lf_guest_from_1') > before, 'spoofed source bypassed its interface role'
+    assert diagnostic_packets('guest-source-policy', 'waydroid0') > source_before
     # Guest fake-IP needs the explicit B TPROXY inlet and a live mapping.
     # The DNS coordinator can reload the gateway independently of the stopped
     # mode coordinator. Wait for an actual synthetic answer before testing its
@@ -518,6 +554,8 @@ if __name__ == '__main__':
         stale_dns_client()
     elif action == 'dns-test':
         dns_test()
+    elif action == 'dns-refusal-burst':
+        dns_refusal_burst()
     elif action == 'gateway-dns':
         for tcp in (False, True):
             dns(sys.argv[2], 'public.guest.fixture.example', tcp, expected='203.0.113.10')

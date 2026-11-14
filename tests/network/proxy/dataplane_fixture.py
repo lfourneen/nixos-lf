@@ -3,6 +3,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import select
 import socket
 import struct
 import sys
@@ -141,6 +142,9 @@ def push():
             stream.bind((address, 18090))
             while True:
                 label, peer = stream.recvfrom(4096)
+                if label.decode(errors='replace') in {'native4', 'native6', 'fake4', 'socks4', 'socks6'}:
+                    path = Path('/tmp/push-peer-' + label.decode() + '.json')
+                    path.write_text(json.dumps({'family': family, 'address': peer[0], 'port': peer[1]}))
                 threading.Thread(target=send, args=(stream, peer, label), daemon=True).start()
     for family, address in ((socket.AF_INET, '203.0.113.10'),
                             (socket.AF_INET6, '2001:db8:ffff::10')):
@@ -181,18 +185,36 @@ def receive(label, address, socks='no'):
         stream.connect(peer)
         stream.send(payload)  # exactly one request; never send a heartbeat
         count = 0
+        last_received = None
         path = Path('/tmp/receive-' + label + '.json')
         while True:
             try:
                 data = stream.recv(4096)
                 assert label.encode() + b':' in data
                 count += 1
-                temporary = path.with_suffix('.tmp')
-                temporary.write_text(json.dumps({'count': count, 'at': time.monotonic()}))
-                temporary.replace(path)
+                last_received = time.monotonic()
             except socket.timeout:
                 pass
+            control_open = None
+            if control is not None:
+                control_open = not select.select([control], [], [], 0)[0] or control.recv(1, socket.MSG_PEEK) != b''
+            now = time.monotonic()
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps({'count': count, 'at': now, 'last_received': last_received,
+                'udp_status': 'receiving' if last_received is not None and now - last_received < 1 else 'udp-timeout',
+                'control_open': control_open}))
+            temporary.replace(path)
 
 
-{'bind': binding, 'autobind': autobind, 'impostor': impostor, 'exchange': exchange, 'strict-socks': strict_socks,
- 'push': push, 'receive': receive}[sys.argv[1]](*sys.argv[2:])
+def echo():
+    # Bounded load target: unlike push(), this never starts a thread per packet.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as stream:
+        stream.bind(('203.0.113.10', 18096))
+        while True:
+            data, peer = stream.recvfrom(4096)
+            stream.sendto(data, peer)
+
+
+if __name__ == '__main__':
+    {'bind': binding, 'autobind': autobind, 'impostor': impostor, 'exchange': exchange, 'strict-socks': strict_socks,
+     'push': push, 'receive': receive, 'echo': echo}[sys.argv[1]](*sys.argv[2:])

@@ -47,7 +47,9 @@ DNS transport has an independent policy: `my.proxy.dnsEncryption="strict"` disab
 
 `unenforced` reports that the expected kernel policy could not be confirmed or repaired. It is an error status, not another protected mode. Applications using the shared readiness check refuse it.
 
-The core's service cgroup, passive TCP/UDP listener identities, managed controller values, TUN device/routes and actual unmarked IPv6 selection for root and the desktop UID feed the health decision. HTTP probes must complete through the currently selected proxy leaf with matching source-port logs; another real HTTP request to a fake-IP proves the transparent TCP path. The default shared deadline is 12 seconds. Definite configuration, route or TUN failures block immediately; unavailable observations use two consecutive rounds, at least two seconds apart. The health decision uses these configured TCP probes together with listener, route and policy observations.
+The core's service cgroup, passive TCP/UDP listener identities, managed controller values, TUN device/routes and actual unmarked IPv6 selection for root and the desktop UID feed the health decision. HTTP probes must complete through the currently selected proxy leaf with matching source-port logs; another real HTTP request to a fake-IP proves the transparent TCP path. The default shared deadline is 12 seconds. Definite configuration, route or TUN failures block immediately; unavailable observations use two consecutive rounds, at least two seconds apart.
+
+`health.json.scope` declares the invocation's coverage; only `ok=true` confirms successful completion. `scope.requests` lists the TCP request paths and is empty for `--fast`. `scope.udp_data_plane="not-probed"` makes the UDP boundary explicit: listener identity is checked, while UDP reachability and association return traffic are not continuously proven. A UDP-only failure can therefore leave B and its TCP verdict healthy.
 
 ## Firewall lifecycle
 

@@ -49,7 +49,9 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 
 `unenforced` 表示预期内核策略无法确认或修复，是错误状态。使用共用就绪检查的应用会拒绝该状态。
 
-健康判断检查核心 cgroup、TCP/UDP 监听身份、受管 API、TUN 设备与路由，以及 root/桌面 UID 未打标 IPv6 的实际选路。HTTP 探针须经当前选中代理叶子完成，且日志匹配源端口；另向 fake-IP 发真实 HTTP 请求证明透明 TCP 路径。默认共享截止为 12 秒。明确的配置、路由或 TUN 失败立即阻断；观测不可用需连续两轮，间隔至少两秒。健康判定汇总这些 TCP 探测及监听、路由和策略观测。
+健康判断检查核心 cgroup、TCP/UDP 监听身份、受管 API、TUN 设备与路由，以及 root/桌面 UID 未打标 IPv6 的实际选路。HTTP 探针须经当前选中代理叶子完成，且日志匹配源端口；另向 fake-IP 发真实 HTTP 请求证明透明 TCP 路径。默认共享截止为 12 秒。明确的配置、路由或 TUN 失败立即阻断；观测不可用需连续两轮，间隔至少两秒。
+
+`health.json.scope` 声明本次调用的检查范围，只有 `ok=true` 才证明这些检查完成。`scope.requests` 列出 TCP 请求路径，`--fast` 时为空。`scope.udp_data_plane="not-probed"` 明确 UDP 边界：核对监听身份，但不持续证明 UDP 可达性和 association 回程。单独的 UDP 故障因此可能让 B 与 TCP 健康结果保持正常。
 
 ## 防火墙生命周期
 

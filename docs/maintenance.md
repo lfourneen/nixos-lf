@@ -110,6 +110,8 @@ Preserve the shared policy lock and the single transaction containing static rul
 
 For changes to nftables, systemd loading or coordination, run `proxy-firewall-vm`, the relevant complete-rule variants, `proxy-control-vm` and `proxy-network-vm`. The dedicated VM checks A/C table ownership, external sets and ordered rules, failed transactions, lock contention and reuse of migration target names. The control VM checks the real helper/core, preservation of its TUN table, C enforcement and B recovery; the broad VM retains first-load and drift-recovery coverage.
 
+The [drop summary](operations.md#drop-counters) maps existing chains and nft JSON expressions in [inspect.py](../system/config/network/diagnostics/inspect.py) to reason/role groups. Preserve that mapping when changing chain names, guest interface order or source/port expressions. Run `proxy-regressions`, `proxy-control-vm` and `proxy-guest-vm` after changing the summary; keep permission/parse errors distinct from zero counters and keep diagnosis independent of enforcement.
+
 ## Link identity
 
 [default.nix](../system/config/network/identity/default.nix) and [link_identity.py](../system/config/network/identity/link_identity.py) use upstream NetworkManager/systemd/dhcpcd APIs without source patches. Check actual nmcli property names and enum formatting, both hostname switches, stable-id substitutions, DHCP identifiers and IPv6 address generation. Preserve the identity-only backup whitelist, private state, inactive/autoconnect guards and refusal to overwrite manual edits; rebuilds do not apply profile targets automatically.

@@ -115,7 +115,7 @@ On Tailscale upgrades, run `tailscale-transport`, `proxy-rules`, `proxy-egress-r
 | File | Meaning |
 |---|---|
 | `/run/proxy-mode/state.json` | Atomic mode, reason, policy version, revision and update time |
-| `/run/proxy-mode/health.json` | Probe verdict and per-layer durations |
+| `/run/proxy-mode/health.json` | Probe scope, verdict and per-layer durations |
 | `/run/proxy-mode/heartbeat.json` | Last successful supervisor round |
 | `/run/netsec/state.json` | Verification verdict, checked generation and freshness |
 | `/run/dns-upstream/state.json` | DNS mode/reason, encryption policy, session, budget, deadline and override |
@@ -153,6 +153,28 @@ cat /var/lib/dns-upstream/history.log
 ```
 
 Some service logs and authority files require sudo. Do not publish snapshots or subscription-bearing configuration as diagnostic output.
+
+### Drop counters
+
+Run `sudo proxy-inspect --drops` for a focused JSON view of existing refusal counters in `inet lf_filter`. Ordinary `proxy-inspect` includes the same view under `drops`. The command reads local state and nftables without changing rules, resetting counters or sending probes.
+
+```sh
+sudo proxy-inspect --drops | jq '{available,error,policy,state_consistent,groups:[.groups[] | select((.packets // 0) > 0)]}'
+```
+
+Each group identifies a stable `reason`, a `role`, its `chain`, and counted packets/bytes. Routed guest roles use the configured interface names. The policy record supplies the observed mode, transition reason and generation; `state_consistent=false` means the state was unavailable or changed during collection. This view does not establish readiness.
+
+| Reason | Counted refusal |
+|---|---|
+| `mode-c-output`, `mode-c-input` | C output or reply/input guards |
+| `guest-source-policy` | Guest source outside its declared scope, including an undeclared address family |
+| `guest-target-policy` | Routed guest protected or unsupported target |
+| `dns-client-policy` | Application access to an internal resolver inlet |
+| `dns-listener-identity`, `proxy-listener-identity` | Replies from an unauthorized local socket UID |
+
+Counts cover only drops with counters in the listed chains. `uncounted_rules` reports selected drops without counters; `installed=false` and null counts mean the chain is absent. Zero counts do not prove that an inlet is enabled or healthy. Reading/parsing failure yields `available=false`, a fixed error category and no groups; `--drops` exits 1. Without the required nftables privileges, the error is `permission-denied`.
+
+Counters start at each rule's latest installation or flush; reload, repair and mode changes can reset some of them. Compare snapshots with that lifecycle and the policy generation in mind. Historical totals do not attribute a particular connection or its original/NAT destination to the current mode. Output has a fixed group count for the configured roles and contains no packet log, target addresses or raw rules; packet volume changes numeric totals only.
 
 ### Refresh status
 
