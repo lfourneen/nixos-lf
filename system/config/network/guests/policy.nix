@@ -27,6 +27,7 @@ let
     uidRanges = config.users.users.${name}.subUidRanges or [ ];
   in {
     inherit name uid uidRanges;
+    gidRanges = config.users.users.${name}.subGidRanges or [ ];
     owner = "{ ${join ([ (toString uid) ] ++ map (r: "${toString r.startUid}-${toString (r.startUid + r.count - 1)}") uidRanges)} }";
   }) h.socketGuestUsers;
 
@@ -132,6 +133,10 @@ let
     }
 
     chain lf_guest_to_${toString n.index} {
+      ${lib.optionalString (p.coreNetns && builtins.elem n.interface p.transparentGuestInterfaces && n.source4 != [ ]) ''
+      iifname "${p.tunDev}" ct direction reply ct state established,related ct original ip saddr { ${join n.source4} } ct original ip daddr ${p.fakeIpNet} return
+      iifname "${p.tunDev}" ct direction reply ct state established,related ct original ip saddr { ${join n.source4} } ct original ip daddr != { ${join protected4} } return
+      ''}
       ${lib.optionalString (n.source4 != [ ]) ''ct direction reply ct state established,related ct original ip saddr { ${join n.source4} } jump lf_guest_return_${toString n.index}
       ct direction reply ct state established,related ct original ip saddr { ${join n.source4} } return''}
       ${lib.optionalString (n.source6 != [ ]) ''ct direction reply ct state established,related ct original ip6 saddr { ${join n.source6} } jump lf_guest_return_${toString n.index}
@@ -179,11 +184,13 @@ in
     declaredInterfaces = builtins.attrNames h.guestNetworks;
     networks = map (n: { inherit (n) interface trust sourceCidrs gateways hostTcpPorts hostUdpPorts; }) networks;
     exceptions = h.guestPrivateExceptions;
-    socketUsers = map (a: { inherit (a) name uid uidRanges; }) socketActors;
+    socketUsers = map (a: { inherit (a) name uid uidRanges gidRanges; }) socketActors;
     socketExceptions = h.socketGuestPrivateExceptions;
     users = lib.mapAttrs (_: u: u.uid) config.users.users;
     subUidRanges = lib.mapAttrs (_: u: u.subUidRanges or [ ]) config.users.users;
-    protectedUsers = lib.unique ([ "root" "nobody" m.desktopUser "clash-core" "gost" "dnsmasq" "unbound" "chrony" "systemd-resolve" "dhcpcd" ]);
+    subGidRanges = lib.mapAttrs (_: u: u.subGidRanges or [ ]) config.users.users;
+    groups = lib.mapAttrs (_: g: g.gid) config.users.groups;
+    protectedUsers = lib.unique ([ "root" "nobody" m.desktopUser "clash-core" "clash-validate" "clash-loopback" "gost" "dnsmasq" "unbound" "chrony" "systemd-resolve" "dhcpcd" ]);
     tunInterface = p.tunDev;
     forbiddenInterfaces = [ "lo" m.wired.name m.wireless.name p.tunDev "tailscale0" ];
     privateScopes = private4 ++ m.ulaV6 ++ m.linkLocalV6;
@@ -280,7 +287,7 @@ in
 
     chain lf_socket_guest_input {
       type filter hook input priority -2; policy accept;
-      ${lib.concatMapStrings (uid: ''ct mark ${socketMark uid} ct direction reply ct state established,related jump lf_socket_guest_reply_${toString uid}
+      ${lib.concatMapStrings (uid: ''ct mark${lib.optionalString p.coreNetns " & 0x7fffffff"} ${socketMark uid} ct direction reply ct state established,related jump lf_socket_guest_reply_${toString uid}
       '') socketUids}
     }
     ''}

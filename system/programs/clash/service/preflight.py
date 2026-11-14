@@ -69,7 +69,7 @@ def inspect_unlocked(settings):
         data = snapshot.config_input(settings, str(Path(settings['gui_data']) / 'clash-verge.yaml'))
         parse = [settings['yq'], '-o=json', '-I=0', '.', '-']
         if os.geteuid() == 0:
-            parse = [settings['setpriv'], '--reuid=clash-core', '--regid=clash-core', '--clear-groups',
+            parse = [settings['setpriv'], '--reuid=clash-validate', '--regid=clash-core', '--clear-groups',
                      '--bounding-set=-all', '--no-new-privs', *parse]
         result = subprocess.run(parse, input=data,
                                 capture_output=True, timeout=8, check=False)
@@ -115,7 +115,7 @@ def inspect_unlocked(settings):
                                 settings['gui_data'], source.name, settings['desktop_uid']), gid)
                 args = [settings['managed_core'], '-t', '-d', directory, '-f', str(candidate / 'clash-verge.yaml')]
                 if os.geteuid() == 0:
-                    args = [settings['setpriv'], '--reuid=clash-core', '--regid=clash-core', '--clear-groups',
+                    args = [settings['setpriv'], '--reuid=clash-validate', '--regid=clash-core', '--clear-groups',
                             '--bounding-set=-all', '--no-new-privs', *args]
                 env = dict(os.environ, LF_MANAGED_PROXY_POLICY=os.environ.get('LF_MANAGED_PROXY_POLICY', settings['managed_policy']))
                 parsed = subprocess.run(args, env=env, capture_output=True, timeout=60, check=False)

@@ -3,7 +3,7 @@
 let
   m = config.my.machine;
   p = config.my.proxy;
-  enabled = config.my.hardening.socketGuestUsers != [ ];
+  enabled = config.my.hardening.socketGuestUsers != [ ] || p.controlledSources;
 
   settings = pkgs.writeText "socket-guest-dns.conf" ''
     port=${toString m.ports.socketGuestDns}
@@ -25,7 +25,7 @@ in
   # Both gateways share the immutable filter; only authenticated Unbound is an
   # upstream here. An unavailable/disabled DoT path fails closed without a lease.
   systemd.services.socket-guest-dns = lib.mkIf enabled {
-    description = "Filtered real-address DNS for restricted socket guest accounts";
+    description = "Filtered real-address DNS for restricted backends and source downloads";
     wantedBy = [ "multi-user.target" ];
     after = [ "nftables.service" "unbound.service" ];
     requires = [ "nftables.service" ];

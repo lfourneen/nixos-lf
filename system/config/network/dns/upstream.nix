@@ -119,7 +119,7 @@ in
         "${pkgs.python3}/bin/python3 ${../firewall/alerts.py} clear dns-policy-sleep.service"
         "${pkgs.python3}/bin/python3 ${../firewall/alerts.py} clear dns-policy-resume.service"
         "${pkgs.systemd}/bin/systemctl start --no-block proxy-net-wake.service"
-      ];
+      ] ++ lib.optional config.my.proxy.coreNetns "${config.my.proxy.coreNetworkCommand} resume";
       Restart = "on-failure";
       RestartSec = "2s";
       TimeoutStartSec = 20;

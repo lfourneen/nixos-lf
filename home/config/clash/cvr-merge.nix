@@ -17,7 +17,8 @@ let
 
   # Portal/LAN/CGNAT bypass the TUN; same ranges as the firewall.
   routeExclude = lib.optionals osConfig.my.hardening.directEgress.privateRoutes (m.privateV4 ++ m.ulaV6 ++ m.linkLocalV6)
-    ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6;
+    ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6
+    ++ lib.optionals osConfig.my.proxy.coreNetns (let t = osConfig.my.proxy.coreTopology; in [ t.subnet4 t.subnet6 ]);
 
   # No trailing newline: the interpolation line supplies it.
   yamlItems = indent: xs: lib.concatStringsSep "\n" (map (x: "${indent}- ${x}") xs);

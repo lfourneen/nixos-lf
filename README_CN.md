@@ -100,6 +100,7 @@ sudo nixos-rebuild switch --flake .#yourname
     ├── programs/           # 系统程序与服务
     │   ├── clash/          # 系统 GUI/helper 和 Mihomo 构建载荷
     │   ├── gost/           # Relay 软件包、补丁和服务
+    │   ├── hermes/         # Agent、技能、邮件 CLI 与受限容器后端
     │   └── systemd/        # journald/coredump 全局设置
     ├── secrets/            # 加密密钥（sops）
     └── systempkgs/         # 系统软件包

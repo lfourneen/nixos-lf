@@ -26,6 +26,7 @@
       "/var/lib/cups"
       "/var/lib/dns-upstream"
       "/var/lib/hermes"
+      { directory = "/var/lib/hermes-containers"; user = "hermes-containers"; group = "hermes-containers"; mode = "0700"; }
       "/var/lib/lastlog"
       "/var/lib/NetworkManager"
       { directory = "/var/lib/netsec-dns-profiles"; mode = "0700"; }

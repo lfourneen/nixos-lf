@@ -203,6 +203,22 @@ replace(root / "hub/route/configs.go", "general := executor.GetGeneral()",
 # builds; the middleware itself checks LF_MANAGED_PROXY_POLICY.
 replace(root / "hub/route/server.go", "\tr := chi.NewRouter()\n\tcors.Apply(r)",
         "\tr := chi.NewRouter()\n\tlfPolicyUse(r)\n\tcors.Apply(r)")
+# Weak decoding renders a float as a string with 'E' notation, so a JSON
+# round-tripped port such as 7898 becomes "7.898E+03" and the listener range
+# parser rejects the whole profile. Format like upstream mapstructure instead.
+replace(root / "common/structure/structure.go",
+        "val.SetString(strconv.FormatFloat(dataVal.Float(), 'E', -1, dataVal.Type().Bits()))",
+        "val.SetString(strconv.FormatFloat(dataVal.Float(), 'f', -1, dataVal.Type().Bits()))")
+# Decimal float ports now reach the unsigned range parser. Reject values that
+# do not fit its target type instead of wrapping (for example 65536 to port 0).
+replace(root / "common/utils/range.go",
+        "func parseUnsigned[T constraints.Unsigned](s string) (T, error) {\n"
+        "\tif val, err := strconv.ParseUint(s, 10, 64); err == nil {\n"
+        "\t\treturn T(val), nil",
+        "func parseUnsigned[T constraints.Unsigned](s string) (T, error) {\n"
+        "\tif val, err := strconv.ParseUint(s, 10, 64); err == nil {\n"
+        "\t\tif uint64(T(val)) != val { return 0, strconv.ErrRange }\n"
+        "\t\treturn T(val), nil")
 source = Path(__file__).parent.parent
 (root / "dns/lf_filter.go").write_text((source / "guard/dns_filter.go").read_text())
 (root / "dns/lf_filter_test.go").write_text((source / "guard/dns_filter_test.go").read_text())

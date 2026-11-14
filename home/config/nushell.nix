@@ -237,6 +237,7 @@ in
         print $"(ansi red_bold)Failed to stop the core ✗(ansi reset)"
         return
       }
+      print "Clash core stopped. Waiting for direct DNS and network readiness..."
       if (proxy-control wait direct | complete).exit_code == 0 {
         print $"(ansi green_bold)Mode A ready \(direct\) ✓(ansi reset)"
       } else {

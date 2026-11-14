@@ -45,18 +45,19 @@ async def bridge(reader, writer, connect, allowed=lambda: True):
                 stream.transport.abort()
 
 
-def peer_identity(writer, uid, table=Path('/proc/net/tcp')):
+def peer_identity(writer, uid, table=Path('/proc/net/tcp'), *, table_text=None, source_address='127.0.0.1'):
     # Authenticate the established server socket before forwarding any browser
     # bytes. A listener lookup alone has a stop/rebind race. Both endpoints are
     # fixed IPv4 loopback; the kernel supplies the peer socket's owning UID.
     local = writer.get_extra_info('sockname')
     peer = writer.get_extra_info('peername')
-    if not local or not peer or local[0] != '127.0.0.1' or peer[0] != '127.0.0.1':
+    if not local or not peer or local[0] != source_address or peer[0] != '127.0.0.1':
         return False
     want_local = f'0100007F:{peer[1]:04X}'
-    want_remote = f'0100007F:{local[1]:04X}'
+    source_hex = socket.inet_aton(source_address)[::-1].hex().upper()
+    want_remote = f'{source_hex}:{local[1]:04X}'
     try:
-        for line in table.read_text().splitlines()[1:]:
+        for line in (table.read_text() if table_text is None else table_text).splitlines()[1:]:
             fields = line.split()
             if len(fields) > 9 and fields[1] == want_local and fields[2] == want_remote and fields[3] == '01':
                 return fields[7] == str(uid)
@@ -70,13 +71,24 @@ async def host(settings):
     state = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(state)
     active = set()
-    ready = False
+    observer = None
+    if settings.get('observer'):
+        spec = importlib.util.spec_from_file_location('core_network', settings['observerModule'])
+        observer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(observer)
 
     async def dial():
-        reader, writer = await asyncio.open_connection('127.0.0.1', settings['port'])
-        if not peer_identity(writer, settings['coreUid']):
+        source = settings.get('sourceAddress', '127.0.0.1')
+        reader, writer = await asyncio.open_connection('127.0.0.1', settings['port'], local_addr=(source, 0))
+        try:
+            table = None
+            if observer:
+                table = (await asyncio.to_thread(observer.request, settings['observer'], 'strict-tcp4'))['table']
+            if not peer_identity(writer, settings['coreUid'], table_text=table, source_address=source):
+                raise ValueError('strict core socket identity mismatch')
+        except BaseException:
             writer.transport.abort()
-            raise ValueError('strict core socket identity mismatch')
+            raise
         return reader, writer
 
     async def client(reader, writer):
@@ -86,22 +98,21 @@ async def host(settings):
             return
         active.add(task)
         try:
-            await bridge(reader, writer, dial, lambda: ready)
+            await bridge(reader, writer, dial, readiness)
         finally:
             active.discard(task)
 
+    def readiness():
+        try:
+            verdict = state.readiness(target='proxy', maximum=settings['maxAge'],
+                                      verification_maximum=settings['verificationMaxAge'])
+            return verdict.get('mode') == 'proxy' and verdict.get('ready') is True
+        except Exception:
+            return False
+
     async def monitor():
-        nonlocal ready
         while True:
-            ready = False
-            try:
-                verdict = state.readiness(target='proxy', maximum=settings['maxAge'],
-                                          verification_maximum=settings['verificationMaxAge'])
-                ready = verdict.get('mode') == 'proxy' and verdict.get('ready') is True
-            except Exception:
-                # Corrupt/unavailable observations must not leave a previously
-                # true readiness value alive in a detached failed task.
-                ready = False
+            ready = readiness()
             if not ready:
                 for task in tuple(active):
                     task.cancel()

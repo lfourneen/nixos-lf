@@ -3,13 +3,13 @@
     # Folders
     ./clash
     ./fhs
+    ./hermes
     ./systemd
     ./gost
 
     # Files
     ./git.nix
     ./flatpak
-    ./hermes.nix
     ./misc.nix
     ./mpd.nix
     ./nix-ld.nix

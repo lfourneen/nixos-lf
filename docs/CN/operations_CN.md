@@ -232,6 +232,14 @@ sudo systemctl start nftables-verify.service
 
 代理意图或核心仍在运行时先安装 C，监督器在健康检查通过后开放 B；直连意图且没有核心时安装 A。迁移保留意图、授权和运行中的核心。使用上文诊断命令检查模式和验证 JSON。清理仅在本命令执行期间发生，其它服务的表由各自所有者管理。
 
+## 核心命名空间恢复
+
+宿主的 `Mihomo` 接口是受管 veth。用 `sudo ip -n lf-clash-core link` 和 `sudo ip netns exec lf-clash-core nft list table inet mihomo` 查看实际核心 TUN 和 auto-redirect 表。完整就绪使用 `proxy-control status proxy --check`，仅有宿主接口不能证明已就绪。
+
+`clash-on` 停止旧 helper 后重建私有命名空间，保持配置的来源授权流程，并断开已有核心连接。物理上行变化和恢复钩子自动重启已经授权的核心。如果 LAN/VPN 与内部地址冲突，通过 `my.proxy.coreLink` 选择未占用的私有 /30 与 /64，各子网及其 host/core 端点应一起调整，不删除重叠检查来恢复连接。内部 MAC 为不同的本地单播地址，与物理 MAC 随机化独立。
+
+激活前保留上一系统 generation。返回使用宿主 TUN 的 generation 前，执行 `sudo proxy-control off`，等待 A 后停止 `clash-core-network.service`。固定清理只移除其拥有的 namespace/veth 和路由优先级；即使存在残留所有权标记，也拒绝删除其它接口或旧版 TUN。然后激活选定 generation，按正常 `clash-on` 流程启动。仅切换 generation 不能证明旧的运行中核心或 namespace 已退出。
+
 ## 配置入口
 
 | 来源 | 设置 |
@@ -270,6 +278,30 @@ users.users.guestnet = { isNormalUser = true; uid = 1100; };
 Wi-Fi profile 显式的克隆 MAC 优先于 `my.hardening.wifi.clonedMacAddress`；否则默认 `stable-ssid` 为相同 SSID 保留相同 MAC。`permanent` 选择硬件地址，`preserve` 保持当前地址。需要协调身份变化时，声明 `my.hardening.wifi.identities`，查看 `network-identity plan UUID`，关闭自动连接并断开后再执行 `apply` 或 `restore`。完整步骤、有线策略和 DHCP 状态准备见[链路身份](identity_CN.md)。
 
 核心内部服务访问由[目标授权](proxy_CN.md#域名目标)单独管理：`localTargetCidrs` 限定本地 DIRECT，`remoteTargetGrants` 按实际叶节点、核心入口、协议和端口授权远程内部地址，`nat64Prefixes` 声明已知翻译前缀。内部后缀只允许本地解析私网答案，不授权节点代解析或拨号。Gost CONNECT 在核心中是 `HTTPS`；修改后需重建并有意导入/重启核心。A 字面门户、C 阻断与原生直连授权各自保持独立。
+
+## Hermes 容器
+
+[`system/programs/hermes/`](../../system/programs/hermes) 集中存放 agent 配置、技能、邮件 CLI 与容器后端。后端在专用账户的 user manager 中运行 `hermes-docker.service`，由 `hermes-containers.socket` 和 `.service` 向 Hermes 提供固定 Unix 字节流；专用账户的私有 runtime 和数据目录保留独立权限。
+
+| 资源 | 默认位置 |
+|---|---|
+| Hermes agent 数据与工作区 | `/var/lib/hermes` |
+| 受限后端 HOME / Docker 数据 | `/var/lib/hermes-containers` / `/var/lib/hermes-containers/docker` |
+| Hermes Docker API | `unix:///run/hermes-containers/docker.sock` |
+
+Gateway、dashboard 和 Hermes 登录 shell 将 `DOCKER_HOST` 指向该 API。Socket 模式为 0660，仅允许后端账户及 `hermes-container-clients` 成员访问。桌面继续使用自己的 Docker 入口。直接以 Hermes 运行的本地 terminal、MCP 和浏览器工具仍使用宿主代理策略；提交给专用 Docker 后端的工作负载才使用受限账户。
+
+后端清除继承的代理环境变量，使用过滤后的真实地址 DNS。A 允许公网 IPv4 直连，B 按宿主公网策略经过受管核心，C 切断应用流量。私网、元数据、fake-IP 目标和宿主代理入口默认没有授权。默认 Docker 网桥没有外部 IPv6 路径；其它已支持的原生后端路径仍受 UID 守卫的双栈检查约束。
+
+```sh
+sudo systemctl status hermes-containers.socket hermes-containers.service
+sudo systemctl --user --machine=hermes-containers@.host status hermes-docker.service
+sudo -u hermes env DOCKER_HOST=unix:///run/hermes-containers/docker.sock docker info --format '{{.DockerRootDir}}'
+```
+
+专用账户 user manager 启动前，retirement unit 先停止 Hermes 旧 user Docker；仍有旧 dockerd 时拒绝启动。全局 Docker user unit 排除 Hermes 和专用后端账户，后者使用独立 unit。新后端继续受 `user.slice` 继承的保留端口 bind 限制约束。
+
+`/var/lib/hermes` 下的 agent 数据保留原位。旧账户的 Docker 镜像和卷也保留原位，不会自动导入新后端。激活前停止业务写入，按旧映射导出需要的镜像与卷，再通过新入口加载和恢复；核对恢复前保留旧数据及映射，不能用复制属主数字或递归 chown 代替迁移。确需回到旧后端配置时，先停止专用 daemon 和两个 API unit，再显式回退。
 
 ## 离线恢复
 

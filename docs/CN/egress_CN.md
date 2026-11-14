@@ -12,7 +12,7 @@ UID、接口和端口来自 [machine.nix](../../system/config/machine.nix)、服
 
 | 主体 / 路径 | 目标和传输条件 | 适用模式与限制 |
 |---|---|---|
-| 代理核心 | socket 属主为 root 或 `clash-core`（982），socket `SO_MARK` 和 packet mark **同时**为 6666；目标由核心选定 | B 及 C 恢复。仅 UID 或仅 packet mark 均不放行；root 和核心 `NET_ADMIN` 仍是信任边界 |
+| 隔离代理核心 | 固定私有 veth/源地址，公网 TCP/UDP 或已授权本地目标；宿主清除 packet mark 并核对回包归属 | B 及 C 恢复；危险目标、宿主保留服务和外部 53 端口受限。网络能力仅作用于核心命名空间 |
 | Tailscale | root UDP socket，两个 mark **同时**为上游 `LinuxBypassMarkNum`（`0x80000`），物理 `ens1`/`wlo1`；peer/STUN 地址和端口动态 | B 保留打洞，C 阻断。正常系统构建检查[源码约定](../../system/config/network/tailscale/transport.nix)，不能对抗 root 冒用 |
 | Unbound（983） | 声明的字面 IPv4/IPv6 上游，TCP 853 | A/B 均检查目标；B 可用 `unboundDotInProxy=false` 关闭此例外。C 阻断外部 DoT。其它普通 UID 不得使用 TCP/UDP 853；root 诊断仍受信任。443 DoH 属于另一策略 |
 | Chrony（61） | 物理上行，UDP 123、TCP 4460 | A/B，C 阻断。默认兼容地址变化；可用 `timeServerCidrs` 在 A/B 的 TUN/NAT 之前限制原始目标，须包含 NTS-KE 和协商出的 NTP 服务器 |

@@ -8,6 +8,8 @@ import socket
 import sys
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('source_worker', sys.argv.pop(1))
 w = importlib.util.module_from_spec(spec)
@@ -31,6 +33,52 @@ class Response:
 
 
 class SourceTests(unittest.TestCase):
+    def test_real_resolver_uses_only_the_fixed_gateway(self):
+        import dns.resolver
+
+        answers = {'A': ['1.1.1.1'], 'AAAA': ['2606:4700:4700::1111']}
+        calls = []
+        class Backend:
+            def resolve(self, host, kind, **kwargs):
+                calls.append((host, kind, kwargs))
+                return [SimpleNamespace(address=value) for value in answers[kind]]
+        backend = Backend()
+        with patch('dns.resolver.Resolver', return_value=backend) as factory, patch.object(
+                socket, 'getaddrinfo', side_effect=AssertionError('system fake-IP resolver used')):
+            lookup = w.real_resolver({'address': '127.0.0.1', 'port': 1056})
+            result = lookup('source.example', 443, type=socket.SOCK_STREAM)
+            self.assertEqual({x[4][0] for x in result}, {'1.1.1.1', '2606:4700:4700::1111'})
+            self.assertEqual(lookup('1.1.1.1', 8443)[0][4], ('1.1.1.1', 8443))
+        factory.assert_called_once_with(configure=False)
+        self.assertEqual((backend.nameservers, backend.port), (['127.0.0.1'], 1056))
+        self.assertEqual([x[1] for x in calls], ['A', 'AAAA'])
+        self.assertTrue(all(x[2]['search'] is False and 0 < x[2]['lifetime'] <= 4 for x in calls))
+
+        with patch('dns.resolver.Resolver', return_value=backend):
+            lookup = w.real_resolver({'address': '127.0.0.1', 'port': 1056})
+            for error in (dns.resolver.NXDOMAIN(), dns.resolver.NoNameservers()):
+                with patch.object(backend, 'resolve', side_effect=error), patch.object(
+                        socket, 'getaddrinfo', side_effect=AssertionError('fell back to system DNS')):
+                    with self.assertRaises(socket.gaierror):
+                        lookup('source.example', 443)
+        for settings in ({'address': '8.8.8.8', 'port': 53}, {'address': '127.0.0.1', 'port': True}):
+            with self.assertRaises(w.Refused):
+                w.real_resolver(settings)
+
+    def test_prepare_shares_real_resolution_between_fetch_and_nodes(self):
+        request = {'registry': {'id': 'fixture', 'subscription': {'url': 'https://source.example/sub'}},
+                   'policy': {}}
+        hosts = []
+        def resolver(host, port, **kwargs):
+            hosts.append(host)
+            return public(host, port, **kwargs)
+        def download(spec, deadline, budget, **kwargs):
+            kwargs['resolver']('source.example', 443, type=socket.SOCK_STREAM)
+            return json.dumps(DOC).encode()
+        with patch.object(w, 'fetch', side_effect=download):
+            w.prepare(request, resolver=resolver)
+        self.assertEqual(hosts, ['source.example', 'proxy.example'])
+
     def test_ua_negotiation_on_the_same_endpoint(self):
         class Connection:
             sock = None

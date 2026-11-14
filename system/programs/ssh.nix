@@ -56,7 +56,7 @@
     };
   };
 
-  # sops-nix secrets (common sops options: hermes.nix). Rendered in sysinit,
+  # sops-nix secrets (common sops options: hermes/hermes.nix). Rendered in sysinit,
   # before sshd starts (/run/secrets/*).
   sops.secrets = {
     ssh_host_ed25519_key = {

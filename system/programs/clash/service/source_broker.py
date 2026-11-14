@@ -264,6 +264,7 @@ def refresh(settings, root):
     raw = read_private(root / 'registry.json')
     registry = json.loads(raw)
     request = json.dumps(dict(registry=registry, policy=json.loads(Path(settings['policy']).read_text()),
+                              resolver=settings.get('resolver'),
                               forced_domains=settings['forced_domains'],
                               probe_domains=settings.get('probe_domains', []),
                               remote_only_catchall=settings.get('remote_only_catchall', False))).encode()

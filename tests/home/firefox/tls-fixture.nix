@@ -1,4 +1,4 @@
-{ pkgs }:
+{ pkgs, extraDnsNames ? [ ] }:
 
 pkgs.runCommand "browser-test-certificates" { nativeBuildInputs = [ pkgs.openssl ]; } ''
   mkdir -p "$out"
@@ -15,7 +15,7 @@ pkgs.runCommand "browser-test-certificates" { nativeBuildInputs = [ pkgs.openssl
   subjectKeyIdentifier=hash
   authorityKeyIdentifier=keyid,issuer
   extendedKeyUsage=serverAuth
-  subjectAltName=DNS:privacy-fixture.invalid,DNS:media.example.invalid,DNS:trusted.sandbox.fixture.test,DNS:expired.sandbox.fixture.test
+  subjectAltName=DNS:privacy-fixture.invalid,DNS:media.example.invalid,DNS:trusted.sandbox.fixture.test,DNS:expired.sandbox.fixture.test${pkgs.lib.concatMapStrings (name: ",DNS:${name}") extraDnsNames}
   EOF
   openssl x509 -req -in trusted.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
     -out trusted.pem -days 3650 -extfile server.ext

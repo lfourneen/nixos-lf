@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import socket
+import shlex
 import struct
 import threading
 import time
@@ -27,6 +28,8 @@ MODULE_PATHS = {'alerts': 'system/config/network/firewall/alerts.py',
  'dnssec_probe': 'system/config/network/dns/dnssec_probe.py',
  'egress_policy': 'system/config/network/firewall/egress_policy.py',
  'events': 'system/config/network/proxy/events.py',
+ 'core_network': 'system/config/network/proxy/core_network.py',
+ 'core_loopback': 'system/config/network/proxy/core_loopback.py',
  'guest_policy': 'system/config/network/guests/guest_policy.py',
  'health': 'system/config/network/proxy/health.py',
  'inspect': 'system/config/network/diagnostics/inspect.py',
@@ -165,6 +168,25 @@ class GuestPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError): guest_policy.validate(bad)
         bad = copy.deepcopy(candidate); bad['socketUsers'][0]['uidRanges'] = [{'startUid': 500000, 'count': 65536}]
         with self.assertRaises(ValueError): guest_policy.validate(bad)
+
+    def test_delegated_group_ranges_cannot_share_another_role(self):
+        candidate = self.policy()
+        candidate['subGidRanges'] = {'guestnet': [{'startGid': 500000, 'count': 65536}],
+                                     'lfour': [{'startGid': 200000, 'count': 65536}]}
+        candidate['socketUsers'][0]['gidRanges'] = candidate['subGidRanges']['guestnet']
+        candidate['groups'] = {'guestnet': 1100, 'users': 100}
+        guest_policy.validate(candidate)
+        changes = [
+            lambda p: p['subGidRanges'].update(lfour=[{'startGid': 500010, 'count': 65536}]),
+            lambda p: p['subGidRanges']['guestnet'].append({'startGid': 500010, 'count': 10}),
+            lambda p: p['groups'].update(alias=500001),
+            lambda p: p['socketUsers'][0].update(gidRanges=[]),
+        ]
+        for change in changes:
+            bad = copy.deepcopy(candidate)
+            change(bad)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                guest_policy.validate(bad)
 
 
 class HealthTests(unittest.TestCase):
@@ -741,14 +763,18 @@ class TunTests(unittest.TestCase):
     def observer(self, drift_uid=None):
         calls = []
         def run(argv, **kwargs):
-            calls.append(argv)
-            if "link" in argv: value = [{"ifname": "Mihomo", "flags": ["UP"]}]
-            elif "rule" in argv: value = [{"table": 2022}]
-            elif "get" in argv:
-                uid = int(argv[argv.index("uid") + 1])
-                value = [{"dev": "ens1" if uid == drift_uid else "Mihomo"}]
-            else: value = [{"dev": "Mihomo"}]
-            return subprocess.CompletedProcess(argv, 0, json.dumps(value), "")
+            values = []
+            for command in kwargs['input'].splitlines():
+                query = argv[:3] + shlex.split(command)
+                calls.append(query)
+                if "link" in query: value = [{"ifname": "Mihomo", "flags": ["UP"]}]
+                elif "rule" in query: value = [{"table": 2022}]
+                elif "get" in query:
+                    uid = int(query[query.index("uid") + 1])
+                    value = [{"dev": "ens1" if uid == drift_uid else "Mihomo"}]
+                else: value = [{"dev": "Mihomo"}]
+                values.append(json.dumps(value))
+            return subprocess.CompletedProcess(argv, 0, "\n".join(values), "")
         return run, calls
 
     def test_actual_route_selection_for_root_and_desktop(self):
@@ -770,6 +796,81 @@ class TunTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError): tun.check(self.settings, bad)
         with patch.object(tun.time, "monotonic", side_effect=[0, 3]):
             with self.assertRaises(ValueError): tun.check(self.settings, observe)
+
+    def test_namespace_and_host_share_deadline_without_serial_wait(self):
+        both = threading.Barrier(2, timeout=1)
+        deadlines = []
+        def namespace(settings, deadline):
+            deadlines.append(deadline)
+            both.wait()
+        observe, calls = self.observer()
+        def host(argv, **kwargs):
+            if not calls:
+                both.wait()
+            self.assertGreater(kwargs['timeout'], 0)
+            self.assertLessEqual(kwargs['timeout'], 2)
+            return observe(argv, **kwargs)
+        with patch.object(tun, 'namespace_check', side_effect=namespace):
+            tun.check(dict(self.settings, observer='fixture'), host)
+        self.assertEqual(len(deadlines), 1)
+        self.assertEqual(len(calls), 11)
+        # A healthy host cannot substitute for a missing private TUN, and a
+        # healthy private TUN cannot substitute for incorrect host selection.
+        with patch.object(tun, 'namespace_check', side_effect=ValueError('private TUN down')):
+            with self.assertRaisesRegex(ValueError, 'private TUN down'):
+                tun.check(dict(self.settings, observer='fixture'), self.observer()[0])
+        with patch.object(tun, 'namespace_check'):
+            with self.assertRaises(ValueError):
+                tun.check(dict(self.settings, observer='fixture'), self.observer(drift_uid=1000)[0])
+
+
+class CoreLinkTests(unittest.TestCase):
+    def test_existing_lan_and_vpn_overlap_refuses_the_internal_link(self):
+        policy = module('core_network')
+        settings = {'subnet4': '10.255.253.0/30', 'subnet6': 'fd46:6c66:636f::/64',
+                    'interface': 'Mihomo', 'ipv6': True, 'table': 2022}
+        addresses, routes = [], []
+        def observe(s, program, *args):
+            value = addresses if 'address' in args else routes
+            return subprocess.CompletedProcess(args, 0, json.dumps(value), '')
+        with patch.object(policy, 'run', side_effect=observe):
+            policy.check_overlap(settings)
+            for cidr in ('10.0.0.0/8', 'fd46:6c66:636f::/64'):
+                routes[:] = [{'dst': cidr, 'dev': 'vpn0', 'table': 52}]
+                with self.subTest(cidr=cidr), self.assertRaises(ValueError):
+                    policy.check_overlap(settings)
+            routes[:] = [{'dst': 'default', 'dev': 'ens1'},
+                         {'dst': '10.255.253.0/30', 'dev': 'Mihomo'},
+                         {'dst': '10.0.0.0/8', 'type': 'throw', 'table': 2022}]
+            policy.check_overlap(settings)
+            addresses[:] = [{'ifname': 'ens1', 'addr_info': [
+                {'local': '10.255.253.1', 'prefixlen': 24}]}]
+            with self.assertRaises(ValueError):
+                policy.check_overlap(settings)
+
+
+class CoreLoopbackTests(unittest.TestCase):
+    def test_local_grants_reserved_ports_and_dns_policy(self):
+        broker = module('core_loopback')
+        settings = {'ipv6': True, 'strictDns': True,
+                    'localTargets': ['127.0.0.0/8', '::1/128'],
+                    'ports': {'dnsmasq': 1054, 'unbound': 1055, 'socketGuestDns': 1056,
+                              'mihomoDns': 1053, 'mihomoMixed': 7897, 'mihomoStrict': 7898,
+                              'mihomoTproxy': 7896, 'gostHttp': 33332, 'gostRedirect': 33333,
+                              'coreLoopback': 14661}}
+        for version, address in ((4, '127.0.0.1'), (6, '::1')):
+            self.assertEqual(broker.target(settings, version, 18098), (address, 18098))
+            for port in (0, 53, 65536, *settings['ports'].values()):
+                with self.subTest(version=version, port=port), self.assertRaises(ValueError):
+                    broker.target(settings, version, port)
+            with self.assertRaises(ValueError):
+                broker.target(dict(settings, localTargets=[]), version, 18098)
+            # Opportunistic DNS is a separate fixed gateway exception. It
+            # never grants arbitrary ports when local DIRECT is disabled.
+            self.assertEqual(broker.target(dict(settings, strictDns=False, localTargets=[]),
+                                           version, 53), (address, 1054))
+        with self.assertRaises(ValueError):
+            broker.target(dict(settings, ipv6=False), 6, 18098)
 
 
 class ListenerTests(unittest.TestCase):
@@ -796,6 +897,18 @@ class ListenerTests(unittest.TestCase):
             sockets = self.snapshot()
             sockets[1][field] = value
             with self.assertRaises(ValueError): listeners.verify(self.expected(), sockets)
+
+    def test_host_and_core_namespace_listeners_cannot_replace_each_other(self):
+        expected, sockets = self.expected(), self.snapshot()
+        for item in expected:
+            item['namespace'] = True
+        with self.assertRaises(ValueError):
+            listeners.verify(expected, sockets)
+        for item in sockets:
+            item['namespace'] = True
+        listeners.verify(expected, sockets)
+        with self.assertRaises(ValueError):
+            listeners.verify(self.expected(), sockets)
 
 
 class LinkTests(unittest.TestCase):
@@ -1249,7 +1362,7 @@ class SupervisorTests(unittest.TestCase):
         return f'''
 STATUS={str(directory / 'status')!r}; REASON={str(directory / 'reason')!r}; VERSION={str(directory / 'version')!r}
 MARKER={str(directory / 'marker')!r}; RULES={str(directory / 'rules')!r}
-CAT=cat; IS_CLASH_ON=true; REQUIRE_TUN=1; static_ok=1; installed=proxy
+CAT=cat; IS_CLASH_ON=true; CORE_ROUTES=true; REQUIRE_TUN=1; static_ok=1; installed=proxy
 obs_fails=0; fails=0; changed=0; woken=0; verifies=0; applies=0; full_repairs=0; snapshots=0
 last_full_repair=-30
 lock_state() {{ :; }}; unlock_state() {{ :; }}
@@ -1284,6 +1397,17 @@ tun_ready() { [ "$tun_good" = 1 ]; }
 health_ok() { tun_good=0; return 0; }
 sync_pass
 [ "$mode" = blocked ] && [ "$installed" = blocked ] && [ "$reason" = no-tun ]
+'''
+            self.run_shell(script, directory)
+
+    def test_host_route_install_failure_never_promotes_namespace_core(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            script = self.setup_shell(directory) + shell_function('sync_pass') + '''
+CORE_ROUTES=false
+health_ok() { exit 99; }
+sync_pass
+[ "$mode" = blocked ] && [ "$reason" = no-tun ] && [ "$installed" = blocked ]
 '''
             self.run_shell(script, directory)
 

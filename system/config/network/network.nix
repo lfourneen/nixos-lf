@@ -99,9 +99,11 @@ let
   # Conntrack ownership for ordinary host-initiated flows; distinct from guest
   # identities (0x47500000 + UID) and from routing/socket marks.
   appConnmark = "0x4c460001";
+  actorConnmark = "ct mark" + lib.optionalString config.my.proxy.coreNetns " & 0x7fffffff";
   reservedListenerPorts = map toString [
     port.mihomoMixed port.mihomoStrict port.mihomoDns port.mihomoTproxy
     port.gostHttp port.gostRedirect port.dnsmasq port.unbound port.socketGuestDns
+    port.coreLoopback
   ];
   coreSocket = "meta skuid { 0, ${toString m.uids.clashCore} } socket mark ${coreMark} meta mark ${coreMark}";
 
@@ -245,8 +247,10 @@ let
 
   # B empties this reply guard. C restores it in its atomic fragment so reply
   # revocation also holds when transitioning directly from B without a reload.
-  strictReplyRule = lib.optionalString config.my.proxy.strictBrowser
-    ''iifname "lo" tcp sport ${toString port.mihomoStrict} counter drop'';
+  strictReplyRules = lib.optionals config.my.proxy.strictBrowser
+    ([ ''iifname "lo" tcp sport ${toString port.mihomoStrict} counter drop'' ]
+    ++ lib.optional config.my.proxy.coreNetns
+      ''iifname "${tunDev}" tcp sport ${toString port.mihomoStrict} counter drop'');
 
   # Fragment proxy-mode.service applies while Clash runs: LAN/multicast stay
   # link-local, and the tail also covers interfaces not pinned in network.links.
@@ -294,6 +298,12 @@ let
     # the killswitch cannot see it: public destinations are refused instead (v4
     # and v6).
     flush chain inet lf_filter proxymode_forward
+    ${lib.optionalString (config.my.proxy.coreNetns && vmTransparentProxyIfaces != [ ]) ''
+    ${lib.concatMapStrings (n: lib.optionalString (builtins.elem n.interface vmTransparentProxyIfaces && n.source4 != [ ]) ''
+    add rule inet lf_filter proxymode_forward iifname "${n.interface}" oifname "${tunDev}" ip saddr { ${join n.source4} } meta mark ${tproxyMark} accept
+    '') guestPolicy.networks}
+    add rule inet lf_filter proxymode_forward iifname "${tunDev}" oifname ${nftIfaces vmTransparentProxyIfaces} ct direction reply ct state established,related accept
+    ''}
     add rule inet lf_filter proxymode_forward iifname ${nftIfaces guestIfaces} ip daddr != { ${local4} } counter drop
     add rule inet lf_filter proxymode_forward iifname ${nftIfaces guestIfaces} ip6 daddr != { ${local6} } counter drop
     add rule inet lf_filter proxymode_forward oifname ${nftIfaces guestIfaces} ip saddr != { ${local4} } counter drop
@@ -347,20 +357,20 @@ let
     flush chain inet lf_filter lf_tailnet_guard
     flush chain inet lf_filter lf_strict_reply_guard
     ${lib.optionalString config.my.proxy.strictBrowser ''
-    add rule inet lf_filter lf_strict_reply_guard ${strictReplyRule}
+    ${lib.concatMapStrings (rule: "add rule inet lf_filter lf_strict_reply_guard ${rule}\n") strictReplyRules}
     ''}
     ${lib.optionalString config.services.tailscale.enable ''
     add rule inet lf_filter lf_tailnet_guard iifname "${config.services.tailscale.interfaceName}" counter drop
     ''}
     ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
-    add rule inet lf_filter lf_tailnet_guard ct mark ${guestPolicy.socketMarks} ct direction reply counter drop
+    add rule inet lf_filter lf_tailnet_guard ${actorConnmark} ${guestPolicy.socketMarks} ct direction reply counter drop
     ''}
     # Application replies are revoked with the same transaction as output.
     # Root/core/relay-originated transport stays unmarked for recovery probes.
-    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply iifname != "lo" counter drop
-    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply ct original ip daddr != 127.0.0.0/8 counter drop
-    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply ct original ip6 daddr != ::1 counter drop
-    add rule inet lf_filter lf_tailnet_guard ct mark ${appConnmark} ct direction reply meta l4proto { tcp, udp } ct original proto-dst { ${toString port.mihomoMixed}, ${toString port.mihomoStrict}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
+    add rule inet lf_filter lf_tailnet_guard ${actorConnmark} ${appConnmark} ct direction reply iifname != "lo" counter drop
+    add rule inet lf_filter lf_tailnet_guard ${actorConnmark} ${appConnmark} ct direction reply ct original ip daddr != 127.0.0.0/8 counter drop
+    add rule inet lf_filter lf_tailnet_guard ${actorConnmark} ${appConnmark} ct direction reply ct original ip6 daddr != ::1 counter drop
+    add rule inet lf_filter lf_tailnet_guard ${actorConnmark} ${appConnmark} ct direction reply meta l4proto { tcp, udp } ct original proto-dst { ${toString port.mihomoMixed}, ${toString port.mihomoStrict}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
     flush set inet lf_filter dns_plaintext4
     ${guestGuard "blocked"}
     ${lib.optionalString vmTproxy "flush chain ip lf_mangle proxymode_tproxy"}
@@ -381,6 +391,12 @@ let
     add rule inet lf_filter lf_blocked_guard ip6 daddr ::1 accept
     # Cut in-flight transparent guest replies before the marked core exception.
     ${guestPolicy.blockedReplies}
+    ${lib.optionalString config.my.proxy.coreNetns (lib.concatMapStrings (entry: ''
+    add rule inet lf_filter lf_blocked_guard oifname "${tunDev}" ${entry.family} daddr ${entry.address} ct original ${entry.family} saddr ${entry.address} meta l4proto ${entry.icmp} ct direction reply ct state related accept
+    '') [
+      { family = "ip"; address = config.my.proxy.coreTopology.core4; icmp = "icmp"; }
+      { family = "ip6"; address = config.my.proxy.coreTopology.core6; icmp = "icmpv6"; }
+    ])}
     # The core keeps its egress so it can reach its nodes and recover.
     add rule inet lf_filter lf_blocked_guard ${coreSocket} accept
     # Root may reach the fake-ip network for the TUN self-test. Do not require
@@ -422,7 +438,7 @@ let
   tproxyMark = "0x233";
 
   tproxyPrerouting = lib.concatMapStrings (i: ''
-    add rule ip lf_mangle proxymode_tproxy iifname "${i}" ip daddr != { ${local4}, 127.0.0.0/8, ${join multicast4} } meta l4proto { tcp, udp } counter tproxy to :${toString port.mihomoTproxy} meta mark set ${tproxyMark} accept
+    add rule ip lf_mangle proxymode_tproxy iifname "${i}" ip daddr != { ${local4}, 127.0.0.0/8, ${join multicast4} } meta l4proto { tcp, udp } counter ${lib.optionalString (!config.my.proxy.coreNetns) "tproxy to :${toString port.mihomoTproxy} "}meta mark set ${tproxyMark} accept
   '') vmTransparentProxyIfaces;
 
   tproxyInputAccept = lib.concatMapStrings (i: ''iifname "${i}" meta mark ${tproxyMark} accept
@@ -457,6 +473,7 @@ in
     ./time.nix
     ./dns/socket-guest.nix
     ./tailscale/transport.nix
+    ./proxy/core-network.nix
   ];
 
   # The nft rules match these daemons by uid, so the accounts are pinned.
@@ -906,6 +923,7 @@ in
       destroy table ip6 lf_proxymode_nat
 
       table inet lf_filter {
+        ${lib.optionalString config.my.proxy.coreNetns ''include "${config.my.proxy.coreNetworkPolicy}/filter.nft"''}
         # Only the elements of these three named sets are runtime leases.
         # Their type, flags, timeout ceiling and every referencing rule are verified.
         set dns_plaintext4 { type ipv4_addr; flags timeout; timeout 120s; }
@@ -931,8 +949,8 @@ in
         }
         chain lf_local_dns_guard {
           type filter hook output priority -198; policy accept;
-          ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
-          oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.socketGuestDns} meta skuid != 0 counter drop
+          ${lib.optionalString (guestPolicy.socketUids != [ ] || config.my.proxy.controlledSources) ''
+          oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.socketGuestDns} meta skuid != { 0${lib.optionalString config.my.proxy.controlledSources ", ${toString m.uids.clashFetch}"} } counter drop
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.socketGuestDns} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
           ''}
           # Only the gateway and root diagnostics may query internal upstreams.
@@ -964,6 +982,7 @@ in
           ct state invalid drop
           ${import ./firewall/ndp-validation.nix}
           iif lo accept
+          ${lib.optionalString config.my.proxy.coreNetns ''iifname "${tunDev}" jump lf_core_input''}
           # Clash Verge TUN device: replies only. The core writes arbitrary
           # bytes into this device, and every host-service accept below is
           # scoped to a real ingress interface, so a blanket `iifname accept`
@@ -1021,6 +1040,11 @@ in
           # Before the conntrack accept so an established guest flow cannot leak.
           jump proxymode_forward
 
+          ${lib.optionalString config.my.proxy.coreNetns ''
+          iifname "${tunDev}" ip saddr ${config.my.proxy.coreTopology.core4} accept
+          iifname "${tunDev}" ip6 saddr ${config.my.proxy.coreTopology.core6} accept
+          ''}
+
           ct state established,related accept
           ct state invalid drop
 
@@ -1060,7 +1084,7 @@ in
         }
         chain lf_strict_reply_guard {
           type filter hook input priority -2; policy accept;
-          ${strictReplyRule}
+          ${lib.concatStringsSep "\n" strictReplyRules}
         }
         chain lf_host_direct { }
         # Cut decrypted tailnet traffic in C before established input accepts,
@@ -1145,6 +1169,7 @@ in
 
       # NAT
       table ip lf_nat {
+        ${lib.optionalString config.my.proxy.coreNetns ''include "${config.my.proxy.coreNetworkPolicy}/nat4.nft"''}
         ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
         chain socket_guest_dns {
           type nat hook output priority -190; policy accept;
@@ -1175,6 +1200,7 @@ in
       # IPv6 twin of the redirect above: otherwise a ULA or link-local resolver is
       # reached in the clear. Same selector; ::1 and the tailnet are exempt.
       table ip6 lf_nat {
+        ${lib.optionalString config.my.proxy.coreNetns ''include "${config.my.proxy.coreNetworkPolicy}/nat6.nft"''}
         ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
         chain socket_guest_dns {
           type nat hook output priority -190; policy accept;
@@ -1219,9 +1245,11 @@ in
   # Deliver marked bridge packets locally to mihomo's tproxy socket.
   systemd.services.vm-transparent-proxy = lib.mkIf vmTproxy {
     description = "TPROXY routing for libvirt VMs";
-    after = [ "network.target" "nftables.service" ];
+    after = [ "network.target" "nftables.service" ] ++ lib.optional config.my.proxy.coreNetns "clash-core-network.service";
     wants = [ "nftables.service" ];
     wantedBy = [ "multi-user.target" ];
+    requires = lib.optional config.my.proxy.coreNetns "clash-core-network.service";
+    # The marked packet reaches the namespace; only that namespace owns TPROXY.
     # Routes can exist before the GUI starts the core: only the healthy Mode-B
     # fragment installs TPROXY rules, and the verifier checks listener identity.
     serviceConfig = {
@@ -1229,11 +1257,11 @@ in
       RemainAfterExit = true;
       ExecStart = pkgs.writeShellScript "vm-tproxy-up" ''
         ${pkgs.iproute2}/bin/ip rule add pref 100 fwmark ${tproxyMark} lookup 100 2>/dev/null || true
-        ${pkgs.iproute2}/bin/ip route add local default dev lo table 100 2>/dev/null || true
+        ${if config.my.proxy.coreNetns then ''${pkgs.iproute2}/bin/ip route replace default via ${config.my.proxy.coreTopology.core4} dev ${tunDev} table 100'' else ''${pkgs.iproute2}/bin/ip route add local default dev lo table 100 2>/dev/null || true''}
       '';
       ExecStop = pkgs.writeShellScript "vm-tproxy-down" ''
         ${pkgs.iproute2}/bin/ip rule del pref 100 fwmark ${tproxyMark} lookup 100 2>/dev/null || true
-        ${pkgs.iproute2}/bin/ip route del local default dev lo table 100 2>/dev/null || true
+        ${pkgs.iproute2}/bin/ip route flush table 100
       '';
     };
   };
@@ -1291,7 +1319,8 @@ in
     "usbcore.autosuspend=-1"
   ];
 
-  boot.kernel.sysctl = lib.mkMerge [ (lib.mkIf (lib.any (n: n.source6 != [ ]) guestPolicy.networks) {
+  boot.kernel.sysctl = lib.mkMerge [ (lib.mkIf ((config.my.proxy.coreNetns && config.networking.enableIPv6)
+    || lib.any (n: n.source6 != [ ]) guestPolicy.networks) {
     "net.ipv6.conf.all.forwarding" = 1;
     # Keep uplink router discovery when declared ULA guests need forwarding.
     "net.ipv6.conf.${wired}.accept_ra" = 2;

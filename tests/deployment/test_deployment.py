@@ -25,8 +25,8 @@ class DeploymentTests(unittest.TestCase):
             "home/config/user.nix", "home/wallpapers/local.png",
             "overlays/default.nix", "system/config/network/network.nix",
             "system/secrets/secrets.yaml",
-            "system/programs/hermes-skills/example/SKILL.md",
-            "system/programs/hermes-skills/example/references/guide.md",
+            "system/programs/hermes/hermes-skills/example/SKILL.md",
+            "system/programs/hermes/hermes-skills/example/references/guide.md",
             "tests/network/integration/fixture.py", "local-data/dns-blocklist.txt.xz",
             "local-data/README.md",
         }

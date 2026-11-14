@@ -79,28 +79,39 @@ def validate(policy):
     uid_map = policy["users"]
     protected = {uid_map[name] for name in policy["protectedUsers"] if name in uid_map}
     names, uids = set(), set()
-    all_ranges = []
-    for name, ranges in policy.get("subUidRanges", {}).items():
-        for value in ranges:
-            first, count = value["startUid"], value["count"]
-            if type(first) is not int or type(count) is not int or first < 65536 or count < 1 or first + count > 4294967295:
-                raise ValueError("invalid delegated UID range")
-            all_ranges.append((name, first, first+count-1))
+    def delegated(key, start_key):
+        result = []
+        for name, ranges in policy.get(key, {}).items():
+            for value in ranges:
+                first, count = value[start_key], value["count"]
+                if type(first) is not int or type(count) is not int or first < 65536 or count < 1 or first + count > 4294967295:
+                    raise ValueError("invalid delegated identity range")
+                result.append((name, first, first+count-1))
+        return result
+
+    uid_ranges = delegated("subUidRanges", "startUid")
+    gid_ranges = delegated("subGidRanges", "startGid")
+
+    def exclusive(actor, key, start_key, ranges, identities):
+        declared = [(value[start_key], value["count"]) for value in actor.get(key, [])]
+        expected = [(start, end-start+1) for owner, start, end in ranges if owner == actor["name"]]
+        if sorted(declared) != sorted(expected):
+            raise ValueError("socket guest delegated identities differ from its account")
+        for first, count in declared:
+            last = first+count-1
+            if any(type(other) is int and first <= other <= last for other in identities):
+                raise ValueError("delegated guest identity overlaps a host account/group")
+            overlaps = sum(first <= end and start <= last for _, start, end in ranges)
+            if overlaps != 1:
+                raise ValueError("delegated guest identity range is shared or overlaps")
     for actor in policy["socketUsers"]:
         name, uid = actor["name"], actor["uid"]
         if name in names or type(uid) is not int or not 1000 <= uid < 65534 or uid in protected or uid in uids:
             raise ValueError("socket guests require distinct dedicated fixed identities")
         if list(uid_map.values()).count(uid) != 1:
             raise ValueError("socket guest UID is shared with another account")
-        for value in actor.get("uidRanges", []):
-            first, count = value["startUid"], value["count"]
-            last = first+count-1
-            if (name, first, last) not in all_ranges:
-                raise ValueError("socket guest has an undeclared UID range")
-            if any(type(other) is int and first <= other <= last for other in uid_map.values()):
-                raise ValueError("delegated guest UID overlaps a host account")
-            if any(other_name != name and first <= end and start <= last for other_name, start, end in all_ranges):
-                raise ValueError("delegated guest UID range is shared with another account")
+        exclusive(actor, "uidRanges", "startUid", uid_ranges, uid_map.values())
+        exclusive(actor, "gidRanges", "startGid", gid_ranges, policy.get("groups", {}).values())
         names.add(name)
         uids.add(uid)
     for entry in policy["socketExceptions"]:

@@ -68,6 +68,8 @@ let
     table = config.my.proxy.routeTable;
     ipv6 = config.networking.enableIPv6;
     uids = lib.unique [ 0 config.users.users.${m.desktopUser}.uid ];
+    observer = if config.my.proxy.coreNetns then config.my.proxy.coreTopology.observer else null;
+    observer_module = ./core_network.py;
   });
 
   tunCheck = pkgs.writeShellScript "proxy-tun-check" ''
@@ -95,6 +97,7 @@ let
 
   listener = service: uids: protocol: address: port: {
     inherit uids protocol address port;
+    namespace = config.my.proxy.coreNetns && service == "clash-verge";
     cgroup = "/system.slice/${service}.service";
   };
 
@@ -103,6 +106,8 @@ let
 
   listenerSettings = pkgs.writeText "proxy-listeners.json" (builtins.toJSON {
     ss = "${pkgs.iproute2}/bin/ss";
+    observer = config.my.proxy.coreTopology.observer;
+    observer_module = ./core_network.py;
     groups = {
       core-dns = dnsListeners "clash-verge" coreUids port.mihomoDns;
       core-mixed = [ (listener "clash-verge" coreUids "tcp" "127.0.0.1" port.mihomoMixed) ];
@@ -135,6 +140,7 @@ let
   '';
 
   healthConfig = {
+    source_address = if config.my.proxy.coreNetns then config.my.proxy.coreTopology.host4 else "127.0.0.1";
     curl = "${pkgs.curl}/bin/curl";
     dig = "${pkgs.dnsutils}/bin/dig";
     socket = mihomoSock;
@@ -183,7 +189,8 @@ let
 
         route-exclude-address = lib.sort builtins.lessThan (
           lib.optionals config.my.hardening.directEgress.privateRoutes (m.privateV4 ++ m.ulaV6 ++ m.linkLocalV6)
-          ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6);
+          ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6
+          ++ lib.optionals config.my.proxy.coreNetns (let t = config.my.proxy.coreTopology; in [ t.subnet4 t.subnet6 ]));
 
         route-address-set = [ ];
         route-exclude-address-set = [ ];
@@ -227,6 +234,7 @@ let
     RULES=${rules}
     B_RULES=${blockedRules}
     IS_CLASH_ON=${isClashOn}
+    CORE_ROUTES=${if config.my.proxy.coreNetns then config.my.proxy.coreNetworkCommand else "${pkgs.coreutils}/bin/true"}
     STATUS=/run/proxy-mode/status
     REASON=/run/proxy-mode/reason
     MARKER=/run/proxy-mode/core-seen
@@ -425,6 +433,7 @@ flush chain inet lf_filter lf_tailnet_guard
 flush set inet lf_filter dns_plaintext4
 ${lib.optionalString (config.my.proxy.transparentGuestInterfaces != [ ]) "flush chain ip lf_mangle proxymode_tproxy"}
 NFT_OFF
+      $CORE_ROUTES routes-off
     }
     # The fragments tear down and re-create their own NAT tables, so each is a
     # single atomic transaction.
@@ -435,6 +444,11 @@ NFT_OFF
     load_complete() {
       local target="$1" transaction=/run/proxy-mode/reload.$$.nft rc=0
       local -a sources=("$STATIC_RULES")
+      # Keep the blocked policy until direct routing is restored. The static
+      # nftables transaction cannot remove the host's policy-routing rules.
+      if [ "$target" = direct ]; then
+        $CORE_ROUTES routes-off || return 1
+      fi
       case "$target" in
         blocked) sources+=("$B_RULES") ;;
         proxy) sources+=("$RULES") ;;
@@ -609,10 +623,13 @@ NFT_OFF
           fi
         fi
         decision_version=$(read_version)
-        unlock_state
         # tun_ok is 1 unless we require a TUN and it is not ready. In the plain
         # HTTP-proxy model (REQUIRE_TUN=0) a missing TUN is not a failure.
+        # Serialize host route changes with off and reload; a discarded health
+        # observation must not reinstall proxy routing after A was committed.
         tun_ok=1
+        if [ "$intent" = proxy ] && ! $CORE_ROUTES routes-on; then tun_ok=0; fi
+        unlock_state
         if [ "$REQUIRE_TUN" = "1" ] && ! tun_ready; then tun_ok=0; fi
 
         if [ "$intent" = direct ]; then
@@ -885,6 +902,11 @@ NFT_OFF
             ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/clash-verge-stage.py} initialize-boot /run/proxy-mode
             (umask 077; : > /run/proxy-mode/authorize-window)
             flock -u 9
+            ${lib.optionalString config.my.proxy.coreNetns ''
+            # Rebuild the private topology after the old core has stopped. A
+            # compromised namespace may damage itself, never host policy.
+            systemctl restart clash-core-network.service
+            ''}
             systemctl start clash-verge.service
             ${lib.optionalString config.my.proxy.controlledSources ''
             ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/clash-verge-stage.py} start-source \
@@ -1177,6 +1199,18 @@ in
         RestrictRealtime = true;
         RemoveIPC = true;
         RestrictAddressFamilies = [ "AF_NETLINK" "AF_UNIX" ];
+      };
+    };
+
+    systemd.services.proxy-core-tun-watch = lib.mkIf config.my.proxy.coreNetns {
+      description = "Wake supervision on core namespace TUN changes";
+      wantedBy = [ "multi-user.target" ];
+      requires = [ "clash-core-network.service" ];
+      after = [ "clash-core-network.service" ];
+      bindsTo = [ "clash-core-network.service" ];
+      serviceConfig = config.systemd.services.proxy-tun-watch.serviceConfig // {
+        NetworkNamespacePath = config.my.proxy.coreTopology.namespacePath;
+        CapabilityBoundingSet = "";
       };
     };
 

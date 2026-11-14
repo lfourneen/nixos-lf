@@ -1,7 +1,11 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false }:
 
 let
-  dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || ech != null);
+  dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || managedSources || ech != null);
+  sourceTls = import ../../home/firefox/tls-fixture.nix {
+    inherit pkgs;
+    extraDnsNames = [ "source.fixture.example" ];
+  };
   echFixture = pkgs.runCommand "ech-origin-fixture" { nativeBuildInputs = [ pkgs.go ]; } ''
     export GOCACHE="$TMPDIR/go-cache"
     export GO111MODULE=off
@@ -12,7 +16,7 @@ let
 
 in
 pkgs.testers.runNixOSTest {
-  name = if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
@@ -40,10 +44,13 @@ pkgs.testers.runNixOSTest {
       ../../../system/config/network/dns/blocklist.nix
       ../../../system/config/network/proxy/coordinator.nix
       ../../../system/config/network/dns/upstream.nix
+      ../../../system/config/network/firewall/alert.nix
+      ../../../system/config/network/firewall/verify.nix
       ../../../system/programs/gost/default.nix
       ../../../system/config/network/diagnostics/default.nix
       ../../../system/programs/clash/service/runtime.nix
     ] ++ lib.optional guests ../guests/guest-config.nix
+      ++ lib.optional hermesContainers ../guests/hermes-container-config.nix
       ++ lib.optional (ech != null) ../../home/firefox/firefox-desktop.nix;
     users.users.lfour = { isNormalUser = true; uid = 1000; };
     users.groups.impostor = { };
@@ -58,11 +65,25 @@ pkgs.testers.runNixOSTest {
       package = clashPackage;
     };
 
-    my.proxy.profileRefreshPolicy = if refresh then "auto" else "strict";
-    my.proxy.subscriptionAudit = if refresh then "enforce" else "warn";
+    my.proxy.profileRefreshPolicy = if refresh || managedSources then "auto" else "strict";
+    my.proxy.subscriptionAudit = if refresh || managedSources then "enforce" else "warn";
+    my.proxy.controlledSources = managedSources;
+    my.proxy.strictBrowser = managedSources;
+    my.proxy.subscriptionTrust = lib.mkIf managedSources "fixed";
+    my.proxy.remoteOnlyCatchAll = managedSources;
     my.proxy.nodeProbeUrls = [ "http://node.fixture.example:8080/" ];
     my.proxy.tunProbeName = "tun.fixture.example";
-    my.proxy.dnsEncryption = if strictDns then "strict" else "opportunistic";
+    my.proxy.dnsEncryption = if strictDns || managedSources then "strict" else "opportunistic";
+    security.pki.certificateFiles = lib.optional managedSources "${sourceTls}/ca.pem";
+    services.unbound.settings.server.local-zone = lib.mkIf managedSources [
+      ''"source.fixture.example." static''
+      ''"source-node.fixture.example." static''
+    ];
+    services.unbound.settings.server.local-data = lib.mkIf managedSources [
+      ''"source.fixture.example. 60 IN A 1.1.1.1"''
+      ''"source-node.fixture.example. 60 IN A 1.1.1.1"''
+    ];
+    systemd.timers.clash-source-refresh.wantedBy = lib.mkIf managedSources (lib.mkForce [ ]);
     my.proxy.proxyOnly = uniformProxy;
     my.proxy.blockedDomains = [ "ads.fixture.example" "blocked.fixture.test" "metrics.home.arpa" ];
     my.proxy.blockedDomainExceptions = [ "ok.blocked.fixture.test" ];
@@ -100,16 +121,28 @@ pkgs.testers.runNixOSTest {
     # No external network is used by this test. Keep daemon startup independent
     # of a real DHCP lease and use one local peer for every DNS/HTTP/SOCKS flow.
     systemd.services.dhcpcd.enable = lib.mkForce false;
+    systemd.services.namespace-sleep-hold = lib.mkIf dataplane {
+      requires = [ "sleep.target" ];
+      after = [ "sleep.target" ];
+      serviceConfig = { Type = "oneshot"; RemainAfterExit = true; ExecStart = "${pkgs.coreutils}/bin/true"; };
+    };
     environment.etc."netsec-integration.py".source = ../integration/integration_fixture.py;
     environment.etc."netsec-dns.py".source = ../dns/dns_fixture.py;
     environment.etc."netsec-tail.py".source = ../tailscale/tailscale_fixture.py;
     environment.etc."netsec-integration-policy.json".text = builtins.toJSON config.my.proxy.managedProfile;
     environment.etc."netsec-control.py".source = ./control_fixture.py;
+    environment.etc."netsec-core-network.py".source = ./core_network_fixture.py;
+    environment.etc."netsec-managed.py" = lib.mkIf managedSources { source = ./managed_netns_fixture.py; };
+    environment.etc."netsec-managed.json" = lib.mkIf managedSources {
+      text = builtins.toJSON { tls = sourceTls; stage = ../../../system/programs/clash/service/clash-verge-stage.py;
+        stageSettings = clashPackage.stageSettings; launcher = "${clashPackage}/bin/verge-mihomo"; };
+    };
     environment.etc."netsec-refresh.py".source = ./refresh_fixture.py;
     environment.etc."netsec-dataplane.py".source = ./dataplane_fixture.py;
     environment.etc."netsec-resilience.py" = lib.mkIf dataplane { source = ./resilience_fixture.py; };
     environment.etc."netsec-health.py" = lib.mkIf dataplane { source = ../../../system/config/network/proxy/health.py; };
     environment.etc."netsec-health.json" = lib.mkIf dataplane { source = config.my.proxy.healthSettings; };
+    environment.etc."netsec-blocked.nft" = lib.mkIf dataplane { text = config.my.proxy.blockedModeRules; };
     environment.etc."netsec-lifecycle.py" = lib.mkIf dataplane { source = ../integration/lifecycle_fixture.py; };
     environment.etc."netsec-nm-wake" = lib.mkIf dataplane {
       source = (lib.findFirst (hook: lib.hasSuffix "-nm-proxy-net-wake" (toString hook.source))
@@ -135,7 +168,7 @@ pkgs.testers.runNixOSTest {
       pkgs.curl pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.nftables pkgs.util-linux
     ] ++ lib.optionals (ech != null) [ pkgs.nssTools ]
       ++ lib.optionals dataplane [ pkgs.conntrack-tools ];
-    virtualisation.memorySize = if ech != null then 3072 else 1024;
+    virtualisation.memorySize = if ech != null then 3072 else if managedSources then 2048 else 1024;
   };
 
   testScript = ''
@@ -153,8 +186,10 @@ pkgs.testers.runNixOSTest {
 
     def wait_proxy():
         try:
-            machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = proxy && test $(jq -r .mode /run/dns-upstream/state.json) = proxy && python3 /etc/netsec-control.py check", timeout=90)
+            machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = proxy && test $(jq -r .mode /run/dns-upstream/state.json) = proxy && python3 /etc/netsec-control.py check && proxy-control status proxy --check", timeout=90)
         except Exception:
+            print(machine.execute("proxy-control status proxy; cat /run/netsec/state.json /run/gost-relay/state.json /run/dns-policy/state.json; journalctl -u nftables-verify --no-pager -n 30"))
+            print(machine.execute("python3 /etc/netsec-core-network.py diagnose"))
             print(machine.execute("cat /run/proxy-mode/state.json /run/proxy-mode/health.json; journalctl -u clash-verge -u proxy-mode --no-pager -n 40; cat /run/clash-verge-rev/validator.log; find /var/lib/clash-verge-service -name '*.log' -exec tail -n 40 {} +"))
             raise
 
@@ -168,6 +203,12 @@ pkgs.testers.runNixOSTest {
     machine.succeed("ip addr add 100.67.0.2/24 dev ens1; ip link set ens1 up; ip -n outside addr add 100.67.0.1/24 dev peer0; ip -n outside addr add 203.0.113.10/32 dev peer0; ip -n outside link set peer0 up; ip -n outside link set lo up; ip route add default via 100.67.0.1 dev ens1 metric 1")
     machine.succeed("ip -6 addr add 2001:db8:dead::2/64 dev ens1 nodad; ip -n outside -6 addr add 2001:db8:dead::1/64 dev peer0 nodad; ip -6 route add default via 2001:db8:dead::1 dev ens1 metric 1")
     machine.succeed("python3 /etc/netsec-integration.py prepare; python3 /etc/netsec-control.py prepare")
+    ${pkgs.lib.optionalString managedSources ''
+    machine.succeed("ip -n outside addr add 1.1.1.1/32 dev peer0")
+    machine.succeed("systemd-run --unit=managed-source-origin ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-managed.py source")
+    machine.wait_for_file("/run/managed-source-ready", timeout=30)
+    machine.succeed("python3 /etc/netsec-managed.py setup", timeout=90)
+    ''}
     ${pkgs.lib.optionalString guests ''
     machine.succeed("python3 /etc/netsec-guests.py prepare")
     ''}
@@ -196,7 +237,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"systemd-run --unit=control-node ip netns exec outside {core} -d /run/netsec-node -f /run/netsec-node.json")
     machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18080")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
-    ${pkgs.lib.optionalString guests ''
+    ${pkgs.lib.optionalString (guests && !hermesContainers) ''
     machine.wait_for_unit("socket-guest-dns.service")
     try:
         machine.wait_until_succeeds("$(jq -r .listenerCheck /etc/netsec-guests.json) dns socket-guest-dns", timeout=60)
@@ -204,6 +245,15 @@ pkgs.testers.runNixOSTest {
     except Exception:
         print(machine.execute("nft list table inet lf_filter; nft list table ip lf_nat; nft list table ip6 lf_nat; ss -lneut; cat /run/dns-upstream/state.json; journalctl -u dns-upstream -u unbound -u socket-guest-dns -u guest-dns-0 --no-pager -n 10"))
         raise
+    ''}
+    ${pkgs.lib.optionalString hermesContainers ''
+    with subtest("retire the old Hermes Docker and use a separately authorized backend"):
+        try:
+            machine.succeed("python3 /etc/hermes-container.py setup", timeout=150)
+            machine.succeed("python3 /etc/hermes-container.py A", timeout=90)
+        except Exception:
+            print(machine.execute("journalctl -u hermes-containers -u hermes-container-retire --no-pager -n 100"))
+            raise
     ''}
     ${pkgs.lib.optionalString strictDns ''
     machine.wait_until_succeeds("jq -e '.mode == \"degraded-dot-only\" and .encryption_policy == \"strict\" and .window_until == 0' /run/dns-upstream/state.json", timeout=90)
@@ -292,7 +342,112 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_file("/run/clash-verge-rev/service.sock")
     machine.succeed("python3 /etc/netsec-control.py start")
     wait_proxy()
+    ${pkgs.lib.optionalString dataplane ''
+    with subtest("the production core cannot obtain host network administration"):
+        machine.succeed("python3 /etc/netsec-core-network.py confinement", timeout=60)
+        wait_proxy()
+    with subtest("authorized localhost TCP/UDP retain IPv4 and IPv6 host behavior"):
+        machine.succeed("systemd-run --unit=namespace-localhost python3 /etc/netsec-core-network.py localhost-server")
+        machine.wait_until_succeeds("ss -4uln | grep -q :18100; ss -6uln | grep -q :18100")
+        try:
+            machine.succeed("ip netns exec lf-clash-core python3 /etc/netsec-core-network.py localhost-probe")
+            machine.succeed("python3 /etc/netsec-core-network.py broker-denials", timeout=60)
+        except Exception:
+            print(machine.execute("journalctl -u clash-core-loopback -u clash-core-localhost --no-pager -n 40; nft list chain inet lf_filter lf_core_input; nft list chain ip lf_nat lf_core_loopback; ip netns exec lf-clash-core nft list table ip lf_core_inlets; ip netns exec lf-clash-core nft list table ip6 lf_core_inlets"))
+            print(machine.execute("nft add table inet localtrace; nft 'add chain inet localtrace pre { type filter hook prerouting priority -311; policy accept; }'; nft 'add rule inet localtrace pre iifname Mihomo meta nftrace set 1'; timeout 5 nft monitor trace >/tmp/localtrace & ip netns exec lf-clash-core python3 /etc/netsec-core-network.py localhost-probe; sleep 2; cat /tmp/localtrace"))
+            raise
+        machine.succeed("systemctl stop proxy-mode.service; nft -f /etc/netsec-blocked.nft")
+        machine.succeed("ip netns exec lf-clash-core python3 /etc/netsec-core-network.py localhost-probe")
+        machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 --max-time 2 -fsS http://127.0.0.1:18098/")
+        machine.succeed("systemctl start proxy-mode.service")
+        wait_proxy()
+        machine.succeed("systemctl stop namespace-localhost.service")
+    with subtest("a new LAN or VPN route overlap refuses readiness and recovers after removal"):
+        for family, prefix in ((4, "10.255.253.0/29"), (6, "fd46:6c66:636f::/63")):
+            machine.succeed(f"ip -{family} route add {prefix} dev ens1")
+            machine.wait_until_succeeds("jq -e '.mode == \"blocked\"' /run/proxy-mode/state.json", timeout=35)
+            machine.succeed(f"ip -{family} route del {prefix} dev ens1")
+            wait_proxy()
+    with subtest("physical address renewal refreshes namespace transports without a new import grant"):
+        previous_core = machine.succeed("pgrep -u clash-core -f '/[.]verge-mihomo-wrapped'").strip()
+        # Removing the last address also removes the gateway route. Model the
+        # complete DHCP renewal, including its replacement default route.
+        machine.succeed("ip addr del 100.67.0.2/24 dev ens1; ip addr add 100.67.0.3/24 dev ens1; ip route replace default via 100.67.0.1 dev ens1 metric 1")
+        machine.wait_until_succeeds(f"test $(pgrep -u clash-core -f '/[.]verge-mihomo-wrapped') != {previous_core}", timeout=35)
+        wait_proxy()
+        changed_core = machine.succeed("pgrep -u clash-core -f '/[.]verge-mihomo-wrapped'").strip()
+        machine.succeed("ip addr del 100.67.0.3/24 dev ens1; ip addr add 100.67.0.2/24 dev ens1; ip route replace default via 100.67.0.1 dev ens1 metric 1")
+        machine.wait_until_succeeds(f"test $(pgrep -u clash-core -f '/[.]verge-mihomo-wrapped') != {changed_core}", timeout=35)
+        wait_proxy()
+    with subtest("missing physical default routes cannot reflect core transports back into the namespace"):
+        # Isolate the routing/fallback contract from the separately tested
+        # uplink restart hook while deliberately withdrawing a default route.
+        machine.succeed("systemctl stop clash-core-uplink-watch.service")
+        for family, address, source, gateway, metric in (
+            (4, "203.0.113.10", "10.255.253.2", "100.67.0.1", 1),
+            (6, "2001:db8:ffff::10", "fd46:6c66:636f::2", "2001:db8:dead::1", 1024),
+        ):
+            machine.succeed(f"ip -{family} route del default via {gateway} dev ens1")
+            machine.fail(f"ip -{family} route get {address} from {source} iif Mihomo")
+            if family == 4:
+                # The primary fake-IP target selects DIRECT and now fails.
+                # The fallback uses the still-reachable private SOCKS node;
+                # every request must retain its exact source-port log proof.
+                for _ in range(5):
+                    machine.succeed("python3 /etc/netsec-health.py /etc/netsec-health.json", timeout=16)
+            machine.succeed(f"ip -{family} route replace default via {gateway} dev ens1 metric {metric}")
+            selected = json.loads(machine.succeed(f"ip -j -{family} route get {address} from {source} iif Mihomo"))
+            assert selected[0]["dev"] == "ens1", selected
+        machine.succeed("systemctl start clash-core-uplink-watch.service")
+        wait_proxy()
+    with subtest("private endpoint loss cannot move the core inlet onto a LAN"):
+        # nsfs may reuse an inode after the last reference is released. A
+        # private object must disappear on reconstruction regardless of reuse.
+        machine.succeed("ip netns exec lf-clash-core nft add table inet namespace_sentinel")
+        machine.succeed("python3 /etc/netsec-core-network.py lost-peer", timeout=40)
+        machine.wait_until_succeeds("jq -e '.mode == \"blocked\"' /run/proxy-mode/state.json", timeout=45)
+        machine.succeed("proxy-control on")
+        machine.wait_for_file("/run/clash-verge-rev/service.sock")
+        machine.succeed("python3 /etc/netsec-control.py start")
+        wait_proxy()
+        machine.fail("ip netns exec lf-clash-core nft list table inet namespace_sentinel")
+    with subtest("the real resume hook renews core transports without importing a new profile"):
+        before_sleep = machine.succeed("pgrep -u clash-core -f '/[.]verge-mihomo-wrapped'").strip()
+        machine.succeed("systemctl start namespace-sleep-hold.service; test -e /run/dns-policy/sleeping")
+        machine.succeed("systemctl stop namespace-sleep-hold.service")
+        machine.wait_until_succeeds("test ! -e /run/dns-policy/sleeping")
+        machine.wait_until_succeeds(f"test $(pgrep -u clash-core -f '/[.]verge-mihomo-wrapped') != {before_sleep}", timeout=35)
+        wait_proxy()
+    ''}
     machine.succeed("setpriv --reuid=1000 --clear-groups proxy-status --json | jq -e '(.ready | type) == \"boolean\" and .mode == \"proxy\"'")
+    ${pkgs.lib.optionalString managedSources ''
+    with subtest("source refresh uses real filtered DNS while B returns fake-IP"):
+        print(machine.succeed("python3 -u /etc/netsec-managed.py refresh", timeout=90))
+        wait_proxy()
+    with subtest("registered source, actual strict inlet and kernel C revocation share the production namespace"):
+        try:
+            print(machine.succeed("python3 -u /etc/netsec-managed.py recover", timeout=180))
+            wait_proxy()
+            print(machine.succeed("python3 -u /etc/netsec-managed.py strict", timeout=120))
+            wait_proxy()
+            print(machine.succeed("python3 -u /etc/netsec-managed.py switch", timeout=120))
+            wait_proxy()
+        except Exception:
+            print(machine.execute("journalctl -u clash-strict -u clash-source-select --no-pager -n 45"))
+            raise
+    ''}
+    ${pkgs.lib.optionalString hermesContainers ''
+    machine.succeed("python3 /etc/hermes-container.py B", timeout=90)
+    machine.succeed("systemctl stop clash-verge.service")
+    machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = blocked", timeout=45)
+    machine.succeed("python3 /etc/hermes-container.py C", timeout=90)
+    machine.succeed("systemctl start clash-verge.service")
+    machine.wait_for_file("/run/clash-verge-rev/service.sock")
+    machine.succeed("python3 /etc/netsec-control.py start")
+    wait_proxy()
+    machine.succeed("python3 /etc/hermes-container.py B", timeout=90)
+    ''}
+    ${pkgs.lib.optionalString (!hermesContainers && !managedSources) ''
     machine.succeed("setpriv --reuid=1000 --clear-groups proxy-status --no-color | grep -q 'Network status'")
     ${pkgs.lib.optionalString (refresh || dataplane) ''
     with subtest("managed profile refresh and core recovery"):
@@ -515,15 +670,15 @@ pkgs.testers.runNixOSTest {
         # Every denied probe must first reach a live origin in healthy B.
         for command in requests:
             machine.succeed(command + " >/dev/null")
-        machine.succeed(f"kill -STOP {core_pid}; ip link set dev Mihomo down; ip link set dev Mihomo name lost-tun")
+        machine.succeed(f"kill -STOP {core_pid}; ip -n lf-clash-core link set dev Mihomo down; ip -n lf-clash-core link set dev Mihomo name lost-tun")
         try:
-            machine.fail("ip link show dev Mihomo")
+            machine.fail("ip -n lf-clash-core link show dev Mihomo")
             machine.wait_until_succeeds("jq -e '.mode == \"blocked\" and .reason == \"no-tun\"' /run/proxy-mode/state.json", timeout=45)
             machine.succeed(f"kill -0 {core_pid}; grep -qx proxy /run/proxy-mode/intent")
             for command in requests:
                 machine.fail(command)
         finally:
-            machine.succeed(f"ip link set dev lost-tun name Mihomo; ip link set dev Mihomo up; kill -CONT {core_pid}")
+            machine.succeed(f"ip -n lf-clash-core link set dev lost-tun name Mihomo; ip -n lf-clash-core link set dev Mihomo up; kill -CONT {core_pid}")
         # Link-down removes kernel routes. Renaming/up alone is insufficient;
         # retain C until the production helper rebuilds the core's TUN/routes.
         machine.succeed("jq -e '.mode == \"blocked\"' /run/proxy-mode/state.json; systemctl restart clash-verge.service", timeout=45)
@@ -540,10 +695,12 @@ pkgs.testers.runNixOSTest {
     machine.succeed("${clashPackage.managedCore}/bin/mihomo -v; systemctl reload nftables.service")
     wait_proxy()
 
-    # Explicit historical cleanup uses that same guarded transaction. Observe C
-    # before health may reopen B, while the actual core and its TUN table survive.
-    machine.succeed("systemctl stop proxy-mode.service; nft -s -j list table inet mihomo >/tmp/mihomo-before.json; nft add table inet filter; nft add table ip proxymode_nat; nft add table ip6 proxymode_nat; proxy-control migrate-firewall")
-    machine.succeed("jq -e '.mode == \"blocked\"' /run/proxy-mode/state.json; nft list chain inet lf_filter lf_blocked_guard | grep -q drop; nft -s -j list table inet mihomo >/tmp/mihomo-after.json; cmp /tmp/mihomo-before.json /tmp/mihomo-after.json; python3 /etc/netsec-control.py check")
+    # Migration starts supervision again. Hold its guarded C policy explicitly
+    # while observing counters; normal health may otherwise reopen B midway
+    # through the diagnostic assertions. The core and its TUN stay alive.
+    machine.succeed("systemctl stop proxy-mode.service; ip netns exec lf-clash-core nft -s -j list table inet mihomo >/tmp/mihomo-before.json; nft add table inet filter; nft add table ip proxymode_nat; nft add table ip6 proxymode_nat; proxy-control migrate-firewall; systemctl stop proxy-mode.service")
+    machine.succeed("jq -e '.mode == \"blocked\"' /run/proxy-mode/state.json; nft list chain inet lf_filter lf_blocked_guard | grep -q drop; ip netns exec lf-clash-core nft -s -j list table inet mihomo >/tmp/mihomo-after.json; cmp /tmp/mihomo-before.json /tmp/mihomo-after.json; python3 /etc/netsec-control.py check")
+
     for family, name in [("inet", "filter"), ("ip", "proxymode_nat"), ("ip6", "proxymode_nat")]:
         machine.fail(f"nft list table {family} {name}")
     ${pkgs.lib.optionalString (dataplane || guests) ''
@@ -581,11 +738,26 @@ pkgs.testers.runNixOSTest {
     machine.succeed("curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:8080/ >/dev/null")
     ''}
     machine.succeed("python3 /etc/netsec-control.py refuse")
+    ${pkgs.lib.optionalString dataplane ''
+    with subtest("stopping the namespace releases owned objects and preserves a legacy TUN"):
+        machine.succeed("systemctl stop clash-core-network.service; test ! -e /run/netns/lf-clash-core; test ! -e /run/clash-network-owner")
+        machine.fail("ip link show dev Mihomo")
+        for family in (4, 6):
+            rules = json.loads(machine.succeed(f"ip -j -{family} rule show"))
+            assert not any(9000 <= rule.get("priority", -1) < 9010 for rule in rules), rules
+        # A stale ownership marker cannot authorize deleting an old-generation
+        # TUN. All objects and sentinels here belong only to this disposable VM.
+        machine.succeed("ip tuntap add dev Mihomo mode tun; touch /run/clash-network-owner")
+        machine.fail("systemctl start clash-core-network.service")
+        machine.succeed("ip link show dev Mihomo; ip link delete dev Mihomo; rm /run/clash-network-owner; systemctl reset-failed clash-core-network.service; systemctl start clash-core-network.service")
+        machine.succeed("test -e /run/netns/lf-clash-core; ip -d link show dev Mihomo | grep -q veth")
+    ''}
     ${pkgs.lib.optionalString (ech != null) ''
     machine.succeed("setpriv --reuid=lfour --regid=users --init-groups env HOME=/home/lfour XDG_RUNTIME_DIR=/run/user/1000 python3 /etc/netsec-ech.py portal")
     machine.copy_from_vm("/tmp/ech-browser-results.json")
     machine.copy_from_vm("/run/netsec-ech/events.jsonl")
     machine.copy_from_vm("/run/netsec-ech/dns.log")
+    ''}
     ''}
   '';
 }

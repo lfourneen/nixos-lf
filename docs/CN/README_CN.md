@@ -20,4 +20,4 @@
 
 默认保留开机直连 A、用户主动开启代理 B、代理失败阻断 C，以及订阅 Rule 分流和宿主 LAN 访问。经宿主转发的访客默认限制私网访问；独立 socket 访客账户另有专门策略。`proxyOnly` 可要求核心内的应用流量使用代理；`bootMode` 独立决定开机直连还是先阻断。
 
-文档描述本仓库的声明配置。示例接口、UID 和端口均为默认值，单点定义在 [machine.nix](../../system/config/machine.nix)。`docs/` 保留在仓库中，[push-to-dir.sh](../../scripts/push-to-dir.sh) 生成 `/etc/nixos` 部署目录时不复制它。
+文档描述本仓库的声明配置。示例接口、UID 和端口均为默认值，单点定义在 [machine.nix](../../system/config/machine.nix)。

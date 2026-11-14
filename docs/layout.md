@@ -11,6 +11,7 @@ English | [简体中文](CN/layout_CN.md) | [Documentation](README.md)
 | [`system/config/network/`](../system/config/network) | Network declarations and their runtime helpers, imported through `default.nix` |
 | [`system/programs/clash/`](../system/programs/clash) | System-wide Clash Verge packaging, GUI launch integration, privileged helper and Mihomo build |
 | [`system/programs/gost/`](../system/programs/gost) | Gost packaging, HTTP patch and relay service |
+| [`system/programs/hermes/`](../system/programs/hermes) | Agent configuration, `hermes-skills/`, mail CLI and restricted rootless Docker integration |
 | [`home/config/clash/`](../home/config/clash) | Home Manager's user profile files and the English status renderer |
 | [`home/programs/firefox/`](../home/programs/firefox) | Managed browser preferences, launcher and desktop sandbox |
 | [`system/programs/systemd/`](../system/programs/systemd) | Global journald and coredump settings |
@@ -25,7 +26,7 @@ The status renderer in `home/config/clash/status.py` consumes the shared readine
 | Subdirectory | Contents |
 |---|---|
 | `dns/` | DNS upstream coordination, leases and budgets, DNSSEC probes, blocklist and NetworkManager/resolved integration |
-| `proxy/` | Root profile, A/B/C coordinator, health, shared readiness, listener checks and TUN observations |
+| `proxy/` | Root profile, A/B/C coordinator, health, shared readiness, listener checks, TUN observations, fixed core namespace/veth and localhost broker |
 | `firewall/` | Bootstrap, ordered-rule verification, alerts, recovery and direct-egress checks |
 | `guests/` | Routed and host-socket guest policy |
 | `identity/` | Link monitoring, profile identity preparation and restore |

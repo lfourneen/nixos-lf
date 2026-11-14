@@ -62,8 +62,8 @@ let
   coreLauncher = pkgs.writeShellScript "verge-mihomo-launcher" ''
     export PATH=${lib.makeBinPath [ pkgs.bash pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.socat pkgs.util-linux ]}:$PATH
     ${builtins.replaceStrings
-      [ "@desktopUid@" "@guiData@" "@clashCore@" "@python@" "@stageTool@" "@stageSettings@" "@controlGroup@" ]
-      [ (toString desktopUid) guiData "clash-core" "${pkgs.python3}/bin/python3" "${./service/clash-verge-stage.py}" (toString stageSettings) config.programs.clash-verge.group ]
+      [ "@desktopUid@" "@guiData@" "@clashCore@" "@python@" "@stageTool@" "@stageSettings@" "@controlGroup@" "@namespacePath@" "@systemctl@" ]
+      [ (toString desktopUid) guiData "clash-core" "${pkgs.python3}/bin/python3" "${./service/clash-verge-stage.py}" (toString stageSettings) config.programs.clash-verge.group config.my.proxy.coreTopology.namespacePath "${pkgs.systemd}/bin/systemctl" ]
       (builtins.readFile ./service/clash-verge-core-launcher.sh)}
   '';
 

@@ -16,6 +16,34 @@ let
 
 in
 {
+  options.my.proxy.coreLink = lib.mkOption {
+    default = { };
+    description = "Internal point-to-point veth addressing, independent of DHCP, Wi-Fi and physical MAC randomisation. Override together if it overlaps a LAN or VPN; detected overlap refuses proxy readiness.";
+    type = lib.types.submodule {
+      options = lib.mapAttrs (_: value: lib.mkOption {
+        type = lib.types.str;
+        default = value;
+      }) (lib.filterAttrs (name: _: builtins.elem name [
+        "hostMac" "coreMac" "host4" "core4" "subnet4" "host6" "core6" "subnet6"
+      ]) (import ./core-topology.nix));
+    };
+  };
+
+  options.my.proxy.coreTopology = lib.mkOption {
+    type = lib.types.attrsOf lib.types.str;
+    internal = true;
+    readOnly = true;
+    default = (import ./core-topology.nix) // config.my.proxy.coreLink;
+  };
+
+  options.my.proxy.coreNetns = lib.mkOption {
+    type = lib.types.bool;
+    internal = true;
+    readOnly = true;
+    default = config.programs.clash-verge.enable;
+    description = "The managed helper and core use a fixed network namespace; standalone firewall fixtures retain their own topology.";
+  };
+
   config.assertions = [{
     assertion = valid;
     message = "my.proxy.fakeIpRange must be an IPv4 CIDR with prefix length 8..30.";

@@ -99,6 +99,42 @@ def public_address(value):
         if ip.version == net.version)
 
 
+def real_resolver(settings):
+    """Use the filtered real-address gateway, never the B fake-IP resolver."""
+    import dns.exception
+    import dns.resolver
+
+    address, port = settings.get('address'), settings.get('port')
+    if address not in ('127.0.0.1', '::1') or type(port) is not int or not 1 <= port <= 65535:
+        raise Refused('resolver settings')
+    backend = dns.resolver.Resolver(configure=False)
+    backend.nameservers, backend.port = [address], port
+    backend.timeout = 1
+    backend.cache = dns.resolver.Cache()
+
+    def lookup(host, port, *, type=socket.SOCK_STREAM):
+        try:
+            addresses = [ipaddress.ip_address(host)]
+        except ValueError:
+            addresses = []
+            deadline = time.monotonic() + 4
+            for kind in ('A', 'AAAA'):
+                try:
+                    answer = backend.resolve(host, kind, search=False,
+                                             lifetime=max(0.001, deadline - time.monotonic()))
+                except dns.resolver.NoAnswer:
+                    continue
+                except dns.exception.DNSException:
+                    raise socket.gaierror(socket.EAI_AGAIN, 'real-address DNS unavailable') from None
+                addresses.extend(ipaddress.ip_address(item.address) for item in answer)
+        if not addresses:
+            raise socket.gaierror(socket.EAI_NONAME, 'real-address DNS has no address')
+        return [(socket.AF_INET if ip.version == 4 else socket.AF_INET6, type, socket.IPPROTO_TCP,
+                 '', (str(ip), port) if ip.version == 4 else (str(ip), port, 0, 0))
+                for ip in addresses]
+    return lookup
+
+
 def fetch(spec, deadline, budget, resolver=socket.getaddrinfo, connection=Connection):
     url = spec['url']
     approved = {spec['url'], *spec.get('redirects', [])}
@@ -348,8 +384,11 @@ def step(phase, function, *args):
         raise Refused(phase) from None
 
 
-def prepare(request, download=fetch, resolver=socket.getaddrinfo):
+def prepare(request, download=None, resolver=socket.getaddrinfo):
     registry, policy = request['registry'], request['policy']
+    if download is None:
+        def download(spec, deadline, budget):
+            return fetch(spec, deadline, budget, resolver=resolver)
     deadline, budget = time.monotonic() + 40, [TOTAL]
     data = step('fetch', download, registry['subscription'], deadline, budget)
     document = step('parse', load, data)
@@ -374,7 +413,8 @@ def main():
     resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024,) * 2)
     resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
     request = json.loads(sys.stdin.buffer.read(1024 * 1024 + 1))
-    print(json.dumps(prepare(request), ensure_ascii=True))
+    resolver = real_resolver(request['resolver']) if request.get('resolver') else socket.getaddrinfo
+    print(json.dumps(prepare(request, resolver=resolver), ensure_ascii=True))
 
 
 if __name__ == '__main__':

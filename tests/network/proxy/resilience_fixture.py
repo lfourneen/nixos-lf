@@ -46,13 +46,30 @@ def mode():
 
 
 def health(required=True):
-    result = run(sys.executable, '/etc/netsec-health.py', '/etc/netsec-health.json',
+    # Retain the fixture-only route stream if a production probe fails. The
+    # production health worker deliberately does not persist raw target logs.
+    diagnostic = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('health', '/etc/netsec-health.py')
+health = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(health)
+original = health.Probe.tun_target
+def observed(self, name, log_path):
+    try:
+        return original(self, name, log_path)
+    except health.ProbeFailure:
+        print('Failed TUN probe route stream:', log_path.read_text(), file=sys.stderr)
+        raise
+health.Probe.tun_target = observed
+sys.exit(health.main())
+"""
+    result = run(sys.executable, '-c', diagnostic, '/etc/netsec-health.json',
                  timeout=16, required=False)
     value = json.loads(result.stdout)
     assert value['scope']['udp_data_plane'] == 'not-probed'
     assert value['scope']['requests'] == ['mixed-tcp', 'fake-ip-tcp']
     if required:
-        assert result.returncode == 0 and value['ok'], value
+        assert result.returncode == 0 and value['ok'], (value, result.stderr)
     return value
 
 
@@ -80,12 +97,23 @@ def outages():
     # Drop at the receiving side. A local OUTPUT drop can report an error to
     # the sending proxy and tear down its mapping, rather than model wire loss.
     run('nft', '-f', '-', input=f'add table inet {table}\n'
-        f'add chain inet {table} input {{ type filter hook input priority -203; policy accept; }}\n')
+        f'add chain inet {table} input {{ type filter hook input priority -203; policy accept; }}\n'
+        f'add chain inet {table} forward {{ type filter hook forward priority -203; policy accept; }}\n')
 
     def round_trip():
         value = health()
-        run('setpriv', '--reuid=1000', '--clear-groups', 'curl', '--noproxy', '*',
-            '-fsS', '--max-time', '4', 'http://[2001:db8:ffff::10]:8080/')
+        result = run('setpriv', '--reuid=1000', '--clear-groups', 'curl', '--noproxy', '*',
+                     '-fsS', '--max-time', '4', 'http://[2001:db8:ffff::10]:8080/', required=False)
+        if result.returncode:
+            for path in ('/run/proxy-mode/state.json', '/run/proxy-mode/health.json',
+                         '/run/netsec/state.json'):
+                print(path, Path(path).read_text(), flush=True)
+            for command in (('journalctl', '-u', 'proxy-mode', '-u', 'gost-relay', '-n', '50', '--no-pager'),
+                            ('ip', 'netns', 'exec', 'outside', 'nft', 'list', 'table', 'inet', table),
+                            ('nft', 'list', 'table', 'inet', table),
+                            ('journalctl', '-u', 'udp-fault-http6', '-n', '20', '--no-pager')):
+                print(run(*command, required=False).stdout, flush=True)
+            raise AssertionError(('IPv6 TCP during UDP fault', result.returncode, result.stderr))
         assert mode() == 'proxy'
         return value
 
@@ -109,6 +137,7 @@ def outages():
     def clear():
         nft(table, f'flush chain inet {table} input\nflush chain inet {table} output\n')
         run('nft', 'flush', 'chain', 'inet', table, 'input')
+        run('nft', 'flush', 'chain', 'inet', table, 'forward')
         before = records()
         try:
             wait(lambda: all(records()[label]['count'] > before[label]['count'] for label in LABELS))
@@ -122,7 +151,7 @@ def outages():
         observe(set())
         # SOCKS node UDP transport is IPv4 even for IPv6 application targets.
         nft(table, f'add rule inet {table} input udp dport 18080 counter drop\n')
-        run('nft', '-f', '-', input=f'add rule inet {table} input iifname "ens1" udp sport 18080 counter drop\n')
+        run('nft', '-f', '-', input=f'add rule inet {table} forward iifname "ens1" udp sport 18080 counter drop\n')
         observe(LABELS)
         clear()
         nft(table, f'add rule inet {table} input ip6 daddr 2001:db8:ffff::10 udp dport 18090 counter drop\n'

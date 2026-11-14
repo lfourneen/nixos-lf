@@ -2,6 +2,7 @@
 
 let
   desktopUser = config.my.machine.desktopUser;
+  frontDir = "/run/user/${toString config.users.users.${desktopUser}.uid}/clash-verge-rev";
 
 in
 {
@@ -23,9 +24,12 @@ in
   systemd.services.clash-verge.wantedBy = lib.mkForce [ ];
   # proxy-mode publishes /run/proxy-mode/boot-id; the helper's
   # ProtectProc=invisible view cannot read the kernel boot id itself.
-  systemd.services.clash-verge.after = lib.mkAfter [ "proxy-mode.service" ];
+  systemd.services.clash-verge.requires = [ "clash-core-network.service" "clash-network-observer.service" "clash-core-loopback.service" "clash-core-localhost.service" ];
+  systemd.services.clash-verge.after = lib.mkAfter [ "proxy-mode.service" "clash-core-network.service" "clash-network-observer.service" "clash-core-loopback.service" "clash-core-localhost.service" ];
+  systemd.services.clash-verge.bindsTo = [ "clash-core-network.service" ];
 
   systemd.services.clash-verge.serviceConfig = {
+    NetworkNamespacePath = config.my.proxy.coreTopology.namespacePath;
     StateDirectory = [ "clash-verge-service" ];
     StateDirectoryMode = "0700";
     RuntimeDirectoryPreserve = "yes";
@@ -63,6 +67,30 @@ in
   };
 
   systemd.tmpfiles.rules = [ "d /var/lib/clash-core 0750 clash-core clash-core -" ];
+
+  systemd.services.clash-gui-forwarder = {
+    description = "Host Unix byte stream from the desktop to the core controller";
+    partOf = [ "clash-verge.service" ];
+    serviceConfig = {
+      User = desktopUser;
+      Group = "clash-core";
+      ExecStart = "${pkgs.socat}/bin/socat UNIX-LISTEN:${frontDir}/verge-mihomo.sock,mode=0600,fork,unlink-early UNIX-CONNECT:/run/clash-verge-rev/core/mihomo.sock";
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = "";
+      RestrictAddressFamilies = [ "AF_UNIX" ];
+      RestrictNamespaces = true;
+      ProtectSystem = "strict";
+      ProtectHome = "read-only";
+      ReadWritePaths = [ frontDir ];
+      PrivateTmp = true;
+      PrivateDevices = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectControlGroups = true;
+      MemoryMax = "64M";
+      TasksMax = 128;
+    };
+  };
 
   systemd.services.profile-refresh-verify = {
     description = "Settle validated profile refreshes or restore the previous snapshot";

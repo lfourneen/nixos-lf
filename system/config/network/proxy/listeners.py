@@ -1,6 +1,7 @@
 """Authenticate passive TCP/UDP listeners; never connect to a redirect port."""
 
 import argparse
+import importlib.util
 import ipaddress
 import json
 import re
@@ -40,10 +41,12 @@ def snapshot(ss, protocols, run=subprocess.run):
 def verify(expected, sockets):
     for item in expected:
         found = [s for s in sockets if s['protocol'] == item['protocol']
-                 and s['port'] == item['port'] and s['address'] == item['address']]
+                 and s['port'] == item['port'] and s['address'] == item['address']
+                 and s.get('namespace', False) == item.get('namespace', False)]
         allowed = {e['address'] for e in expected
                    if (e['protocol'], e['port']) == (item['protocol'], item['port'])}
-        extra = any(s['protocol'] == item['protocol'] and s['port'] == item['port']
+        extra = any(s.get('namespace', False) == item.get('namespace', False)
+                    and s['protocol'] == item['protocol'] and s['port'] == item['port']
                     and s['address'] not in allowed for s in sockets)
         if extra or len(found) != 1:
             raise ValueError(f"{item['protocol']} {item['address']}:{item['port']}: missing or duplicate listener")
@@ -61,7 +64,15 @@ def main():
         with open(args.settings) as stream:
             settings = json.load(stream)
         expected = [item for group in args.groups for item in settings['groups'][group]]
-        verify(expected, snapshot(settings['ss'], {e['protocol'] for e in expected}))
+        sockets = []
+        if any(not item.get('namespace') for item in expected):
+            sockets.extend(snapshot(settings['ss'], {e['protocol'] for e in expected if not e.get('namespace')}))
+        if any(item.get('namespace') for item in expected):
+            spec = importlib.util.spec_from_file_location('core_network', settings['observer_module'])
+            observer = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(observer)
+            sockets.extend(observer.request(settings['observer'], 'listeners')['sockets'])
+        verify(expected, sockets)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print('listeners: ' + str(error), file=sys.stderr)
         return 1

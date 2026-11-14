@@ -13,7 +13,7 @@
 #          dns-blocklist.txt.xz - the flake cannot evaluate without it),
 #          flake.nix, flake.lock, .sops.yaml
 # Skipped: docs/, .git/, .gitignore, scripts/, *.md (repository manuals, except
-#          system/programs/hermes-skills/** which the Hermes build needs),
+#          system/programs/hermes/hermes-skills/** which the Hermes build needs),
 #          LICENSE, and junk (result*, *.swp, *~, *.bak, .DS_Store, .direnv/).
 # IMPORTANT: do NOT filter by .gitignore — that would drop the AppImage and
 # secrets.yaml and break the build.
@@ -133,8 +133,8 @@ excludes=(
   --exclude '*.swp' --exclude '*~' --exclude '*.bak' --exclude '.DS_Store'
   # Hermes skills are *.md and the build needs them: re-include before the *.md
   # cut. rsync uses the first matching rule, so these must precede --exclude.
-  --include 'programs/hermes-skills/'
-  --include 'programs/hermes-skills/**'
+  --include 'programs/hermes/hermes-skills/'
+  --include 'programs/hermes/hermes-skills/**'
   --exclude '*.md'
 )
 

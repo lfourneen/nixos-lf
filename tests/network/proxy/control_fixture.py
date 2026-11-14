@@ -14,10 +14,10 @@ MAGIC = 'A thing of beauty is a joy for ever. Its loveliness increases; it will 
 SENTINEL = Path('/run/proxy-mode/helper-sentinel')
 
 
-def request(sock, method, path, body=None, headers=None):
-    conn = http.client.HTTPConnection('localhost', timeout=5)
+def request(sock, method, path, body=None, headers=None, timeout=5):
+    conn = http.client.HTTPConnection('localhost', timeout=timeout)
     conn.sock = socket.socket(socket.AF_UNIX)
-    conn.sock.settimeout(5)
+    conn.sock.settimeout(timeout)
     conn.sock.connect(sock)
     conn.request(method, path, json.dumps(body) if body is not None else None,
                  headers={'Content-Type': 'application/json', **(headers or {})})
@@ -70,7 +70,7 @@ def start():
                            {'X-IPC-Magic': MAGIC})
     assert status == 503 and 'configured launcher' in body, (status, body)
     status, body = request('/run/clash-verge-rev/service.sock', 'POST', '/clash/start', payload,
-                           {'X-IPC-Magic': MAGIC})
+                           {'X-IPC-Magic': MAGIC}, timeout=30)
     assert status == 200, (status, body)
 
 
@@ -83,6 +83,13 @@ def check():
         if b'/.verge-mihomo-wrapped\0' in cmd:
             cores.append(pid)
     assert len(cores) == 1, cores
+    namespace = Path('/run/netns/lf-clash-core').stat().st_ino
+    assert Path(f'/proc/{cores[0]}/ns/net').stat().st_ino == namespace
+    assert namespace != Path('/proc/1/ns/net').stat().st_ino
+    forwarder = subprocess.check_output(['systemctl', 'show', '-p', 'MainPID', '--value',
+                                         'clash-gui-forwarder.service'], text=True).strip()
+    assert forwarder.isdigit() and forwarder != '0'
+    assert Path(f'/proc/{forwarder}/ns/net').stat().st_ino == Path('/proc/1/ns/net').stat().st_ino
     status = dict(line.split(':', 1) for line in Path(f'/proc/{cores[0]}/status').read_text().splitlines() if ':' in line)
     assert set(status['Uid'].split()) == {str(core_uid)}, status['Uid']
     for cap in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'):

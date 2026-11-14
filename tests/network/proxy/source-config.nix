@@ -17,6 +17,10 @@ assert builtins.elem "CAP_DAC_READ_SEARCH" c.systemd.services.clash-source-selec
 assert builtins.elem "/var/lib/clash-source" c.systemd.services.clash-verge.serviceConfig.ReadWritePaths;
 assert builtins.elem "/var/lib/clash-source" c.systemd.services.profile-refresh-verify.serviceConfig.ReadWritePaths;
 assert c.my.proxy.dnsEncryption == "strict";
+assert c.users.users.clash-fetch.uid == c.my.machine.uids.clashFetch;
+assert c.systemd.services.socket-guest-dns.enable;
+assert builtins.elem "socket-guest-dns.service" c.systemd.services.clash-source-refresh.after;
+assert builtins.elem "clash-core" c.systemd.services.clash-source-refresh.serviceConfig.SupplementaryGroups;
 
 pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3 ]; } ''
   test -x ${command}/bin/clash-source

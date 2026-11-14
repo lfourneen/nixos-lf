@@ -105,6 +105,7 @@ See [Source layout](docs/layout.md) for module ownership and entrypoints.
     ├── programs/           # System programs and services
     │   ├── clash/          # System GUI/helper and grouped Mihomo sources
     │   ├── gost/           # Relay package, patch and service
+    │   ├── hermes/         # Agent, skills, mail CLI and restricted container backend
     │   └── systemd/        # Global journald/coredump settings
     ├── secrets/            # Encrypted secrets (sops)
     └── systempkgs/         # System packages

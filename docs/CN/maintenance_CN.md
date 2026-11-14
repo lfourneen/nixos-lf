@@ -176,6 +176,8 @@ jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json 
 | `proxy-dns-strict-vm` | 真实 helper/核心、共享 DNS/代理过滤、严格故障/override/租约及残留集合拒绝、私网 split 权限与字面门户恢复 |
 | `proxy-guest-config`、`proxy-guest-rules` | 生产/独立账户配置与 rootless 启动器语法；LKL 中的完整混合角色规则。正常系统构建也要求访客校验通过 |
 | `proxy-guest-vm` | 三个真实转发网络、DHCP/DNS、IPv4/ULA、伪造源地址、实际 pasta/RootlessKit/subuid socket、fake-IP 拒绝、旧 DNS conntrack、双向撤销以及核心存活时的 C |
+| `proxy-hermes-containers-vm` | 真实旧/新 Docker、socket ACL、离线镜像、账户授权、TCP/UDP、未支持 IPv6 拒绝、Hermes 宿主代理、A/B/C 与恢复 |
+| `proxy-core-netns-vm` | 独立核心 namespace 原型：TUN/veth、双栈节点、原生/SOCKS UDP、DNS/fake-IP、mark/raw 包、宿主策略归属、撤权与重启 |
 | `proxy-egress-config` | 规范 CIDR 与授权/时间目标范围；接入正常系统构建 |
 | `proxy-egress-vm` | Tailscale VM 的受限策略版本；双栈私网/多播/DNS/DoT/NTS、UID/接口/端口拒绝、已有连接撤权与 C |
 | `proxy-egress-control-vm` | 真实生产 TUN/NAT 之前的受限策略，包含私网允许与拒绝 |
@@ -189,7 +191,8 @@ jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json 
 | `browser-sandbox-vm` | 真实 Wayland Firefox、系统根 TLS 与无效证书拒绝、父进程隔离、音频、门户授权、链接复用、代次/重启及总线代理故障阻断 |
 | `browser-ech-vm` | 真实 Firefox/helper/核心、原生 HTTPS 发现、ECH 与 GREASE、密钥/无 ECH 重试、不可信拒绝、证书错误、掩护名不改目标及 A/C 行为 |
 | `browser-ech-uniform-vm` | 在 `proxyOnly=true` 下验证相同真实浏览器路径及策略消费 |
-| `proxy-control-vm` | 真实生产 helper/launcher、能力、授权、DNS、TUN 核心存活时的迁移及 C→B 恢复 |
+| `proxy-managed-netns-vm` | 登记的 TLS 来源、完整监督器就绪、生产核心 namespace 的真实严格入口、C 撤权和来源切换 |
+| `proxy-control-vm` | 真实 helper/launcher、生产 netns/宿主权限边界、localhost 双栈 TCP/UDP、地址冲突、断链/恢复、授权、DNS、TUN 与 C→B 恢复 |
 | `proxy-uniform-vm` | 统一代理下的生产 helper/核心：全新 TCP/UDP 的 DIRECT 拒绝、双栈 UDP、原生 IPv6 TUN 和恢复 |
 | `proxy-network-vm` | 广泛内核故障注入：模式、DNS、租约、休眠、访客、TPROXY 和恢复 |
 
@@ -209,3 +212,5 @@ nix build --no-link .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
 广泛 VM 含有意的模拟/root-core fixture，生产启动权限由小控制 VM 验证；两者均不改宿主路由/防火墙。包测试证明 parser/policy，不能替代内核路径测试。宿主激活后另需特权观测实际身份/能力、监听所有者、快照状态与 A → B/C 转换。
+
+原型检查保留独立拓扑，由夹具驱动模式。生产 namespace 集成由 `proxy-control-vm` 和 `proxy-managed-netns-vm` 覆盖：真实 helper/GUI IPC、namespace 身份、宿主权限隔离、localhost TCP/UDP、地址冲突、断链、物理地址更新、恢复钩子、受控 TLS 来源、严格入口和来源切换。观察服务保持无 capability，须查询正确命名空间、保留两侧选路验证并核对 broker peer 凭据。内存有限时串行运行各 VM；每次只求值/构建一个目标，避免多变体求值与限时探针重叠。

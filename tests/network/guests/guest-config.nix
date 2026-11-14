@@ -19,6 +19,7 @@ let
     dnsmasq = "${config.services.dnsmasq.package}/bin/dnsmasq";
     dhcpcd = "${pkgs.dhcpcd}/bin/dhcpcd";
     listenerCheck = config.my.proxy.listenerCheck;
+    coreNamespace = if config.my.proxy.coreNetns then config.my.proxy.coreTopology.namespace else null;
     pasta = "${pkgs.passt}/bin/pasta";
     rootlesskit = "${pkgs.rootlesskit}/bin/rootlesskit";
     backendPath = lib.makeBinPath [ pkgs.slirp4netns pkgs.iproute2 pkgs.util-linux pkgs.coreutils ] + ":/run/wrappers/bin";

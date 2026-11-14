@@ -117,7 +117,7 @@ in
             || warn 'TUN resolver routing has not converged to the managed gateway'
           ${lib.optionalString config.my.proxy.tunMode ''
           ${config.my.proxy.tunCheck} || live_fail 'TUN kernel path is not ready'
-          $NFT list table inet mihomo >/dev/null || live_fail 'mihomo auto-redirect table missing'
+          ${lib.optionalString config.my.proxy.coreNetns "${pkgs.iproute2}/bin/ip netns exec ${config.my.proxy.coreTopology.namespace} "}$NFT list table inet mihomo >/dev/null || live_fail 'mihomo auto-redirect table missing'
           ''}
           listeners relay core || live_fail 'proxy listener identity mismatch'
           if [ "$(cat /run/dns-upstream/status)" != proxy ]; then
@@ -143,7 +143,7 @@ in
           # Retry briefly so a core's own teardown is not judged mid-flight.
           tun_gone=1
           for _ in 1 2 3; do
-            if ! ip link show dev ${lib.escapeShellArg config.my.proxy.tunDev} >/dev/null 2>&1; then
+            if ! ip ${lib.optionalString config.my.proxy.coreNetns "-n ${config.my.proxy.coreTopology.namespace}"} link show dev ${lib.escapeShellArg config.my.proxy.tunDev} >/dev/null 2>&1; then
               tun_gone=1; break
             fi
             tun_gone=0; sleep 1

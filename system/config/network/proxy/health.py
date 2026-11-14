@@ -143,8 +143,8 @@ def effective_policy(text, proxies):
     raise ProbeFailure("obs", "recorded leaf no longer matches the current selection")
 
 
-def route_line(contents, host, port):
-    pattern = re.compile(r"127\.0\.0\.1:" + re.escape(str(port)) + r" --> "
+def route_line(contents, host, port, address='127.0.0.1'):
+    pattern = re.compile(r'(?<![0-9A-Za-z:.])' + re.escape(address) + ':' + re.escape(str(port)) + r" --> "
                          + re.escape(host) + r"(?::[0-9]+)?(?:\s|$)")
     result = None
     for line in contents.splitlines():
@@ -256,9 +256,12 @@ class Probe:
             raise ProbeFailure("dns", "TUN DNS self-test did not answer")
         # A root fake-IP TCP flow is excluded from gost's REDIRECT. It exercises
         # the core's effective TUN/auto-redirect data path as well as DNS hijack.
+        # Let the kernel allocate a fresh ephemeral port. A small, repeatedly
+        # scanned range reuses ports across different fake-IP candidates; their
+        # redirects share one endpoint and conntrack can then rewrite a port.
         output = self.command([self.settings["curl"], "--noproxy", "*", "--head", "-sS",
                                "-o", "/dev/null", "--max-time", "2.5", "--max-filesize", "1048576",
-                               "--local-port", "15110-15190", "--resolve", name + ":80:" + fake_ip,
+                               "--resolve", name + ":80:" + fake_ip,
                                "-w", "%{http_code} %{local_port}", "http://" + name + "/"], 2.7)
         fields = output.split()
         if len(fields) != 2 or fields[0] not in {"200", "204", "301", "302", "307", "308"} \
@@ -289,7 +292,8 @@ class Probe:
                                      self.remaining(30) / self.target_slots))
         output = self.command([self.settings["curl"], "-sS", "-o", "/dev/null", "-w",
                                "%{http_code} %{local_port}", "--max-time", str(timeout),
-                               "--noproxy", "", "--local-port", "15010-15090", "-x",
+                               "--noproxy", "", "--local-port", "15010-15090",
+                               "--interface", self.settings.get('source_address', '127.0.0.1'), "-x",
                                f"http://127.0.0.1:{self.settings['mixed_port']}", url], timeout + 0.2)
         fields = output.split()
         if len(fields) != 2 or fields[0] not in {"200", "204"} or not fields[1].isdigit():
@@ -297,7 +301,8 @@ class Probe:
         until = self.clock() + self.remaining(0.6)
         policy = None
         while self.clock() < until:
-            policy = route_line(log_path.read_text(errors="replace"), host, fields[1])
+            policy = route_line(log_path.read_text(errors="replace"), host, fields[1],
+                                self.settings.get('source_address', '127.0.0.1'))
             if policy:
                 break
             time.sleep(0.05)

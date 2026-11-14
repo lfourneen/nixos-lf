@@ -16,7 +16,17 @@ The renderer supports `select`, `url-test` and `fallback` groups with explicit m
 
 A private manifest binds the source ID and revision, response hashes, transformer, policy, rendered YAML, dropped-node count and geodata. The snapshot digest includes that manifest. Registrations, candidates and approvals live under root-private `/var/lib/clash-source/sources/<id>`; `selected` is an atomic pointer protected by the shared `source.lock`. Existing single-source state is copied into this layout on the next broker operation before selection is published. Per-source `approved/` snapshots survive switching and reboot. Fetch failure preserves the selection; parser/audit/health failure preserves the previous authorized runtime snapshot. The requested selection can therefore differ from `proxy-status`'s `Active source` until validation completes. Applying a candidate restarts the core and can briefly enter C; an incompatible fallback leaves C in effect.
 
+`clash-off` revokes runtime authority while preserving the source's accepted baseline.
+The next `clash-on` restores that baseline if a newer candidate is refused.
+Stopping and restarting does not approve the refused changes.
+
 Same-name identity, transport and credential changes are compared against that source's own settled baseline, including after switching away and back. Validated DNS rotation with the same logical server identity remains automatic. Sensitive routes are compared in both directions. Exact approval binds candidate, baseline, revision, policy and one-hour expiry; it cannot waive certificate, hosts, private-target or malformed-input failures. See [source registration](operations.md#source-registration).
+
+Source downloads and node-address pinning use the filtered real-address gateway on `127.0.0.1:1056`, independently of B's fake-IP answers.
+Only the dedicated `clash-fetch` account and root can query that port directly.
+The worker still rejects non-public answers and verifies HTTPS certificates.
+If the gateway or its Unbound upstream is unavailable, refresh fails without falling back to system DNS.
+Fresh lookups therefore require the Unbound DoT path in B as well; `unboundDotInProxy=false` leaves only eligible cached answers.
 
 ## Visibility and trust
 
@@ -35,17 +45,17 @@ Status reports `controlled-fetch`, `legacy-unverified` or unknown provenance sep
 
 | Component | Default endpoint / state | Identity |
 |---|---|---|
-| Mihomo | Mixed `127.0.0.1:7897`, DNS `:1053`, TUN `Mihomo` | `clash-core`, UID 982; `NET_ADMIN` and `NET_RAW` |
-| Clash Verge helper | On-demand `clash-verge.service` | Root with bounded launch/file/network capabilities |
+| Mihomo | Mixed `127.0.0.1:7897`, DNS `:1053`, TUN `Mihomo` | `clash-core`, UID 982; `NET_ADMIN` and `NET_RAW` inside the core network namespace |
+| Clash Verge helper | On-demand `clash-verge.service` | Root with bounded launch/file capabilities; network capabilities confined to the core namespace |
 | GUI controller forwarder | `/run/user/<desktop-uid>/clash-verge-rev/verge-mihomo.sock` | Desktop UID, core group, no capabilities; socket 0600 |
 | Gost | HTTP `127.0.0.1:33332`, transparent `127.0.0.1:33333` and `[::1]:33333` | UID 987, no capabilities |
 | dnsmasq / Unbound / dhcpcd | Local DNS / wired DHCP | UIDs 985 / 983 / 986 |
 
-[identity.nix](../system/programs/clash/service/identity.nix) and [runtime.nix](../system/programs/clash/service/runtime.nix) define the core identity and service contract. The root launcher starts the core via `setpriv`, retaining only the two network capabilities in its permitted, effective, inheritable, ambient and bounding sets. The real controller is `/run/clash-verge-rev/core/mihomo.sock`; supervisors use it directly. A desktop-UID `socat` forwarder supplies the GUI path.
+[identity.nix](../system/programs/clash/service/identity.nix) and [runtime.nix](../system/programs/clash/service/runtime.nix) define the core identity and service contract. The root launcher starts the core via `setpriv`, retaining only the two network capabilities in its permitted, effective, inheritable, ambient and bounding sets. The real controller is `/run/clash-verge-rev/core/mihomo.sock`; supervisors use it directly. A capless desktop-UID `socat` service in the host namespace supplies the GUI path over Unix byte streams, without passing file descriptors.
 
 The helper retains the privileges needed for identity changes, directory ownership and child management. It accepts only the packaged, root-owned launcher as an executable. Managed logs use `/var/lib/clash-verge-service/logs`, with fixed rotation. Caller-supplied IPC paths do not drive root chmod/unlink or startup reconciliation. Systemd owns child cleanup. The helper's private state is separate from the writable core cache in `/var/lib/clash-core`.
 
-The helper enforces fixed execution paths and file-operation rules at its privileged boundary. The core holds host `NET_ADMIN` and belongs to the trusted network administration layer. Desktop programs sharing the GUI UID can use its permitted GUI/controller operations.
+The helper enforces fixed execution paths and file-operation rules at its privileged boundary. Systemd places the helper and core in `lf-clash-core` before execution. The core cannot administer host interfaces, routes or firewall tables; host setup and policy changes belong to fixed root services. Desktop programs sharing the GUI UID can use its permitted GUI/controller operations.
 
 An explicitly enabled IPv4 guest TPROXY inlet binds `0.0.0.0:7896`; the ordinary mixed/DNS/controller endpoints remain local under `allow-lan=false`. The packaged listener handles this bind separately and selects IPv4 sockets. Its TCP/UDP UID and service cgroup are checked before B; guest interface/source authorization remains in the firewall. Later core auto-redirect preserves the owned guest mark instead of replacing its transparent socket. See [guest networking](network.md#guests-and-containers).
 
@@ -53,7 +63,9 @@ An explicitly enabled IPv4 guest TPROXY inlet binds `0.0.0.0:7896`; the ordinary
 
 `proxy-control preflight` checks the desktop profile, required assets and the managed parser without changing network intent. `clash-on` requires this preparation to succeed, records proxy intent and enters C before starting the helper. It clears refresh pins and pending health checks, preserves intact snapshot authority, and opens a single-use import window for 300 seconds. A failed import consumes the window.
 
-[clash-verge-stage.py](../system/programs/clash/service/clash-verge-stage.py) accepts bounded regular files owned by the desktop user, rejects symlinks and detects concurrent input changes. It copies YAML and geodata into a root-owned snapshot, normalizes the controller location and runs `-t` as `clash-core` without capabilities. Snapshot directories use 0750 and files use 0640. Authority records and parser diagnostics remain private to root.
+[clash-verge-stage.py](../system/programs/clash/service/clash-verge-stage.py) accepts bounded regular files owned by the desktop user, rejects symlinks and detects concurrent input changes. It copies YAML and geodata into a root-owned snapshot, normalizes the controller location and runs `-t` as the separate `clash-validate` identity without capabilities. Snapshot directories use 0750 and files use 0640. Authority records and parser diagnostics remain private to root.
+
+Authorized `127.0.0.1` and `::1` TCP/UDP targets reach host loopback through a separate capless `clash-loopback` broker. Its Unix channels check the peer UID and reject reserved proxy/DNS ports. UDP interception preserves the original destination port. Opportunistic DNS port 53 has a fixed host-gateway mapping; strict DNS disables it. These channels carry bytes and datagrams, never host socket descriptors. Other loopback aliases are not forwarded.
 
 The snapshot digest covers YAML, geodata bytes and absent optional assets. Assets include `Country.mmdb`, `GeoIP.dat`, `GeoSite.dat`, `ASN.mmdb` and `BundleMRS.7z`. Legacy country-database names are normalized. `cache.db` and the `proxies/` provider cache point to separate writable core state and are outside this digest.
 

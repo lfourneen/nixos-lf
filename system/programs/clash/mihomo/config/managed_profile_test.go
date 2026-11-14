@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -446,5 +447,116 @@ func TestLFManagedSubscriptionTrust(t *testing.T) {
 	targets["allow-dynamic-remote-grants"] = true
 	if err := lfValidateSubscription(document, targets); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A stale profile that only needs the tunnel exclusion upgrade must still start
+// when it carries typed listener ports. Re-encoding the whole RawConfig through
+// JSON turned "port: 7898" into a float64, which the inbound structure decoder
+// then rendered as "7.898E+03" and rejected as an invalid range.
+func TestLFManagedExclusionUpgradeKeepsListenerPorts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	policy := `{"listeners":[{"listen":"127.0.0.1","name":"lf-strict","port":7898,"type":"mixed","udp":false}],` +
+		`"tun.route-exclude-address":["10.0.0.0/8"]}`
+	if err := os.WriteFile(path, []byte(policy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	profile := strings.Join([]string{
+		"listeners:",
+		"- listen: 127.0.0.1",
+		"  name: lf-strict",
+		"  port: 7898",
+		"  type: mixed",
+		"  udp: false",
+		"tun:",
+		"  route-exclude-address:",
+		"  - 10.1.0.0/16",
+		"",
+	}, "\n")
+	raw, err := UnmarshalRawConfig([]byte(profile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lfValidateRaw(raw); err != nil {
+		t.Fatalf("stale profile failed to start: %v", err)
+	}
+	if len(raw.Listeners) != 1 {
+		t.Fatalf("policy upgrade changed the listener count: %d", len(raw.Listeners))
+	}
+	if port := raw.Listeners[0]["port"]; port != int(7898) {
+		t.Fatalf("listener port lost its integer type: %T %v", port, port)
+	}
+	if _, err := parseListeners(raw); err != nil {
+		t.Fatalf("policy upgrade broke listener parsing: %v", err)
+	}
+}
+
+func TestLFManagedInjectedListenerPort(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	policy := `{"listeners":[{"listen":"127.0.0.1","name":"lf-strict","port":7898,"type":"mixed","udp":false}]}`
+	if err := os.WriteFile(path, []byte(policy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	raw := DefaultRawConfig()
+	if _, err := lfValidateRaw(raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.Listeners) != 1 || raw.Listeners[0]["port"] != float64(7898) {
+		t.Fatal("policy did not inject the JSON numeric listener port")
+	}
+	listeners, err := parseListeners(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := listeners["lf-strict"].RawAddress(); got != "127.0.0.1:7898" {
+		t.Fatalf("injected listener address: %s", got)
+	}
+	raw.Listeners[0]["port"] = float64(7899)
+	if _, err := lfValidateRaw(raw); err == nil {
+		t.Fatal("accepted listener port outside the managed policy")
+	}
+}
+
+func TestLFManagedNumericListenerPortBounds(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		port any
+		want string
+	}{
+		{"integer", int(7898), "127.0.0.1:7898"},
+		{"float64", float64(7898), "127.0.0.1:7898"},
+		{"float32", float32(7898), "127.0.0.1:7898"},
+		{"maximum", float64(65535), "127.0.0.1:65535"},
+		{"fraction", float64(7898.5), ""},
+		{"negative", float64(-1), ""},
+		{"overflow-float", float64(65536), ""},
+		{"overflow-integer", int(65536), ""},
+		{"overflow-range", "7898-65536", ""},
+		{"huge", float64(1e300), ""},
+		{"nan", math.NaN(), ""},
+		{"infinity", math.Inf(1), ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			raw := DefaultRawConfig()
+			raw.Listeners = []map[string]any{{
+				"name": "port-test", "type": "mixed", "listen": "127.0.0.1",
+				"port": test.port, "udp": false,
+			}}
+			listeners, err := parseListeners(raw)
+			if test.want == "" {
+				if err == nil {
+					t.Fatalf("accepted invalid listener port: %v", test.port)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := listeners["port-test"].RawAddress(); got != test.want {
+				t.Fatalf("listener address: got %s, want %s", got, test.want)
+			}
+		})
 	}
 }

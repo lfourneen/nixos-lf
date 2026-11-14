@@ -116,7 +116,8 @@
         "proxy-network-vm",
         "browser-ech-vm",
         "browser-ech-uniform-vm",
-        "proxy-validation-tools"
+        "proxy-validation-tools",
+        "proxy-managed-netns-vm"
       ],
       "entrypoints": [
         "config/config.go: ParseRawConfig, RawConfig/RawTun schema and controller General",
@@ -147,7 +148,8 @@
         "proxy-control-vm",
         "proxy-uniform-vm",
         "proxy-guest-vm",
-        "proxy-network-vm"
+        "proxy-network-vm",
+        "proxy-managed-netns-vm"
       ],
       "entrypoints": [
         "Mihomo go.mod/go.sum and vendor/github.com/metacubex/sing-tun",
@@ -216,7 +218,8 @@
         "proxy-control-vm",
         "proxy-refresh-vm",
         "proxy-validation-tools",
-        "proxy-regressions"
+        "proxy-regressions",
+        "proxy-managed-netns-vm"
       ],
       "entrypoints": [
         "helper src/core/manager.rs, server.rs, logger.rs and reconcile.rs",
@@ -227,7 +230,8 @@
         "Root spawn uses only the root-owned packaged launcher; caller log/socket/PID paths never drive privileged file/process operations.",
         "Snapshot authorization covers YAML/assets, is single-use/boot-scoped and survives ordinary helper restart with correct permissions.",
         "GUI binary remains upstream; actual core runs as the fixed UID with only NET_ADMIN and NET_RAW.",
-        "Read-only preflight precedes proxy intent changes. Fast checks reuse full snapshot hashes only while protected identity and ctime metadata match, with periodic full verification."
+        "Read-only preflight precedes proxy intent changes. Fast checks reuse full snapshot hashes only while protected identity and ctime metadata match, with periodic full verification.",
+        "The helper/core run in the fixed core network namespace; host validators use a separate UID, the desktop forwarder stays on the host and no host INET/netlink FD reaches the core."
       ]
     },
     "dns": {
@@ -321,7 +325,10 @@
         "proxy-network-vm",
         "proxy-validation-tools",
         "proxy-regressions",
-        "proxy-guest-vm"
+        "proxy-guest-vm",
+        "proxy-hermes-containers-vm",
+        "proxy-core-netns-vm",
+        "proxy-managed-netns-vm"
       ],
       "entrypoints": [
         "nft transaction parsing, socket/conntrack expressions and JSON output",
@@ -331,7 +338,8 @@
         "Owned static/safety policy commits once under the shared lock; foreign tables survive and rejected transactions retain the previous policy.",
         "Bootstrap protects first-load failures; proxy intent passes through C before health permits B.",
         "Ordered expressions, canonical JSON and expiring DNS leases remain verifiable; stopping owners leaves protection installed.",
-        "Desktop cgroup bind restrictions, automatic-port reservations and proxy reply UIDs protect managed listeners. Tracked ordinary application replies stop in C while root/core recovery and guest ownership marks survive."
+        "Desktop cgroup bind restrictions, automatic-port reservations and proxy reply UIDs protect managed listeners. Tracked ordinary application replies stop in C while root/core recovery and guest ownership marks survive.",
+        "Host setup owns only the declared veth, namespace and route priorities; core marks are scrubbed, forwarded transport is independently constrained and internal address overlap refuses readiness."
       ]
     },
     "link-identity": {
@@ -373,7 +381,8 @@
         "proxy-control-vm",
         "proxy-refresh-vm",
         "proxy-core",
-        "proxy-source-config"
+        "proxy-source-config",
+        "proxy-managed-netns-vm"
       ],
       "entrypoints": [
         "system/programs/clash/service/source_worker.py",
@@ -404,7 +413,8 @@
         "proxy-dns-strict-vm",
         "proxy-strict-rules-vm",
         "proxy-core",
-        "proxy-source-config"
+        "proxy-source-config",
+        "proxy-managed-netns-vm"
       ],
       "entrypoints": [
         "home/programs/firefox/network.py",

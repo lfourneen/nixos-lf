@@ -8,6 +8,9 @@ let
     coreUid = config.my.machine.uids.clashCore;
     maxAge = p.stateMaxAgeSeconds;
     verificationMaxAge = p.verificationMaxAgeSeconds;
+    sourceAddress = if p.coreNetns then p.coreTopology.host4 else "127.0.0.1";
+    observer = if p.coreNetns then p.coreTopology.observer else null;
+    observerModule = ../../../config/network/proxy/core_network.py;
   });
 
 in
@@ -37,9 +40,10 @@ in
         PrivateTmp = true;
         RestrictAddressFamilies = [ "AF_INET" "AF_UNIX" ];
         IPAddressDeny = "any";
-        IPAddressAllow = "localhost";
+        IPAddressAllow = [ "localhost" ] ++ lib.optionals p.coreNetns
+          (let t = p.coreTopology; in [ t.host4 t.core4 ]);
         MemoryMax = "128M";
-        TasksMax = 16;
+        TasksMax = 64;
         Restart = "on-failure";
       };
     };

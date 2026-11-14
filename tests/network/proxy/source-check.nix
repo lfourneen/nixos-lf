@@ -1,7 +1,7 @@
 { pkgs }:
 
 pkgs.runCommand "controlled-source-checks" {
-  nativeBuildInputs = [ (pkgs.python3.withPackages (p: [ p.pyyaml ])) ];
+  nativeBuildInputs = [ (pkgs.python3.withPackages (p: [ p.pyyaml p.dnspython ])) ];
 } ''
   export PYTHONDONTWRITEBYTECODE=1
   export SOURCE_AUDIT=${../../../system/programs/clash/service/subscription_audit.py}

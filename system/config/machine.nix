@@ -63,11 +63,15 @@
     };
 
     uids = {
+      clashFetch = lib.mkOption { type = lib.types.int; default = 981; };
       clashCore = lib.mkOption { type = lib.types.int; default = 982; };
+      clashValidate = lib.mkOption { type = lib.types.int; default = 1197; };
       unbound = lib.mkOption { type = lib.types.int; default = 983; };
       dnsmasq = lib.mkOption { type = lib.types.int; default = 985; };
       dhcpcd = lib.mkOption { type = lib.types.int; default = 986; };
       gost = lib.mkOption { type = lib.types.int; default = 987; };
+      clashLoopback = lib.mkOption { type = lib.types.int; default = 1199; };
+      hermesContainers = lib.mkOption { type = lib.types.int; default = 1200; };
     };
 
     # Ports the nftables rules and the services behind them must agree on.
@@ -76,6 +80,7 @@
       dnsmasq = lib.mkOption { type = lib.types.port; default = 1054; };
       unbound = lib.mkOption { type = lib.types.port; default = 1055; };
       socketGuestDns = lib.mkOption { type = lib.types.port; default = 1056; };
+      coreLoopback = lib.mkOption { type = lib.types.port; default = 14661; };
       gostHttp = lib.mkOption { type = lib.types.port; default = 33332; };
       gostRedirect = lib.mkOption { type = lib.types.port; default = 33333; };
       mihomoStrict = lib.mkOption { type = lib.types.port; default = 7898; };

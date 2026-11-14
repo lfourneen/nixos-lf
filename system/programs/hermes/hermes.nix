@@ -16,7 +16,7 @@ let
         (lib.findFirst
           (l: builtins.match ".*hermes-agent/v[0-9].*" l != null)
           ""
-          (lib.splitString "\n" (builtins.readFile ../../flake.nix)));
+          (lib.splitString "\n" (builtins.readFile ../../../flake.nix)));
     in
     if m == null then
       throw "hermes.nix: cannot parse hermes-agent version from flake.nix (expected a '.../hermes-agent/vX.Y.Z' input URL)"
@@ -283,8 +283,10 @@ in
 
       security = {
         allowed_users = [ "lfour" ];
+
         # Fail closed: a broken/timed-out scanner blocks instead of allowing.
         tirith_fail_open = false;
+
         # No on-demand pip/npm installs (supply-chain surface; Nix owns deps).
         allow_lazy_installs = false;
       };
@@ -487,6 +489,7 @@ in
     environment = {
       HTTP_PROXY = "${gostHttp}/";
       HTTPS_PROXY = "${gostHttp}/";
+
       # Lowercase twins: python-requests/httpx and some Go/Rust tooling read
       # only these. ALL_PROXY is deliberately absent - clients that treat it as
       # a SOCKS URL break on an http:// value. NO_PROXY matches the host list.

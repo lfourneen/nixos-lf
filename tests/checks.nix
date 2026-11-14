@@ -158,7 +158,20 @@ let
       '';
 
       proxy-egress-config = self.nixosConfigurations.lfour.config.my.hardening.directEgress.configCheck;
-      proxy-guest-config = pkgs.runCommand "guest-policy-config" { } ''
+      proxy-guest-config = let
+        c = self.nixosConfigurations.lfour.config;
+        account = c.users.users.hermes-containers;
+        service = c.systemd.services.hermes-containers;
+      in assert account.uid == c.my.machine.uids.hermesContainers;
+      assert builtins.elem "hermes-containers" c.my.hardening.socketGuestUsers;
+      assert account.extraGroups == [ "hermes-container-clients" ];
+      assert pkgs.lib.sort builtins.lessThan c.users.groups.hermes-container-clients.members == [ "hermes" "hermes-containers" ];
+      assert service.serviceConfig.User == "hermes-containers";
+      assert builtins.elem "HTTP_PROXY" service.serviceConfig.UnsetEnvironment;
+      assert builtins.elem "hermes-container-retire.service" service.requires;
+      assert c.systemd.services.hermes-agent.environment.DOCKER_HOST == "unix:///run/hermes-containers/docker.sock";
+      assert c.systemd.services.hermes-backend.environment.DOCKER_HOST == c.systemd.services.hermes-agent.environment.DOCKER_HOST;
+      pkgs.runCommand "guest-policy-config" { } ''
         test -e ${self.nixosConfigurations.lfour.config.my.hardening.guestConfigCheck}
         test -e ${guestConfig.my.hardening.guestConfigCheck}
         ${pkgs.bash}/bin/bash -n ${guestConfig.systemd.user.services.docker.serviceConfig.ExecStart}
@@ -298,6 +311,24 @@ let
         guests = true;
       };
 
+      proxy-hermes-containers-vm = import ./network/proxy/control-vm.nix {
+        inherit pkgs;
+        clashPackage = strictClashPackage;
+        guests = true;
+        hermesContainers = true;
+      };
+
+      proxy-core-netns-vm = import ./network/proxy/core-netns-vm.nix {
+        inherit pkgs;
+        core = self.nixosConfigurations.lfour.config.programs.clash-verge.package.managedCore;
+      };
+
+      proxy-managed-netns-vm = import ./network/proxy/control-vm.nix {
+        inherit pkgs;
+        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        managedSources = true;
+      };
+
       proxy-dns-strict-vm = import ./network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = strictClashPackage;
@@ -353,6 +384,14 @@ let
       assert broad.programs.clash-verge.package == strictClashPackage;
       assert small.systemd.services.clash-verge.serviceConfig.CapabilityBoundingSet
         == c.systemd.services.clash-verge.serviceConfig.CapabilityBoundingSet;
+      assert c.systemd.services.clash-verge.serviceConfig.NetworkNamespacePath == "/run/netns/lf-clash-core";
+      assert small.systemd.services.clash-verge.serviceConfig.NetworkNamespacePath
+        == c.systemd.services.clash-verge.serviceConfig.NetworkNamespacePath;
+      assert c.systemd.services.clash-network-observer.serviceConfig.CapabilityBoundingSet == "";
+      assert c.systemd.services.clash-core-loopback.serviceConfig.User != "clash-core";
+      assert c.systemd.services.clash-core-loopback.serviceConfig.CapabilityBoundingSet == "";
+      assert c.systemd.services.clash-core-localhost.serviceConfig.NetworkNamespacePath
+        == c.systemd.services.clash-verge.serviceConfig.NetworkNamespacePath;
 
       pkgs.runCommand "proxy-control-config" { nativeBuildInputs = [ pkgs.python3 ]; } ''
         python3 - ${c.my.proxy.listenerSettings} ${toString uid} <<'PY'
@@ -363,6 +402,7 @@ let
             for listener in settings['groups'][name]:
                 assert listener['uids'] == [int(sys.argv[2])], listener
                 assert listener['cgroup'] == '/system.slice/clash-verge.service', listener
+                assert listener['namespace'] is True, listener
         PY
         touch "$out"
       '';

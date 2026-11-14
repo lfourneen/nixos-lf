@@ -176,6 +176,8 @@ Use the attributes below from the checkout. Nix builds normally use the local da
 | `proxy-dns-strict-vm` | Real helper/core, shared DNS/proxy filtering, strict outage/override/lease and leftover-set refusal, private split permission and literal portal recovery |
 | `proxy-guest-config`, `proxy-guest-rules` | Production/dedicated-account configuration and rootless launcher syntax; complete mixed-role rules in LKL. Guest validation is also required by normal system builds |
 | `proxy-guest-vm` | Three real routed networks, DHCP/DNS, IPv4/ULA, spoofed sources, actual pasta/RootlessKit/subuid sockets, fake-IP refusal, stale DNS conntrack, bidirectional grant revocation and C with a live core |
+| `proxy-hermes-containers-vm` | Real legacy/new Docker, socket ACL, offline image, account grants, TCP/UDP, unsupported IPv6 refusal, Hermes host proxy, A/B/C and recovery |
+| `proxy-core-netns-vm` | Independent core namespace prototype: TUN/veth, dual-stack nodes, native/SOCKS UDP, DNS/fake-IP, marks/raw packets, host policy ownership, revocation and restart |
 | `proxy-egress-config` | Canonical CIDRs and bounded grant/time scopes; also required by normal system builds |
 | `proxy-egress-vm` | Restricted counterpart of the Tailscale VM; scoped dual-stack private/multicast/DNS/DoT/NTS traffic, UID/interface/port denials, established grant revocation and C |
 | `proxy-egress-control-vm` | Restricted policy before real production TUN/NAT, including allowed/denied private destinations |
@@ -189,7 +191,8 @@ Use the attributes below from the checkout. Nix builds normally use the local da
 | `browser-sandbox-vm` | Real Wayland Firefox, system-root TLS and invalid-certificate rejection, parent isolation, audio, portal grants, link reuse, generation/restart and fail-closed proxy lifecycle |
 | `browser-ech-vm` | Confined real Firefox/helper/core, native HTTPS discovery, ECH versus GREASE, key/no-ECH retry, untrusted rejection, certificate errors, cover-name target preservation and A/C behavior |
 | `browser-ech-uniform-vm` | The same real browser paths and policy consumption with `proxyOnly=true` |
-| `proxy-control-vm` | Real production helper/launcher, process capabilities, authorization, DNS, migration with a live TUN core and C-to-B recovery |
+| `proxy-control-vm` | Real production helper/launcher/netns, capabilities, localhost broker, overlap/link/resume recovery, authorization, DNS and bidirectional C revocation |
+| `proxy-managed-netns-vm` | Registered TLS sources, full supervisor readiness, actual strict inlet, C revocation and source switching in the production core namespace |
 | `proxy-uniform-vm` | Production helper/core under uniform proxy policy: fresh TCP/UDP DIRECT refusal, dual-stack UDP, native IPv6 TUN and recovery |
 | `proxy-network-vm` | Broad kernel fault injection: modes, DNS, leases, sleep, guests, TPROXY and recovery |
 
@@ -209,3 +212,5 @@ nix build --no-link .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
 The broad VM includes deliberate simulated/root-core fixtures; use the small control VM to verify production launch permissions. Neither changes the running host's routes/firewall. Package tests establish parser/policy behavior; they do not replace kernel-path tests. Host activation additionally needs privileged observations of actual process identity/capabilities, listener ownership, snapshot state and A → B/C transitions.
+
+The prototype check keeps a separate fixture-driven topology. Production namespace integration is covered by `proxy-control-vm` and `proxy-managed-netns-vm`: real helper/GUI IPC, namespace identity, host confinement, localhost TCP/UDP, address conflicts, link loss, physical address renewal, resume, controlled TLS sources, strict inlet and source switching. Keep the observer capless, query the correct namespace, preserve both route views and verify broker peer credentials. Run VM variants sequentially when memory is limited; evaluate/build one target at a time so large multi-variant evaluations do not overlap timed probes.

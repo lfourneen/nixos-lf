@@ -23,17 +23,25 @@
                                    上行
 ```
 
-这些监听均在本机。大小写环境变量、GSettings 和 Flatpak 覆盖将应用指向 `127.0.0.1:33332`。Gost 在 B 中把两种入口转给 `127.0.0.1:7897`，A 中直通，C 或未知状态下关闭监听。客户端显式连接透明入口 `33333` 会在 NAT 前被拒绝；该入口只供重定向流量使用。
+Gost 监听于宿主命名空间；宿主回环核心入口经私有 veth 转发，核心监听和实际 TUN 位于 `lf-clash-core`。大小写环境变量、GSettings 和 Flatpak 覆盖将应用指向 `127.0.0.1:33332`。Gost 在 B 中把两种入口转给 `127.0.0.1:7897`，A 中直通，C 或未知状态下关闭监听。客户端显式连接透明入口 `33333` 会在 NAT 前被拒绝；该入口只供重定向流量使用。
 
-`user.slice` 通过 `SocketBindDeny` 保留固定代理和本地 DNS 端口，覆盖 TCP/UDP 与 IPv4/IPv6。桌面会话和用户管理器继承此限制，其它开发端口仍可使用。`ip_local_reserved_ports` 将这些端口排除在自动分配范围外，覆盖 `bind(0)` 和客户端隐式绑定。Loopback 代理应答要求 socket UID 匹配服务身份：Gost 端口允许 root/Gost，核心端口允许 root/clash-core。就绪检查使用监听地址、UID 和 cgroup。
+`user.slice` 通过 `SocketBindDeny` 保留固定代理和本地 DNS 端口，覆盖 TCP/UDP 与 IPv4/IPv6。桌面会话和用户管理器继承此限制，其它开发端口仍可使用。`ip_local_reserved_ports` 将这些端口排除在自动分配范围外，覆盖 `bind(0)` 和客户端隐式绑定。宿主 Gost 应答要求 root/Gost socket UID。核心应答必须经过受管 veth，并匹配已跟踪的入口连接。就绪检查使用监听地址、UID、cgroup 和网络命名空间。
 
 端口保留依赖 systemd 的 cgroup `bind4`/`bind6` hook 及内核 cgroup-BPF 支持，作用范围是 `user.slice` 中的进程；不可信系统服务需要在所属 slice 配置同等限制。Root 和受管服务身份属于信任边界。应答 UID 检查确认响应 socket 的身份，绑定限制阻止数据交给未授权的 UDP 监听者。机制见 [systemd 绑定策略](https://www.freedesktop.org/software/systemd/man/260/systemd.resource-control.html#SocketBindAllow=bind-rule)。
 
-Mihomo 为出站 socket 设置 `6666` / `0x1a0a` mark；核心例外同时要求 socket 与 packet mark，并核对 socket UID 为 root 或 `clash-core`。默认 `my.proxy.proxyOnly=false` 时 Rule 可选 DIRECT；可选的[统一代理策略](proxy_CN.md#路由策略)在核心内拒绝应用 DIRECT。核心以外的私网和基础设施路径仍由各自规则控制。
+Mihomo 在自己的命名空间内设置 `6666` / `0x1a0a` socket mark。宿主清除 veth 入站 packet mark，独立检查源身份、目标范围、保留端口和回包归属。旧宿主 socket 例外同时要求两个 mark 与 root/core UID；隔离核心不能靠伪造 mark 获得该例外。默认 `my.proxy.proxyOnly=false` 时 Rule 可选 DIRECT；可选的[统一代理策略](proxy_CN.md#路由策略)在核心内拒绝应用 DIRECT。核心以外的私网和基础设施路径仍由各自规则控制。
 
 [DNS](dns_CN.md) 与该路径并行：resolved → dnsmasq → Mihomo 或 Unbound。日常 [Firefox](browser_CN.md) 使用 Gost；可选透明路径使用本机 DNS 和宿主 socket，遵循相同 TUN/防火墙策略，支持 HTTPS-RR/ECH 发现。身份入口使用专用 Unix relay 与严格核心入口。两者均在[外层文件系统及桌面接口沙箱](browser_CN.md#外层沙箱)内运行，保留桌面 UID；严格入口额外隔离 IP 网络。
 
 核心内的字面或解析后私网目标按[本地 DIRECT 与远程叶节点](proxy_CN.md#域名目标)分别授权；订阅规则负责选择节点，节点侧内部目标由目标授权规则控制。
+
+## 核心网络命名空间
+
+[core-network.nix](../../system/config/network/proxy/core-network.nix) 建立固定的私有 veth 和命名空间。宿主端保留配置的 `tunDev` 名称，真正的同名 TUN 仅存在于核心命名空间。无 capability 的 root 观察服务通过固定操作读取私有监听和路由；宿主与私有选路须在共用的两秒截止内全部通过。TUN 检查按地址族批量执行只读查询。
+
+`my.proxy.coreLink` 提供私有 IPv4 /30、IPv6 /64 端点及固定本地 MAC。建立拓扑和就绪检查均拒绝与现有 LAN/VPN 地址或路由重叠。veth 丢失不能把核心入口转发到物理 LAN。宿主主路由表没有可用路径时，核心传输查询直接失败，避免落入 TUN 表绕回自身。物理地址/路由变化和恢复钩子更新已授权的 helper/core；显式 `clash-on` 重建命名空间，并断开已有核心连接。
+
+宿主防火墙双向复核核心传输，允许公网 TCP/UDP 和声明的 `localTargetCidrs`，另行限制危险目标、宿主保留服务与外部明文 DNS。这是传输边界，不是按工作负载限定业务目标。localhost 兼容和 GUI 通道使用[独立 Unix relay](proxy_CN.md#组件与身份)，不向核心传递宿主 INET/netlink 描述符。
 
 ## 模式与执行
 
@@ -49,13 +57,13 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 
 `unenforced` 表示预期内核策略无法确认或修复，是错误状态。使用共用就绪检查的应用会拒绝该状态。
 
-健康判断检查核心 cgroup、TCP/UDP 监听身份、受管 API、TUN 设备与路由，以及 root/桌面 UID 未打标 IPv6 的实际选路。HTTP 探针须经当前选中代理叶子完成，且日志匹配源端口；另向 fake-IP 发真实 HTTP 请求证明透明 TCP 路径。默认共享截止为 12 秒。明确的配置、路由或 TUN 失败立即阻断；观测不可用需连续两轮，间隔至少两秒。
+健康判断检查核心 cgroup、所属命名空间内的 TCP/UDP 监听身份、受管 API、私有 TUN 与宿主 veth 路由，以及 root/桌面 UID 未打标 IPv6 的实际选路。HTTP 探针须经当前选中代理叶子完成，且日志匹配源端口；另向 fake-IP 发真实 HTTP 请求证明透明 TCP 路径。默认共享截止为 12 秒。明确的配置、路由或 TUN 失败立即阻断；观测不可用需连续两轮，间隔至少两秒。
 
 `health.json.scope` 声明本次调用的检查范围，只有 `ok=true` 才证明这些检查完成。`scope.requests` 列出 TCP 请求路径，`--fast` 时为空。`scope.udp_data_plane="not-probed"` 明确 UDP 边界：核对监听身份，但不持续证明 UDP 可达性和 association 回程。单独的 UDP 故障因此可能让 B 与 TCP 健康结果保持正常。
 
 ## 防火墙生命周期
 
-[default.nix](../../system/config/network/network.nix) 定义静态策略及 B/C 片段。[coordinator.nix](../../system/config/network/proxy/coordinator.nix) 在共享锁下以一次 `nft -f` 事务安装静态规则和安全模式，只替换本仓库拥有的表，保留 Mihomo 等服务的表。
+[default.nix](../../system/config/network/network.nix) 定义静态策略及 B/C 片段。[coordinator.nix](../../system/config/network/proxy/coordinator.nix) 在共享锁下以一次 `nft -f` 事务安装静态规则和安全模式，只替换本仓库拥有的宿主表及其中的 `lf_core_*` 链。Mihomo 管理私有命名空间内的自有表，固定 setup 另安装私有 `lf_core_inlets` 和 `lf_core_local_udp` 表；其它服务的宿主表仍保留。
 
 本仓库管理以下精确的表 family/name 组合：
 
@@ -89,7 +97,7 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 
 NAT 优先级排列内核共享 destination-NAT hook 中的规则查找顺序；socket 访客 DNS 的 `-90` filter 在该 hook 之后检查实际改写后的目标。
 
-B 重定向宿主公网 TCP，fake-IP 保留核心路径，其余公网出站在明确例外后丢弃。例外包括核心 mark、按 UID 限定的 Unbound DoT 与 Chrony NTS/NTP、窄 DHCP、组播和默认私网访问。Tailscale UDP 例外要求 UID 0、物理上行口，且 socket 的 `SO_MARK` 与 packet mark 都等于上游 Linux bypass mark `0x80000`。保留动态 peer/STUN 端口，未打标 root UDP 按普通规则处理。Root 和受管核心是可信网络管理主体，具有设置 socket mark 和修改防火墙的权限。当前 LKL 内核支持 `socket mark`，不支持 `socket cgroupv2`。
+B 重定向宿主公网 TCP，fake-IP 保留核心路径，其余公网出站在明确例外后丢弃。例外包括核心 mark、按 UID 限定的 Unbound DoT 与 Chrony NTS/NTP、窄 DHCP、组播和默认私网访问。Tailscale UDP 例外要求 UID 0、物理上行口，且 socket 的 `SO_MARK` 与 packet mark 都等于上游 Linux bypass mark `0x80000`。保留动态 peer/STUN 端口，未打标 root UDP 按普通规则处理。Root 服务负责宿主策略；核心只能修改私有网络命名空间，在宿主授权的传输范围内仍负责可信的应用路由。当前 LKL 内核支持 `socket mark`，不支持 `socket cgroupv2`。
 
 [transport.nix](../../system/config/network/tailscale/transport.nix) 将该 mark 作为上游常量，而非可自行分配的配置。正常系统构建会核对所选 Tailscale 源码的常量及预期的 magicsock/STUN 打标路径。切换网络不会改变常量；升级时须通过该检查与 `proxy-tailscale-vm`，后者用所选真实 CLI 和隔离的双栈 STUN peer 验证。退回 `SO_BINDTODEVICE` 不会静默重新放行未打标 root UDP。
 
@@ -99,7 +107,7 @@ C 的早期 output guard 在核心重定向前阻断应用，保留 loopback IPC
 
 C 阻断已跟踪、由宿主应用发起的 TCP/UDP 连接回包，覆盖原生 TUN、fake-IP 和显式 SOCKS UDP。优先级为 `-198` 的 output hook 为尚无标记的普通应用连接设置 conntrack mark `0x4c460001`。受限访客使用独立标记；root、核心和 Gost 的传输连接不在标记范围内。C 的 input 守卫丢弃已标记的网络及固定代理入口回包。接收侧阻断使存活的 SOCKS UDP 关联可以随 B 恢复接收。
 
-接收方向的约束依赖这些 conntrack 标记，其它防火墙所有者须保留其含义。Socket 队列内的数据不在此约束范围内。C 仍保留 loopback IPC、本地 DNS、root/核心恢复和链路维护流量。
+接收方向的约束依赖这些 conntrack 标记，其它防火墙所有者须保留其含义。conntrack 最高位记录送入核心 veth 的连接，应用/访客身份检查保留并屏蔽该位。Socket 队列内的数据不在此约束范围内。C 仍保留 loopback IPC、本地 DNS、root/核心恢复和链路维护流量。
 
 [bootstrap.nix](../../system/config/network/firewall/bootstrap.nix) 在 NetworkManager/dhcpcd 前安装入站和转发基线；首次完整装载失败仍保留它。静态漂移触发完整修复：直连意图回到 A，代理意图先回 C，再检查健康。失败报告 `unenforced`。
 
@@ -136,4 +144,6 @@ Tailscale 不自动接受 DNS、子网路由或出口节点；只有已认证 ta
 
 Passt 与 rootless 网络将访客报文转换为宿主 socket，桥接规则无法据此识别容器。对不可信后端，应以 `my.hardening.socketGuestUsers` 声明独立固定普通账户；正常构建拒绝桌面/root/基础设施身份、共用 UID 及重叠的委派范围。`socketGuestPrivateExceptions` 按账户、原始出口接口、私网 CIDR 和目标端口授权。loopback/代理入口、保留代理/DNS 目标端口、fake-IP 和已知转换目标不可授权。TCP/UDP 53 强制进入[过滤后的真实地址解析器](dns_CN.md#受限-socket-访客-dns)，避免 B 的合成地址遮蔽 UID 守卫需要检查的私网最终目标。这些账户的 rootless Docker 启动器会清除继承的显式代理环境变量。
 
-先安装策略，再以声明账户运行后端。新增/更改受限账户或 UID 映射前，应停止旧后端；回包跟踪无法追溯识别旧的未标记 socket。在身份保持声明时撤销私网授权，会切断已跟踪连接的双向流量。桌面账户的 rootless Docker 仍属于可信开发环境，因为它与桌面应用共用 UID。UID 策略约束网络出站；文件权限、共享 Unix socket、入站端口发布及同桥隔离需要另行控制。授权匹配宿主 socket/路由的原始目标，不检查应用隧道内部的目标。root 与拥有宿主 `NET_ADMIN` 的核心仍受信任。见[配置示例](operations_CN.md#配置入口)。
+先安装策略，再以声明账户运行后端。新增/更改受限账户或 UID 映射前，应停止旧后端；回包跟踪无法追溯识别旧的未标记 socket。在身份保持声明时撤销私网授权，会切断已跟踪连接的双向流量。桌面账户的 rootless Docker 仍属于可信开发环境，因为它与桌面应用共用 UID。UID 策略约束网络出站；文件权限、共享 Unix socket、入站端口发布及同桥隔离需要另行控制。授权匹配宿主 socket/路由的原始目标，不检查应用隧道内部的目标。root 负责可信宿主管理，隔离核心在其传输授权内负责可信应用路由。见[配置示例](operations_CN.md#配置入口)。
+
+本机将 Hermes Docker 工作负载交给独立账户 `hermes-containers`，默认 UID 1200，并使用独立的 subuid/subgid 范围；其宿主 socket 使用受限账户策略。Hermes agent、dashboard、本地 terminal 和 MCP 进程仍按自身宿主身份运行，可在健康 B 中使用 Gost；C 阻断它们的应用代理流量。加入 `hermes` 组不会获得另一套网络例外。同一后端内的容器共享该账户的网络授权。入口、数据与服务管理见 [Hermes 容器](operations_CN.md#hermes-容器)。

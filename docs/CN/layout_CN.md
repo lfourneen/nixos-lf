@@ -11,6 +11,7 @@
 | [`system/config/network/`](../../system/config/network) | 网络声明与配套运行脚本，以 `default.nix` 为入口 |
 | [`system/programs/clash/`](../../system/programs/clash) | 系统级 Clash Verge 打包、GUI 启动集成、特权 helper 和 Mihomo 构建 |
 | [`system/programs/gost/`](../../system/programs/gost) | Gost 打包、HTTP 补丁与 relay 服务 |
+| [`system/programs/hermes/`](../../system/programs/hermes) | Agent 配置、`hermes-skills/`、邮件 CLI 与受限 rootless Docker 集成 |
 | [`home/config/clash/`](../../home/config/clash) | Home Manager 写入用户目录的配置及英文状态渲染器 |
 | [`home/programs/firefox/`](../../home/programs/firefox) | 受管浏览器偏好、启动器和桌面沙箱 |
 | [`system/programs/systemd/`](../../system/programs/systemd) | journald 与 coredump 全局设置 |
@@ -25,7 +26,7 @@
 | 子目录 | 内容 |
 |---|---|
 | `dns/` | 上游协调、租约与额度、DNSSEC 探针、黑名单、NetworkManager/resolved 接入 |
-| `proxy/` | 根策略、A/B/C 协调器、健康与共用就绪、监听检查、TUN 观测 |
+| `proxy/` | 根策略、A/B/C 协调器、健康与共用就绪、监听检查、TUN 观测、固定核心命名空间/veth 和 localhost broker |
 | `firewall/` | 启动保护、有序规则验证、告警、恢复和直连权限检查 |
 | `guests/` | 转发访客与宿主 socket 访客策略 |
 | `identity/` | 链路监控、profile 身份准备及恢复 |

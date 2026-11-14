@@ -394,6 +394,7 @@ def dns_test():
 
 def proxy():
     config = json.loads(POLICY.read_text())
+    core = ['ip', 'netns', 'exec', config['coreNamespace']] if config['coreNamespace'] else []
     # Stop only the VM's coordinator while loading declared policy variants;
     # live health reconciliation must not immediately repair a deliberate test.
     run('systemctl', 'mask', '--runtime', '--now', 'proxy-mode.service')
@@ -401,7 +402,7 @@ def proxy():
     # the TPROXY listener exists is refused and never retried, so wait for the
     # declared listener rather than sleeping a fixed amount.
     for _ in range(50):
-        if ':7896' in run('ss', '-lntH'):
+        if ':7896' in run(*core, 'ss', '-lntH'):
             break
         time.sleep(0.2)
     else:
@@ -409,6 +410,7 @@ def proxy():
     def tproxy_diagnostics():
         print('--- TPROXY diagnostics ---', flush=True)
         for command in (
+            (*core, 'ss', '-lntup'),
             ('ss', '-lntup'),
             ('nft', '-a', 'list', 'chain', 'ip', 'lf_mangle', 'prerouting'),
             ('nft', '-a', 'list', 'chain', 'ip', 'lf_mangle', 'proxymode_tproxy'),

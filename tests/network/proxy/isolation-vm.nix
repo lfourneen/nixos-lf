@@ -22,6 +22,7 @@ pkgs.testers.runNixOSTest {
     users.users.clash-fetch = { isSystemUser = true; group = "clash-fetch"; };
     users.groups.clash-core = { gid = 982; };
     users.users.clash-core = { isSystemUser = true; uid = 982; group = "clash-core"; };
+    users.users.clash-validate = { isSystemUser = true; uid = 1197; group = "clash-core"; };
     environment.systemPackages = [ python pkgs.curl pkgs.iproute2 pkgs.util-linux ];
     networking.extraHosts = "1.1.1.1 privacy-fixture.invalid";
     networking.firewall.enable = false;

@@ -307,7 +307,7 @@ def run_audit(settings, directory, baseline):
     error = {'verdict': 'deny', 'deny': {'audit_error': 1}, 'warn': {},
              'unknown': {}}
     setpriv = settings.get('setpriv')
-    prefix = [setpriv, '--reuid=clash-core', '--regid=clash-core', '--clear-groups',
+    prefix = [setpriv, '--reuid=clash-validate', '--regid=clash-core', '--clear-groups',
               '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all',
               '--no-new-privs'] if setpriv else []
     argv = prefix + [settings.get('audit_python', ''), settings.get('audit_tool', ''),
@@ -554,7 +554,11 @@ def source_baseline(settings, runtime, gid):
 
 
 def restore_persistent(settings, runtime, state, gid):
-    if not settings.get('source_root') or (runtime / 'effective').exists() or (state / 'authorized-config').exists():
+    # Off revokes runtime authority but preserves snapshots. Recover only from
+    # the selected source's settled baseline, even if an effective link remains.
+    # Partial authority still goes through verification and must fail closed.
+    if not settings.get('source_root') or (state / 'authorized-config').exists() \
+            or (state / 'config-digest').exists():
         return
     destination, value, stamp = source_baseline(settings, runtime, gid)
     if destination is None:
@@ -1044,7 +1048,7 @@ def main():
         with log.open('wb') as stream:
             log.chmod(0o600)
             result = subprocess.run([
-                settings['setpriv'], '--reuid=clash-core', '--regid=clash-core', '--clear-groups',
+                settings['setpriv'], '--reuid=clash-validate', '--regid=clash-core', '--clear-groups',
                 '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs',
                 real, '-t', '-d', str(directory), '-f', str(directory / 'clash-verge.yaml')],
                 stdout=stream, stderr=stream, timeout=remaining)

@@ -7,7 +7,8 @@ let
 
   routeExclude = lib.optionals config.my.hardening.directEgress.privateRoutes
     (m.privateV4 ++ m.ulaV6 ++ m.linkLocalV6)
-    ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6;
+    ++ m.multicastV4 ++ [ "${m.limitedBroadcastV4}/32" ] ++ m.multicastV6
+    ++ lib.optionals p.coreNetns (let t = p.coreTopology; in [ t.subnet4 t.subnet6 ]);
 
   emptyTunFields = [ "route-address" "route-address-set" "route-exclude-address-set"
     "include-interface" "exclude-interface" "include-uid" "include-uid-range"

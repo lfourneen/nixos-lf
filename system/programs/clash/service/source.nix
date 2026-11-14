@@ -2,7 +2,7 @@
 
 let
   p = config.my.proxy;
-  python = pkgs.python3.withPackages (p: [ p.pyyaml ]);
+  python = pkgs.python3.withPackages (p: [ p.pyyaml p.dnspython ]);
 
   settings = pkgs.writeText "clash-source-settings.json" (builtins.toJSON {
     root = "/var/lib/clash-source";
@@ -17,7 +17,8 @@ let
     systemctl = "${pkgs.systemd}/bin/systemctl";
     desktop_uid = config.users.users.${config.my.machine.desktopUser}.uid;
     gui_index = "${config.users.users.${config.my.machine.desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev/profiles.yaml";
-    ca = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+    ca = config.security.pki.caBundle;
+    resolver = { address = "127.0.0.1"; port = config.my.machine.ports.socketGuestDns; };
     remote_only_catchall = p.remoteOnlyCatchAll;
     assets = {
       "GeoIP.dat" = "${pkgs.v2ray-geoip}/share/v2ray/geoip.dat";
@@ -33,7 +34,16 @@ in
 {
   config = lib.mkIf p.controlledSources {
     users.groups.clash-fetch = {};
-    users.users.clash-fetch = { isSystemUser = true; group = "clash-fetch"; };
+    users.users.clash-fetch = {
+      isSystemUser = true;
+      group = "clash-fetch";
+      uid = config.my.machine.uids.clashFetch;
+    };
+    assertions = [{
+      assertion = config.my.machine.uids.clashFetch > 0
+        && lib.count (u: u.uid == config.my.machine.uids.clashFetch) (lib.attrValues config.users.users) == 1;
+      message = "Controlled source downloads require a dedicated fixed clash-fetch UID.";
+    }];
     environment.systemPackages = [ command ];
     systemd.tmpfiles.rules = [ "d /var/lib/clash-source 0700 root root -" ];
 
@@ -53,6 +63,7 @@ in
         ProtectHome = "read-only";
         PrivateTmp = true;
         ReadWritePaths = [ "/var/lib/clash-source" ];
+
         # Read the fixed desktop-owned index through a private home directory.
         CapabilityBoundingSet = [ "CAP_SETUID" "CAP_SETGID" "CAP_SETPCAP" "CAP_DAC_READ_SEARCH" ];
         RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
@@ -64,8 +75,8 @@ in
 
     systemd.services.clash-source-refresh = {
       description = "Fetch registered subscription and immutable provider generation";
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+      after = [ "network-online.target" "socket-guest-dns.service" ];
+      wants = [ "network-online.target" "socket-guest-dns.service" ];
 
       script = ''
         ${command}/bin/clash-source refresh
@@ -84,6 +95,10 @@ in
         ProtectHome = true;
         PrivateTmp = true;
         ReadWritePaths = [ "/var/lib/clash-source" "/run/proxy-mode" ];
+
+        # Check the core socket after restart without granting DAC override.
+        # The download worker clears supplementary groups before execution.
+        SupplementaryGroups = [ "clash-core" ];
         CapabilityBoundingSet = [ "CAP_SETUID" "CAP_SETGID" "CAP_SETPCAP" ];
         RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" "AF_NETLINK" ];
         TimeoutStartSec = "100s";

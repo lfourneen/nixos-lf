@@ -448,6 +448,35 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(self.verify(), old)
         self.assertEqual(self.record()['result'], 'fallback')
 
+    def test_source_restart_restores_settled_authority_over_an_effective_link(self):
+        old = self.auto_baseline()
+        baseline = (self.runtime / 'effective').resolve()
+        self.config.write_text(self.config.read_text() + '# unobserved candidate\n')
+        self.restart()
+        self.assertNotEqual(self.verify(), old)
+        # Off revokes both authority records and leaves the effective link.
+        for name in ('authorized-config', 'config-digest'):
+            (self.state / name).unlink()
+        self.settings['source_root'] = str(self.root)
+        with patch.object(stage, 'source_baseline', return_value=(baseline, old, time.time())) as restore:
+            stage.restore_persistent(self.settings, self.runtime, self.state, os.getgid())
+        restore.assert_called_once()
+        self.assertEqual(self.verify(), old)
+        self.assertEqual((self.runtime / 'effective').resolve(), baseline)
+
+    def test_partial_source_authority_is_not_silently_restored(self):
+        self.auto_baseline()
+        self.settings['source_root'] = str(self.root)
+        for missing in ('authorized-config', 'config-digest'):
+            original = (self.state / missing).read_bytes()
+            (self.state / missing).unlink()
+            with patch.object(stage, 'source_baseline', side_effect=AssertionError('partial authority restored')):
+                stage.restore_persistent(self.settings, self.runtime, self.state, os.getgid())
+            with self.assertRaises((ValueError, OSError)):
+                self.verify()
+            (self.state / missing).write_bytes(original)
+            (self.state / missing).chmod(0o600)
+
 
     def enable_audit(self):
         self.audit_settings = self.root / 'audit-settings.json'

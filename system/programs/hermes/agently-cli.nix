@@ -50,7 +50,7 @@ let
           echo "status:   up to date"
         else
           echo "status:   UPDATE AVAILABLE ($pinned -> $latest)"
-          echo "          bump version + hash in system/programs/agently-cli.nix, then rebuild"
+          echo "          bump version + hash in system/programs/hermes/agently-cli.nix, then rebuild"
         fi
       else
         echo "latest:   <unreachable>"
@@ -75,7 +75,7 @@ let
         else
           echo "status:   CHANGED UPSTREAM"
           echo "          review: curl -s $skill_url | diff - $skill_file"
-          echo "          then replace system/programs/agently-mail/SKILL.md and rebuild"
+          echo "          then replace system/programs/hermes/hermes-skills/agently-mail/SKILL.md and rebuild"
         fi
       else
         echo "upstream: <unreachable>"

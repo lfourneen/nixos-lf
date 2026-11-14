@@ -65,6 +65,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ "$(id -u)" = 0 ] || die "the core starts only through the root helper"
+@python@ -c 'import os; assert os.stat("/proc/self/ns/net").st_ino == os.stat("@namespacePath@").st_ino' \
+  || die "the core must start inside the managed network namespace"
 [ -n "$config" ] || die "-f is required"
 [ -f "$intent_file" ] || die "start Clash with clash-on; the core is not authorized in Mode A"
 [ "$(cat "$intent_file" 2>/dev/null || true)" = proxy ] \
@@ -109,11 +111,10 @@ PYFRONT
     rm -f "$forwarder_pid"
   fi
   rm -f "$front_sock"
-  setpriv --reuid=@desktopUid@ --regid=@clashCore@ --clear-groups \
-    --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \
-    socat "UNIX-LISTEN:$front_sock,mode=0600,fork,unlink-early" \
-    "UNIX-CONNECT:$core_sock" >>/run/clash-verge-rev/forwarder.log 2>&1 &
-  echo $! >"$forwarder_pid"
+  # Desktop-owned processes stay in the host namespace. Even a process with
+  # the desktop UID's debugging rights must not gain a private core IP inlet.
+  @systemctl@ restart clash-gui-forwarder.service
+  @systemctl@ show -p MainPID --value clash-gui-forwarder.service >"$forwarder_pid"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [ -S "$front_sock" ] && break
     sleep 0.1

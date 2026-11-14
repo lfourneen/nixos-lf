@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"reflect"
 	"sort"
@@ -287,28 +288,31 @@ func lfApplyTunExcludes(raw *RawConfig, policy map[string]any) error {
 		}
 		want = append(want, item)
 	}
-	data, err := json.Marshal(raw)
+	data, err := json.Marshal(raw.Tun.RouteExcludeAddress)
 	if err != nil {
 		return err
 	}
-	var document map[string]any
-	if err = json.Unmarshal(data, &document); err != nil {
+	var actual []any
+	if err = json.Unmarshal(data, &actual); err != nil {
 		return err
 	}
-	tun, _ := document["tun"].(map[string]any)
-	if tun == nil {
+	if reflect.DeepEqual(lfCanonical(actual), lfCanonical(want)) {
 		return nil
 	}
-	actual, ok := tun["route-exclude-address"].([]any)
-	if ok && reflect.DeepEqual(lfCanonical(actual), lfCanonical(want)) {
-		return nil
+	// Replace only the owned field. Re-encoding the whole RawConfig through
+	// JSON used to turn every number in the untyped proxy and listener maps
+	// into a float64, and the inbound structure decoder then rendered a
+	// listener port as "7.898E+03", rejecting the entire profile.
+	prefixes := make([]netip.Prefix, 0, len(want))
+	for _, item := range want {
+		prefix, err := netip.ParsePrefix(item.(string))
+		if err != nil {
+			return nil
+		}
+		prefixes = append(prefixes, prefix)
 	}
-	tun["route-exclude-address"] = want
-	merged, err := json.Marshal(document)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(merged, raw)
+	raw.Tun.RouteExcludeAddress = prefixes
+	return nil
 }
 
 // A generated profile can outlive the Nix generation that produced it. Match

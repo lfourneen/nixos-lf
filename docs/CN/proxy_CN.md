@@ -14,9 +14,21 @@ Sops 的 `proxy_source` 字符串可用 `{"sources":[...]}` 保存所有来源�
 
 渲染器支持 `select`、`url-test`、`fallback`，成员须显式指定或引用已登记 provider。字段逐项校验：HTTPS `url`、1–86400 秒的整数 `interval`、0–60000 ms 的 `tolerance`、100–60000 ms 的 `timeout`、1–100 的 `max-failed-times`、布尔 `lazy` 及 HTTP `expected-status` 表达式。不支持的字段、`load-balance`、动态 filter、`rule-providers`、provider filter/override 和不支持的传输均拒绝。支持 SS、VMess、VLESS、Trojan、Hysteria2、TUIC、HTTP、SOCKS5 节点；远程 HTTP/SOCKS 明文认证仍拒绝，兼容性扩展不放宽内容审计。
 
-私有 manifest 绑定来源 ID、版本、响应摘要、转换器、策略、生成 YAML、丢弃计数及 geodata，快照摘要覆盖 manifest。登记、候选及批准位于 root 私有 `/var/lib/clash-source/sources/<id>`，`selected` 是受公共 `source.lock` 保护的原子指针。旧单来源状态在下一次 broker 操作时复制到此布局，再发布选择。各来源 `approved/` 快照跨切换和重启保留。下载失败保留原选择；解析、审计或健康失败保留此前授权的运行快照。因此，验证完成前，请求的选择可能与 `proxy-status` 的 `Active source` 不同。应用候选会重启核心，可能短暂进入 C；旧回退不兼容时保持 C。
+私有 manifest 绑定来源 ID、版本、响应摘要、转换器、策略、生成 YAML、丢弃计数及 geodata，已授权的 `127.0.0.1` 和 `::1` TCP/UDP 目标通过独立、无 capability 的 `clash-loopback` broker 访问宿主回环。Unix 通道核对 peer UID，拒绝保留的代理/DNS 端口；UDP 截获保留原目标端口。机会性 DNS 的 53 端口固定映射到宿主网关，严格 DNS 禁用此映射。通道只传输字节和报文，不传递宿主 socket 描述符；其它回环别名不转发。
+
+快照摘要覆盖 manifest。登记、候选及批准位于 root 私有 `/var/lib/clash-source/sources/<id>`，`selected` 是受公共 `source.lock` 保护的原子指针。旧单来源状态在下一次 broker 操作时复制到此布局，再发布选择。各来源 `approved/` 快照跨切换和重启保留。下载失败保留原选择；解析、审计或健康失败保留此前授权的运行快照。因此，验证完成前，请求的选择可能与 `proxy-status` 的 `Active source` 不同。应用候选会重启核心，可能短暂进入 C；旧回退不兼容时保持 C。
+
+`clash-off` 撤销运行授权，但保留该来源已接受的基线。
+下次 `clash-on` 时，若较新的候选被拒绝，会恢复这份基线。
+停止再启动不会批准被拒绝的变更。
 
 同名身份、传输和认证变化与该来源自己的 settled 基线比较，切走再切回也保留比较依据。逻辑服务器身份不变的已验证 DNS 轮换可自动处理；敏感路由比较覆盖两个方向。精确批准绑定候选、基线、版本、策略及一小时有效期，不豁免证书、hosts、私网目标或格式错误。见[来源登记](operations_CN.md#来源登记)。
+
+来源下载和节点地址固定使用 `127.0.0.1:1056` 的过滤后真实地址解析器，不受 B 模式 fake-IP 答案影响。
+只有专用 `clash-fetch` 账户和 root 可以直接查询该端口。
+Worker 仍拒绝非公网答案，并验证 HTTPS 证书。
+解析器或 Unbound 上游不可用时，刷新失败，不回退到系统 DNS。
+因此，B 中的新查询也需要 Unbound DoT 路径，`unboundDotInProxy=false` 时只能使用符合条件的缓存答案。
 
 ## 可见信息与信任
 
@@ -35,17 +47,17 @@ Sops 的 `proxy_source` 字符串可用 `{"sources":[...]}` 保存所有来源�
 
 | 组件 | 默认端点 / 状态 | 身份 |
 |---|---|---|
-| Mihomo | Mixed `127.0.0.1:7897`、DNS `:1053`、TUN `Mihomo` | `clash-core`，UID 982；`NET_ADMIN` 和 `NET_RAW` |
-| Clash Verge helper | 按需启动的 `clash-verge.service` | root，能力限定为启动、文件及网络管理所需集合 |
+| Mihomo | Mixed `127.0.0.1:7897`、DNS `:1053`、TUN `Mihomo` | `clash-core`，UID 982；核心网络命名空间内的 `NET_ADMIN` 和 `NET_RAW` |
+| Clash Verge helper | 按需启动的 `clash-verge.service` | root，保留有限的启动/文件权限；网络能力限定于核心命名空间 |
 | GUI 控制口前向器 | `/run/user/<桌面uid>/clash-verge-rev/verge-mihomo.sock` | 桌面 UID、core 组，无能力；socket 0600 |
 | Gost | HTTP `127.0.0.1:33332`、透明 `127.0.0.1:33333` / `[::1]:33333` | UID 987，无能力 |
 | dnsmasq / Unbound / dhcpcd | 本地 DNS / 有线 DHCP | UID 985 / 983 / 986 |
 
-[identity.nix](../../system/programs/clash/service/identity.nix) 和 [runtime.nix](../../system/programs/clash/service/runtime.nix) 定义核心身份与服务约定。root 启动器经 `setpriv` 降权，核心的 permitted、effective、inheritable、ambient、bounding 集均只保留两项网络能力。真实控制口为 `/run/clash-verge-rev/core/mihomo.sock`，监督器直接访问；桌面 UID 的 `socat` 提供 GUI 前向路径。
+[identity.nix](../../system/programs/clash/service/identity.nix) 和 [runtime.nix](../../system/programs/clash/service/runtime.nix) 定义核心身份与服务约定。root 启动器经 `setpriv` 降权，核心的 permitted、effective、inheritable、ambient、bounding 集均只保留两项网络能力。真实控制口为 `/run/clash-verge-rev/core/mihomo.sock`，监督器直接访问；宿主命名空间内无 capability 的桌面 UID `socat` 服务通过 Unix 字节流提供 GUI 前向路径，不传递文件描述符。
 
 Helper 保留身份切换、目录所有权和子进程管理所需权限，仅允许打包的 root 所有启动器作为可执行文件。受管日志固定在 `/var/lib/clash-verge-service/logs` 并固定轮转；客户端 IPC 路径不驱动 root chmod/unlink 或启动恢复。Systemd 管理子进程清理。Helper 私有状态与 `/var/lib/clash-core` 的可写缓存分开。
 
-Helper 在特权边界执行固定路径和文件操作约束。核心持有宿主 `NET_ADMIN`，属于可信网络管理层；同桌面 UID 程序可以调用允许的 GUI/API。
+Helper 在特权边界执行固定路径和文件操作约束。Systemd 在执行前将 helper 和核心置于 `lf-clash-core`。核心不能管理宿主接口、路由和防火墙表，宿主配置及策略变更由固定 root 服务负责；同桌面 UID 程序可以调用允许的 GUI/API。
 
 显式启用的 IPv4 访客 TPROXY 入口绑定 `0.0.0.0:7896`；普通 mixed/DNS/controller 端点在 `allow-lan=false` 下仍仅本机。打包监听器单独处理该绑定并选择 IPv4 socket，进入 B 前检查 TCP/UDP 的 UID 与服务 cgroup；访客接口/源地址授权仍由防火墙负责。核心后续 auto-redirect 保留自有访客 mark 对应的透明 socket。见[访客网络](network_CN.md#访客与容器)。
 
@@ -53,7 +65,9 @@ Helper 在特权边界执行固定路径和文件操作约束。核心持有宿�
 
 `proxy-control preflight` 检查桌面配置、必需资源和受管解析约束，不改变网络意图。`clash-on` 以预检成功为前提，写入代理意图，进入 C 后启动 helper。它清除刷新 pin 和待健康检查记录，保留完整的快照授权，并打开一次性 300 秒导入窗口。失败也会消费该窗口。
 
-[clash-verge-stage.py](../../system/programs/clash/service/clash-verge-stage.py) 接受桌面用户所有、大小受限的普通文件，拒绝符号链接并检测并发变化。它复制 YAML 和 geodata 到 root 所有的快照，规范控制口位置，以无 capabilities 的 `clash-core` 执行 `-t`。快照目录使用 0750，文件使用 0640；授权记录和原始解析诊断仅 root 可读。
+[clash-verge-stage.py](../../system/programs/clash/service/clash-verge-stage.py) 接受桌面用户所有、大小受限的普通文件，拒绝符号链接并检测并发变化。它复制 YAML 和 geodata 到 root 所有的快照，规范控制口位置，以独立、无 capabilities 的 `clash-validate` 身份执行 `-t`。快照目录使用 0750，文件使用 0640；授权记录和原始解析诊断仅 root 可读。
+
+已授权的 `127.0.0.1` 和 `::1` TCP/UDP 目标通过独立、无 capability 的 `clash-loopback` broker 访问宿主回环。Unix 通道核对 peer UID，拒绝保留的代理/DNS 端口；UDP 截获保留原目标端口。机会性 DNS 的 53 端口固定映射到宿主网关，严格 DNS 禁用此映射。通道只传输字节和报文，不传递宿主 socket 描述符；其它回环别名不转发。
 
 快照摘要覆盖 YAML、geodata 字节和可选资源缺失状态。资源包括 `Country.mmdb`、`GeoIP.dat`、`GeoSite.dat`、`ASN.mmdb` 和 `BundleMRS.7z`，旧 country 数据库名字会规范化。`cache.db` 和 `proxies/` provider 缓存指向独立可写状态，不纳入该摘要。
 

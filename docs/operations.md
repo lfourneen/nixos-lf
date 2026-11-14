@@ -232,6 +232,14 @@ The root command holds the operator and policy locks and commits the three delet
 
 Proxy intent or a running core installs C first; the supervisor opens B after health checks pass. Direct intent with no core installs A. Migration preserves intent, authorization and the running core. Use the diagnostics above to check mode and verification JSON. Cleanup occurs only during this command. Tables owned by other services stay under their owners' control.
 
+## Core namespace recovery
+
+The host `Mihomo` interface is the managed veth. Inspect the actual core TUN and auto-redirect table with `sudo ip -n lf-clash-core link` and `sudo ip netns exec lf-clash-core nft list table inet mihomo`. Use `proxy-control status proxy --check` for the complete readiness contract; a host interface alone does not establish readiness.
+
+`clash-on` reconstructs the private namespace after stopping the old helper and preserves the configured source authorization workflow. Existing core connections are closed. Physical uplink changes and resume restart the already authorized core automatically. If a LAN or VPN overlaps the internal link, configure a free private /30 and /64 via `my.proxy.coreLink`, changing each subnet and its host/core endpoints together; never remove the overlap check to restore access. The internal MACs are distinct local unicast addresses and are independent of physical MAC randomization.
+
+Keep the previous system generation before activation. Before returning to a generation with host-owned TUN setup, run `sudo proxy-control off`, wait for A, and stop `clash-core-network.service`. Its fixed cleanup removes only its owned namespace/veth and route priorities; a foreign or legacy TUN is refused even with a stale ownership marker. Then activate the chosen generation and use the normal `clash-on` workflow. A generation change alone is not proof that an old live core or namespace has been retired.
+
 ## Configuration
 
 | Source | Settings |
@@ -270,6 +278,30 @@ The example addresses are placeholders. Built-in bridge source/gateway defaults 
 Install/reconcile the complete nft policy before starting pasta or rootless Docker under `guestnet`. The Docker user unit clears inherited explicit proxy variables for restricted accounts and uses the declared rootless package/settings. Stop existing backends before adding/changing identities or delegated UID mappings. To revoke private access for running backends, keep the identity declared, remove its grants and reload the firewall; both tracked directions are cut. Changing `socketGuestUsers` alone does not migrate desktop containers. These accounts use the separate real-address DNS path, which has no plaintext/split-DNS fallback. See [guest boundaries](network.md#guests-and-containers).
 
 Wi-Fi profiles explicitly setting a cloned MAC override `my.hardening.wifi.clonedMacAddress`; otherwise the default `stable-ssid` retains the same MAC for the same SSID. `permanent` selects the hardware address, while `preserve` keeps the current address. For coordinated changes, declare `my.hardening.wifi.identities`, inspect `network-identity plan UUID`, then disable autoconnect and disconnect before `apply` or `restore`. See [Link identity](identity.md) for the complete procedure, wired policies and DHCP state preparation.
+
+## Hermes containers
+
+[`system/programs/hermes/`](../system/programs/hermes) groups the agent configuration, skills, mail CLI and container backend. The backend runs `hermes-docker.service` in the dedicated account's user manager; `hermes-containers.socket` and `.service` expose a fixed Unix stream to Hermes. The account's private runtime and data directory retain their own permissions.
+
+| Resource | Default location |
+|---|---|
+| Hermes agent data and workspace | `/var/lib/hermes` |
+| Restricted backend home / Docker data | `/var/lib/hermes-containers` / `/var/lib/hermes-containers/docker` |
+| Hermes Docker API | `unix:///run/hermes-containers/docker.sock` |
+
+Gateway, dashboard and Hermes login shells set `DOCKER_HOST` to that API. Its socket is mode 0660 and restricted to the backend account and `hermes-container-clients` members. The desktop keeps its own Docker endpoint. Local terminal/MCP/browser tools running directly as Hermes keep the host proxy policy; only workloads submitted to the dedicated Docker backend use its restricted account.
+
+The backend clears inherited proxy variables and uses the filtered real-address DNS path. A permits public IPv4 directly, B follows host public routing through the managed core, and C cuts application traffic. Private/metadata/fake-IP targets and host proxy inlets have no default grant. The default Docker bridge has no external IPv6 path. Other supported native backend paths retain the UID guard's dual-stack checks.
+
+```sh
+sudo systemctl status hermes-containers.socket hermes-containers.service
+sudo systemctl --user --machine=hermes-containers@.host status hermes-docker.service
+sudo -u hermes env DOCKER_HOST=unix:///run/hermes-containers/docker.sock docker info --format '{{.DockerRootDir}}'
+```
+
+Before starting the new account's user manager, the retirement unit stops Hermes' old user Docker and refuses startup if an old dockerd remains. The global Docker user unit excludes Hermes and the dedicated backend; the latter uses its own unit. The new backend keeps the reserved-port bind restrictions inherited from `user.slice`.
+
+Agent data under `/var/lib/hermes` remains in place. Existing Docker images and volumes under the old account remain there too; they are not automatically imported into the new backend. Stop application writes and export required images/volumes under the old mapping before activation, then load and restore them through the new endpoint. Keep the old data and mapping until recovery has been checked; copying ownership numbers or recursively changing them is not a migration. Stop the dedicated daemon and both API units before deliberately returning to an older backend configuration.
 
 ## Offline recovery
 
