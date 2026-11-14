@@ -7,7 +7,7 @@
 # password is asked at most once for the whole run (zero times while sudo's
 # timestamp is still valid). Running it as root (`su -`) works too.
 #
-# Copied:  home/ (incl. wallpapers), overlays/,
+# Copied:  home/, overlays/,
 #          system/ (incl. secrets/secrets.yaml), tests/ (flake check sources),
 #          local-data/ (generated inputs, including the tracked
 #          dns-blocklist.txt.xz - the flake cannot evaluate without it),
@@ -142,8 +142,8 @@ excludes=(
 # above could not empty the directory completely.
 # Copy only build-input trees. docs/ and scripts/ stay in the checkout;
 # adding a top-level repository directory must not deploy it implicitly.
-# home/ keeps local wallpapers; system/ keeps secrets/secrets.yaml and Hermes
-# skill Markdown; tests/ supplies flake checks without executing them here.
+# system/ keeps secrets/secrets.yaml and Hermes skill Markdown;
+# tests/ supplies flake checks without executing them here.
 config_trees=(home overlays system tests)
 for tree in "${config_trees[@]}"; do
   rsync -a --delete --no-owner --no-group "${excludes[@]}" \

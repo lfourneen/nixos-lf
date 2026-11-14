@@ -22,7 +22,7 @@ class DeploymentTests(unittest.TestCase):
         self.dest = self.root / "destination"
         self.keep = {
             "flake.nix", "flake.lock", ".sops.yaml",
-            "home/config/user.nix", "home/wallpapers/local.png",
+            "home/config/user.nix", "home/config/assets/local.png",
             "overlays/default.nix", "system/config/network/network.nix",
             "system/secrets/secrets.yaml",
             "system/programs/hermes/hermes-skills/example/SKILL.md",

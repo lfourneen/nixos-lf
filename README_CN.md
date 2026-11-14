@@ -1,239 +1,141 @@
-# NixOS 配置
+# nixos-lf
 
 [English](README.md) | 简体中文
 
-基于 Nix flakes 的声明式 NixOS 系统配置，包含定制化的桌面环境与各种生产力工具。
+这是一套以 Niri、Noctalia 和 Home Manager 为基础的个人 NixOS 工作站配置。
+桌面、加密存储、启动时重置的根文件系统、开发工具、AI agent 和网络策略都由同一个 Nix flake 管理。
 
----
+配置面向 `x86_64-linux`，基于 NixOS 26.05，部分软件来自 Unstable。
+系统构建入口为 `nixosConfigurations.lfour`。
 
-## 注意 / 警告
+## 包含哪些功能
 
-> **请勿直接照搬此配置！**
+- **Wayland 桌面。**
+  默认使用 Niri，Noctalia 提供状态栏、启动器、通知和随壁纸变化的主题。
+  GDM 中也可选择 GNOME，中文输入使用 Fcitx5 与 Rime。
 
-* **修改用户名**：请将配置中所有 `lfour` 的引用替换为你自己的用户名。
-* **硬件分区**：本配置使用 `disko`，需要编辑 `system/hardware/disko.nix` 以匹配你的磁盘布局。（参考[这个全新安装示例](https://github.com/lfourneen/nixos-disko-lf)。）
-* **按需调整**：此配置针对我的硬件和偏好定制，使用前请审查并调整所有设置！
+- **存储与持久化。**
+  Disko 声明 LUKS2 加密的 Btrfs 布局。
+  每次启动重建根子卷，Impermanence 将选定的系统和应用状态保存在 `/persist`。
 
----
+- **开发环境。**
+  配置 Nushell、带语言服务器的 Neovim、VS Code 和 Zed，提供 rootless Docker、虚拟化工具，以及供传统 Linux 软件使用的 FHS 环境。
 
-## 特性
+- **受管网络。**
+  nftables、本地 DNS 和 Mihomo 协同控制直连、代理和阻断三种状态。
+  Clash Verge 提供图形界面，核心运行在独立网络命名空间中，只加载已登记来源授权的配置。
 
-* **桌面环境**：见 `system/config/desktop.nix`
-* **文件系统**：BTRFS + LUKS2
-* **Shell**：带自定义配置的 Nushell
-* **系统管理**：使用 Home Manager 管理用户配置
-* **硬件支持**：NVIDIA、AMDGPU、蓝牙、音频等硬件配置
-* **网络与安全**：受管 DNS、nftables 防火墙、代理策略及系统加固
-* **虚拟化**：Docker 等虚拟化工具
+- **Firefox。**
+  原生软件包包含锁定的隐私设置、文件系统沙箱、独立身份 profile 和临时门户浏览器，启动时检查网络状态。
 
----
+- **Hermes Agent。**
+  通过 Nix 管理 agent、gateway、dashboard、MCP 集成和技能。
+  Agent 数据保存在 `/var/lib/hermes`，容器工作负载使用独立账户和 Docker 后端。
 
-## 网络文档
+- **硬件与远程访问。**
+  按作者的机器配置 AMD/NVIDIA 显卡、音频、蓝牙、USBGuard，以及经 Tailscale 使用的 Sunshine 串流。
 
-> **使用本仓库前请先阅读 `docs/`。** 网络层是 fail-closed 的：DNS、nftables、A/B/C
-> 模式与受控订阅来源相互耦合。跳过[操作与诊断](docs/CN/operations_CN.md#来源登记)中的登记步骤，
-> Mode B 将无法进入，机器还可能失去 DNS 或完全无法联网。
+各功能的模块入口见[源码目录](docs/CN/layout_CN.md)。
+网络设计和日常命令见[网络文档](docs/CN/README_CN.md)。
 
-从 **[网络文档](docs/CN/README_CN.md)** 阅读架构、A/B/C 模式、DNS 和受管 Firefox；日常使用及恢复见 **[操作与诊断](docs/CN/operations_CN.md)**，组件自定义、升级方法和检查对应关系见 **[补丁维护](docs/CN/maintenance_CN.md)**。
+## 使用这套配置
 
----
-## 使用方法
+这是一套针对具体机器编写的配置。
+用于自己的设备前，需要调整账户、硬件标识、磁盘布局、持久化路径和加密密钥。
+在已有系统上使用时，尤其要先理解 Disko 与开机重置根目录的行为。
+全新安装可参考独立的 [Disko 安装示例](https://github.com/lfourneen/nixos-disko-lf)。
 
-1. 克隆本仓库：
-```bash
-git clone https://github.com/yourusername/nixos-lf.git
-cd nixos-lf/scripts/ && ./push-to-dir.sh
+克隆仓库：
 
+```sh
+git clone https://github.com/lfourneen/nixos-lf.git
+cd nixos-lf
 ```
 
-2. 按需修改配置文件，例如：
-* 在 `system/config/user.nix` 中，将 `"lfour"` 改为你的用户名。
+从以下文件开始调整：
 
+| 文件 | 调整内容 |
+|---|---|
+| [flake.nix](flake.nix) | 系统输出、用户集成和依赖版本 |
+| [system/config/user.nix](system/config/user.nix) | 账户与用户组 |
+| [system/config/machine.nix](system/config/machine.nix) | 网络接口、地址、端口和服务身份 |
+| [system/hardware/](system/hardware) | 磁盘、启动、CPU 和 GPU 配置 |
+| [system/hardware/partition.nix](system/hardware/partition.nix) | 需要持久保存的目录与文件 |
+| [system/programs/sops.nix](system/programs/sops.nix) | 密钥声明和 Age 私钥位置 |
+| [home/](home) | 桌面、shell、编辑器和应用偏好 |
 
-3. 构建并切换到新配置：
-```bash
-sudo nixos-rebuild switch --flake .#yourname
+本机选择严格加密 DNS，并要求登记代理来源。
+使用代理前先完成[来源登记](docs/CN/operations_CN.md#来源登记)。
+请求代理后，如果核心不可用，系统会阻断应用流量，直到代理恢复或你主动选择直连。
 
+先构建调整后的系统：
+
+```sh
+nix build --no-link .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
-*(将 `yourname` 替换为你的实际主机名或要部署的 flake 输出名。)*
+准备好后再激活：
 
----
-
-## 目录结构
-
-模块职责与入口见[源码目录](docs/CN/layout_CN.md)。
-
-```
-.
-├── flake.nix               # Flake 主配置
-├── flake.lock              # Flake 锁文件
-├── docs/                   # 架构、操作与补丁维护
-│   └── CN/                 # 中文文档
-├── home/                   # 用户配置
-│   ├── config/             # 用户级配置
-│   │   └── clash/          # 用户 profile 文件与状态界面
-│   ├── programs/           # 用户程序
-│   ├── wallpapers/         # 壁纸文件
-│   └── userpkgs/           # 用户软件包
-│
-├── overlays/               # Nixpkgs overlays
-│
-├── local-data/                   # 生成的构建输入
-│   └── dns-blocklist.txt.xz      # DNS 黑名单合并后的上游名单
-│
-├── scripts/                          # 工具脚本
-│   ├── sync-to-git.sh                # 将 /etc/nixos 复制到 ~/Projects/Nix/nixos，宽松权限
-│   ├── push-to-dir.sh                # 将仓库配置推回 /etc/nixos，安全权限
-│   └── refresh-dns-blocklist.py      # 从上游清单重建 local-data/dns-blocklist.txt.xz
-│
-├── tests/                  # Flake 检查引用的回归测试源码
-│   ├── network/            # 按功能分组的网络策略和 VM 检查
-│   ├── home/               # Clash GUI 和 Firefox 检查
-│   └── deployment/         # 部署复制检查
-│
-└── system/                 # 系统级配置
-    ├── config/             # 系统配置
-    │   └── network/        # 网络声明及配套运行脚本
-    ├── hardware/           # 硬件相关配置
-    ├── modules/            # 内核模块配置
-    ├── programs/           # 系统程序与服务
-    │   ├── clash/          # 系统 GUI/helper 和 Mihomo 构建载荷
-    │   ├── gost/           # Relay 软件包、补丁和服务
-    │   ├── hermes/         # Agent、技能、邮件 CLI 与受限容器后端
-    │   └── systemd/        # journald/coredump 全局设置
-    ├── secrets/            # 加密密钥（sops）
-    └── systempkgs/         # 系统软件包
-
+```sh
+sudo nixos-rebuild switch --flake .#lfour
 ```
 
----
+如果修改了 flake 输出名，请相应替换命令中的 `lfour`。
+后续重建也应指向你实际维护的仓库。
 
-## 脚本
+发行分支和共用的 `stateVersion` 都在 [flake.nix](flake.nix) 中配置。
+升级 NixOS 时，同步调整 Nixpkgs 和 Home Manager 的 input 分支。
+`stateVersion` 应保持不变，只有检查兼容性变化并完成相关应用数据迁移后才调整。
 
-* **`scripts/sync-to-git.sh`** — 将 `/etc/nixos` 复制到 `~/Projects/Nix/nixos`（如 `~/Projects/Nix` 不存在则自动创建），把所有权改为当前用户并设置宽松权限（目录 755 / 文件 644），以便提交到 Git。
-* **`scripts/push-to-dir.sh`** — 仅将明确选择的 `home/`、`overlays/`、`system/`、`tests/`、`local-data/`、`flake.nix`、`flake.lock` 和 `.sops.yaml` 复制到 `/etc/nixos`，目录 700 / 文件 600。以普通用户运行，脚本内部使用 `sudo`；`docs/` 和 `scripts/` 留在仓库。`tests/` 提供检查源码，复制不会执行测试。`local-data/` 的必要 DNS 快照已由 Git 跟踪，脚本在触碰目标前检查它。可用 `python3 tests/deployment/test_deployment.py scripts/push-to-dir.sh` 在临时目录验证复制行为。
-* **`scripts/refresh-dns-blocklist.py`** — 拉取上游清单，合并去重后写入 `local-data/dns-blocklist.txt.xz`，并重写 `system/config/network/dns/blocklist.nix` 的上游/快照头部。`--check` 只报告漂移不写入。构建时与运行时都不下载任何东西。
+## 日常网络操作
 
----
+| 命令 | 用途 |
+|---|---|
+| `clash-on` | 请求代理并启动受管核心 |
+| `clash-off` | 切换到直连 |
+| `proxy-status` | 查看模式、DNS 和就绪状态 |
+| `firefox-identity` | 通过严格代理入口打开独立身份 profile |
+| `firefox-portal http://192.168.1.1/` | 在直连模式打开临时门户会话 |
 
-## Hermes / Sops-Nix
+A 表示直连，B 表示代理健康可用，C 在代理不可用时阻断应用流量。
+关闭 GUI 不会切换到 A。
+来源管理、诊断和离线恢复见[操作与诊断](docs/CN/operations_CN.md)。
 
-本配置使用 `sops-nix` 配合 Age 密钥对来管理 `hermes` 的密钥。
+## Hermes 与密钥
 
-### 1. Age 密钥初始化
+Hermes 配置和技能位于 [system/programs/hermes/](system/programs/hermes)。
+Nushell 中可直接运行 `hermes`，其它 shell 使用 `sudo -u hermes -i hermes`。
+容器入口与数据管理见 [Hermes 容器](docs/CN/operations_CN.md#hermes-容器)。
 
-如果是在恢复/迁移已有系统，请选择**选项 A**；首次配置请选择**选项 B**。
+密钥由 sops-nix 管理，Age 私钥默认位于 `~/.config/sops/age/keys.txt`。
+首次用于自己的系统时，恢复已有私钥或生成新私钥，并调整 [.sops.yaml](.sops.yaml) 的接收者。
+私钥不要提交到 Git。
 
-#### 选项 A：迁移 / 恢复已有配置（推荐）
-如果你已经有备份的 Age 密钥对，只需将 `keys.txt` 复制到目标位置：
+直接编辑加密文件：
 
-```bash
-mkdir -p ~/.config/sops/age
-cp /path/to/your/backup/keys.txt ~/.config/sops/age/keys.txt
-chmod 600 ~/.config/sops/age/keys.txt
-
+```sh
+sops edit system/secrets/secrets.yaml  # API 和消息服务凭据
+sops edit system/secrets/soul.yaml     # Hermes 人格设置
+sops edit system/secrets/proxy.yaml    # 代理来源清单
 ```
 
-#### 选项 B：全新初始化
+保存时 sops 会重新加密文件，重建系统后应用修改。
+密钥名称及服务属主见 [sops.nix](system/programs/sops.nix)。
 
-如果是为全新配置生成新的密钥对：
+## 仓库导航
 
-1. 生成新的 Age 密钥：
-```bash
-mkdir -p ~/.config/sops/age
-age-keygen -o ~/.config/sops/age/keys.txt
+| 目录 | 内容 |
+|---|---|
+| [system/](system) | 系统服务、硬件、网络策略和软件包 |
+| [home/](home) | Home Manager 模块和用户应用 |
+| [overlays/](overlays) | 软件包覆盖 |
+| [local-data/](local-data) | 纳入版本管理的构建输入，如 DNS 黑名单快照 |
+| [scripts/](scripts) | 配置复制工具和黑名单刷新脚本 |
+| [tests/](tests) | 软件包、策略和隔离 VM 检查 |
+| [docs/](docs/CN/README_CN.md) | 架构、配置、日常操作和维护手册 |
 
-```
-
-> **安全警告：** `keys.txt` 是你的私钥。切勿提交到 Git 或公开暴露！请备份到安全位置。
-
-2. 从输出或文件中获取你的公钥：
-```bash
-# 公钥格式：age1...
-
-```
-
-3. 在配置根目录创建或更新 `.sops.yaml`：
-```yaml
-creation_rules:
-  - path_regex: secrets\.yaml$
-    key_groups:
-      - age:
-          - "age1ql30gw8xxxxxxxxxxxxxxxxxxxxxxxxxxx" # 在此粘贴你的公钥
-
-```
-
-4. 创建并编辑加密密钥文件：
-```bash
-cd /etc/nixos/system/secrets
-sops secrets.yaml
-
-```
-
-以 YAML 格式添加你的 API 密钥（例如 `hermes_api_key: "sk-proj-1234567890abcdef"`）。保存后文件内容会自动加密。
-
-> 之后添加新密钥（所有密钥均为 YAML 顶层条目）：
-
-```bash
-cd /etc/nixos/system/secrets
-
-# 命令行直接设置。key 使用方括号索引语法，value 必须是合法 JSON 字符串（外层多加一层引号）：
-sops set secrets.yaml '["github_token"]' '"ghp_xxx"'
-
-# 从文件读取（长值，如 ssh 私钥）
-sops set --value-file secrets.yaml '["ssh_host_ed25519_key"]' /tmp/key
-
-# 或从 stdin 读取
-echo -n 'ghp_xxx' | sops set --value-stdin secrets.yaml '["github_token"]'
-
-# 交互式：编辑器打开明文，保存后自动重新加密
-sops secrets.yaml
-
-# 验证
-sops -d secrets.yaml
-```
-
-### 2. 运行 Hermes
-
-部署 NixOS 配置（`update`）后，可用以下任意一种方式启动 Hermes：
-
-```bash
-# Nushell 辅助函数（以'sudo -u hermes -i hermes'运行，带沙箱提示）
-hermes
-
-# 纯 bash
-sudo -u hermes -i hermes
-
-```
-
----
-
-## 自定义
-
-* **系统配置**：编辑 `system/config/` 下的文件
-* **用户配置**：编辑 `home/config/` 下的文件
-* **程序**：修改 `system/programs/` 和 `home/programs/`
-* **硬件**：调整 `system/hardware/` 中的设置
-* **应用**：见 `home/userpkgs/`、`overlays/` 和 `system/systempkgs/`
-
----
-
-## 依赖
-
-* NixOS 26.05 及 Unstable
-* Home Manager
-* Noctalia shell
-* Disko
-* Impermanence
-* Nix-Flatpak
-* Hermes Agent
-* Sops-Nix
-* MCP-NixOS
-* LLM-Agents
-
----
+修改网络组件或更新相关依赖前，可按[维护手册](docs/CN/maintenance_CN.md)选择检查，并核对本地补丁。
 
 ## 许可证
 
-本项目基于 MIT License 授权 - 详见 LICENSE 文件。
+本项目基于 MIT License 授权 - 详见 [LICENSE](LICENSE) 文件。

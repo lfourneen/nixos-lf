@@ -4,7 +4,9 @@ English | [简体中文](CN/operations_CN.md) | [Documentation](README.md)
 
 ## Source registration
 
-The private source catalog is the Sops-encrypted [system/secrets/proxy.yaml](../system/secrets/proxy.yaml), rendered at activation to root-private `/run/secrets/proxy_source` (mode 0400). In the Sops editor, `proxy_source` is a JSON string containing the sources array:
+The private source catalog is the Sops-encrypted [system/secrets/proxy.yaml](../system/secrets/proxy.yaml), rendered at activation to root-private `/run/secrets/proxy_source` (mode 0400).
+
+In the Sops editor, `proxy_source` is a JSON string containing the sources array:
 
 ```yaml
 proxy_source: |-
@@ -24,37 +26,116 @@ proxy_source: |-
   }
 ```
 
-Each root-approved source has one main `subscription` and optional HTTP providers. Register additional subscriptions as separate IDs; they do not have to be declared as providers of the first subscription. Providers within one source must still match its main YAML's provider names and URLs. `redirects` may list at most four exact HTTPS destinations. The default UA is `clash.meta`; an endpoint may add `"user-agent":"clash.meta"`. An optional per-source `"gui-profile":"REMOTE_PROFILE_UID"` binds a GUI profile's exact UID, not its displayed name. Review that UID in the local `profiles.yaml`; the mapping does not import its URL or YAML.
+Each source has one main `subscription` and optional HTTP providers.
+Give an additional subscription its own ID.
+Providers within a source must match the names and URLs declared by that subscription.
 
-Run `sops system/secrets/proxy.yaml` and append another object to `sources` for each new subscription. IDs must be unique; the catalog accepts 1–256 sources. The legacy single-source JSON object remains supported. After deploying and activating the edited configuration, `/run/secrets/proxy_source` contains the catalog. Editing the checkout alone does not update that runtime file or any registration. Review and register the intended ID:
+Optional endpoint settings include up to four exact HTTPS `redirects` and a `user-agent` value, defaulting to `clash.meta`.
+A source's `"gui-profile":"REMOTE_PROFILE_UID"` maps the exact UID from the GUI's local `profiles.yaml`.
+The mapping authorizes selection, without importing the GUI's URL or YAML.
 
-```sh
-sudo clash-source review /run/secrets/proxy_source --id primary
-sudo clash-source register /run/secrets/proxy_source --id primary --digest REVIEWED_DIGEST --previous none
-sudo systemctl start clash-source-refresh.service
-clash-on
-```
+### Register a source
 
-`review FILE` without `--id` lists every entry’s digest and previous registered revision, without endpoints or credentials. A catalog containing multiple entries requires `--id` for registration; approving one entry grants nothing to the others. The canonical revision covers that entry, so adding or editing another source does not change it.
+Run `sops edit system/secrets/proxy.yaml` and add an object to `sources` for each subscription.
+IDs must be unique, and the catalog supports 1–256 entries.
+Rebuild and activate the configuration to update `/run/secrets/proxy_source`, then review and register the source by ID:
 
-`review` returns the previous revision of that ID; use it instead of `none` when updating an existing registration. A mismatched revision or candidate digest refuses registration. Updating one source invalidates only its download pointer and semantic approval, retaining its settled audit baseline. The first registration becomes selected; later registrations remain available without changing the selection. Existing single-source state migrates on the next broker command.
+1. Review the source and note the returned digest:
 
-For a newly added `secondary`, review its own digest and register it once. These commands assume the updated catalog has already been deployed:
+   ```sh
+   sudo clash-source review /run/secrets/proxy_source --id primary
+   ```
+
+2. Replace `REVIEWED_DIGEST` and register the source:
+
+   ```sh
+   sudo clash-source register /run/secrets/proxy_source --id primary --digest REVIEWED_DIGEST --previous none
+   ```
+
+3. Fetch the registered configuration:
+
+   ```sh
+   sudo systemctl start clash-source-refresh.service
+   ```
+
+4. Request proxy mode:
+
+   ```sh
+   clash-on
+   ```
+
+`review FILE` without `--id` lists every entry’s digest and previous registered revision, without endpoints or credentials.
+A catalog containing multiple entries requires `--id` for registration.
+Approving one entry grants nothing to the others.
+The canonical revision covers that entry, so adding or editing another source does not change it.
+
+`review` returns the previous revision of that ID.
+Use it instead of `none` when updating an existing registration.
+A mismatched revision or candidate digest refuses registration.
+Updating one source invalidates only its download pointer and semantic approval, retaining its settled audit baseline.
+The first registration becomes selected.
+Later registrations remain available without changing the selection.
+Existing single-source state migrates on the next broker command.
+
+### Add and switch sources
+
+For a newly added `secondary`, review its own digest and register it once.
+
+These commands assume the updated catalog has already been deployed:
+
+Review and register it:
 
 ```sh
 sudo clash-source review /run/secrets/proxy_source --id secondary
 sudo clash-source register /run/secrets/proxy_source --id secondary --digest REVIEWED_DIGEST --previous none
+```
+
+Then inspect the registered sources and select one:
+
+```sh
 sudo clash-source list
 sudo clash-source use secondary
 ```
 
-Later switches use only `sudo clash-source use primary` or `sudo clash-source use secondary`; no re-registration is needed. Deleting an entry from the encrypted catalog does not revoke an existing registration. Use the explicit `revoke` command below.
+Later switches use only `sudo clash-source use primary` or `sudo clash-source use secondary`.
+No re-registration is needed.
+Deleting an entry from the encrypted catalog does not revoke an existing registration.
+Use the explicit `revoke` command below.
 
-`list` reports the requested selection, registered revisions and each settled digest without endpoints or credentials. `use` fetches the new source before atomically selecting it and queues the refresh service; an optional `--revision REVIEWED_DIGEST` rejects a changed registration. Failed fetching leaves the prior selection intact. The shared lock serializes source registration, selection and staging. Parser, audit and health validation still gate activation; the previous authorized runtime remains a fallback. `proxy-status` shows `Active source`, which may differ from the request during validation or fallback. Switching back reuses that source's retained audit baseline. To remove an inactive registration and its per-source state, run `sudo clash-source revoke secondary`; select another source before revoking the selected one. Stopping proxy intent explicitly retires a running fallback immediately. Legacy files copied during migration remain as root-private backups and are outside this command.
+Use `list` to inspect the requested source, registered revisions and settled digests.
+`use` fetches a source before selecting it and scheduling refresh.
+`--revision REVIEWED_DIGEST` refuses a registration that has changed since review.
+Fetch failure leaves the previous selection in place.
 
-The `clash-source-select.path` unit watches the GUI's `profiles.yaml`. Switching to a mapped UID requests the corresponding registered source. Unknown profiles leave the selection unchanged; changing a GUI URL, YAML or script grants no additional authority. Inspect `journalctl -u clash-source-select -u clash-source-refresh` when the GUI selection and active source differ. In A, selection and fetching do not request B; use `clash-on` deliberately.
+`proxy-status` shows the running source as `Active source`.
+It can differ from the requested source while the candidate is being checked or an earlier snapshot is running as fallback.
+Each source keeps its own accepted baseline across switches.
 
-`clash-source refresh` only prepares a candidate. The system service also restarts the managed helper/core while proxy intent is active; its timer runs every 30 minutes. Worker failures identify `fetch`, `parse`, `render` or `pin-addresses`; content-audit findings appear separately in `proxy-status`. Unresolvable nodes may be dropped up to `max(1, node_count // 5)`; private answers still refuse the candidate. Fetch/parse/audit failure preserves a valid runtime fallback; no fallback leaves C. If C prevents source recovery, deliberately select A, fetch the registered source, then request B. DNS does not downgrade automatically.
+To remove an unused source and its state, run `sudo clash-source revoke secondary`.
+Select another source before revoking the current one.
+To stop a running fallback immediately, use `clash-off`.
+
+The `clash-source-select.path` unit watches the GUI's `profiles.yaml`.
+Switching to a mapped UID requests the corresponding registered source.
+Unknown profiles leave the selection unchanged.
+Changing a GUI URL, YAML or script grants no additional authority.
+Inspect `journalctl -u clash-source-select -u clash-source-refresh` when the GUI selection and active source differ.
+In A, selection and fetching do not request B.
+Use `clash-on` deliberately.
+
+`clash-source refresh` only prepares a candidate.
+The system service also restarts the managed helper/core while proxy intent is active.
+Its timer runs every 30 minutes.
+Worker failures identify `fetch`, `parse`, `render` or `pin-addresses`.
+Content-audit findings appear separately in `proxy-status`.
+Unresolvable nodes may be dropped up to `max(1, node_count // 5)`.
+Private answers still refuse the candidate.
+Fetch/parse/audit failure preserves a valid runtime fallback.
+No fallback leaves C.
+If C prevents source recovery, deliberately select A, fetch the registered source, then request B.
+DNS does not downgrade automatically.
+
+### Approve a changed source
 
 For an intentional semantic change, inspect the private source diff and the sanitized candidate/settled digests, then approve only the required categories:
 
@@ -63,37 +144,93 @@ sudo clash-source approve --digest CANDIDATE_DIGEST --baseline SOURCE_SETTLED_DI
 sudo systemctl start clash-source-refresh.service
 ```
 
-Read the selected source’s baseline digest from `sudo clash-source list`. Supported approval categories are `node_identity`, `node_authentication`, `node_transport`, `sensitive_route`. Approval expires after one hour, is consumed on commit and does not bypass static safety checks. Check `proxy-status` and actual B readiness after the observation window.
+Read the selected source’s baseline digest from `sudo clash-source list`.
+Supported approval categories are `node_identity`, `node_authentication`, `node_transport`, `sensitive_route`.
+Approval expires after one hour, is consumed on commit and does not bypass static safety checks.
+Check `proxy-status` and actual B readiness after the observation window.
 
-For portal login, deliberately enter A and run `firefox-portal http://192.168.1.1/` with the actual literal portal address. It has fresh data, no extensions, a single-IP port-80/443 relay and a 15-minute lifetime. Redirects to another address fail; explicitly start another session for that address after reviewing it. Closing the session removes its data. Daily Firefox can stay in A; resume B before launching identity Firefox. Keep an offline bootable generation and registration-key backup; this command does not create a recovery generation or alter DNS fallback policy.
+### Portal login
 
+For portal login, deliberately enter A and run `firefox-portal http://192.168.1.1/` with the actual literal portal address.
+It has fresh data, no extensions, a single-IP port-80/443 relay and a 15-minute lifetime.
+Redirects to another address fail.
+Explicitly start another session for that address after reviewing it.
+Closing the session removes its data.
+Daily Firefox can stay in A.
+Resume B before launching identity Firefox.
+Keep an offline bootable generation and registration-key backup.
+This command does not create a recovery generation or alter DNS fallback policy.
 
 ## Switching modes
 
-Use the Nushell commands `clash-on` and `clash-off`. They record privileged intent, manage the GUI/helper lifecycle and wait for coherent state. Closing the GUI alone leaves proxy intent active and therefore enters C when the core stops.
+Use the Nushell commands `clash-on` and `clash-off`.
+They record privileged intent, manage the GUI/helper lifecycle and wait for coherent state.
+Closing the GUI alone leaves proxy intent active and therefore enters C when the core stops.
 
-`sudo proxy-control on` and `sudo proxy-control off` are the underlying system controls. `on` opens the single-use configuration-import window and starts the helper; the controlled-source host starts the core from its registered candidate; compatibility mode still lets the GUI supply/start it. `off` clears authorization and stops the helper. The desktop commands also handle GUI processes. Starting only `clash-verge` in A does not authorize a core.
+`sudo proxy-control on` and `sudo proxy-control off` are the underlying system controls.
+`on` opens the single-use configuration-import window and starts the helper.
+The controlled-source host starts the core from its registered candidate.
+Compatibility mode still lets the GUI supply/start it.
+`off` clears authorization and stops the helper.
+The desktop commands also handle GUI processes.
+Starting only `clash-verge` in A does not authorize a core.
 
-```sh
-proxy-control preflight
-proxy-policy
-proxy-control status auto --check
-proxy-control status proxy
-proxy-control wait proxy
-proxy-control status direct
-firefox --check
-proxy-inspect
-```
+| Command | Purpose |
+|---|---|
+| `proxy-control preflight` | Check configuration and assets without changing intent |
+| `proxy-policy` | Show network permissions and policy |
+| `proxy-control status auto --check` | Check readiness for the requested mode |
+| `proxy-control status proxy` | Show proxy status |
+| `proxy-control wait proxy` | Wait for proxy readiness |
+| `proxy-control status direct` | Show direct-access status |
+| `firefox --check` | Check browser prerequisites without opening a window |
 
-`status auto` follows operator intent; `--check` returns a failing exit code when the JSON is not ready. The JSON includes phase, reason, DNS allowance and next action. `wait` reports progress every ten seconds. `proxy-status` displays an English panel with mode, egress policy, DNS, verification age, relay, alarms and the last preparation result. It reads the shared contract; `--plain` selects log-friendly text and `--json` returns structured data. `--no-color` and `NO_COLOR` disable color. `egress-audit` supplies additional active diagnostics. `proxy-inspect` only reads state, service resources and link/queue/offload statistics; it sends no probe traffic.
+`status auto` follows the requested mode.
+`--check` returns nonzero when the system is not ready, and `wait` reports progress every ten seconds.
+
+| Tool | Output |
+|---|---|
+| `proxy-status` | Mode, egress policy, DNS, readiness, alarms and the latest preparation result |
+| `proxy-status --plain` | Plain text suitable for logs |
+| `proxy-status --json` | Structured status |
+| `proxy-inspect` | Passive service, link, queue and resource diagnostics |
+| `egress-audit` | Additional active network probes |
+
+Use `--no-color` or `NO_COLOR` to disable color in the status panel.
+
+`proxy-policy` shows native UID/interface/CIDR grants together with core DIRECT ranges, remote target grants and subscription trust.
+These are independent permission planes.
+A restricted native policy combined with broad core DIRECT ranges still allows clients reaching that local proxy inlet to use those core ranges.
+For host application LAN restriction, configure both `directEgress.mode="restricted"` and `localTargetCidrs=[]`, then declare the required grants.
+`proxy-inspect` reports command-failure categories and exit codes without exposing arbitrary service stderr.
 
 ## Remote desktop
 
-Sunshine is enabled and starts with `graphical-session.target`, exposing the current session as **Desktop**. After deployment, log into the desktop and open `https://localhost:47990` on the computer to set credentials and approve Moonlight's pairing PIN. Both the phone and computer must be logged into the same permitted tailnet. Add the computer's Tailscale IP manually in Moonlight; discovery is not required. The same overlay address works on LAN and over the internet, subject to the tailnet's access policy. Direct access by physical LAN IP is not enabled by the default empty `trustedLanCidrs`.
+Sunshine is enabled and starts with `graphical-session.target`, exposing the current session as **Desktop**.
+After deployment, log into the desktop and open `https://localhost:47990` on the computer to set credentials and approve Moonlight's pairing PIN.
+Both the phone and computer must be logged into the same permitted tailnet.
+Add the computer's Tailscale IP manually in Moonlight.
+Discovery is not required.
+The same overlay address works on LAN and over the internet, subject to the tailnet's access policy.
+Direct access by physical LAN IP is not enabled by the default empty `trustedLanCidrs`.
 
-The web UI accepts only local clients; it is not a default tailnet firewall allowance. UPnP is disabled. Streaming uses the explicit tailnet TCP/UDP port lists in [options.nix](../system/config/network/options.nix). Configure phone-to-computer grants in the Tailscale admin console separately; that policy is not stored in this repository. A and healthy B allow remote desktop; C cuts the session, including existing UDP flows and decrypted tailnet input. Use `clash-off` locally when direct A is intended.
+The web UI accepts only local clients.
+It is not a default tailnet firewall allowance.
+UPnP is disabled.
+Streaming uses the explicit tailnet TCP/UDP port lists in [options.nix](../system/config/network/options.nix).
+Configure phone-to-computer grants in the Tailscale admin console separately.
+That policy is not stored in this repository.
+A and healthy B allow remote desktop.
+C cuts the session, including existing UDP flows and decrypted tailnet input.
+Use `clash-off` locally when direct A is intended.
 
-[sunshine.nix](../system/programs/sunshine.nix) selects the CUDA build variant. The configured `https://cache.nixos-cuda.org` substituter supplies binaries matching the derivation selected by the lock and package options. Check cache availability with `nix build --max-jobs 0 --no-link .#nixosConfigurations.lfour.config.services.sunshine.package`; this command disables local compilation. Credentials and pairing state reside in the user's Sunshine directory; the Desktop entry and service settings are declarative. Check hardware capture/encoding and phone streaming in the deployed graphical session.
+[sunshine.nix](../system/programs/sunshine.nix) selects the CUDA build variant.
+The configured `https://cache.nixos-cuda.org` substituter supplies binaries matching the derivation selected by the lock and package options.
+Check cache availability with `nix build --max-jobs 0 --no-link .#nixosConfigurations.lfour.config.services.sunshine.package`.
+This command disables local compilation.
+Credentials and pairing state reside in the user's Sunshine directory.
+The Desktop entry and service settings are declarative.
+Check hardware capture/encoding and phone streaming in the deployed graphical session.
 
 ```sh
 systemctl --user status sunshine.service
@@ -102,13 +239,15 @@ sudo tailscale netcheck
 sudo tailscale ping <phone-tailnet-name-or-IP>
 ```
 
-For the optional restricted B policy, Unbound DoT switch and time destination pins, see [Direct egress](egress.md). Restricted B retains negotiated Sunshine media; C always cuts remote control.
+For the optional restricted B policy, Unbound DoT switch and time destination pins, see [Direct egress](egress.md).
+Restricted B retains negotiated Sunshine media.
+C always cuts remote control.
 
-On Tailscale upgrades, run `tailscale-transport`, `proxy-rules`, `proxy-egress-rules`, `proxy-tailscale-vm` and `proxy-egress-vm`. The source contract check is also required by normal system builds. `0x80000` is Tailscale's upstream Linux socket mark, stable across network changes but checked on upgrades. If the mark is unavailable or bind-to-device is forced, B does not reopen all-root UDP: diagnose marking/permissions and use intentional A if needed.
-
-`proxy-policy` shows native UID/interface/CIDR grants together with core DIRECT ranges, remote target grants and subscription trust. These are independent permission planes. A restricted native policy combined with broad core DIRECT ranges still allows clients reaching that local proxy inlet to use those core ranges. For host application LAN restriction, configure both `directEgress.mode="restricted"` and `localTargetCidrs=[]`, then declare the required grants. Dedicated guest accounts retain their separate boundary.
-
-`proxy-inspect` reports command-failure categories and exit codes without exposing arbitrary service stderr.
+Tailscale marking failures leave B blocking unmarked root UDP.
+Check service permissions and socket marks.
+Use `clash-off` locally if direct access is needed.
+Upgrade checks are listed in [maintenance](maintenance.md#validation).
+Dedicated guest accounts retain their separate boundary.
 
 ## State and diagnosis
 
@@ -121,19 +260,28 @@ On Tailscale upgrades, run `tailscale-transport`, `proxy-rules`, `proxy-egress-r
 | `/run/dns-upstream/state.json` | DNS mode/reason, encryption policy, session, budget, deadline and override |
 | `/run/dns-policy/state.json` | Broker lease state and applied generation |
 | `/run/gost-relay/state.json` | Relay observation and applied generation |
-| `/run/netsec/alerts/*.json` | Per-owner alarms; `/run/netsec/failed` lists owners |
+| `/run/netsec/alerts/*.json` | Per-owner alarms. `/run/netsec/failed` lists owners |
 | `/run/proxy-mode/intent`, `core-seen` | Boot-scoped operator intent and crash-detection marker |
 | `/run/proxy-mode/authorized-config`, `config-digest`, `authorize-window` | Root-only snapshot authority and single-use import grant |
-| `/run/proxy-mode/profile-refresh.json` | Last refresh result, digests, fixed reason, sanitized audit counts and 20-entry history; mode 0644 |
-| `/run/proxy-mode/profile-refresh-pin.json` | Rejected candidate digest and one-hour TTL; mode 0644 |
+| `/run/proxy-mode/profile-refresh.json` | Last refresh result, digests, fixed reason, sanitized audit counts and 20-entry history. Mode 0644 |
+| `/run/proxy-mode/profile-refresh-pin.json` | Rejected candidate digest and one-hour TTL. Mode 0644 |
 | `/run/proxy-mode/profile-refresh-verifying.json` | Root-only pending transaction with the previous snapshot path |
 | `/run/proxy-mode/profile-refresh-settled.json`, `profile-refresh-commit.json`, `profile-refresh-restart.json` | Root-only settled authority, interrupted commit recovery and pending core recovery |
-| `/run/proxy-mode/effective-config.json`, `boot-id` | Normalized effective YAML digest bound to the shared boot identity; `effective-config-sha256` is a compatibility mirror |
+| `/run/proxy-mode/effective-config.json`, `boot-id` | Normalized effective YAML digest bound to the shared boot identity. `effective-config-sha256` is a compatibility mirror |
 | `/run/proxy-mode/health-failure.json` | Last failed probe with fixed reason, layer timings, boot identity and snapshot digest |
 
-Atomic JSON is the consumer interface. Separate `status`, `reason`, `version`, `result` and `verified-version` files are compatibility mirrors. Reason-only updates change `revision`; kernel-policy commits change `policy_version`, also exposed as `version`. Results spanning a newer generation are discarded.
+Atomic JSON is the consumer interface.
+Separate `status`, `reason`, `version`, `result` and `verified-version` files are compatibility mirrors.
+Reason-only updates change `revision`.
+Kernel-policy commits change `policy_version`, also exposed as `version`.
+Results spanning a newer generation are discarded.
 
-Readiness requires current-generation mode, DNS, broker and relay observations, no active alarm and fresh verification. Broker state must be `applied`; `suspended`/`revoked` and DNS `degraded-dot-only` are not ready. Consumer freshness defaults to 120 seconds; verifier freshness defaults to 420 seconds, covering its five-minute timer and bounded execution. Boot identity and monotonic timestamps reject cross-boot, future and stale records.
+Readiness requires current-generation mode, DNS, broker and relay observations, no active alarm and fresh verification.
+Broker state must be `applied`.
+`suspended`/`revoked` and DNS `degraded-dot-only` are not ready.
+Consumer freshness defaults to 120 seconds.
+Verifier freshness defaults to 420 seconds, covering its five-minute timer and bounded execution.
+Boot identity and monotonic timestamps reject cross-boot, future and stale records.
 
 | Reason | Where to look |
 |---|---|
@@ -152,17 +300,24 @@ cat /run/dns-upstream/state.json
 cat /var/lib/dns-upstream/history.log
 ```
 
-Some service logs and authority files require sudo. Do not publish snapshots or subscription-bearing configuration as diagnostic output.
+Some service logs and authority files require sudo.
+Do not publish snapshots or subscription-bearing configuration as diagnostic output.
 
 ### Drop counters
 
-Run `sudo proxy-inspect --drops` for a focused JSON view of existing refusal counters in `inet lf_filter`. Ordinary `proxy-inspect` includes the same view under `drops`. The command reads local state and nftables without changing rules, resetting counters or sending probes.
+Run `sudo proxy-inspect --drops` for a focused JSON view of existing refusal counters in `inet lf_filter`.
+Ordinary `proxy-inspect` includes the same view under `drops`.
+The command reads local state and nftables without changing rules, resetting counters or sending probes.
 
 ```sh
 sudo proxy-inspect --drops | jq '{available,error,policy,state_consistent,groups:[.groups[] | select((.packets // 0) > 0)]}'
 ```
 
-Each group identifies a stable `reason`, a `role`, its `chain`, and counted packets/bytes. Routed guest roles use the configured interface names. The policy record supplies the observed mode, transition reason and generation; `state_consistent=false` means the state was unavailable or changed during collection. This view does not establish readiness.
+Each group identifies a stable `reason`, a `role`, its `chain`, and counted packets/bytes.
+Routed guest roles use the configured interface names.
+The policy record supplies the observed mode, transition reason and generation.
+`state_consistent=false` means the state was unavailable or changed during collection.
+This view does not establish readiness.
 
 | Reason | Counted refusal |
 |---|---|
@@ -172,46 +327,102 @@ Each group identifies a stable `reason`, a `role`, its `chain`, and counted pack
 | `dns-client-policy` | Application access to an internal resolver inlet |
 | `dns-listener-identity`, `proxy-listener-identity` | Replies from an unauthorized local socket UID |
 
-Counts cover only drops with counters in the listed chains. `uncounted_rules` reports selected drops without counters; `installed=false` and null counts mean the chain is absent. Zero counts do not prove that an inlet is enabled or healthy. Reading/parsing failure yields `available=false`, a fixed error category and no groups; `--drops` exits 1. Without the required nftables privileges, the error is `permission-denied`.
+Counts cover only drops with counters in the listed chains.
+`uncounted_rules` reports selected drops without counters.
+`installed=false` and null counts mean the chain is absent.
+Zero counts do not prove that an inlet is enabled or healthy.
+Reading/parsing failure yields `available=false`, a fixed error category and no groups.
+`--drops` exits 1.
+Without the required nftables privileges, the error is `permission-denied`.
 
-Counters start at each rule's latest installation or flush; reload, repair and mode changes can reset some of them. Compare snapshots with that lifecycle and the policy generation in mind. Historical totals do not attribute a particular connection or its original/NAT destination to the current mode. Output has a fixed group count for the configured roles and contains no packet log, target addresses or raw rules; packet volume changes numeric totals only.
+Counters start at each rule's latest installation or flush.
+Reload, repair and mode changes can reset some of them.
+Compare snapshots with that lifecycle and the policy generation in mind.
+Historical totals do not attribute a particular connection or its original/NAT destination to the current mode.
+Output has a fixed group count for the configured roles and contains no packet log, target addresses or raw rules.
+Packet volume changes numeric totals only.
 
 ### Refresh status
 
-`proxy-status` reports the update schedule in `Auto update`, the latest refresh in `Profile refresh` and `Update result`, and the GUI-to-snapshot digest comparison in `Profile vs runtime`. `proxy-policy` includes `profile_refresh`. `proxy-inspect` exposes up to 20 sanitized refresh history entries.
+`proxy-status` reports the update schedule in `Auto update`, the latest refresh in `Profile refresh` and `Update result`, and the GUI-to-snapshot digest comparison in `Profile vs runtime`.
+`proxy-policy` includes `profile_refresh`.
+`proxy-inspect` exposes up to 20 sanitized refresh history entries.
 
-`verifying` means the imported snapshot is awaiting its health result. `fallback` means the candidate was rejected and the prior authorized snapshot was retained. `rolled_back` means snapshot authority was restored and a helper restart was requested. Check the network readiness fields to confirm that the core recovered. A digest difference describes different content; it does not establish which file is newer.
+`verifying` means the imported snapshot is awaiting its health result.
+`fallback` means the candidate was rejected and the prior authorized snapshot was retained.
+`rolled_back` means snapshot authority was restored and a helper restart was requested.
+Check the network readiness fields to confirm that the core recovered.
+A digest difference describes different content.
+It does not establish which file is newer.
 
-Subscription changes use the same root policy. New hosts overrides need matching `subscriptionAuditAllowedHosts` entries; switching a subscription does not expand that permission. Probe targets and expected routes are configurable. If protected routes remain indeterminate, `enforce` retains the prior snapshot; use the audit categories to identify the constraint before changing policy.
+Subscription changes use the same root policy.
+New hosts overrides need matching `subscriptionAuditAllowedHosts` entries.
+Switching a subscription does not expand that permission.
+Probe targets and expected routes are configurable.
+If protected routes remain indeterminate, `enforce` retains the prior snapshot.
+Use the audit categories to identify the constraint before changing policy.
 
-The user notification timer reads local files every five minutes. It combines refresh failures, content-audit findings, overdue updates, content drift and stale subscriptions into one message per round. Refresh failures are deduplicated by full result and digest; overdue and drift reminders follow state transitions; stale reminders are limited to once per day. Deduplication state is stored privately in `$XDG_STATE_HOME/clash-verge/refresh-notified.json` and advances only after delivery succeeds. The timer does not fetch subscriptions.
+The user notification timer reads local files every five minutes.
+It combines refresh failures, content-audit findings, overdue updates, content drift and stale subscriptions into one message per round.
+Refresh failures are deduplicated by full result and digest.
+Overdue and drift reminders follow state transitions.
+Stale reminders are limited to once per day.
+Deduplication state is stored privately in `$XDG_STATE_HOME/clash-verge/refresh-notified.json` and advances only after delivery succeeds.
+The timer does not fetch subscriptions.
 
 ### Subscription reachability
 
-Run `proxy-subscription --check --json` to check the current subscription explicitly. The command reads the URL from the GUI index and reports HTTP status, transport, elapsed time, bytes, HTTPS and redirect count. Supply `--etag` to send a conditional GET; without a validator it sends an ordinary GET.
+Run `proxy-subscription --check --json` to check the current subscription explicitly.
+The command reads the URL from the GUI index and reports HTTP status, transport, elapsed time, bytes, HTTPS and redirect count.
+Supply `--etag` to send a conditional GET.
+Without a validator it sends an ordinary GET.
 
-The check first uses the direct path permitted by the current network policy and tries the configured mixed port after a transport failure. A complete HTTP response such as 403 is reported without a proxy retry. The command does not write profiles, import configuration or advance update timestamps.
+The check first uses the direct path permitted by the current network policy and tries the configured mixed port after a transport failure.
+A complete HTTP response such as 403 is reported without a proxy retry.
+The command does not write profiles, import configuration or advance update timestamps.
 
-The total deadline defaults to 15 seconds and covers name resolution, both transport attempts, redirects and body reads. `--timeout` accepts 1–120 seconds. Responses are limited to 8 MiB and three same-origin redirects; cross-origin redirects and HTTPS downgrades are refused. Output excludes URLs, response bodies and validator contents. `proxy-inspect --deep` adds service restart counts and a fixed journal query for privileged troubleshooting.
+The total deadline defaults to 15 seconds and covers name resolution, both transport attempts, redirects and body reads.
+`--timeout` accepts 1–120 seconds.
+Responses are limited to 8 MiB and three same-origin redirects.
+Cross-origin redirects and HTTPS downgrades are refused.
+Output excludes URLs, response bodies and validator contents.
+`proxy-inspect --deep` adds service restart counts and a fixed journal query for privileged troubleshooting.
 
 ## Coordination and firewall repair
 
-Socket-directory events, TUN link monitoring, nft events, NetworkManager dispatch and dhcpcd hooks wake the supervisors. Adaptive polling backs them up: two seconds during transitions, capped at five seconds in enforced modes and 60 seconds in direct mode. The mode supervisor has a 90-second watchdog. A cancelled probe does not count as a failed observation.
+Socket-directory events, TUN link monitoring, nft events, NetworkManager dispatch and dhcpcd hooks wake the supervisors.
+Adaptive polling backs them up: two seconds during transitions, capped at five seconds in enforced modes and 60 seconds in direct mode.
+The mode supervisor has a 90-second watchdog.
+A cancelled probe does not count as a failed observation.
 
-Build-time [expected rules](../system/config/network/proxy/coordinator.nix) are generated with the same nft implementation inside an LKL userspace kernel. The verifier compares owned tables, hooks, priorities, policies and full ordered expressions. Handles, counters, set-element order and tightly bounded authorized DNS leases are normalized. Read/parse errors are failures, never empty successes. A correctly installed C passes even with no core.
+Build-time [expected rules](../system/config/network/proxy/coordinator.nix) are generated with the same nft implementation inside an LKL userspace kernel.
+The verifier compares owned tables, hooks, priorities, policies and full ordered expressions.
+Handles, counters, set-element order and tightly bounded authorized DNS leases are normalized.
+Read/parse errors are failures, never empty successes.
+A correctly installed C passes even with no core.
 
-`nftables-verify` publishes failure/alarms but exits zero so repair/rebuild jobs can proceed. Check the JSON verdict, not just unit exit status. Each component clears only its own alarm. Queued verification requests survive a busy round.
+`nftables-verify` publishes failure/alarms but exits zero so repair/rebuild jobs can proceed.
+Check the JSON verdict, not just unit exit status.
+Each component clears only its own alarm.
+Queued verification requests survive a busy round.
 
 ```sh
 sudo systemctl restart nftables.service
 sudo systemctl start nftables-verify.service
 ```
 
-Restart/reload reinstalls the owned static policy plus the safety mode atomically; proxy intent goes through C before health reopens B. Stopping nftables leaves its policy installed. `nftables-verify-repair.service` performs explicit repair and recheck; `nftables-recover` retries a failed nftables unit. Avoid flushing the global ruleset.
+Restart/reload reinstalls the owned static policy plus the safety mode atomically.
+Proxy intent goes through C before health reopens B.
+Stopping nftables leaves its policy installed.
+`nftables-verify-repair.service` performs explicit repair and recheck.
+`nftables-recover` retries a failed nftables unit.
+Avoid flushing the global ruleset.
 
 ## Firewall table migration
 
-`proxy-control migrate-firewall` explicitly removes `inet filter`, `ip proxymode_nat` and `ip6 proxymode_nat` while installing the [reserved tables](network.md#firewall-lifecycle). Ordinary startup, reload and repair leave these three names untouched. Run migration only after confirming that the tables belong to this configuration.
+`proxy-control migrate-firewall` explicitly removes `inet filter`, `ip proxymode_nat` and `ip6 proxymode_nat` while installing the [reserved tables](network.md#firewall-lifecycle).
+Ordinary startup, reload and repair leave these three names untouched.
+Run migration only after confirming that the tables belong to this configuration.
 
 Inspect each migration target and confirm its owner:
 
@@ -228,17 +439,38 @@ sudo proxy-control migrate-firewall
 sudo systemctl start nftables-verify.service
 ```
 
-The root command holds the operator and policy locks and commits the three deletions, static rules and safety mode in one nft transaction. A rejected transaction preserves the installed rules and migration targets. Missing targets are accepted, so repeated execution is supported while those names remain assigned to this configuration.
+The root command holds the operator and policy locks and commits the three deletions, static rules and safety mode in one nft transaction.
+A rejected transaction preserves the installed rules and migration targets.
+Missing targets are accepted, so repeated execution is supported while those names remain assigned to this configuration.
 
-Proxy intent or a running core installs C first; the supervisor opens B after health checks pass. Direct intent with no core installs A. Migration preserves intent, authorization and the running core. Use the diagnostics above to check mode and verification JSON. Cleanup occurs only during this command. Tables owned by other services stay under their owners' control.
+Proxy intent or a running core installs C first.
+The supervisor opens B after health checks pass.
+Direct intent with no core installs A.
+Migration preserves intent, authorization and the running core.
+Use the diagnostics above to check mode and verification JSON.
+Cleanup occurs only during this command.
+Tables owned by other services stay under their owners' control.
 
 ## Core namespace recovery
 
-The host `Mihomo` interface is the managed veth. Inspect the actual core TUN and auto-redirect table with `sudo ip -n lf-clash-core link` and `sudo ip netns exec lf-clash-core nft list table inet mihomo`. Use `proxy-control status proxy --check` for the complete readiness contract; a host interface alone does not establish readiness.
+The host `Mihomo` interface is the managed veth.
+Inspect the actual core TUN and auto-redirect table with `sudo ip -n lf-clash-core link` and `sudo ip netns exec lf-clash-core nft list table inet mihomo`.
+Use `proxy-control status proxy --check` for the complete readiness contract.
+A host interface alone does not establish readiness.
 
-`clash-on` reconstructs the private namespace after stopping the old helper and preserves the configured source authorization workflow. Existing core connections are closed. Physical uplink changes and resume restart the already authorized core automatically. If a LAN or VPN overlaps the internal link, configure a free private /30 and /64 via `my.proxy.coreLink`, changing each subnet and its host/core endpoints together; never remove the overlap check to restore access. The internal MACs are distinct local unicast addresses and are independent of physical MAC randomization.
+`clash-on` reconstructs the private namespace after stopping the old helper and preserves the configured source authorization workflow.
+Existing core connections are closed.
+Physical uplink changes and resume restart the already authorized core automatically.
+If a LAN or VPN overlaps the internal link, configure a free private /30 and /64 via `my.proxy.coreLink`, changing each subnet and its host/core endpoints together.
+Never remove the overlap check to restore access.
+The internal MACs are distinct local unicast addresses and are independent of physical MAC randomization.
+Keep a previous system generation before activation.
 
-Keep the previous system generation before activation. Before returning to a generation with host-owned TUN setup, run `sudo proxy-control off`, wait for A, and stop `clash-core-network.service`. Its fixed cleanup removes only its owned namespace/veth and route priorities; a foreign or legacy TUN is refused even with a stale ownership marker. Then activate the chosen generation and use the normal `clash-on` workflow. A generation change alone is not proof that an old live core or namespace has been retired.
+To return to a generation that uses a host-owned TUN:
+
+1. Run `sudo proxy-control off` and wait for A.
+2. Stop `clash-core-network.service`. Its cleanup removes its owned namespace, veth and route priorities. It refuses to delete foreign interfaces or a legacy TUN, even with a stale ownership marker.
+3. Activate the chosen generation and start it through the normal `clash-on` workflow.
 
 ## Configuration
 
@@ -251,37 +483,79 @@ Keep the previous system generation before activation. Before returning to a gen
 | [cvr-merge.nix](../home/config/clash/cvr-merge.nix) | Matching Clash GUI Merge template and routing enhancement |
 | [firefox.nix](../home/programs/firefox/firefox.nix), [options.nix](../home/programs/firefox/options.nix) | Native browser, networkPath, nvidiaAcceleration, privacy, policy, fonts and outer sandbox |
 
-TUN defaults: `Mihomo`, table 2022, rule priority 9000, internal marks 8227/8228, fallback priority 32768, file descriptor 0. Parser, template and health share these values. `tunMode=false` selects HTTP-only/redir-host operation, dropping the requirement for a TUN. Fake-IP network is derived from `fakeIpRange`; avoid independent edits to consumers.
+TUN defaults: `Mihomo`, table 2022, rule priority 9000, internal marks 8227/8228, fallback priority 32768, file descriptor 0.
+Parser, template and health share these values.
+`tunMode=false` selects HTTP-only/redir-host operation, dropping the requirement for a TUN.
+Fake-IP network is derived from `fakeIpRange`.
+Avoid independent edits to consumers.
 
-For core access to a local/internal service, [target authorization](proxy.md#domain-targets) separates local DIRECT CIDRs from remote node grants. An internal suffix only permits a locally resolved private answer; it does not authorize node-side resolution or dialing. Remote grants use the actual leaf name, core inlet, transport and destination ports. Gost CONNECT arrives as `HTTPS`. Rebuild and deliberately import/restart the managed core after changing these options. A retains literal portal access; C remains blocked. Native [direct-egress grants](egress.md) are independent.
+For core access to a local/internal service, [target authorization](proxy.md#domain-targets) separates local DIRECT CIDRs from remote node grants.
+An internal suffix only permits a locally resolved private answer.
+It does not authorize node-side resolution or dialing.
+Remote grants use the actual leaf name, core inlet, transport and destination ports.
+Gost CONNECT arrives as `HTTPS`.
+Rebuild and deliberately import/restart the managed core after changing these options.
+A retains literal portal access.
+C remains blocked.
+Native [direct-egress grants](egress.md) are independent.
 
-For separate guest trust classes, select a development bridge explicitly and grant only the needed private service to other guests. A host-socket backend additionally needs its own fixed account; choose a free UID and nonoverlapping subordinate ranges:
+For separate guest trust classes, select a development bridge explicitly and grant only the needed private service to other guests.
+A host-socket backend additionally needs its own fixed account.
+
+Choose a free UID and nonoverlapping subordinate ranges:
 
 ```nix
 my.hardening = {
   guestNetworks.virbr0.trust = "trusted";
   guestPrivateExceptions = [{
-    interface = "waydroid0"; cidr = "192.168.1.20/32";
+    interface = "waydroid0";
+    cidr = "192.168.1.20/32";
     tcpPorts = [ 443 ];
   }];
   socketGuestUsers = [ "guestnet" ];
   socketGuestPrivateExceptions = [{
-    user = "guestnet"; interface = "ens1"; cidr = "192.168.1.20/32";
+    user = "guestnet";
+    interface = "ens1";
+    cidr = "192.168.1.20/32";
     tcpPorts = [ 443 ];
   }];
 };
-users.users.guestnet = { isNormalUser = true; uid = 1100; };
+users.users.guestnet = {
+  isNormalUser = true;
+  uid = 1100;
+};
 ```
 
-The example addresses are placeholders. Built-in bridge source/gateway defaults come from `my.machine`; extra `guestInterfaces` require their own canonical, disjoint `guestNetworks` source CIDRs. Add `hostTcpPorts` / `hostUdpPorts` on a role only when a service should be reachable at its declared gateways. IPv6 needs explicit ULA sources/gateways; public guest IPv6 stays refused. A hotspot remains restricted unless its own trust is explicitly changed.
+The example addresses are placeholders.
+Built-in bridge source/gateway defaults come from `my.machine`.
+Extra `guestInterfaces` require their own canonical, disjoint `guestNetworks` source CIDRs.
+Add `hostTcpPorts` / `hostUdpPorts` on a role only when a service should be reachable at its declared gateways.
+IPv6 needs explicit ULA sources/gateways.
+Public guest IPv6 stays refused.
+A hotspot remains restricted unless its own trust is explicitly changed.
 
-Install/reconcile the complete nft policy before starting pasta or rootless Docker under `guestnet`. The Docker user unit clears inherited explicit proxy variables for restricted accounts and uses the declared rootless package/settings. Stop existing backends before adding/changing identities or delegated UID mappings. To revoke private access for running backends, keep the identity declared, remove its grants and reload the firewall; both tracked directions are cut. Changing `socketGuestUsers` alone does not migrate desktop containers. These accounts use the separate real-address DNS path, which has no plaintext/split-DNS fallback. See [guest boundaries](network.md#guests-and-containers).
+Install/reconcile the complete nft policy before starting pasta or rootless Docker under `guestnet`.
+The Docker user unit clears inherited explicit proxy variables for restricted accounts and uses the declared rootless package/settings.
+Stop existing backends before adding/changing identities or delegated UID mappings.
+To revoke private access for running backends, keep the identity declared, remove its grants and reload the firewall.
 
-Wi-Fi profiles explicitly setting a cloned MAC override `my.hardening.wifi.clonedMacAddress`; otherwise the default `stable-ssid` retains the same MAC for the same SSID. `permanent` selects the hardware address, while `preserve` keeps the current address. For coordinated changes, declare `my.hardening.wifi.identities`, inspect `network-identity plan UUID`, then disable autoconnect and disconnect before `apply` or `restore`. See [Link identity](identity.md) for the complete procedure, wired policies and DHCP state preparation.
+Both tracked directions are cut.
+Changing `socketGuestUsers` alone does not migrate desktop containers.
+These accounts use the separate real-address DNS path, which has no plaintext/split-DNS fallback.
+See [guest boundaries](network.md#guests-and-containers).
+
+Wi-Fi profiles explicitly setting a cloned MAC override `my.hardening.wifi.clonedMacAddress`.
+Otherwise the default `stable-ssid` retains the same MAC for the same SSID.
+`permanent` selects the hardware address, while `preserve` keeps the current address.
+For coordinated changes, declare `my.hardening.wifi.identities`, inspect `network-identity plan UUID`, then disable autoconnect and disconnect before `apply` or `restore`.
+See [Link identity](identity.md) for the complete procedure, wired policies and DHCP state preparation.
 
 ## Hermes containers
 
-[`system/programs/hermes/`](../system/programs/hermes) groups the agent configuration, skills, mail CLI and container backend. The backend runs `hermes-docker.service` in the dedicated account's user manager; `hermes-containers.socket` and `.service` expose a fixed Unix stream to Hermes. The account's private runtime and data directory retain their own permissions.
+[`system/programs/hermes/`](../system/programs/hermes) groups the agent configuration, skills, mail CLI and container backend.
+The backend runs `hermes-docker.service` in the dedicated account's user manager.
+`hermes-containers.socket` and `.service` expose a fixed Unix stream to Hermes.
+The account's private runtime and data directory retain their own permissions.
 
 | Resource | Default location |
 |---|---|
@@ -289,9 +563,17 @@ Wi-Fi profiles explicitly setting a cloned MAC override `my.hardening.wifi.clone
 | Restricted backend home / Docker data | `/var/lib/hermes-containers` / `/var/lib/hermes-containers/docker` |
 | Hermes Docker API | `unix:///run/hermes-containers/docker.sock` |
 
-Gateway, dashboard and Hermes login shells set `DOCKER_HOST` to that API. Its socket is mode 0660 and restricted to the backend account and `hermes-container-clients` members. The desktop keeps its own Docker endpoint. Local terminal/MCP/browser tools running directly as Hermes keep the host proxy policy; only workloads submitted to the dedicated Docker backend use its restricted account.
+Gateway, dashboard and Hermes login shells set `DOCKER_HOST` to that API.
+Its socket is mode 0660 and restricted to the backend account and `hermes-container-clients` members.
+The desktop keeps its own Docker endpoint.
+Local terminal/MCP/browser tools running directly as Hermes keep the host proxy policy.
+Only workloads submitted to the dedicated Docker backend use its restricted account.
 
-The backend clears inherited proxy variables and uses the filtered real-address DNS path. A permits public IPv4 directly, B follows host public routing through the managed core, and C cuts application traffic. Private/metadata/fake-IP targets and host proxy inlets have no default grant. The default Docker bridge has no external IPv6 path. Other supported native backend paths retain the UID guard's dual-stack checks.
+The backend clears inherited proxy variables and uses the filtered real-address DNS path.
+A permits public IPv4 directly, B follows host public routing through the managed core, and C cuts application traffic.
+Private/metadata/fake-IP targets and host proxy inlets have no default grant.
+The default Docker bridge has no external IPv6 path.
+Other supported native backend paths retain the UID guard's dual-stack checks.
 
 ```sh
 sudo systemctl status hermes-containers.socket hermes-containers.service
@@ -299,13 +581,26 @@ sudo systemctl --user --machine=hermes-containers@.host status hermes-docker.ser
 sudo -u hermes env DOCKER_HOST=unix:///run/hermes-containers/docker.sock docker info --format '{{.DockerRootDir}}'
 ```
 
-Before starting the new account's user manager, the retirement unit stops Hermes' old user Docker and refuses startup if an old dockerd remains. The global Docker user unit excludes Hermes and the dedicated backend; the latter uses its own unit. The new backend keeps the reserved-port bind restrictions inherited from `user.slice`.
+Before starting the new account's user manager, the retirement unit stops Hermes' old user Docker and refuses startup if an old dockerd remains.
+The global Docker user unit excludes Hermes and the dedicated backend.
+The latter uses its own unit.
+The new backend keeps the reserved-port bind restrictions inherited from `user.slice`.
+The agent data in `/var/lib/hermes` and the old account's Docker images and volumes stay in place.
+Images and volumes are not imported automatically.
 
-Agent data under `/var/lib/hermes` remains in place. Existing Docker images and volumes under the old account remain there too; they are not automatically imported into the new backend. Stop application writes and export required images/volumes under the old mapping before activation, then load and restore them through the new endpoint. Keep the old data and mapping until recovery has been checked; copying ownership numbers or recursively changing them is not a migration. Stop the dedicated daemon and both API units before deliberately returning to an older backend configuration.
+To migrate the required container data:
+
+1. Stop application writes and export images and volumes using the old account's UID mapping before activation.
+2. Load images and restore volumes through the new Docker endpoint.
+3. Check the restored data before removing the old data or UID mapping.
+
+A recursive ownership change is not a substitute for this migration.
+Before returning to an older backend configuration, stop the dedicated daemon and both API units.
 
 ## Offline recovery
 
-If direct access is intended, use `clash-off`. For portal/DNS recovery in A under the default `dnsEncryption="opportunistic"`, inspect DNS state/history, then explicitly enable the bounded-renewal override if needed:
+If direct access is intended, use `clash-off`.
+For portal/DNS recovery in A under the default `dnsEncryption="opportunistic"`, inspect DNS state/history, then explicitly enable the bounded-renewal override if needed:
 
 ```sh
 sudo touch /run/dns-upstream/force-plaintext
@@ -313,12 +608,29 @@ sudo touch /run/dns-upstream/force-plaintext
 sudo rm /run/dns-upstream/force-plaintext
 ```
 
-This permits plaintext DNS and continues billing the session budget; it cannot override C's egress guard. See [DNS](dns.md) for the exact scope.
+This permits plaintext DNS and continues billing the session budget.
+It cannot override C's egress guard.
+See [DNS](dns.md) for the exact scope.
 
-With `my.proxy.dnsEncryption="strict"`, the override is ignored and no plaintext fallback is granted. `clash-off` still selects A with encrypted DNS. Try a literal HTTP portal address, another uplink, or repair the authenticated DoT configuration. A portal requiring unavailable public DNS needs an intentional policy change, for example an already built `opportunistic` generation selected offline. Prepare such a generation before relying on strict mode while travelling. Private split DNS and MagicDNS remain available under their normal approvals and mode constraints.
+With `my.proxy.dnsEncryption="strict"`, the override is ignored and no plaintext fallback is granted.
+`clash-off` still selects A with encrypted DNS.
+Try a literal HTTP portal address, another uplink, or repair the authenticated DoT configuration.
+A portal requiring unavailable public DNS needs an intentional policy change, for example an already built `opportunistic` generation selected offline.
+Prepare such a generation before relying on strict mode while travelling.
+Private split DNS and MagicDNS remain available under their normal approvals and mode constraints.
 
-For a broken generation, select an older systemd-boot entry. The boot menu retains eight entries to fit the ESP. A store path retained by garbage collection can also be reactivated offline: inspect `/nix/var/nix/profiles/system-*-link`, set the system profile with `nix-env -p /nix/var/nix/profiles/system --set /nix/store/<nixos-system-…>`, then run `/nix/var/nix/profiles/system/bin/switch-to-configuration boot` as root. If nothing boots, unlock/mount root and the ESP from a NixOS ISO and run the recovery inside `nixos-enter --root /mnt`.
+To recover a broken system generation:
+
+1. Select an older entry in the systemd-boot menu. The menu retains eight entries.
+2. If the required generation is absent from the menu, inspect the retained profiles in `/nix/var/nix/profiles/system-*-link`. As root, select its store path and install its boot entry:
+
+   ```sh
+   nix-env -p /nix/var/nix/profiles/system --set /nix/store/<nixos-system-path>
+   /nix/var/nix/profiles/system/bin/switch-to-configuration boot
+   ```
+
+3. If no installed system boots, start a NixOS ISO, unlock and mount root and the ESP, then enter the installation with `nixos-enter --root /mnt`.
 
 ## Configuration checks
 
-[Patch maintenance](maintenance.md#validation) maps changes to checks, distinguishing temporary-file tests, package builds, isolated kernel VMs and host activation. Run the relevant set together after editing. Copying the checkout with `scripts/push-to-dir.sh` deploys build inputs and test sources; it neither runs the checks nor copies `docs/`.
+[Patch maintenance](maintenance.md#validation) lists checks for configuration and dependency changes.

@@ -2,7 +2,7 @@
 
 English | [简体中文](CN/README_CN.md) | [Project](../README.md)
 
-This system combines physical uplinks, local DNS, a managed proxy core, guest networking and a native Firefox package. The network mode determines which paths applications may use; browser privacy and proxy routing are separate choices.
+These guides cover the network stack: traffic routing, DNS, proxy access, Firefox and guest networks.
 
 | Guide | Contents |
 |---|---|
@@ -16,8 +16,12 @@ This system combines physical uplinks, local DNS, a managed proxy core, guest ne
 | [Operations](operations.md) | Switching modes, status, recovery, configuration and checks |
 | [Network patch maintenance](maintenance.md) | Customization inventory, build integration, source compatibility checks and component regression plans |
 
-Start with the architecture guide to understand the system. Use Operations for day-to-day administration and Patch maintenance before updating dependencies.
+Start with [Network architecture](network.md) for traffic paths and the A/B/C modes.
+For commands and troubleshooting, use [Operations](operations.md).
+[Patch maintenance](maintenance.md) covers dependency updates and local customizations.
 
-Defaults retain direct access at boot in A, user-requested proxy access in B, blocking on proxy failure in C, subscription Rule routing and host LAN access. Routed guests default to restricted private access; dedicated socket guest accounts have a separate policy. `proxyOnly` can require application proxy routing inside the core; `bootMode` independently controls whether boot starts with direct access or blocking.
-
-The guides describe the configuration in this repository. Interface names, UIDs and ports shown are its defaults; their definitions live in [machine.nix](../system/config/machine.nix).
+The default policy starts with direct access in A.
+Requesting proxy access selects B once the core is ready, or C while it is unavailable.
+`proxyOnly` controls routing inside the core, and `bootMode` controls the initial mode.
+Their configuration is described in the linked guides.
+Interface names, service UIDs and ports come from [machine.nix](../system/config/machine.nix).

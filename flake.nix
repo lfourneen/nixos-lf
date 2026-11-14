@@ -45,6 +45,9 @@
   let
     system = "x86_64-linux";
 
+    # Data compatibility baseline. Keep this when upgrading input branches.
+    stateVersion = "26.05";
+
   in
   {
     checks.${system} = import ./tests/checks.nix { inherit self nixpkgs system; };
@@ -60,6 +63,8 @@
 
         # Proper nixpkgs configuration module
         {
+          system.stateVersion = stateVersion;
+
           nixpkgs = {
             overlays = [
               # Custom overlays
@@ -104,6 +109,7 @@
             };
             users.lfour = {
               imports = [ ./home ];
+              home.stateVersion = stateVersion;
             };
           };
         }

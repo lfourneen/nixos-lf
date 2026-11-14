@@ -123,9 +123,5 @@
     "fs.inotify.max_user_watches" = 1048576;
     "fs.inotify.max_user_instances" = 1024;
   };
-
-  # NixOS Version
-  system.stateVersion = "26.05";
-
 }
 

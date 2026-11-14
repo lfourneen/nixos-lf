@@ -2,7 +2,7 @@
 
 [English](../layout.md) | 简体中文 | [文档目录](README_CN.md)
 
-`tests/checks.nix` 维护 checks 定义和测试配置，根 `flake.nix` 仅导入。`system/programs/clash/service/source_worker.py`、`source_broker.py` 和 `source.nix` 管理受控来源；`strict-browser.nix` 与 `home/programs/firefox/network.py` 连接严格浏览网络路径。
+`system/` 管理系统服务与策略，`home/` 中的 Home Manager 模块管理桌面和用户应用。
 
 ## 系统与桌面职责
 
@@ -17,11 +17,15 @@
 | [`system/programs/systemd/`](../../system/programs/systemd) | journald 与 coredump 全局设置 |
 | [`system/hardware/`](../../system/hardware) | 设备声明及配套的启动、CPU 和 NVIDIA 服务设置 |
 
-`home/config/clash/status.py` 从 `system/config/network/proxy/state.py` 读取共用就绪契约；diagnostics 模块为交互 shell 和自动化调用者提供命令入口，Nushell 转发 `proxy-status` 参数。特权配置导入与快照授权由系统侧 Clash 服务负责。
+`home/config/clash/status.py` 从 `system/config/network/proxy/state.py` 读取共用就绪契约。
+diagnostics 模块为交互 shell 和自动化调用者提供命令入口，Nushell 转发 `proxy-status` 参数。
+特权配置导入与快照授权由系统侧 Clash 服务负责。
 
 ## 网络配置
 
-`system/config/network/default.nix` 组合网络功能；`options.nix` 定义宿主及访客访问选项，`proxy/options.nix` 定义受管代理选项。机器身份、接口、UID 和端口统一来自 `system/config/machine.nix`。
+`system/config/network/default.nix` 组合网络功能。
+`options.nix` 定义宿主及访客访问选项，`proxy/options.nix` 定义受管代理选项。
+机器身份、接口、UID 和端口统一来自 `system/config/machine.nix`。
 
 | 子目录 | 内容 |
 |---|---|
@@ -37,9 +41,12 @@
 
 ## Clash 与 Gost 构建输入
 
-Clash 的 `gui/` 保存系统包的 GUI 启动与默认值处理；`service/` 保存 helper 补丁、服务身份、核心启动器、授权快照和准备检查。`mihomo/` 按 `patches/`、`guard/`、`config/`、`controller/` 和 `tests/` 组织构建载荷，由软件包 fileset 收集并交给构建期 patcher。
+Clash 的 `gui/` 保存系统包的 GUI 启动与默认值处理。
+`service/` 保存 helper 补丁、服务身份、核心启动器、授权快照和准备检查。
+`mihomo/` 按 `patches/`、`guard/`、`config/`、`controller/` 和 `tests/` 组织构建载荷，由软件包 fileset 收集并交给构建期 patcher。
 
-Gost 在自己的程序目录内使用 `patches/`、`src/` 和 `tests/`，默认模块连接软件包与 relay 服务。源码入口及验证命令见[维护手册](maintenance_CN.md)。
+Gost 在自己的程序目录内使用 `patches/`、`src/` 和 `tests/`，默认模块连接软件包与 relay 服务。
+源码入口及验证命令见[维护手册](maintenance_CN.md)。
 
 ## 测试
 
@@ -50,4 +57,5 @@ Gost 在自己的程序目录内使用 `patches/`、`src/` 和 `tests/`，默认
 | [`tests/home/firefox/`](../../tests/home/firefox) | 浏览器策略、运行时、沙箱和 ECH fixture |
 | [`tests/deployment/`](../../tests/deployment) | 部署复制检查 |
 
-`tests/checks.nix` 经 `flake.nix` 导入，将这些源码接入 `checks.x86_64-linux.*`。脚本作为独立 store 文件运行时，由 Nix 测试显式传入源码路径；本地 Python 测试从所属功能目录定位仓库。
+[tests/checks.nix](../../tests/checks.nix) 将这些检查接入 `checks.x86_64-linux.*`。
+检查选择及命令见[维护手册](maintenance_CN.md#验证)。

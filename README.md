@@ -1,245 +1,144 @@
-# NixOS Configuration
+# nixos-lf
 
 English | [简体中文](README_CN.md)
 
-A declarative NixOS system configuration using Nix flakes, featuring a customized desktop environment and various productivity tools.
+A personal NixOS workstation built around Niri, Noctalia and Home Manager.
+This repository brings the desktop, an encrypted and ephemeral root filesystem, development tools, an AI agent and network policy into one Nix flake.
+The configuration targets `x86_64-linux`.
+It uses NixOS 26.05 with selected packages from Unstable, and exposes the system as `nixosConfigurations.lfour`.
 
----
+## What is included
 
-## NOTICE / WARNING
+- **Wayland desktop.**
+  Niri is the default session, with Noctalia for the bar, launcher, notifications and wallpaper-based theming.
+  GNOME is also available through GDM.
+  Fcitx5 with Rime provides Chinese input.
 
-> **Do NOT blindly apply this configuration!**
+- **Storage and persistence.**
+  Disko declares a LUKS2-encrypted Btrfs layout.
+  The root subvolume is recreated at boot, while Impermanence keeps selected system and application state under `/persist`.
 
-* **Change the username**: Make sure to update all references to my username (`lfour`) to your own throughout the configs.
-* **Hardware Partitioning**: This config uses `disko`, so you'll need to edit `system/hardware/disko.nix` to match your disk layout. (See [this clean install example](https://github.com/lfourneen/nixos-disko-lf).)
-* **Adapt to Your Needs**: This config is tailored for my hardware and preferences. Review and adjust all settings before use!
+- **Development environment.**
+  Nushell, Neovim with language servers, VS Code and Zed sit alongside rootless Docker, virtualisation tools and FHS environments for software that needs a conventional Linux layout.
 
----
+- **Managed networking.**
+  nftables, local DNS and Mihomo share a direct/proxy/blocked state model.
+  Clash Verge supplies the GUI.
+  The core runs in its own network namespace, and registered subscription sources control which configuration it may load.
 
-## Features
+- **Firefox.**
+  A native package includes locked privacy settings, a filesystem sandbox, a separate identity profile and a temporary portal browser.
+  Browser startup follows the network state.
 
-* **Desktop Environment**: See `system/config/desktop.nix`
-* **File System**: BTRFS with LUKS2
-* **Shell**: Nushell with custom config
-* **System Management**: Home Manager for user configuration
-* **Hardware Support**: NVIDIA, AMDGPU, Bluetooth, audio, and other hardware configurations
-* **Network and Security**: Managed DNS, nftables firewall, proxy policy and system hardening
-* **Virtualization**: Docker and other virtualization tools
+- **Hermes Agent.**
+  The agent, gateway, dashboard, MCP integrations and skills are declared in Nix.
+  Agent data lives in `/var/lib/hermes`, with a separate account and Docker backend for container workloads.
 
----
+- **Hardware and remote access.**
+  AMD/NVIDIA graphics, audio, Bluetooth, USBGuard and Sunshine over Tailscale are configured for the author's machine.
 
-## Network documentation
+The [source layout](docs/layout.md) identifies the modules behind these features.
+The [network guides](docs/README.md) explain the network policy and daily commands.
 
-> **Read `docs/` before using this repository.** The network layer is
-> fail-closed and couples DNS, nftables, the A/B/C modes and the controlled
-> subscription source. Deploying it without the registration steps in the
-> [operations guide](docs/operations.md#source-registration) leaves Mode B
-> unreachable and can leave the machine without DNS or internet access.
+## Using this configuration
 
-Start with the **[network documentation](docs/README.md)** for the architecture,
-A/B/C modes, DNS and managed Firefox. The **[operations guide](docs/operations.md)**
-covers daily use and recovery; **[patch maintenance](docs/maintenance.md)** maps
-customized components to their sources, upgrade workflow and checks.
+This is a machine-specific configuration.
+Before adapting it, review the user account, hardware identifiers, disk layout, persistence paths and encrypted secrets.
+Disko and the boot-time root reset need particular care on an existing installation.
+A separate [Disko installation example](https://github.com/lfourneen/nixos-disko-lf) covers a clean install.
 
----
-## Usage
+Clone the repository:
 
-1. Clone this repository:
-```bash
-git clone https://github.com/yourusername/nixos-lf.git
-cd nixos-lf/scripts/ && ./push-to-dir.sh
-
+```sh
+git clone https://github.com/lfourneen/nixos-lf.git
+cd nixos-lf
 ```
 
-2. Update the config files as needed, for example:
-* In `system/config/user.nix`, change `"lfour"` to your username.
+Start with these files:
 
+| File | What to adapt |
+|---|---|
+| [flake.nix](flake.nix) | System output, user integration and input versions |
+| [system/config/user.nix](system/config/user.nix) | Accounts and groups |
+| [system/config/machine.nix](system/config/machine.nix) | Network interfaces, addresses, ports and service identities |
+| [system/hardware/](system/hardware) | Disk layout, boot, CPU and GPU configuration |
+| [system/hardware/partition.nix](system/hardware/partition.nix) | Persistent directories and files |
+| [system/programs/sops.nix](system/programs/sops.nix) | Secret declarations and Age key location |
+| [home/](home) | Desktop, shell, editor and application preferences |
 
-3. Build and switch to the new configuration:
-```bash
-sudo nixos-rebuild switch --flake .#yourname
+The host uses strict encrypted DNS and registered proxy sources.
+Complete [source registration](docs/operations.md#source-registration) before expecting proxy mode to work.
+Once proxy access is requested, an unavailable core blocks application traffic until it recovers or you explicitly select direct access.
 
+Build the adapted system first:
+
+```sh
+nix build --no-link .#nixosConfigurations.lfour.config.system.build.toplevel
 ```
 
-*(Replace `yourname` with your actual hostname or the flake output you wish to deploy.)*
+Then activate it when ready:
 
----
-
-## Directory Structure
-
-See [Source layout](docs/layout.md) for module ownership and entrypoints.
-
-```
-.
-├── flake.nix               # Main flake configuration
-├── flake.lock              # Flake lock file
-├── docs/                   # Architecture, operations and patch maintenance
-│   └── CN/                 # Chinese guides
-├── home/                   # User configuration
-│   ├── config/             # User-specific configs
-│   │   └── clash/          # User profile files and status renderer
-│   ├── programs/           # User programs
-│   ├── wallpapers/         # Wallpaper files
-│   └── userpkgs/           # User packages
-│
-├── overlays/               # Nixpkgs overlays
-│
-├── local-data/               # Generated build inputs
-│   └── dns-blocklist.txt.xz  # Merged upstream name list for the DNS blocklist
-│
-├── scripts/                      # Utility scripts
-│   ├── sync-to-git.sh            # Copy /etc/nixos to ~/Projects/Nix/nixos with relaxed permissions
-│   ├── push-to-dir.sh            # Push repo config back to /etc/nixos with secure permissions
-│   └── refresh-dns-blocklist.py  # Rebuild local-data/dns-blocklist.txt.xz from its upstreams
-│
-├── tests/                  # Regression sources referenced by flake checks
-│   ├── network/            # Feature-grouped network policy and VM checks
-│   ├── home/               # Clash GUI and Firefox checks
-│   └── deployment/         # Deployment-copy checks
-│
-└── system/                 # System-wide configuration
-    ├── config/             # System configs
-    │   └── network/        # Network declarations and runtime helpers
-    ├── hardware/           # Hardware-specific configurations
-    ├── modules/            # Kernel modules configurations
-    ├── programs/           # System programs and services
-    │   ├── clash/          # System GUI/helper and grouped Mihomo sources
-    │   ├── gost/           # Relay package, patch and service
-    │   ├── hermes/         # Agent, skills, mail CLI and restricted container backend
-    │   └── systemd/        # Global journald/coredump settings
-    ├── secrets/            # Encrypted secrets (sops)
-    └── systempkgs/         # System packages
-
+```sh
+sudo nixos-rebuild switch --flake .#lfour
 ```
 
----
+Replace `lfour` in these commands if you rename the flake output.
+Later rebuilds should use the checkout you maintain.
 
-## Scripts
+Release branches and the shared `stateVersion` are configured in [flake.nix](flake.nix).
+When upgrading NixOS, update the Nixpkgs and Home Manager input branches together.
+Keep `stateVersion` unchanged unless you have reviewed and migrated the affected application data.
 
-* **`scripts/sync-to-git.sh`** — Copies `/etc/nixos` to `~/Projects/Nix/nixos` (creating `~/Projects/Nix` if needed), changes ownership to the current user, and sets permissive permissions (dirs 755 / files 644) so the config can be committed to Git.
-* **`scripts/push-to-dir.sh`** — Copies the explicitly selected `home/`, `overlays/`, `system/`, `tests/`, `local-data/`, `flake.nix`, `flake.lock`, and `.sops.yaml` into `/etc/nixos` with dirs 700 / files 600. Run as your normal user; the script uses `sudo` internally. `docs/` and `scripts/` stay in the checkout. `tests/` supplies check sources without executing them. The required DNS snapshot in `local-data/` is tracked; the script checks it before touching the destination. Verify copying in a disposable directory with `python3 tests/deployment/test_deployment.py scripts/push-to-dir.sh`.
-* **`scripts/refresh-dns-blocklist.py`** — Fetches the upstream lists, merges and de-duplicates them into `local-data/dns-blocklist.txt.xz`, and rewrites the upstream/snapshot header of `system/config/network/dns/blocklist.nix`. `--check` reports drift without writing. Nothing is downloaded at build time or at run time.
+## Daily networking
 
----
+| Command | Purpose |
+|---|---|
+| `clash-on` | Request proxy access and start the managed core |
+| `clash-off` | Select direct access |
+| `proxy-status` | Show mode, DNS and readiness |
+| `firefox-identity` | Open the separate browser profile through the strict proxy inlet |
+| `firefox-portal http://192.168.1.1/` | Open a temporary portal session in direct mode |
 
-## Hermes / Sops-Nix
+A is direct access, B is healthy proxy access, and C blocks application traffic while proxy access is unavailable.
+Closing the GUI does not select A.
+See [operations and recovery](docs/operations.md) for source management, diagnostics and offline recovery.
 
-This configuration manages `hermes` secrets using `sops-nix` encrypted with an Age key pair.
+## Hermes and secrets
 
-### 1. Age Key Setup
+Hermes configuration and skills live in [system/programs/hermes/](system/programs/hermes).
+Open the CLI with `hermes` in Nushell, or run `sudo -u hermes -i hermes` from another shell.
+Its container endpoint and data handling are described in [Hermes containers](docs/operations.md#hermes-containers).
 
-Choose **Option A** if you are restoring/migrating an existing system, or **Option B** if you are setting this up for the first time.
+Secrets use sops-nix with an Age key at `~/.config/sops/age/keys.txt`.
+For your own installation, restore your key or create one and update the recipients in [.sops.yaml](.sops.yaml).
+Keep the private key outside Git.
 
-#### Option A: Migration / Restoring Existing Setup (Recommended)
-If you already have a backed-up Age key pair, simply copy your `keys.txt` to the expected location:
+Edit the encrypted files directly:
 
-```bash
-mkdir -p ~/.config/sops/age
-cp /path/to/your/backup/keys.txt ~/.config/sops/age/keys.txt
-chmod 600 ~/.config/sops/age/keys.txt
-
+```sh
+sops edit system/secrets/secrets.yaml  # API and messaging credentials
+sops edit system/secrets/soul.yaml     # Hermes persona
+sops edit system/secrets/proxy.yaml    # Proxy source catalog
 ```
 
-#### Option B: Fresh Initial Setup
+Saving re-encrypts the file.
+Rebuild to apply the changes.
+Secret names and service ownership are declared in [sops.nix](system/programs/sops.nix).
 
-If you are generating a new key pair for a brand-new configuration:
+## Repository guide
 
-1. Generate a new Age key:
-```bash
-mkdir -p ~/.config/sops/age
-age-keygen -o ~/.config/sops/age/keys.txt
+| Directory | Contents |
+|---|---|
+| [system/](system) | System services, hardware, network policy and packages |
+| [home/](home) | Home Manager modules and user applications |
+| [overlays/](overlays) | Package overrides |
+| [local-data/](local-data) | Versioned inputs such as the DNS blocklist snapshot |
+| [scripts/](scripts) | Configuration copy tools and blocklist refresh utility |
+| [tests/](tests) | Package, policy and isolated VM checks |
+| [docs/](docs/README.md) | Architecture, configuration, operations and maintenance |
 
-```
-
-> **Security Warning:** `keys.txt` is your private key. Never commit it to Git or expose it publicly! Store a backup in a secure location.
-
-2. Get your public key from the output or by inspecting the file:
-```bash
-# Public key format: age1...
-
-```
-
-3. Create or update `.sops.yaml` in your configuration root directory:
-```yaml
-creation_rules:
-  - path_regex: secrets\.yaml$
-    key_groups:
-      - age:
-          - "age1ql30gw8xxxxxxxxxxxxxxxxxxxxxxxxxxx" # Paste your public key here
-
-```
-
-4. Create and edit your encrypted secret file:
-```bash
-cd /etc/nixos/system/secrets
-sops secrets.yaml
-
-```
-
-Add your API keys in YAML format (e.g., `hermes_api_key: "sk-proj-1234567890abcdef"`). Upon saving, the file contents will be automatically encrypted.
-
-> Adding a new key later (all keys are top-level YAML entries):
-
-```bash
-cd /etc/nixos/system/secrets
-
-# From the command line. Key uses bracket/index syntax, value must be
-# a valid JSON string (extra quotes around it):
-sops set secrets.yaml '["github_token"]' '"ghp_xxx"'
-
-# From a file (long values, e.g. ssh private key)
-sops set --value-file secrets.yaml '["ssh_host_ed25519_key"]' /tmp/key
-
-# Or from stdin
-echo -n 'ghp_xxx' | sops set --value-stdin secrets.yaml '["github_token"]'
-
-# Interactive: opens the decrypted file in your editor, save to re-encrypt
-sops secrets.yaml
-
-# Verify
-sops -d secrets.yaml
-```
-
-### 2. Running Hermes
-
-After deploying the NixOS configuration (`update`), launch Hermes using either method:
-
-```bash
-# Nushell helper (runs 'sudo -u hermes -i hermes' with sandbox notice)
-hermes
-
-# Plain bash
-sudo -u hermes -i hermes
-
-```
-
----
-
-## Customization
-
-* **System Config**: Edit files in `system/config/`
-* **User Config**: Edit files in `home/config/`
-* **Programs**: Modify `system/programs/` and `home/programs/`
-* **Hardware**: Adjust settings in `system/hardware/`
-* **Applications**: See `home/userpkgs/`, `overlays/` and `system/systempkgs/`
-
----
-
-## Dependencies
-
-* NixOS 26.05 && Unstable
-* Home Manager
-* Noctalia shell
-* Disko
-* Impermanence
-* Nix-Flatpak
-* Hermes Agent
-* Sops-Nix
-* MCP-NixOS
-* LLM-Agents
-
----
+For changes to the network stack, use the [maintenance guide](docs/maintenance.md) to choose the relevant checks and review local patches before updating dependencies.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

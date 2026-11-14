@@ -27,8 +27,5 @@
 
   # Font
   fonts.fontconfig.enable = true;
-
-  # Home-Manager version
-  home.stateVersion = "26.05";
 }
 
