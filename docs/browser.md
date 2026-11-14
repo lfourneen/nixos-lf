@@ -58,10 +58,10 @@ ECH encrypts the inner TLS ClientHello, including the origin SNI. In this config
 
 | `my.firefox.networkPath` | Name discovery and transport | ECH behavior |
 |---|---|---|
-| `"http-proxy"`, default | Strict local relay or compatibility Gost HTTP proxy; target resolution is delegated to the core | The pinned Firefox 159.0.1 excludes HTTPS CONNECT from HTTPS-RR discovery. GREASE remains enabled; HTTPS-RR discovery uses the transparent path below |
+| `"http-proxy"`, default | Strict local relay or compatibility Gost HTTP proxy; target resolution is delegated to the core | The pinned Firefox 160.0 excludes HTTPS CONNECT from HTTPS-RR discovery. GREASE remains enabled; HTTPS-RR discovery uses the transparent path below |
 | `"transparent"` | System DNS and native HTTPS-RR queries; A uses direct sockets, B uses the host TUN/firewall path | NSS can use the returned ECHConfig and perform a real ECH handshake with a compatible origin |
 
-Firefox's [connection gate](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/netwerk/protocol/http/nsHttpChannel.cpp) checks both the proxy DNS strategy and `UsingConnect()`. Changing DNS transport alone does not change this gate. This package keeps the test-only `force_use_https_rr` override disabled; the transparent option uses the packaged browser without a Gecko source patch.
+Firefox's [connection gate](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_160_0_RELEASE/netwerk/protocol/http/nsHttpChannel.cpp) checks both the proxy DNS strategy and `UsingConnect()`. Changing DNS transport alone does not change this gate. This package keeps the test-only `force_use_https_rr` override disabled; the transparent option uses the packaged browser without a Gecko source patch.
 
 Select it explicitly in the system configuration:
 
@@ -89,7 +89,7 @@ Firefox/NSS builds the encrypted ClientHello
   -> B: managed TUN/core -> Rule DIRECT or selected proxy -> origin
 ```
 
-The Unix browser uses the [native resolver API](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/netwerk/dns/PlatformDNSUnix.cpp) for type 65. Browser DoH remains disabled and locked. No additional local DoH endpoint is needed: the existing resolver chain transports HTTPS records as DNS messages.
+The Unix browser uses the [native resolver API](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_160_0_RELEASE/netwerk/dns/PlatformDNSUnix.cpp) for type 65. Browser DoH remains disabled and locked. No additional local DoH endpoint is needed: the existing resolver chain transports HTTPS records as DNS messages.
 
 The core retains fake-IP address behavior while forwarding HTTPS and SVCB records through its normal resolver. The shared filter runs first, so a blocked domain receives local NXDOMAIN instead of an ECHConfig. Record parameters, including the ECH public name, are carried back to the browser; the core does not consume the browser's ECHConfig or terminate its origin TLS session. A's DNSSEC validation, B's encrypted transport, approved split DNS and MagicDNS retain their [separate boundaries](dns.md#responsibilities).
 

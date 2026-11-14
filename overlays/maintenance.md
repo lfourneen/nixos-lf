@@ -10,7 +10,7 @@ follow their supplying input in [flake.lock](../flake.lock).
 | --- | --- |
 | [default.nix](default.nix) | Niri SHM screencast diff fetched with a fixed hash; checks disabled in this override. Compare upstream integration and exercise screencasting before retiring the diff |
 | [dsh-desktop-appimage.nix](dsh-desktop-appimage.nix) | ASAR menu changes, bundled pnpm git-install behavior, unpack/executable preservation and Landlock launcher. Review exact JS anchors, bundled pnpm, sharp WASM and executable assets on each AppImage bump |
-| [dsh-tui.nix](dsh-tui/dsh-tui.nix) | Prebuilt release extraction, native DSH dependency links, persistent plugin profile and FHS launcher. Check the pkg asset layout, host peer range, shared Cordis instance and plugin persistence; see [packaging and plugin guide](dsh-tui/README.md) |
+| [dsh-tui.nix](dsh-tui/dsh-tui.nix) | Prebuilt release extraction, native DSH dependency links, persistent plugin profile and FHS launcher. Check the pkg asset layout, exact host compatibility and API declaration fingerprints, actual host exports/TUI loading, shared Cordis instance and plugin persistence; see [packaging and plugin guide](dsh-tui/README.md) |
 | [bilibili-appimage.nix](bilibili-appimage.nix) | Desktop command replacement and Wayland launcher; verify changed desktop layout and sandbox flags |
 | [wemeet-cursor-hook.nix](wemeet-cursor-hook.nix) | Pinned external cursor-hook library, built from source; verify preload/cursor behavior with compositor updates |
 

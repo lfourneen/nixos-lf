@@ -60,10 +60,10 @@ ECH 加密 TLS ClientHello 的内部内容，包括站点 SNI。本配置由浏�
 
 | `my.firefox.networkPath` | 名称发现与传输 | ECH 行为 |
 |---|---|---|
-| `"http-proxy"`，默认 | 严格本地 relay 或兼容 Gost HTTP 代理，目标解析委托核心 | 锁定的 Firefox 159.0.1 将 HTTPS CONNECT 排除在 HTTPS-RR 发现之外；保留 GREASE，HTTPS-RR 发现使用下方透明路径 |
+| `"http-proxy"`，默认 | 严格本地 relay 或兼容 Gost HTTP 代理，目标解析委托核心 | 锁定的 Firefox 160.0 将 HTTPS CONNECT 排除在 HTTPS-RR 发现之外；保留 GREASE，HTTPS-RR 发现使用下方透明路径 |
 | `"transparent"` | 系统 DNS 与原生 HTTPS-RR 查询；A 使用直连 socket，B 使用宿主 TUN/防火墙路径 | NSS 可使用返回的 ECHConfig，与支持的站点进行真实 ECH 握手 |
 
-Firefox 的[连接门](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/netwerk/protocol/http/nsHttpChannel.cpp)同时检查代理 DNS 策略和 `UsingConnect()`，单改 DNS 传输不会改变这个门。本包禁用仅供测试的 `force_use_https_rr` override，透明选项复用打包浏览器，不修改 Gecko 源码。
+Firefox 的[连接门](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_160_0_RELEASE/netwerk/protocol/http/nsHttpChannel.cpp)同时检查代理 DNS 策略和 `UsingConnect()`，单改 DNS 传输不会改变这个门。本包禁用仅供测试的 `force_use_https_rr` override，透明选项复用打包浏览器，不修改 Gecko 源码。
 
 在系统配置中显式选择：
 
@@ -91,7 +91,7 @@ Firefox/NSS 构造加密 ClientHello
   -> B: 受管 TUN/核心 -> Rule DIRECT 或选定代理 -> 站点
 ```
 
-Unix 浏览器通过[原生解析 API](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/netwerk/dns/PlatformDNSUnix.cpp)查询 type 65。浏览器 DoH 保持关闭并锁定；现有解析链路已能传递 HTTPS DNS 消息，无须另开本地 DoH 入口。
+Unix 浏览器通过[原生解析 API](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_160_0_RELEASE/netwerk/dns/PlatformDNSUnix.cpp)查询 type 65。浏览器 DoH 保持关闭并锁定；现有解析链路已能传递 HTTPS DNS 消息，无须另开本地 DoH 入口。
 
 核心保留地址记录的 fake-IP 行为，同时让 HTTPS 和 SVCB 记录经过正常解析器。共享过滤先执行，阻断域返回本地 NXDOMAIN，不交付 ECHConfig。记录参数连同 ECH public name 返回浏览器，核心不使用浏览器的 ECHConfig，也不终止站点 TLS。A 的 DNSSEC、B 的加密传输、已批准 split DNS 和 MagicDNS 保留[各自边界](dns_CN.md#各路径的责任)。
 

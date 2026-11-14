@@ -57,6 +57,8 @@ let
       done
       ln -s ${host} "$out/node_modules/@deepseek-ai/dsh"
 
+      node ${./patch-host-compat.mjs} "$out" ${host}
+
       node - "$out" ${host} ${version} <<'JS'
       const { createRequire } = require('node:module');
       const { realpathSync } = require('node:fs');
@@ -79,6 +81,12 @@ let
         --replace-fail 'export async function updateTui(profile, plan, signal, options = {}) {' \
         'export async function updateTui(profile, plan, signal, options = {}) { console.error("dsh-tui: update overlays/dsh-tui/dsh-tui.nix / the llm-agents input and rebuild NixOS."); return { code: 1, tuiChanged: false, compatible: true };'
       runHook postInstall
+    '';
+    doInstallCheck = true;
+    installCheckPhase = ''
+      runHook preInstallCheck
+      node --expose-internals ${./check-runtime.mjs} "$out" ${host}
+      runHook postInstallCheck
     '';
     dontFixup = true;
   };

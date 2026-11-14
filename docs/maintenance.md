@@ -6,7 +6,7 @@ Check definitions live in [`tests/checks.nix`](../tests/checks.nix), imported by
 
 ## Build integration
 
-Package versions come from [flake.lock](../flake.lock), not the desktop updater. Stable Nixpkgs supplies Gost, dnsmasq, Unbound and Firefox; unstable supplies Mihomo, the Clash Verge GUI and its separately packaged helper. The current locked set is Mihomo 1.19.33, vendored MetaCubeX sing-tun 0.4.28, Gost 3.3.2, Clash Verge GUI 2.5.2, helper 2.3.3, dnsmasq 2.93 and Unbound 1.26.2. GUI, helper and core versions are independent.
+Package versions come from [flake.lock](../flake.lock), not the desktop updater. Stable Nixpkgs supplies Gost, dnsmasq, Unbound and Firefox; unstable supplies Mihomo, the Clash Verge GUI and its separately packaged helper. The current locked set is Mihomo 1.19.33, vendored MetaCubeX sing-tun 0.4.28, Gost 3.3.2, Clash Verge GUI 2.5.2, helper 2.3.3, dnsmasq 2.93, Unbound 1.26.2, Firefox 160.0 and system NSS 3.133. GUI, helper and core versions are independent.
 
 [clash-verge.nix](../system/programs/clash/clash-verge.nix) builds the customized core/helper and places them in the GUI package. [default.nix](../system/programs/gost/default.nix) builds the relay package. Their `lib.fileset.toSource` inputs include only patchers, custom Go code and tests, so unrelated checkout changes do not rebuild those Go packages. **Add any new patch payload/test to the corresponding fileset.** A file present in the checkout but absent from the source set never reaches the builder.
 

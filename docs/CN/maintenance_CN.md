@@ -6,7 +6,7 @@
 
 ## 构建接入
 
-版本由 [flake.lock](../../flake.lock) 决定，不跟随桌面自更新。稳定 Nixpkgs 提供 Gost、dnsmasq、Unbound、Firefox；unstable 提供 Mihomo、Clash Verge GUI 及独立打包的 helper。当前锁定组合为 Mihomo 1.19.33、vendored MetaCubeX sing-tun 0.4.28、Gost 3.3.2、GUI 2.5.2、helper 2.3.3、dnsmasq 2.93、Unbound 1.26.2。GUI/helper/core 版本相互独立。
+版本由 [flake.lock](../../flake.lock) 决定，不跟随桌面自更新。稳定 Nixpkgs 提供 Gost、dnsmasq、Unbound、Firefox；unstable 提供 Mihomo、Clash Verge GUI 及独立打包的 helper。当前锁定组合为 Mihomo 1.19.33、vendored MetaCubeX sing-tun 0.4.28、Gost 3.3.2、GUI 2.5.2、helper 2.3.3、dnsmasq 2.93、Unbound 1.26.2、Firefox 160.0 及系统 NSS 3.133。GUI/helper/core 版本相互独立。
 
 [clash-verge.nix](../../system/programs/clash/clash-verge.nix) 构建定制核心/helper 并装入 GUI 包，[default.nix](../../system/programs/gost/default.nix) 构建定制 relay。两者以 `lib.fileset.toSource` 只收集 patcher、Go 代码和测试，避免无关仓库改动重建 Go 包。**新增补丁文件或测试时必须更新对应 fileset**，否则文件即使在仓库中也不会进入 builder。
 
