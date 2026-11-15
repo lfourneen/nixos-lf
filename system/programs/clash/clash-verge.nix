@@ -114,6 +114,7 @@ let
       export LF_MANAGED_TEST_LEGACY_PROFILE=${../../../tests/network/proxy/legacy-managed-profile.json}
       go test -mod=vendor ./config ./hub/route -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/inbound ./transport/socks5 -count=1
+      go test -mod=vendor github.com/metacubex/sing-tun -run '^TestLFManaged' -count=1
       go test -mod=vendor ./component/lfguard -count=1
       go test -mod=vendor ./adapter ./adapter/provider -run '^TestLFManaged' -count=1
       go test -mod=vendor ./dns -run '^TestLFManaged' -count=1
@@ -126,7 +127,6 @@ let
       chmod -R u+w vendor/github.com/metacubex/sing-tun
       ${pkgs.python3}/bin/python3 ${managedSources}/patches/patch_mihomo.py .
       ${pkgs.python3}/bin/python3 ${managedSources}/patches/patch_sing_tun.py .
-      ${pkgs.python3}/bin/python3 ${managedSources}/patches/patch_socks.py .
     '';
   });
 
@@ -135,9 +135,8 @@ in
   imports = [ ./service/runtime.nix ];
 
   # Service mode drops the core to its pinned UID; the firewall permits its mark.
-  # Source patches enforce the managed profile and correct nftables interval
-  # endpoints and SOCKS address parsing. Exact anchors reject incompatible
-  # upstream sources at build time.
+  # Source patches enforce the managed profile and TUN/guest redirect behavior.
+  # Exact anchors reject incompatible upstream sources at build time.
   programs.clash-verge = {
     enable = true;
     package = (pkgs.unstable.clash-verge-rev.override {

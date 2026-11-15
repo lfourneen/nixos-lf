@@ -395,9 +395,15 @@ def dns_test():
 def proxy():
     config = json.loads(POLICY.read_text())
     core = ['ip', 'netns', 'exec', config['coreNamespace']] if config['coreNamespace'] else []
-    # Stop only the VM's coordinator while loading declared policy variants;
+    # Mask only the VM's coordinator while loading declared policy variants;
     # live health reconciliation must not immediately repair a deliberate test.
-    run('systemctl', 'mask', '--runtime', '--now', 'proxy-mode.service')
+    mask = Path('/run/systemd/system.control/proxy-mode.service')
+    mask.parent.mkdir(parents=True, exist_ok=True)
+    mask.symlink_to('/dev/null')
+    run('systemctl', 'daemon-reload')
+    run('systemctl', 'stop', 'proxy-mode.service')
+    if run('systemctl', 'show', '-p', 'LoadState', '--value', 'proxy-mode.service').strip() != 'masked':
+        raise RuntimeError('proxy supervisor is not masked')
     # Stopping the coordinator can race the core restart. A probe sent before
     # the TPROXY listener exists is refused and never retried, so wait for the
     # declared listener rather than sleeping a fixed amount.

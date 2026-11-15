@@ -27,8 +27,7 @@ Rust helper 在 `postPatch` 追加修改，保留继承的 Nixpkgs 处理。
 | Mihomo parser | [patch_mihomo.py](../../system/programs/clash/mihomo/patches/patch_mihomo.py)、[managed_profile.go](../../system/programs/clash/mihomo/config/managed_profile.go) | 最终受管策略、摘要、已知旧配置规范化，拒绝无条件 DIRECT 兜底 |
 | Mihomo controller | [managed_route.go](../../system/programs/clash/mihomo/controller/managed_route.go)、[policy_middleware.go](../../system/programs/clash/mihomo/controller/policy_middleware.go) | 同 schema PATCH 解码与运行时写白名单 |
 | Mihomo 出站 / DNS / 日志 | [target_guard.go](../../system/programs/clash/mihomo/guard/target_guard.go)、`patch_mihomo.py` | 目标验证/固定 IP、本地与远程叶节点授权、可选直拨拒绝、rule DNS metadata、Global 实际链路日志、只用快照 geodata |
-| Mihomo SOCKS parser | [patch_socks.py](../../system/programs/clash/mihomo/patches/patch_socks.py)、[socks_addr_test.go](../../system/programs/clash/mihomo/tests/socks_addr_test.go) | 整数偏移避免长域名字节运算溢出 |
-| Vendored sing-tun | [patch_sing_tun.py](../../system/programs/clash/mihomo/patches/patch_sing_tun.py) | nft 最大地址区间端点，以及 TUN-bound OUTPUT TCP DNAT |
+| Vendored sing-tun | [patch_sing_tun.py](../../system/programs/clash/mihomo/patches/patch_sing_tun.py) | TUN-bound OUTPUT TCP DNAT 与访客 TPROXY socket 保留 |
 | Vendored Gost HTTP | [patch_gost.py](../../system/programs/gost/patches/patch_gost.py)、[gost_http.go](../../system/programs/gost/src/gost_http.go) | 兼容裸数字 IPv6 CONNECT，保留 Go HTTP 解析 |
 | Clash Verge helper | [patch_clash_service.py](../../system/programs/clash/service/patch_clash_service.py) | 固定 root 执行、日志及 socket/启动文件操作 |
 | Clash Verge 打包/启动 | [clash-verge.nix](../../system/programs/clash/clash-verge.nix)、[核心启动器](../../system/programs/clash/service/clash-verge-core-launcher.sh)、[stage 工具](../../system/programs/clash/service/clash-verge-stage.py)、[GUI 启动器](../../system/programs/clash/gui/clash-verge-gui.py)、[GUI defaults](../../system/programs/clash/gui/clash-verge-defaults.sh) | 授权快照、降权、singleton 处理、HTTPS 延迟默认。复用原 GUI 二进制 |
@@ -78,9 +77,6 @@ Metadata、适配器命名和组叶子变化需对照直拨测试。
 策略摘要与 root 快照摘要分开。
 geodata 下载限制同时覆盖 parser 验证和损坏/缺失资源替换。
 
-`patch_socks.py` 修改 `adapter/inbound/util.go` 运算并复制边界测试，头部记录上游参考。
-上游实现修正后，应比较长域名解码和畸形输入行为，保留回归覆盖，只移除冗余 patch 调用与 payload 项。
-
 受管 fake-IP 必须保留地址合成和共享过滤，同时完整转发 HTTPS/SVCB 参数。
 Rule 和统一代理均保持关闭嗅探，旧 profile 继承 root 策略，避免 ECH public name 替换请求目标。
 
@@ -92,11 +88,10 @@ Rule 和统一代理均保持关闭嗅探，旧 profile 继承 root 策略，避
 补丁作用于 Mihomo 内嵌的 `vendor/github.com/metacubex/sing-tun`，版本由 Mihomo 依赖树确定。
 检查 `go.mod`、replace 指令与实际 vendor 树。
 
-补丁包含三个独立部分：
+补丁包含两个独立部分：
 
-1. `redirect_nftables_exprs.go`：最大 IPv4/IPv6 地址没有有效后继，省略区间结束标记，避免倒置或空 nft interval。Patcher 记录 SagerNet 参考，移除前须比较 MetaCubeX fork 的实际代码。
-2. `redirect_nftables_rules.go`：受管非 mark auto-redirect 模式中，OUTPUT TCP DNAT 使用 TUN 自身地址代替 loopback，使 `SO_BINDTODEVICE(TUN)` 在 `route_localnet=0` 下正常。其它模式保留上游行为。
-3. `redirect_nftables_rules.go`：PREROUTING 排除已由自有 B 模式访客 TPROXY 规则设置 `0x233` mark 的报文，保留选定透明 socket 与原始目标。该 mark 与 `network.nix` 共享，普通访客无法通过线上报文设置宿主 packet mark。
+1. `redirect_nftables_rules.go`：受管非 mark auto-redirect 模式中，OUTPUT TCP DNAT 使用 TUN 自身地址代替 loopback，使 `SO_BINDTODEVICE(TUN)` 在 `route_localnet=0` 下正常。其它模式保留上游行为。
+2. `redirect_nftables_rules.go`：PREROUTING 排除已由自有 B 模式访客 TPROXY 规则设置 `0x233` mark 的报文，保留选定透明 socket 与原始目标。该 mark 与 `network.nix` 共享，普通访客无法通过线上报文设置宿主 packet mark。
 
 核对双栈、排除网段、hook 条件、访客 mark 和 redirect port。
 访客 mark 的查表规则优先级为 100，须早于 TUN 规则。
@@ -360,7 +355,7 @@ VM 检查运行在隔离的虚拟机中，硬件加速需要 KVM 权限。
 | `tailscale-transport` | 所选上游 Linux bypass 常量与预期的 magicsock/STUN socket 打标路径。正常系统构建也强制执行 |
 | `proxy-tailscale-vm` | 所选真实 Tailscale CLI、隔离双栈 STUN、双上行、socket/packet/UID 约束、B/C 恢复及远控端口策略 |
 | `proxy-control-config` | 生产/测试身份、helper 能力与监听一致 |
-| `proxy-core` | 定制核心构建和 parser/router/目标与缓存/实际适配器叶节点/direct/UDP/DNS/SOCKS Go 测试 |
+| `proxy-core` | 定制核心构建，以及 parser、router、目标与缓存、实际适配器叶节点、DIRECT、UDP、DNS、SOCKS 报文和 sing-tun 区间端点的 Go 测试 |
 | `proxy-target-vm` | 真实 helper/核心，宿主与节点 loopback 陷阱，HTTP/CONNECT/SOCKS、内部域名固定 IP、窄远程授权、Rule/Global 与 A/C 行为 |
 | `proxy-gost` | 定制 relay 构建及 vendored HTTP 测试 |
 | `browser-privacy` | 最终原生浏览器 policy lock 与离线启动 |

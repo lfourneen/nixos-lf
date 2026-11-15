@@ -50,10 +50,10 @@
       "recipe": "69f919965aeb170f101ea8b0580a3d83dc088a4d34764ab7bb9e42cc4461f666"
     },
     "mihomo": {
-      "version": "1.19.33",
-      "source": "sha256-O2OJ0WFt0T32yOIT1El+ACJWVm2oAJOjU1JTDXb2IEo=",
-      "dependencies": "sha256-wPkqyp2iuA762qID2FK3xWOMU5ZNxAle8saCmZzpeSI=",
-      "recipe": "7db25ad77ded9dbc8f3e5ae0d12a04af261a8dd5da404fa872150966fe0787bd"
+      "version": "1.19.34",
+      "source": "sha256-5sdl+Zodfvo/qaa5zLlj2PaaFoOf3xFScyRLw5a2Oqo=",
+      "dependencies": "sha256-29dWXUPyrlzHIxhss8aYuVmb8Wx4rPyNxjT2mmUI/LI=",
+      "recipe": "865274fe298ad2c87394d7edf2a82fbd0aafe58f3739c799694e8871af3a1311"
     },
     "networkmanager": {
       "version": "1.56.0",
@@ -80,10 +80,10 @@
       "recipe": "fbc3938beb4106418ebe7e3899b4d27fe6b0d435e07b1b79da8427d6d096286b"
     },
     "tailscale": {
-      "version": "1.104.5",
-      "source": "sha256-aq4pBe75wNRFDEa3kSDa/pBLsZws5mOUOjHDUycpmXM=",
-      "dependencies": "sha256-RvaouD88naVNOPJBVcqMaAn+ovjXI4g83ShCdRiR5/Q=",
-      "recipe": "5dd895927c91e2646b92d99037aba814a60bfe5f8a502ff6f65af4ae338cd7f9"
+      "version": "1.104.6",
+      "source": "sha256-oF3izFlknJRuEYp3rw1urN4XKZPvjtda6lsIw9arRvs=",
+      "dependencies": "sha256-IJ0m56UP0RyMBE5eQeQ082EMJZfvrgE37lfPHE2ujCA=",
+      "recipe": "b94a5077e5ebff3d0f414f0697bf4acb85aeae1e6f01b3fd9d05f09855690e20"
     },
     "unbound": {
       "version": "1.26.2",

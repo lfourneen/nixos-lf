@@ -2,6 +2,8 @@
 
 let
   dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || managedSources || assurance || ech != null);
+  maskSupervisor = "mkdir -p /run/systemd/system.control; ln -s /dev/null /run/systemd/system.control/proxy-mode.service; systemctl daemon-reload; systemctl stop proxy-mode.service; test $(systemctl show -p LoadState --value proxy-mode.service) = masked";
+  unmaskSupervisor = "unlink /run/systemd/system.control/proxy-mode.service; systemctl daemon-reload";
   sourceTls = import ../../home/firefox/tls-fixture.nix {
     inherit pkgs;
     extraDnsNames = [ "source.fixture.example" "dot.fixture.test" ];
@@ -623,7 +625,7 @@ pkgs.testers.runNixOSTest {
     ${pkgs.lib.optionalString guests ''
     machine.succeed("python3 /etc/netsec-guests.py proxy")
     machine.copy_from_vm("/run/netsec-guests/drop-observations.json")
-    machine.succeed("systemctl unmask --runtime proxy-mode.service; systemctl start proxy-mode.service")
+    machine.succeed("${unmaskSupervisor}; systemctl start proxy-mode.service")
     wait_proxy()
     with subtest("DNS client refusal has a bounded passive diagnostic"):
         dns_before = drop_view()
@@ -748,12 +750,13 @@ pkgs.testers.runNixOSTest {
     # Migration starts supervision again. Hold its guarded C policy explicitly
     # while observing counters; normal health may otherwise reopen B midway
     # through the diagnostic assertions. The core and its TUN stay alive.
-    machine.succeed("systemctl stop proxy-mode.service; ip netns exec lf-clash-core nft -s -j list table inet mihomo >/tmp/mihomo-before.json; nft add table inet filter; nft add table ip proxymode_nat; nft add table ip6 proxymode_nat; proxy-control migrate-firewall; systemctl stop proxy-mode.service")
+    machine.succeed("systemctl stop proxy-mode.service; ip netns exec lf-clash-core nft -s -j list table inet mihomo >/tmp/mihomo-before.json; nft add table inet filter; nft add table ip proxymode_nat; nft add table ip6 proxymode_nat; proxy-control migrate-firewall; systemctl stop proxy-mode.service${pkgs.lib.optionalString (dataplane || guests) "; ${maskSupervisor}"}")
     machine.succeed("jq -e '.mode == \"blocked\"' /run/proxy-mode/state.json; nft list chain inet lf_filter lf_blocked_guard | grep -q drop; ip netns exec lf-clash-core nft -s -j list table inet mihomo >/tmp/mihomo-after.json; cmp /tmp/mihomo-before.json /tmp/mihomo-after.json; python3 /etc/netsec-control.py check")
 
     for family, name in [("inet", "filter"), ("ip", "proxymode_nat"), ("ip6", "proxymode_nat")]:
         machine.fail(f"nft list table {family} {name}")
     ${pkgs.lib.optionalString (dataplane || guests) ''
+    machine.fail("systemctl start proxy-mode.service")
     blocked_before = drop_view()
     assert blocked_before["policy"]["mode"] == "blocked", blocked_before
     ''}
@@ -761,6 +764,7 @@ pkgs.testers.runNixOSTest {
     ${pkgs.lib.optionalString (dataplane || guests) ''
     with subtest("C diagnostics and denied inspection never change firewall decisions"):
         blocked_after = drop_view()
+        assert blocked_after["policy"]["mode"] == "blocked", blocked_after
         assert drop_packets(blocked_after, "mode-c-output") > drop_packets(blocked_before, "mode-c-output")
         rules_before = json.loads(machine.succeed("nft -s -j list table inet lf_filter"))
         code, output = machine.execute("setpriv --reuid=1000 --clear-groups proxy-inspect --drops")
@@ -771,6 +775,7 @@ pkgs.testers.runNixOSTest {
         machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 2 http://203.0.113.10:8080/")
         machine.succeed("proxy-inspect --drops >/tmp/drop-blocked.json")
         machine.copy_from_vm("/tmp/drop-blocked.json")
+    machine.succeed("${unmaskSupervisor}")
     ''}
     machine.succeed("systemctl start proxy-mode.service")
     wait_proxy()

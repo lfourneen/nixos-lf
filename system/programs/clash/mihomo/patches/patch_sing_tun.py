@@ -1,53 +1,13 @@
-"""Support nftables exclusion ranges ending at the maximum IPv4/IPv6 address.
+"""Preserve managed TUN-bound OUTPUT and guest TPROXY socket selection.
 
-Omit the invalid end marker so the final interval extends to the maximum.
-Upstream: https://github.com/SagerNet/sing-tun/commit/7954dd6e20105bd48659dbb8bfc145c0a2e86a6d
-Exact source matching requires review when the interval builder changes.
+Exact source matching requires review when the redirect rules change.
 """
 from pathlib import Path
 import stat
 import sys
 
-TARGET = Path("vendor/github.com/metacubex/sing-tun/redirect_nftables_exprs.go")
-
-BUGGY = (
-    "\t\tendAddr := rr.To().Next()\n"
-    "\t\tif !endAddr.IsValid() {\n"
-    "\t\t\tendAddr = rr.From()\n"
-    "\t\t}\n"
-    "\t\tsetElements = append(setElements, nftables.SetElement{\n"
-    "\t\t\tKey: rr.From().AsSlice(),\n"
-    "\t\t})\n"
-    "\t\tsetElements = append(setElements, nftables.SetElement{\n"
-    "\t\t\tKey:         endAddr.AsSlice(),\n"
-    "\t\t\tIntervalEnd: true,\n"
-    "\t\t})\n"
-)
-
-FIXED = (
-    "\t\tendAddr := rr.To().Next()\n"
-    "\t\tsetElements = append(setElements, nftables.SetElement{\n"
-    "\t\t\tKey: rr.From().AsSlice(),\n"
-    "\t\t})\n"
-    "\t\tif endAddr.IsValid() {\n"
-    "\t\t\tsetElements = append(setElements, nftables.SetElement{\n"
-    "\t\t\t\tKey:         endAddr.AsSlice(),\n"
-    "\t\t\t\tIntervalEnd: true,\n"
-    "\t\t\t})\n"
-    "\t\t}\n"
-)
-
 
 def patch(root):
-    path = root / TARGET
-    source = path.read_text()
-    if source.count(BUGGY) != 1:
-        raise SystemExit(
-            "vendored sing-tun anchor changed or fix already upstreamed: %s" % path
-        )
-    path.chmod(path.stat().st_mode | stat.S_IWUSR)
-    path.write_text(source.replace(BUGGY, FIXED, 1))
-
     # REDIRECT in OUTPUT targets loopback. SO_BINDTODEVICE(TUN) sockets retain
     # their output constraint during rerouting, sending 127/8 into the TUN and
     # hitting the kernel's martian protection. DNAT to the TUN's own local
@@ -108,6 +68,8 @@ def patch(root):
         raise SystemExit('sing-tun output redirect anchor changed; review TUN-bound socket fix')
     path.chmod(path.stat().st_mode | stat.S_IWUSR)
     path.write_text(source.replace(anchor, replacement, 1))
+    tests = Path(__file__).parent.parent / 'tests/sing_tun_interval_test.go'
+    path.with_name('lf_interval_test.go').write_text(tests.read_text())
 
 
 if __name__ == "__main__":

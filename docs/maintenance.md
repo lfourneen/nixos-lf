@@ -28,8 +28,7 @@ A build failure after an upgrade is a request to compare upstream behavior, not 
 | Mihomo parser | [patch_mihomo.py](../system/programs/clash/mihomo/patches/patch_mihomo.py), [managed_profile.go](../system/programs/clash/mihomo/config/managed_profile.go) | Final managed-policy enforcement, policy digest, known legacy normalization, no unconditional DIRECT catch-all |
 | Mihomo controller | [managed_route.go](../system/programs/clash/mihomo/controller/managed_route.go), [policy_middleware.go](../system/programs/clash/mihomo/controller/policy_middleware.go) | Same-schema PATCH decoding and runtime write allowlist |
 | Mihomo egress / DNS / logs | [target_guard.go](../system/programs/clash/mihomo/guard/target_guard.go), `patch_mihomo.py` | Checked/pinned targets, local/remote leaf authorization, optional direct-dial refusal, rule-DNS metadata, actual global-mode route chain and snapshot-only geodata |
-| Mihomo SOCKS parser | [patch_socks.py](../system/programs/clash/mihomo/patches/patch_socks.py), [socks_addr_test.go](../system/programs/clash/mihomo/tests/socks_addr_test.go) | Integer offsets avoid byte overflow on long domain names |
-| Vendored sing-tun | [patch_sing_tun.py](../system/programs/clash/mihomo/patches/patch_sing_tun.py) | Maximum-address nft interval endpoint and TUN-bound OUTPUT TCP DNAT |
+| Vendored sing-tun | [patch_sing_tun.py](../system/programs/clash/mihomo/patches/patch_sing_tun.py) | TUN-bound OUTPUT TCP DNAT and guest TPROXY socket preservation |
 | Vendored Gost HTTP handler | [patch_gost.py](../system/programs/gost/patches/patch_gost.py), [gost_http.go](../system/programs/gost/src/gost_http.go) | Bare numeric IPv6 CONNECT compatibility with upstream Go HTTP parsing |
 | Clash Verge helper | [patch_clash_service.py](../system/programs/clash/service/patch_clash_service.py) | Pin root execution, fixed managed logs and constrained socket/startup file operations |
 | Clash Verge package/launch | [clash-verge.nix](../system/programs/clash/clash-verge.nix), [core launcher](../system/programs/clash/service/clash-verge-core-launcher.sh), [stage tool](../system/programs/clash/service/clash-verge-stage.py), [GUI launcher](../system/programs/clash/gui/clash-verge-gui.py), [GUI defaults](../system/programs/clash/gui/clash-verge-defaults.sh) | Authorized snapshots, privilege drop, GUI singleton handling and HTTPS delay-test default. Upstream GUI binary reused |
@@ -83,10 +82,6 @@ The production helper must supply it.
 Keep policy hashing distinct from the root-owned snapshot digest.
 The geodata download gate must also cover parser validation and replacement of a missing/corrupt database.
 
-`patch_socks.py` changes arithmetic in `adapter/inbound/util.go` and copies boundary tests into that package.
-Its header records an upstream reference.
-If an upstream release implements the correction, compare long-domain decoding and malformed input behavior, retain the regression tests and remove only the redundant patch invocation/payload entries.
-
 Managed fake-IP must forward HTTPS/SVCB records with their parameters intact while retaining address synthesis and the shared filter.
 Keep sniffing disabled in both Rule and uniform modes.
 Cached profiles must inherit the root policy so an ECH public name cannot replace the requested target.
@@ -100,11 +95,10 @@ The target is `vendor/github.com/metacubex/sing-tun`, not an independently insta
 A Mihomo update can change it even when no explicit sing-tun setting changes.
 Inspect Mihomo's `go.mod`, module replacement directives and generated vendor tree.
 
-The patch has **three independent parts**:
+The patch has two independent parts:
 
-1. `redirect_nftables_exprs.go`: a range ending at the maximum IPv4/IPv6 address has no valid successor. Omit its end marker instead of producing an inverted/empty nft interval. The patcher records a SagerNet reference. Check the MetaCubeX fork's actual code before removing this part.
-2. `redirect_nftables_rules.go`: in managed non-mark auto-redirect mode, local OUTPUT TCP DNAT uses the TUN's own address instead of loopback. This preserves `SO_BINDTODEVICE(TUN)` sockets with `route_localnet=0`. Other redirect modes retain their upstream behavior.
-3. `redirect_nftables_rules.go`: PREROUTING excludes packets marked `0x233` by the owned B-only guest TPROXY rules. Their transparent socket and original target must survive later auto-redirect lookup. The mark is a shared contract with `network.nix`. Ordinary guests cannot transmit a host packet mark over the wire.
+1. `redirect_nftables_rules.go`: in managed non-mark auto-redirect mode, local OUTPUT TCP DNAT uses the TUN's own address instead of loopback. This preserves `SO_BINDTODEVICE(TUN)` sockets with `route_localnet=0`. Other redirect modes retain their upstream behavior.
+2. `redirect_nftables_rules.go`: PREROUTING excludes packets marked `0x233` by the owned B-only guest TPROXY rules. Their transparent socket and original target must survive later auto-redirect lookup. The mark is a shared contract with `network.nix`. Ordinary guests cannot transmit a host packet mark over the wire.
 
 Check both IP families, configured exclusions, hook conditions, the guest mark and redirect-port selection.
 The guest mark lookup must precede TUN policy rules.
@@ -374,7 +368,7 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 | `tailscale-transport` | Selected upstream Linux bypass constant and expected magicsock/STUN socket marking paths. Also required by normal system builds |
 | `proxy-tailscale-vm` | Real selected Tailscale CLI, isolated dual-stack STUN, both uplinks, socket/packet/UID restrictions, B/C recovery and remote desktop port policy |
 | `proxy-control-config` | Production/test identities, helper capabilities and generated listeners agree |
-| `proxy-core` | Patched core build plus injected parser, router, target/cache, actual adapter-leaf, direct/UDP/DNS and SOCKS Go tests |
+| `proxy-core` | Patched core build and Go tests for the parser, router, target/cache, actual adapter leaf, DIRECT, UDP, DNS, SOCKS framing and sing-tun interval endpoints |
 | `proxy-target-vm` | Real helper/core, distinct local/node loopback traps, HTTP/CONNECT/SOCKS, internal-name pinning, scoped remote grant, Rule/Global and A/C behavior |
 | `proxy-gost` | Patched relay build and vendored HTTP parser tests |
 | `browser-privacy` | Final native browser policy/locks and offline launch behavior |

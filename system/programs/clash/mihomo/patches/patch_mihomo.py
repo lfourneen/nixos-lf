@@ -240,6 +240,7 @@ source = Path(__file__).parent.parent
 (root / "component/lfguard/validated_answers_test.go").write_text((source / "guard/validated_answers_test.go").read_text())
 (root / "component/lfguard/guard_test.go").write_text((source / "guard/target_guard_test.go").read_text())
 (root / "adapter/lf_managed_target_test.go").write_text((source / "tests/managed_target_test.go").read_text())
+(root / "adapter/inbound/lf_socks_addr_test.go").write_text((source / "tests/socks_addr_test.go").read_text())
 (root / "adapter/outbound/lf_managed_direct_test.go").write_text((source / "tests/managed_direct_test.go").read_text())
 (root / "tunnel/lf_managed_udp_test.go").write_text((source / "tests/managed_udp_test.go").read_text())
 (root / "tunnel/lf_managed_dns_test.go").write_text((source / "tests/managed_dns_test.go").read_text())
