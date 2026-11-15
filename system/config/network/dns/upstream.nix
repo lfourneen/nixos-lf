@@ -330,9 +330,10 @@ in
             --argjson now "$now" --argjson override "$override" --argjson version "$policy_version" \
             --argjson success "$last_success" --arg dnssec "$dot_state" --argjson probe "$dot_result" \
             --arg encryption ${lib.escapeShellArg config.my.proxy.dnsEncryption} \
+            --argjson local_dnssec ${lib.boolToString config.my.proxy.localDnssec} \
             '{mode:$mode,reason:$reason,session:$session,budget_remaining:$budget,budget_total:$total,
               window_until:$window,plaintext_override:$override,encryption_policy:$encryption,
-              monotonic_seconds:$now,policy_version:$version,last_success_monotonic:$success,dnssec_status:$dnssec,dnssec_probe:$probe}' \
+              monotonic_seconds:$now,policy_version:$version,last_success_monotonic:$success,dnssec_status:$dnssec,dnssec_probe:$probe,local_dnssec:$local_dnssec}' \
               > "$runtime/state.json.$$" && mv -f "$runtime/state.json.$$" "$runtime/state.json"
           atomic_write "$runtime/reason" "$state_reason"
           atomic_write "$runtime/status" "$current"

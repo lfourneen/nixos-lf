@@ -10,7 +10,7 @@ import time
 
 
 REVOKE = "".join("flush set inet lf_filter " + name + "\n"
-                 for name in ("dns_plaintext4", "dns_split4", "dns_split6"))
+                 for name in ("dns_plaintext4", "dns_split4", "dns_split6", "b_authorization"))
 
 
 @contextlib.contextmanager
@@ -46,6 +46,18 @@ def transition(settings, action, root=Path("/run"), run=subprocess.run):
         # after sleep.target is inactive, including a failed ExecStart.
         run([settings["nft"], "-f", "-"], input=REVOKE, text=True,
             capture_output=True, timeout=5, check=True)
+        # A pre-sleep proof cannot be replayed after resume, even when kernel
+        # timeout clocks paused while asleep.
+        authorization = root / 'proxy-mode/authorization.json'
+        if authorization.exists():
+            value = json.loads(authorization.read_text())
+            value['until'] = 0
+            temporary = authorization.with_suffix('.tmp')
+            temporary.write_text(json.dumps(value) + '\n')
+            temporary.replace(authorization)
+        epoch = root / 'proxy-mode/authorization-epoch'
+        previous = int(epoch.read_text()) if epoch.exists() else 0
+        epoch.write_text(str(previous + 1) + '\n')
         if action == "resume":
             marker.unlink(missing_ok=True)
         temporary = runtime / "state.json.tmp"

@@ -155,7 +155,8 @@ DNS recovery and private resolver exceptions follow the [DNS policy](dns.md).
 Firefox native HTTPS query
   -> libc resolver -> systemd-resolved -> dnsmasq suffix filter
        A: Unbound -> authenticated DoT + local DNSSEC validation
-       B: core suffix filter -> configured encrypted resolver
+       B: core suffix filter -> local validator when localDnssec=true
+                               otherwise configured encrypted resolver
   <- HTTPS RR carrying ECHConfig
 
 Firefox/NSS builds the encrypted ClientHello
@@ -171,7 +172,8 @@ The core retains fake-IP address behavior while forwarding HTTPS and SVCB record
 The shared filter runs first, so a blocked domain receives local NXDOMAIN instead of an ECHConfig.
 Record parameters, including the ECH public name, are carried back to the browser.
 The core does not consume the browser's ECHConfig or terminate its origin TLS session.
-A's DNSSEC validation, B's encrypted transport, approved split DNS and MagicDNS retain their [separate boundaries](dns.md#responsibilities).
+A validates DNSSEC locally, and B does so when `localDnssec=true`.
+Encrypted transport, unsigned zones, approved split DNS and MagicDNS retain their [separate boundaries](dns.md#responsibilities).
 
 NSS selects the config, constructs ClientHelloInner/Outer, verifies the certificate and handles authenticated retry configs.
 GREASE and `ECHAccepted` are different observations: a service accepting ordinary TLS can see GREASE while reporting that ECH was not accepted.

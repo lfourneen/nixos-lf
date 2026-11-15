@@ -62,7 +62,11 @@ Existing single-source state migrates on the next broker operation.
 Approved snapshots survive switching and reboot.
 Fetch failures preserve the selection, and parser, audit or health failures preserve the authorized runtime snapshot.
 Until checks complete, `Active source` can differ from the requested selection.
-Applying a candidate restarts the core and can briefly enter C.
+
+The refresh service checks candidates before interrupting a ready core.
+Rejected or unchanged candidates preserve that core only while its snapshot authority, integrity, full health and readiness remain valid.
+An unhealthy or unauthorized runtime follows C recovery.
+Applying a changed candidate enters C before restarting the core and must pass startup checks again.
 Without a compatible fallback, C remains in effect.
 
 `clash-off` revokes runtime authority while preserving the source's accepted baseline.
@@ -71,6 +75,7 @@ Stopping and restarting does not approve the refused changes.
 
 Same-name identity, transport and credential changes are compared against that source's own settled baseline, including after switching away and back.
 Validated DNS rotation with the same logical server identity remains automatic.
+Changing the logical server or TLS name still requires review even when its pinned IP is unchanged.
 Sensitive routes are compared in both directions.
 Exact approval binds candidate, baseline, revision, policy and one-hour expiry.
 It cannot waive certificate, hosts, private-target or malformed-input failures.
@@ -183,7 +188,7 @@ If no settled baseline exists, the failure is recorded as `refused` and the heal
 Use `proxy-status` to confirm service recovery.
 The helper unit being active alone does not prove core readiness.
 
-Candidate read or validation failures under `auto` preserve an intact authorized snapshot, record `fallback` and start the core from that snapshot.
+At startup, candidate read or validation failures under `auto` preserve an intact authorized snapshot, record `fallback` and start the core from that snapshot.
 Without a valid fallback, startup fails with exit 78.
 The launcher always runs the effective snapshot.
 Rejected candidate digests are pinned for one hour, so ordinary restarts reuse the rejection without extending its lifetime.
@@ -198,7 +203,7 @@ The record excludes subscription URLs, credentials, node names, private paths an
 
 `my.proxy.subscriptionAudit` supports `off`, `warn` and `enforce`, with `warn` as the module default.
 The host configuration selects `enforce`.
-The worker runs offline as `clash-core`, without capabilities, after `-t` and before snapshot commit.
+The worker runs offline as `clash-validate`, without capabilities, after `-t` and before snapshot commit.
 `off` disables only this additional check.
 The managed parser and digest checks always apply.
 

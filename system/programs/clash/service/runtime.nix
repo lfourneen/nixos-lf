@@ -75,6 +75,9 @@ in
       User = desktopUser;
       Group = "clash-core";
       ExecStart = "${pkgs.socat}/bin/socat UNIX-LISTEN:${frontDir}/verge-mihomo.sock,mode=0600,fork,unlink-early UNIX-CONNECT:/run/clash-verge-rev/core/mihomo.sock";
+      # socat reports the stop signal as an exit status; a requested stop is not
+      # a failed unit and must not be reported next to real failures.
+      SuccessExitStatus = [ 143 ];
       NoNewPrivileges = true;
       CapabilityBoundingSet = "";
       RestrictAddressFamilies = [ "AF_UNIX" ];

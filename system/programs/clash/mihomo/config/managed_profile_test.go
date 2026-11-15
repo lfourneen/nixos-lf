@@ -12,6 +12,36 @@ import (
 	"github.com/metacubex/mihomo/common/yaml"
 )
 
+func TestLFManagedDNSTransportCannotAdoptModeAUpstreams(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	expected := map[string]any{
+		"dns":              map[string]any{"nameserver": []string{"https://1.1.1.1/dns-query#lf-remote"}},
+		"bootstrap-listen": "127.0.0.1:1058",
+	}
+	data, _ := json.Marshal(map[string]any{"lf-dns-transport": expected})
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	raw := DefaultRawConfig()
+	raw.LFDNSTransport = map[string]any{"dns": map[string]any{
+		"nameserver": []string{"tls://101.226.4.6"},
+	}}
+	if _, err := lfValidateRaw(raw); err != nil {
+		t.Fatal(err)
+	}
+	actual, _ := json.Marshal(raw.LFDNSTransport)
+	want, _ := json.Marshal(expected)
+	if string(actual) != string(want) {
+		t.Fatal("cached profile replaced B upstreams", string(actual))
+	}
+	if err := ValidateManagedPatch(map[string]any{"lf-dns-transport": map[string]any{
+		"dns": map[string]any{"nameserver": []string{"tls://101.226.4.6"}},
+	}}); err == nil {
+		t.Fatal("controller replaced B upstreams")
+	}
+}
+
 func TestLFManagedStrictSniffer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "policy.json")
 	if err := os.WriteFile(path, []byte(`{"sniffer.enable":false}`), 0600); err != nil {

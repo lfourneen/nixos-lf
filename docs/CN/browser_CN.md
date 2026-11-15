@@ -147,7 +147,8 @@ C 在内核阻断流量并拒绝新启动，A 保留字面 HTTP 门户。
 Firefox 原生 HTTPS 查询
   -> libc resolver -> systemd-resolved -> dnsmasq 后缀过滤
        A: Unbound -> 认证 DoT + 本地 DNSSEC 验证
-       B: 核心后缀过滤 -> 声明的加密解析器
+       B: 核心后缀过滤 -> localDnssec=true 时使用本地验证器
+                         否则使用声明的加密解析器
   <- 携带 ECHConfig 的 HTTPS RR
 
 Firefox/NSS 构造加密 ClientHello
@@ -162,7 +163,8 @@ Unix 浏览器通过[原生解析 API](https://github.com/mozilla-firefox/firefo
 核心保留地址记录的 fake-IP 行为，同时让 HTTPS 和 SVCB 记录经过正常解析器。
 共享过滤先执行，阻断域返回本地 NXDOMAIN，不交付 ECHConfig。
 记录参数连同 ECH public name 返回浏览器，核心不使用浏览器的 ECHConfig，也不终止站点 TLS。
-A 的 DNSSEC、B 的加密传输、已批准 split DNS 和 MagicDNS 保留[各自边界](dns_CN.md#各路径的责任)。
+A 在本地验证 DNSSEC，B 在 `localDnssec=true` 时也在本地验证。
+加密传输、未签名区域、已批准 split DNS 和 MagicDNS 保留[各自边界](dns_CN.md#各路径的责任)。
 
 NSS 选择配置、构造 ClientHelloInner/Outer、验证证书并处理已认证的重试配置。
 GREASE 与 `ECHAccepted` 是不同观测：普通 TLS 可以携带 GREASE，而服务端仍报告未接受 ECH。

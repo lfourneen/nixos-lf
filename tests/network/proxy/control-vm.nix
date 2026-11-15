@@ -1,10 +1,11 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false }:
 
 let
-  dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || managedSources || ech != null);
+  dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || managedSources || assurance || ech != null);
   sourceTls = import ../../home/firefox/tls-fixture.nix {
     inherit pkgs;
-    extraDnsNames = [ "source.fixture.example" ];
+    extraDnsNames = [ "source.fixture.example" "dot.fixture.test" ];
+    extraIpAddresses = pkgs.lib.optional assurance "203.0.113.53";
   };
   echFixture = pkgs.runCommand "ech-origin-fixture" { nativeBuildInputs = [ pkgs.go ]; } ''
     export GOCACHE="$TMPDIR/go-cache"
@@ -16,7 +17,7 @@ let
 
 in
 pkgs.testers.runNixOSTest {
-  name = if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if assurance then "proxy-authorization-and-dnssec" else if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
@@ -28,8 +29,18 @@ pkgs.testers.runNixOSTest {
         profile = import ../../../system/config/network/proxy/profile.nix { inherit config lib; };
       in profile // {
         options.my.proxy = profile.options.my.proxy // {
+          managedDnsTransport = profile.options.my.proxy.managedDnsTransport // {
+            default = let original = profile.options.my.proxy.managedDnsTransport.default;
+            in original // lib.optionalAttrs assurance {
+              dns = original.dns // {
+                nameserver = [ "https://203.0.113.53/dns-query#Fixture" ];
+                default-nameserver = [ "tls://203.0.113.53:853" ];
+                proxy-server-nameserver = [ "https://203.0.113.53/dns-query#DIRECT" ];
+              };
+            };
+          };
           managedDns = profile.options.my.proxy.managedDns // {
-            default = profile.options.my.proxy.managedDns.default // {
+            default = profile.options.my.proxy.managedDns.default // lib.optionalAttrs (!assurance) {
               nameserver = [ "udp://100.67.0.1:15354" ];
               default-nameserver = [ "100.67.0.1" ];
               proxy-server-nameserver = [ "udp://100.67.0.1:15354" ];
@@ -49,7 +60,8 @@ pkgs.testers.runNixOSTest {
       ../../../system/programs/gost/default.nix
       ../../../system/config/network/diagnostics/default.nix
       ../../../system/programs/clash/service/runtime.nix
-    ] ++ lib.optional guests ../guests/guest-config.nix
+    ] ++ lib.optional assurance (import ../dns/assurance-config.nix { inherit sourceTls; })
+      ++ lib.optional guests ../guests/guest-config.nix
       ++ lib.optional hermesContainers ../guests/hermes-container-config.nix
       ++ lib.optional (ech != null) ../../home/firefox/firefox-desktop.nix;
     users.users.lfour = { isNormalUser = true; uid = 1000; };
@@ -66,6 +78,7 @@ pkgs.testers.runNixOSTest {
     };
 
     my.proxy.profileRefreshPolicy = if refresh || managedSources then "auto" else "strict";
+    my.proxy.authorizationLeaseSeconds = lib.mkIf managedSources 60;
     my.proxy.subscriptionAudit = if refresh || managedSources then "enforce" else "warn";
     my.proxy.controlledSources = managedSources;
     my.proxy.strictBrowser = managedSources;
@@ -73,8 +86,8 @@ pkgs.testers.runNixOSTest {
     my.proxy.remoteOnlyCatchAll = managedSources;
     my.proxy.nodeProbeUrls = [ "http://node.fixture.example:8080/" ];
     my.proxy.tunProbeName = "tun.fixture.example";
-    my.proxy.dnsEncryption = if strictDns || managedSources then "strict" else "opportunistic";
-    security.pki.certificateFiles = lib.optional managedSources "${sourceTls}/ca.pem";
+    my.proxy.dnsEncryption = if strictDns || managedSources || assurance then "strict" else "opportunistic";
+    security.pki.certificateFiles = lib.optional (managedSources || assurance) "${sourceTls}/ca.pem";
     services.unbound.settings.server.local-zone = lib.mkIf managedSources [
       ''"source.fixture.example." static''
       ''"source-node.fixture.example." static''
@@ -128,6 +141,7 @@ pkgs.testers.runNixOSTest {
       after = [ "sleep.target" ];
       serviceConfig = { Type = "oneshot"; RemainAfterExit = true; ExecStart = "${pkgs.coreutils}/bin/true"; };
     };
+
     environment.etc."netsec-integration.py".source = ../integration/integration_fixture.py;
     environment.etc."netsec-dns.py".source = ../dns/dns_fixture.py;
     environment.etc."netsec-tail.py".source = ../tailscale/tailscale_fixture.py;
@@ -135,10 +149,12 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-control.py".source = ./control_fixture.py;
     environment.etc."netsec-core-network.py".source = ./core_network_fixture.py;
     environment.etc."netsec-managed.py" = lib.mkIf managedSources { source = ./managed_netns_fixture.py; };
+
     environment.etc."netsec-managed.json" = lib.mkIf managedSources {
       text = builtins.toJSON { tls = sourceTls; stage = ../../../system/programs/clash/service/clash-verge-stage.py;
         stageSettings = clashPackage.stageSettings; launcher = "${clashPackage}/bin/verge-mihomo"; };
     };
+
     environment.etc."netsec-refresh.py".source = ./refresh_fixture.py;
     environment.etc."netsec-dataplane.py".source = ./dataplane_fixture.py;
     environment.etc."netsec-resilience.py" = lib.mkIf dataplane { source = ./resilience_fixture.py; };
@@ -146,10 +162,12 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-health.json" = lib.mkIf dataplane { source = config.my.proxy.healthSettings; };
     environment.etc."netsec-blocked.nft" = lib.mkIf dataplane { text = config.my.proxy.blockedModeRules; };
     environment.etc."netsec-lifecycle.py" = lib.mkIf dataplane { source = ../integration/lifecycle_fixture.py; };
+
     environment.etc."netsec-nm-wake" = lib.mkIf dataplane {
       source = (lib.findFirst (hook: lib.hasSuffix "-nm-proxy-net-wake" (toString hook.source))
         (throw "production NM wake hook not found") config.networking.networkmanager.dispatcherScripts).source;
     };
+
     environment.etc."network-benchmark.py".source = ../../../scripts/network-benchmark.py;
     environment.etc."netsec-target.py" = lib.mkIf targetPolicy { source = ./target_fixture.py; };
     environment.etc."netsec-launcher".text = "${clashPackage}/bin/verge-mihomo";
@@ -166,7 +184,7 @@ pkgs.testers.runNixOSTest {
     };
 
     environment.systemPackages = [
-      (pkgs.python3.withPackages (p: [ p.pyyaml ]))
+      (pkgs.python3.withPackages (p: [ p.pyyaml ] ++ lib.optional assurance p.dnspython))
       pkgs.curl pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.nftables pkgs.util-linux
     ] ++ lib.optionals (ech != null) [ pkgs.nssTools ]
       ++ lib.optionals dataplane [ pkgs.conntrack-tools ];
@@ -204,7 +222,15 @@ pkgs.testers.runNixOSTest {
     machine.succeed("ip netns add outside; ip link add ens1 type veth peer name peer0; ip link set peer0 netns outside")
     machine.succeed("ip addr add 100.67.0.2/24 dev ens1; ip link set ens1 up; ip -n outside addr add 100.67.0.1/24 dev peer0; ip -n outside addr add 203.0.113.10/32 dev peer0; ip -n outside link set peer0 up; ip -n outside link set lo up; ip route add default via 100.67.0.1 dev ens1 metric 1")
     machine.succeed("ip -6 addr add 2001:db8:dead::2/64 dev ens1 nodad; ip -n outside -6 addr add 2001:db8:dead::1/64 dev peer0 nodad; ip -6 route add default via 2001:db8:dead::1 dev ens1 metric 1")
-    machine.succeed("python3 /etc/netsec-integration.py prepare; python3 /etc/netsec-control.py prepare")
+    ${pkgs.lib.optionalString assurance ''
+    machine.succeed("ip -n outside -6 addr add fd42:96::1/64 dev peer0 nodad; ip -6 addr add fd42:96::2/64 dev ens1 nodad; ip -n outside addr add 203.0.113.42/32 dev peer0; ip -n outside addr add 203.0.113.53/32 dev peer0")
+    machine.succeed("systemctl start netsec-assurance-dns.service")
+    ''}
+    machine.succeed("python3 /etc/netsec-integration.py prepare")
+    ${pkgs.lib.optionalString assurance ''
+    machine.succeed("python3 /etc/netsec-assurance.py configure")
+    ''}
+    machine.succeed("python3 /etc/netsec-control.py prepare")
     ${pkgs.lib.optionalString managedSources ''
     machine.succeed("ip -n outside addr add 1.1.1.1/32 dev peer0")
     machine.succeed("systemd-run --unit=managed-source-origin ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-managed.py source")
@@ -239,6 +265,14 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"systemd-run --unit=control-node ip netns exec outside {core} -d /run/netsec-node -f /run/netsec-node.json")
     machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18080")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
+    ${pkgs.lib.optionalString assurance ''
+    machine.wait_for_unit("netsec-assurance-dns.service")
+    try:
+        print(machine.succeed("python3 -u /etc/netsec-assurance.py direct", timeout=30))
+    except Exception:
+        print(machine.execute("journalctl -u unbound -u netsec-assurance-dns --no-pager -n 30; nft list chain inet lf_filter lf_dns_egress_guard"))
+        raise
+    ''}
     ${pkgs.lib.optionalString (guests && !hermesContainers) ''
     machine.wait_for_unit("socket-guest-dns.service")
     try:
@@ -449,7 +483,21 @@ pkgs.testers.runNixOSTest {
     wait_proxy()
     machine.succeed("python3 /etc/hermes-container.py B", timeout=90)
     ''}
-    ${pkgs.lib.optionalString (!hermesContainers && !managedSources) ''
+    ${pkgs.lib.optionalString assurance ''
+    with subtest("local DNSSEC, isolated DNS budgets and expiring kernel authorization"):
+        try:
+            print(machine.succeed("python3 -u /etc/netsec-assurance.py dns", timeout=90))
+            print(machine.succeed("ip netns exec lf-clash-core python3 -u /etc/netsec-assurance.py pressure", timeout=60))
+            wait_proxy()
+            print(machine.succeed("python3 -u /etc/netsec-assurance.py lease", timeout=120))
+        except Exception:
+            print(machine.execute("journalctl -u clash-dns-application -u clash-dns-infrastructure -u netsec-assurance-dns -u proxy-mode --no-pager -n 50; cat /run/proxy-mode/health.json /run/proxy-mode/authorization.json; nft list set inet lf_filter b_authorization"))
+            raise
+        wait_proxy()
+        machine.succeed("proxy-control off")
+        machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
+    ''}
+    ${pkgs.lib.optionalString (!hermesContainers && !managedSources && !assurance) ''
     machine.succeed("setpriv --reuid=1000 --clear-groups proxy-status --no-color | grep -q 'Network status'")
     ${pkgs.lib.optionalString (refresh || dataplane) ''
     with subtest("managed profile refresh and core recovery"):

@@ -11,6 +11,7 @@ pkgs.runCommand "netsec-signed-fixture" { nativeBuildInputs = [ pkgs.ldns.exampl
   valid IN A 203.0.113.42
   short 1 IN A 203.0.113.43
   bogus IN A 192.0.2.17
+  service IN HTTPS 1 . alpn="h2" port=443
   EOF
   ksk=$(ldns-keygen -a ECDSAP256SHA256 -k signed.fixture.example.)
   zsk=$(ldns-keygen -a ECDSAP256SHA256 signed.fixture.example.)

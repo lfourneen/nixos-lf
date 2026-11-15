@@ -22,6 +22,9 @@ assert c.users.users.clash-fetch.uid == c.my.machine.uids.clashFetch;
 assert c.systemd.services.socket-guest-dns.enable;
 assert builtins.elem "socket-guest-dns.service" c.systemd.services.clash-source-refresh.after;
 assert builtins.elem "clash-core" c.systemd.services.clash-source-refresh.serviceConfig.SupplementaryGroups;
+assert !(builtins.elem "CAP_NET_ADMIN" c.systemd.services.clash-source-refresh.serviceConfig.CapabilityBoundingSet);
+assert c.systemd.services.clash-source-guard.serviceConfig.CapabilityBoundingSet == [ "CAP_NET_ADMIN" ];
+assert c.systemd.services.clash-source-guard.serviceConfig.NoNewPrivileges;
 assert builtins.length reviewCommands == 2;
 
 pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3 ]; } ''
@@ -45,6 +48,14 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   assert policy['lf-private-targets']['subscription-trust'] == 'fixed'
   assert policy['lf-private-targets']['strict-inlets'] == ['lf-strict']
   assert policy['listeners'][0]['port'] == ${toString c.my.machine.ports.mihomoStrict}
+  transport = policy['lf-dns-transport']['dns']
+  assert transport['nameserver'] == ['https://1.1.1.1/dns-query#lf-remote', 'https://8.8.8.8/dns-query#lf-remote']
+  assert transport['nameserver-policy'] == {}
+  assert transport['proxy-server-nameserver'] == ['https://223.5.5.5/dns-query']
+  for role, path in ${builtins.toJSON (pkgs.lib.mapAttrs (_: path: toString path) c.my.proxy.coreValidatorConfigs)}.items():
+      validator = Path(path).read_text()
+      assert 'forward-tcp-upstream: yes' in validator and 'forward-addr: 127.0.0.1@' in validator
+      assert 'dot.360.cn' not in validator and '101.226.4.6' not in validator
   PY
   touch "$out"
 ''

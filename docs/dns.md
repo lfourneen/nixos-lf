@@ -2,7 +2,8 @@
 
 English | [简体中文](CN/dns_CN.md) | [Documentation](README.md)
 
-The host selects `dnsEncryption="strict"` in `host.nix`.
+The host selects `dnsEncryption="strict"` and `localDnssec=true` in `host.nix`, so managed public DNS uses local DNSSEC validation in both A and B.
+The module default for `localDnssec` is `false`.
 Opportunistic leases and recovery budgets described below remain module compatibility behavior.
 Strict grants no public plaintext recovery or runtime force-plaintext override.
 DoT failure leaves cached/local answers.
@@ -36,14 +37,14 @@ DoH shares HTTPS port 443 and is not distinguished by this rule.
 | Path | Domain filtering | Transport and validation |
 |---|---|---|
 | System queries, including Gost's A passthrough | dnsmasq suffix rules before the selected upstream | A uses Unbound DoT and local DNSSEC validation. Default recovery can use leased plaintext. B uses the core |
-| Core DNS listener and TUN DNS hijack | Shared suffix rules before hosts, cache and fake-IP allocation | Managed DoH/DoT. B does not run A's local DNSSEC validator |
-| HTTP/SOCKS proxy target in B | Shared suffix rules before application TCP/UDP dial, including private-domain exceptions | Real-IP validation and pinning for public and approved internal names. The actual leaf must authorize private targets |
-| Node / encrypted-resolver bootstrap | Core resolver queries use the shared filter before cache/upstream access | Separate, literal-address encrypted bootstrap resolvers avoid depending on an already connected proxy. Internal infrastructure is exempt from application target/IP and `proxyOnly` checks |
+| Core DNS listener and TUN DNS hijack | Shared suffix rules before hosts, cache and fake-IP allocation | With `localDnssec`, local validation precedes address synthesis. Otherwise, managed DoH/DoT |
+| HTTP/SOCKS proxy target in B | Shared suffix rules before application TCP/UDP dial, including private-domain exceptions | Real-IP checks and pinning for public and approved internal names. `localDnssec` also validates public answers locally. The actual leaf must authorize private targets |
+| Node / encrypted-resolver bootstrap | Core resolver queries use the shared filter before cache/upstream access | An independent local validator with `localDnssec`, otherwise literal-address encrypted bootstrap resolvers. Neither depends on an already connected proxy. Internal infrastructure is exempt from application target/IP and `proxyOnly` checks |
 | Approved split DNS / native MagicDNS | Split forwarding follows dnsmasq's domain precedence. Resolved's native MagicDNS route bypasses dnsmasq | Explicit private resolver / Tailscale overlay exception. No local public DNSSEC guarantee |
 
 The suffix filter returns local NXDOMAIN for blocked domains.
 A uses Unbound for local DNSSEC validation.
-B uses the core's encrypted resolvers.
+B uses local validators when `localDnssec` is enabled and the core's encrypted resolvers otherwise.
 Private-address checks run separately on DNS answers and application targets.
 Literal IP requests, independent application DoH, remote-side lookups outside the managed core and native MagicDNS are outside the common suffix filter's scope.
 
@@ -112,7 +113,7 @@ Sleep and connection changes revoke permissions before renewal.
 ### Upstream configuration and time
 
 `my.machine.dotEndpoints` declares literal IPv4/IPv6 endpoints and their certificate `authName`.
-Unbound, the probe and firewall use the same list, derived by default from `dotUpstreams` and `dotAuthName`.
+Host Unbound, the Mode-A probe and host firewall use the same list, derived by default from `dotUpstreams` and `dotAuthName`.
 Choose endpoints reachable from the intended networks.
 
 `my.proxy.dnsStaleWaitMilliseconds` sets how long to wait for fresh data before returning eligible stale cache entries, defaulting to 300 ms.
@@ -158,21 +159,82 @@ Local suffixes and selected connectivity/STUN resources receive real answers.
 Filtering fake-IP changes resolution, not routing.
 HTTP-only mode (`tunMode=false`) uses redir-host.
 
-Public name servers use Cloudflare/Google DoH.
-Domestic names and proxy-endpoint bootstrap use the configured domestic resolvers.
-`respect-rules` is enabled, additional direct resolvers and proxy-server resolver-policy maps are disabled, and the core's parser/controller policy prevents runtime weakening of managed fields.
-B's resolver is separate from A's local Unbound validator.
+With `localDnssec=true`, application DNS goes to a private Unbound validator at `127.0.0.1:1055`, while node and resolver bootstrap use a separate validator at `127.0.0.1:1056`.
+Both live inside the core namespace, independently of the host services using the same port numbers.
+They maintain separate persistent RFC 5011 anchors seeded from locked `dns-root-data` and ignore client CD requests.
+Each validator forwards over TCP loopback to a private Mihomo transport listener: application queries use port 1057 and bootstrap queries use 1058.
+These listeners carry raw DNSSEC material without hosts substitution, fake-IP synthesis or reuse of ordinary resolver cache entries.
+
+Application transport uses Cloudflare/Google DoH.
+On this host, controlled sources bind those queries to the `lf-remote` group, so they travel through a remote proxy.
+Configurations without controlled sources retain `respect-rules` selection.
+Node bootstrap retains its independent encrypted proxy-server and literal-address bootstrap resolvers.
+Ordinary application names are not sent to that bootstrap path.
+Public application transport keeps no domestic split: names assigned to domestic resolvers in the compatibility configuration use the same foreign DoH here.
+Only node bootstrap keeps a domestic resolver.
+Cold application lookups can require several remote exchanges for validation, and cache reuse remains limited by validation and TTLs.
+Mode A's `my.machine.dotEndpoints` list is independent of both B roles.
+TLS certificate checks remain enabled in Mihomo, and upstream failure grants no plaintext fallback.
+
+With `localDnssec=false`, public name servers use Cloudflare/Google DoH, and domestic names and proxy-endpoint bootstrap use the configured domestic resolvers.
+That compatibility path does not locally validate B's DNSSEC answers.
+In both configurations, `respect-rules` is enabled, additional direct resolvers and proxy-server resolver-policy maps are disabled, and the parser/controller prevents runtime weakening of managed fields.
 
 The core validates and pins domain dial targets after routing, including approved internal suffixes.
+With local validation enabled, public dial targets use the local validator's checked answers before their real addresses are pinned.
+Subscription hosts and system hosts cannot substitute an unvalidated public answer.
 Literal and resolved private targets then need local DIRECT or scoped remote-leaf authorization.
 New UDP mappings are validated.
 Cached mappings recheck egress and port grants without another DNS lookup.
 The [target authorization policy](proxy.md#domain-targets) is separate from DNS answer filtering.
 A DNS or suffix exception grants no remote internal access.
 
+Public dial-target checks share concurrent lookups of the same name and query A/AAAA in parallel within a three-second deadline.
+A usable validated family does not wait for a stalled family's full timeout.
+Successful results are reused for at most ten seconds and never beyond the validator's TTLs, including CNAMEs.
+Zero-TTL results and failures are not cached.
+Each policy owns its cache and outstanding work, so a replacement policy cannot reuse old answers or pending queries.
+
 In managed fake-IP mode, address-record behavior stays synthetic while HTTPS/SVCB queries use the configured resolver and retain their service parameters.
 The common filter runs before both.
+Local validation runs before public fake-IP allocation, preserving bogus failures, signed NXDOMAIN and NODATA, including a CNAME chain without the requested address type.
+Synthetic addresses clear AD because the fake mapping itself is not signed.
+Unsigned answers remain unauthenticated, and explicit private-domain exceptions retain their separate scope.
+Managed DNS refuses queries with more than one question.
 Firefox's use of these records, its CONNECT limitation and the optional native browser path are explained in [the browser guide](browser.md#ech-discovery-and-proxy-compatibility).
+
+### Local validation and role budgets
+
+```nix
+my.proxy.dnsEncryption = "strict";
+my.proxy.localDnssec = true;
+my.proxy.dnsQueryBudget = {
+  application = 256;
+  infrastructure = 64;
+};
+```
+
+Local validation requires strict encryption and `coreNetns=true`.
+The query budgets shown are the module defaults, with allowed ranges of 32–4096 and 8–1024 respectively.
+Each validator has its own request list, cache, descriptor limit and memory limit, so application overload does not consume the bootstrap validator's budget.
+Excess requests can be refused.
+Capacity becomes available again as in-flight work finishes.
+A's host validator and restricted socket guest DNS remain separate.
+These controls isolate DNS roles.
+Per-application conntrack, UDP-association and proxy-queue quotas are outside these budgets.
+
+Separately, the dial-target guard holds at most 256 cached names and 256 in-flight names.
+These fixed limits do not change with the validator query budgets.
+
+Only the validator UID is excluded from the private TUN, and its namespace firewall permits queries solely to the private TCP transport listeners plus local replies.
+The validators cannot send external DNS traffic themselves.
+Application DIRECT targets cannot borrow the validator or transport ports.
+Validator failure makes fresh public lookups fail without a plaintext or direct-access fallback.
+
+Enabling local validation requires rebuilding the generation and restarting the managed services.
+Known previous managed DNS and TUN values are migrated to the new root policy.
+Foreign values and controller changes that weaken it remain rejected.
+Returning to the compatibility path requires explicitly selecting `localDnssec=false` in a rebuilt generation.
 
 ## Restricted socket guest DNS
 

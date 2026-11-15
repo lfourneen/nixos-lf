@@ -2,7 +2,8 @@
 
 [English](../dns.md) | 简体中文 | [文档目录](README_CN.md)
 
-本机在 `host.nix` 选择 `dnsEncryption="strict"`。
+本机在 `host.nix` 选择 `dnsEncryption="strict"` 和 `localDnssec=true`，使 A/B 的受管公网 DNS 均在本地验证 DNSSEC。
+模块的 `localDnssec` 默认值为 `false`。
 下文 opportunistic 租约及恢复额度属于模块兼容策略。
 strict 不授予公共明文恢复，也不接受运行时 force-plaintext。
 DoT 故障时保留缓存/本地回答。
@@ -34,13 +35,13 @@ DoH 与 HTTPS 共用 443，不能据此区分。
 | 路径 | 域名过滤 | 传输与验证 |
 |---|---|---|
 | 系统查询，含 Gost 在 A 的直连代解析 | dnsmasq 在选定上游前执行后缀规则 | A 使用 Unbound DoT 和本地 DNSSEC。默认恢复可使用有租约的明文。B 转交核心 |
-| 核心 DNS 监听与 TUN DNS hijack | 在 hosts、缓存和 fake-IP 分配前执行共享后缀规则 | 受管 DoH/DoT。B 不运行 A 的本地 DNSSEC 验证器 |
-| B 中 HTTP/SOCKS 代理目标 | 应用 TCP/UDP 拨号前执行共享规则，私网域名豁免也要先过过滤 | 公网及已批准内部域名均验证并固定真实 IP。私网目标还需实际叶节点的出口授权 |
-| 节点与加密解析器引导 | 核心解析器在缓存/上游访问前执行共享过滤 | 独立的字面地址加密引导解析器避免依赖已连通代理。内部基础设施不受应用目标 IP 和 `proxyOnly` 检查约束 |
+| 核心 DNS 监听与 TUN DNS hijack | 在 hosts、缓存和 fake-IP 分配前执行共享后缀规则 | 启用 `localDnssec` 时先本地验证再合成地址，否则使用受管 DoH/DoT |
+| B 中 HTTP/SOCKS 代理目标 | 应用 TCP/UDP 拨号前执行共享规则，私网域名豁免也要先过过滤 | 公网及已批准内部域名均检查并固定真实 IP。`localDnssec` 还在本地验证公网答案。私网目标需实际叶节点的出口授权 |
+| 节点与加密解析器引导 | 核心解析器在缓存/上游访问前执行共享过滤 | 启用 `localDnssec` 时使用独立本地验证器，否则使用字面地址加密引导解析器，两者均不依赖已连通代理。内部基础设施不受应用目标 IP 和 `proxyOnly` 检查约束 |
 | 已批准 split DNS / 原生 MagicDNS | split 转发遵守 dnsmasq 域名优先级。resolved 的原生 MagicDNS 条件路由绕过 dnsmasq | 明确的私网解析器 / Tailscale 隧道例外，不提供本地公网 DNSSEC 保证 |
 
 后缀过滤器为阻断域返回本地 NXDOMAIN。
-A 由 Unbound 在本地验证 DNSSEC，B 使用核心的加密解析器。
+A 由 Unbound 在本地验证 DNSSEC，B 在启用 `localDnssec` 时使用本地验证器，否则使用核心的加密解析器。
 私网地址检查分别作用于 DNS 答案和应用目标。
 字面 IP、应用独立 DoH、受管核心之外的远端解析及原生 MagicDNS 不在共享后缀过滤范围内。
 
@@ -106,7 +107,7 @@ C 的更早出站规则始终切断外部 DNS，不受回退选择影响。
 ### 上游配置与时间
 
 `my.machine.dotEndpoints` 声明字面 IPv4/IPv6 端点及证书名称 `authName`。
-Unbound、探针和防火墙共用该列表，默认由 `dotUpstreams` 与 `dotAuthName` 派生。
+宿主 Unbound、A 模式探针和宿主防火墙共用该列表，默认由 `dotUpstreams` 与 `dotAuthName` 派生。
 应选择在目标网络中可用的端点。
 
 `my.proxy.dnsStaleWaitMilliseconds` 限制返回有效陈旧缓存前等待新数据的时间，默认 300 ms。
@@ -150,20 +151,79 @@ TUN 模式使用 fake-IP（默认 `198.18.0.1/16`）、固定 blacklist 过滤�
 fake-IP 过滤仅改变解析，不改变路由。
 HTTP-only（`tunMode=false`）采用 redir-host。
 
-公共解析使用 Cloudflare/Google DoH，国内域与代理端点引导使用配置的国内解析器。
-启用 `respect-rules`，禁用额外 direct 解析器和 proxy-server resolver-policy map。
-核心 parser/controller 防止运行时削弱受管字段。
-B 与 A 的本地 Unbound 验证器分开。
+启用 `localDnssec=true` 时，应用 DNS 转交私有 Unbound `127.0.0.1:1055`，节点和解析器引导使用独立验证器 `127.0.0.1:1056`。
+两者均在核心命名空间内，与宿主相同端口号的服务相互独立。
+它们分别维护由锁定 `dns-root-data` 初始化的持久 RFC 5011 信任锚，并忽略客户端 CD 请求。
+每个验证器通过 TCP loopback 转交私有 Mihomo 传输监听：应用查询使用 1057，引导查询使用 1058。
+这些监听传递完整 DNSSEC 材料，不使用 hosts 替换、fake-IP 合成或普通解析器缓存。
+
+应用传输使用 Cloudflare/Google DoH。
+本机受控来源将这些查询绑定到 `lf-remote` 组，经远程代理传输。
+未启用受控来源的配置保留 `respect-rules` 选路。
+节点引导保留独立的加密 proxy-server 解析器和字面地址引导解析器。
+普通应用域名不会送到该引导路径。
+公网应用传输不保留国内分流：兼容配置中会交给国内解析器的域名，在这里同样经海外 DoH 解析。
+只有节点引导保留国内解析器。
+应用冷查询可能需要多次远程交换以完成验证，缓存复用受验证结果及 TTL 限制。
+A 的 `my.machine.dotEndpoints` 列表与 B 的两类角色相互独立。
+Mihomo 保持 TLS 证书校验，上游故障不授予明文回退。
+
+`localDnssec=false` 时，公共解析使用 Cloudflare/Google DoH，国内域与代理端点引导使用配置的国内解析器。
+该兼容路径不在本地验证 B 的 DNSSEC 答案。
+两种配置均启用 `respect-rules`，禁用额外 direct 解析器和 proxy-server resolver-policy map，parser/controller 防止运行时削弱受管字段。
 
 核心在路由后检查并固定域名拨号目标，包含已批准内部后缀。
+启用本地验证后，公网拨号目标使用本地验证器确认的答案，再固定真实地址。
+订阅 hosts 和系统 hosts 不能替换为未经验证的公网答案。
 字面及解析后的私网目标还需本地 DIRECT 或限定远程叶节点的授权。
 新 UDP 映射重新验证，缓存映射不重解析，但每包重新检查出口和端口授权。
 [目标授权策略](proxy_CN.md#域名目标)与 DNS 答案过滤是不同层。
 DNS 或后缀例外不授予远程内部访问。
 
+公网拨号目标检查合并同名并发查询，在共用的三秒截止内并行查询 A/AAAA。
+一个地址族已有可用的验证结果时，不会等待另一族一直超时。
+成功结果最多复用十秒，且不超过验证器返回的 TTL，包含 CNAME 的 TTL。
+零 TTL 结果和失败不进入缓存。
+缓存与在途工作归各自策略所有，替换策略不能复用旧答案或未完成的查询。
+
 受管 fake-IP 模式保留地址记录的合成行为，同时让 HTTPS/SVCB 查询使用声明的解析器，保留服务参数。
 两者均先经过共享过滤。
+本地验证在公网 fake-IP 分配前执行，保留 bogus 失败、已签名 NXDOMAIN 和 NODATA，包含末端缺少所请求地址类型的 CNAME 链。
+合成地址清除 AD，因为 fake 映射本身没有签名。
+未签名答案仍未经认证，明确的私网域名例外保持独立范围。
+受管 DNS 拒绝包含多个 question 的查询。
 Firefox 如何使用这些记录、CONNECT 限制和可选原生路径见[浏览器手册](browser_CN.md#ech-发现与代理兼容)。
+
+### 本地验证与角色预算
+
+```nix
+my.proxy.dnsEncryption = "strict";
+my.proxy.localDnssec = true;
+my.proxy.dnsQueryBudget = {
+  application = 256;
+  infrastructure = 64;
+};
+```
+
+本地验证要求严格加密和 `coreNetns=true`。
+示例查询预算为模块默认值，允许范围分别为 32–4096 和 8–1024。
+两个验证器各自拥有查询表、缓存、文件描述符和内存上限，应用超载不会消耗引导验证器的预算。
+超限请求可以被拒绝，在途工作结束后容量可重新使用。
+A 的宿主验证器和受限 socket 访客 DNS 仍相互独立。
+这些控制隔离 DNS 角色，不对每个应用设置 conntrack、UDP association 或代理队列配额。
+
+拨号目标守卫另有固定上限：最多缓存 256 个名称，并处理 256 个不同名称的在途查询。
+这些上限不随验证器查询预算调整。
+
+只有验证器 UID 从私有 TUN 排除，其命名空间防火墙仅允许查询私有 TCP 传输监听及本地回包。
+验证器自身不能向外发送 DNS 流量。
+应用 DIRECT 目标不能借用验证器或传输端口。
+验证器故障会使新的公网解析失败，不回退到明文或应用直连。
+
+启用本地验证需要重新构建 generation 并重启受管服务。
+已知的旧版受管 DNS 和 TUN 值会迁移到新的 root 策略。
+外来值及削弱策略的 controller 写入仍被拒绝。
+回到兼容路径需要在重新构建的 generation 中显式选择 `localDnssec=false`。
 
 ## 受限 socket 访客 DNS
 

@@ -196,6 +196,8 @@ func lfManagedProfileDefaults(raw *RawConfig) error {
 	if err != nil || policy == nil {
 		return err
 	}
+	// This transport is wholly root-owned, including across cached profiles.
+	raw.LFDNSTransport, _ = policy["lf-dns-transport"].(map[string]any)
 	if value, ok := policy["geodata-mode"].(bool); ok {
 		raw.GeodataMode = value
 	}
@@ -235,6 +237,20 @@ func lfManagedProfileDefaults(raw *RawConfig) error {
 	if err := lfUpgradeMagicDNS(raw, policy); err != nil {
 		return err
 	}
+	if err := lfUpgradeLocalDNSSEC(raw, policy); err != nil {
+		return err
+	}
+	if len(raw.Tun.ExcludeUID) == 0 {
+		if value, ok := policy["tun.exclude-uid"]; ok {
+			data, err := json.Marshal(value)
+			if err != nil {
+				return err
+			}
+			if err = json.Unmarshal(data, &raw.Tun.ExcludeUID); err != nil {
+				return err
+			}
+		}
+	}
 	if err := lfApplyTunExcludes(raw, policy); err != nil {
 		return err
 	}
@@ -266,6 +282,53 @@ func lfManagedProfileDefaults(raw *RawConfig) error {
 		raw.Tun.AutoRedirectIPRoute2FallbackRuleIndex = tun.AutoRedirectIPRoute2FallbackRuleIndex
 	}
 	return nil
+}
+
+// A generated profile can outlive the Nix generation that produced it. The
+// local validator replaces only exact, root-described predecessor DNS values.
+// Foreign resolver maps still fail validation and PATCH never upgrades them.
+func lfUpgradeLocalDNSSEC(raw *RawConfig, policy map[string]any) error {
+	targets, _ := policy["lf-private-targets"].(map[string]any)
+	if endpoint, _ := targets["local-dnssec"].(string); endpoint == "" {
+		return nil
+	}
+	previous, _ := targets["previous-dns"].(map[string]any)
+	data, err := json.Marshal(raw.DNS)
+	if err != nil {
+		return err
+	}
+	var actual map[string]any
+	if err = json.Unmarshal(data, &actual); err != nil {
+		return err
+	}
+	upgrade := map[string]any{}
+	for key, legacy := range previous {
+		expected, pinned := policy["dns."+key]
+		if !pinned {
+			continue
+		}
+		matches := reflect.DeepEqual(lfCanonical(actual[key]), lfCanonical(legacy))
+		if key == "nameserver-policy" {
+			withoutMagic := map[string]any{}
+			for name, value := range legacy.(map[string]any) {
+				if name != "+.ts.net" {
+					withoutMagic[name] = value
+				}
+			}
+			matches = matches || reflect.DeepEqual(lfCanonical(actual[key]), lfCanonical(withoutMagic))
+		}
+		if matches {
+			upgrade[key] = expected
+		}
+	}
+	data, err = json.Marshal(upgrade)
+	if err != nil {
+		return err
+	}
+	if _, changed := upgrade["nameserver-policy"]; changed {
+		raw.DNS.NameServerPolicy = nil
+	}
+	return json.Unmarshal(data, &raw.DNS)
 }
 
 // A generated profile can outlive the Nix generation that produced it. The

@@ -331,7 +331,7 @@ let
         meta mark != ${coreMark} meta skuid != ${redirectExemptUidSet} ip6 daddr != { ${redirectExempt6} } tcp dport != { 53, ${toString port.dot} } counter redirect to :${toString port.gostRedirect}
       }
     }
-  '';
+  '' + config.my.proxy.authorizationRules;
 
   # Fragment proxy-mode.service applies while Clash runs but its path is not the
   # strict TUN one we require: the TUN is missing/unready, mihomo is in `direct`
@@ -345,6 +345,7 @@ let
   # other process, and the redirect is torn down so non-TUN flows are refused,
   # not relayed.
   blockedModeRules = lib.optionalString proxyKillSwitch ''
+    ${config.my.proxy.authorizationReset}
     # Tear the normal fragment down inside the same load: no stale redirect and
     # no stale drop can survive next to the guard.
     destroy table ip lf_proxymode_nat
@@ -929,6 +930,11 @@ in
         set dns_plaintext4 { type ipv4_addr; flags timeout; timeout 120s; }
         set dns_split4 { type ifname . ipv4_addr; flags timeout; timeout 120s; }
         set dns_split6 { type ifname . ipv6_addr; flags timeout; timeout 120s; }
+        set b_authorization { type nf_proto; flags timeout; timeout 120s; size 2; }
+        chain lf_lease_output { type filter hook output priority -197; policy accept; }
+        chain lf_lease_input { type filter hook input priority -3; policy accept; }
+        chain lf_lease_forward { type filter hook forward priority -2; policy accept; }
+        chain lf_lease_ingress { type filter hook prerouting priority -198; policy accept; }
         chain dns_plaintext_mode {
           ${lib.optionalString (config.my.proxy.dnsEncryption != "strict") "ip daddr @dns_plaintext4 accept"}
         }

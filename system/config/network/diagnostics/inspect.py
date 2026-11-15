@@ -47,6 +47,10 @@ def drop_groups(settings):
     # These are policy categories, not per-flow attribution. Reuse anonymous
     # counters on existing drops; never depend on handles or include accepts.
     groups = [
+        ('lf_lease_output', 'authorization-expired-output', 'host-output-and-guest-replies'),
+        ('lf_lease_input', 'authorization-expired-input', 'host-input-and-tailnet'),
+        ('lf_lease_forward', 'authorization-expired-forward', 'routed-guests'),
+        ('lf_lease_ingress', 'authorization-expired-ingress', 'routed-guests'),
         ('lf_blocked_guard', 'mode-c-output', 'host-output-and-guest-replies'),
         ('lf_tailnet_guard', 'mode-c-input', 'host-input-and-tailnet'),
         ('lf_strict_reply_guard', 'strict-reply-policy', 'strict-browser'),

@@ -104,16 +104,23 @@ let
   dnsListeners = service: uids: port:
     map (protocol: listener service uids protocol "127.0.0.1" port) [ "tcp" "udp" ];
 
+  validatorListeners = lib.optionals config.my.proxy.localDnssec
+    (map (value: value // { namespace = true; })
+      (dnsListeners "clash-dns-application" [ config.users.users.unbound.uid ] port.unbound
+       ++ dnsListeners "clash-dns-infrastructure" [ config.users.users.unbound.uid ] port.socketGuestDns
+       ++ dnsListeners "clash-verge" coreUids port.coreDnsTransport
+       ++ dnsListeners "clash-verge" coreUids port.coreDnsBootstrapTransport));
+
   listenerSettings = pkgs.writeText "proxy-listeners.json" (builtins.toJSON {
     ss = "${pkgs.iproute2}/bin/ss";
     observer = config.my.proxy.coreTopology.observer;
     observer_module = ./core_network.py;
     groups = {
-      core-dns = dnsListeners "clash-verge" coreUids port.mihomoDns;
+      core-dns = dnsListeners "clash-verge" coreUids port.mihomoDns ++ validatorListeners;
       core-mixed = [ (listener "clash-verge" coreUids "tcp" "127.0.0.1" port.mihomoMixed) ];
 
       core = [ (listener "clash-verge" coreUids "tcp" "127.0.0.1" port.mihomoMixed) ]
-        ++ dnsListeners "clash-verge" coreUids port.mihomoDns
+        ++ dnsListeners "clash-verge" coreUids port.mihomoDns ++ validatorListeners
         ++ lib.optionals (config.my.proxy.transparentGuestInterfaces != [ ])
           (map (protocol: listener "clash-verge" coreUids protocol "0.0.0.0" port.mihomoTproxy) [ "tcp" "udp" ]);
 
@@ -198,7 +205,7 @@ let
         include-interface = [ ];
         exclude-interface = [ ];
         include-uid = [ ];
-        exclude-uid = [ ];
+        exclude-uid = lib.optional config.my.proxy.localDnssec m.uids.unbound;
         include-uid-range = [ ];
         exclude-uid-range = [ ];
       });
@@ -257,6 +264,9 @@ let
     VERSION=/run/proxy-mode/version
     STATIC_RULES=${staticRules}
     LEGACY_RULES=${legacyRules}
+    AUTHORIZATION=${config.my.proxy.authorizationCommand}
+    AUTHORIZATION_ENABLED=${if config.my.proxy.authorizationLeaseSeconds == null then "0" else "1"}
+    LEASE_SECONDS=${builtins.toJSON config.my.proxy.authorizationLeaseSeconds}
 
     TUNDEV=${config.my.proxy.tunDev}
     REQUIRE_TUN=${if requireTun then "1" else "0"}
@@ -301,8 +311,9 @@ let
       atomic_write "$STATUS" "$mode" || return 1
       atomic_write "$REASON" "$reason" || return 1
       $JQ -n --arg mode "$mode" --arg reason "$reason" --argjson version "$version" \
+        --argjson lease "''${LEASE_SECONDS:-null}" \
         --argjson revision "$((revision + 1))" --arg updated "$(${pkgs.coreutils}/bin/date -Iseconds)" \
-        '{mode:$mode,reason:$reason,version:$version,policy_version:$version,revision:$revision,updated_at:$updated}' > /run/proxy-mode/state.json.$$
+        '{mode:$mode,reason:$reason,version:$version,policy_version:$version,revision:$revision,updated_at:$updated,authorization_lease_seconds:$lease}' > /run/proxy-mode/state.json.$$
       mv -f /run/proxy-mode/state.json.$$ /run/proxy-mode/state.json
       [ "''${1:-policy}" != policy ] || request_verify
     }
@@ -431,6 +442,7 @@ flush chain inet lf_filter lf_host_egress_guard
 flush chain inet lf_filter lf_host_direct
 flush chain inet lf_filter lf_tailnet_guard
 flush set inet lf_filter dns_plaintext4
+${config.my.proxy.authorizationReset}
 ${lib.optionalString (config.my.proxy.transparentGuestInterfaces != [ ]) "flush chain ip lf_mangle proxymode_tproxy"}
 NFT_OFF
       $CORE_ROUTES routes-off
@@ -506,7 +518,10 @@ NFT_OFF
     }
     health_ok() {
       local output=/run/proxy-mode/health.$$.json next_fast=$SECONDS
-      local health_digest health_at
+      local health_digest health_at proof_time proof_id proof_epoch
+      read -r proof_time _ < /proc/uptime
+      proof_id=$($CAT /proc/sys/kernel/random/uuid)
+      proof_epoch=$($CAT /run/proxy-mode/authorization-epoch 2>/dev/null || echo 0)
       health_digest=$($CAT /run/proxy-mode/config-digest 2>/dev/null || true)
       health_at=$(${pkgs.coreutils}/bin/date +%s)
       health_gate=obs
@@ -542,8 +557,10 @@ NFT_OFF
         rm -f "$output"; return 1
       fi
       $JQ --arg digest "$health_digest" --argjson at "$health_at" \
+        --argjson monotonic "$proof_time" --arg proof "$proof_id" --argjson version "$decision_version" \
+        --arg epoch "$proof_epoch" \
         --arg boot "$($CAT /run/proxy-mode/boot-id)" \
-        '. + {digest:$digest, at:$at, boot_id:$boot}' "$output" > "$output.stamped"
+        '. + {digest:$digest, at:$at, boot_id:$boot,monotonic_seconds:$monotonic,proof_id:$proof,policy_version:$version,authorization_epoch:$epoch}' "$output" > "$output.stamped"
       mv -f "$output.stamped" /run/proxy-mode/health.json
       rm -f "$output"
       health_gate=$($JQ -r '.reason' /run/proxy-mode/health.json)
@@ -564,6 +581,7 @@ NFT_OFF
 
     sync_pass() {
       pass_verified=0
+      proof_renew=0
       lock_state
       # A snapshot belongs to this lock window, never to the process lifetime.
       forget_snapshot
@@ -657,6 +675,7 @@ NFT_OFF
             # HTTP timeouts are observations; a full successful request and its
             # exact-source route log prove the selected node without /delay.
             if health_ok; then
+              proof_renew=1
               obs_fails=0
               want=proxy; want_reason=""
             else
@@ -752,6 +771,18 @@ NFT_OFF
       elif [ "$reason" != "$want_reason" ]; then
         reason="$want_reason"
         publish_state observation
+      fi
+
+      # Hysteresis never renews a lease. A complete fresh proof is consumed
+      # once under the same lock as the policy and operator generation.
+      if [ "''${AUTHORIZATION_ENABLED:-0}" = 1 ] && [ "$mode" = proxy ] && [ "$proof_renew" = 1 ]; then
+        if ! "$AUTHORIZATION" "$decision_version"; then
+          rules_on_blocked
+          forget_snapshot
+          mode=blocked; reason=authorization-failed
+          publish_state
+          request_wake
+        fi
       fi
 
       # Post-condition of the recorded mode; a mismatch keeps the user offline
@@ -981,6 +1012,8 @@ NFT_OFF
 
 in
 {
+  imports = [ ./authorization.nix ];
+
   options.my.proxy.proxyModeRules = lib.mkOption {
     type = lib.types.str;
     default = "";

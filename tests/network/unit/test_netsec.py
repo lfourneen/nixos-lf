@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import socket
 import shlex
 import struct
@@ -71,6 +72,72 @@ def shell_function(name):
     if not match:
         raise AssertionError(f"missing shell function {name}")
     return match.group(0).replace("''${", "${")
+
+
+class ClientDNSProbeTests(unittest.TestCase):
+    def probe(self, replies, pool='198.18.0.0/16', budget=20, fast=True):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dig = root / 'dig'
+            dig.write_text('#!' + sys.executable + '\n' + '''
+import json, os, sys, time
+from pathlib import Path
+path = Path(os.environ['DNS_TEST_CALLS'])
+calls = json.loads(path.read_text()) if path.exists() else []
+replies = json.loads(os.environ['DNS_TEST_REPLIES'])
+reply = replies[min(len(calls), len(replies)-1)]
+calls.append(sys.argv[-2])
+path.write_text(json.dumps(calls))
+time.sleep(reply.get('sleep', 0))
+print(reply.get('answer', ''))
+sys.exit(reply.get('status', 0))
+''')
+            dig.chmod(0o755)
+            checker = root / 'check'
+            checker.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' ' +
+                               shlex.quote(str(ROOT / MODULE_PATHS['rules'])) + ' "$@"\n')
+            checker.chmod(0o755)
+            environment = dict(os.environ, DIG=str(dig), DNS_PORT='1054', RULE_CHECK=str(checker),
+                               DNS_TEST_CALLS=str(root / 'calls'), DNS_TEST_REPLIES=json.dumps(replies))
+            script = 'set -Eeuo pipefail\nsource "$1"\n'
+            if fast:
+                script += 'sleep() { SECONDS=$((SECONDS + $1)); }\n'
+            script += '''
+if client_dns "$2" "$3" global.example backup.example; then
+  exit 0
+fi
+printf '%s\\n' "$client_dns_error" >&2
+exit 1
+'''
+            started = time.monotonic()
+            result = subprocess.run(['bash', '-c', script, 'test',
+                                     str(ROOT / 'system/config/network/firewall/client_dns.sh'),
+                                     pool, str(budget)], env=environment,
+                                    text=True, capture_output=True, timeout=5)
+            calls = json.loads((root / 'calls').read_text())
+            return result, calls, time.monotonic() - started
+
+    def test_timeout_empty_and_outside_pool_retry_without_errexit(self):
+        result, calls, _ = self.probe([{'status': 9}, {}, {'answer': '203.0.113.1'},
+                                       {'answer': '198.18.0.7'}])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, ['global.example', 'backup.example'] * 2)
+
+    def test_redir_host_requires_an_address_not_a_diagnostic_or_cname(self):
+        result, calls, _ = self.probe([{'answer': ';; communications error'},
+                                       {'answer': 'alias.example.'},
+                                       {'answer': '203.0.113.9'}], pool='0.0.0.0/0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 3)
+
+    def test_failed_rounds_and_slow_tools_are_bounded(self):
+        result, calls, _ = self.probe([{'status': 9}], budget=1)
+        self.assertEqual(result.returncode, 1)
+        self.assertLessEqual(len(calls), 2)
+        result, calls, elapsed = self.probe([{'sleep': 3}], budget=1, fast=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(calls), 1)
+        self.assertLess(elapsed, 2)
 
 
 class DirectEgressPolicyTests(unittest.TestCase):
@@ -857,6 +924,7 @@ class CoreLoopbackTests(unittest.TestCase):
                     'ports': {'dnsmasq': 1054, 'unbound': 1055, 'socketGuestDns': 1056,
                               'mihomoDns': 1053, 'mihomoMixed': 7897, 'mihomoStrict': 7898,
                               'mihomoTproxy': 7896, 'gostHttp': 33332, 'gostRedirect': 33333,
+                              'coreDnsTransport': 1057, 'coreDnsBootstrapTransport': 1058,
                               'coreLoopback': 14661}}
         for version, address in ((4, '127.0.0.1'), (6, '::1')):
             self.assertEqual(broker.target(settings, version, 18098), (address, 18098))
@@ -1200,6 +1268,49 @@ class StateTests(unittest.TestCase):
                 with self.subTest(change=change): self.assertFalse(ready(dict(good, **change))["ready"])
             self.assertFalse(ready({"result": "ok", "version": 1, "checked_at": "1970-01-01"})["ready"])
 
+    def test_degraded_verification_is_reported_without_blocking_readiness(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'proxy-mode').mkdir(exist_ok=True)
+            (root / 'proxy-mode/boot-id').write_text('boot')
+            fresh = {"mode": "proxy", "policy_version": 1, "monotonic_seconds": 1000}
+            documents = {"proxy-mode/state.json": {"mode": "proxy", "policy_version": 1},
+                         "proxy-mode/heartbeat.json": fresh,
+                         "gost-relay/state.json": fresh,
+                         "dns-upstream/state.json": fresh,
+                         "dns-policy/state.json": dict(fresh, status="applied")}
+            for name, value in documents.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(value))
+            path = root / 'netsec/state.json'
+            path.parent.mkdir()
+            verified = {"result": "degraded", "version": 1, "monotonic_seconds": 1000, "boot_id": "boot"}
+            path.write_text(json.dumps(verified))
+            result = state.readiness(root, now=1000, boot_id="boot")
+            # The verifier keeps advisories on a warning channel. It is installed
+            # and every hard check passed, so it must not read as unverified.
+            self.assertTrue(result["ready"], result["reasons"])
+            self.assertEqual(result["verification"], "degraded")
+            self.assertEqual(result["phase"], "ready")
+            for change in ({"result": "unknown"}, {"result": None}, {"result": []},
+                           {"result": {}}, {"version": 2},
+                           {"boot_id": "old"}, {"monotonic_seconds": 0},
+                           {"monotonic_seconds": 1001}):
+                with self.subTest(change=change):
+                    path.write_text(json.dumps(dict(verified, **change)))
+                    self.assertFalse(state.readiness(root, now=1000, boot_id="boot")["ready"])
+            path.write_text(json.dumps(dict(verified, result="failed")))
+            result = state.readiness(root, now=1000, boot_id="boot")
+            self.assertFalse(result["ready"])
+            self.assertIn("rules not verified for this generation", result["reasons"])
+            # A degraded verdict never clears an alarm owned by another failure.
+            (root / "netsec" / "failed").write_text("nftables-verify")
+            path.write_text(json.dumps(verified))
+            result = state.readiness(root, now=1000, boot_id="boot")
+            self.assertFalse(result["ready"])
+            self.assertIn("enforcement alarm active", result["reasons"])
+
     def test_alert_recovery_does_not_clear_another_owner(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1216,6 +1327,9 @@ class StateTests(unittest.TestCase):
 
 class EventTests(unittest.TestCase):
     def test_only_lease_elements_skip_wake(self):
+        self.assertFalse(events.needs_wake('flush set inet lf_filter b_authorization'))
+        self.assertFalse(events.needs_wake('add element inet lf_filter b_authorization { ipv4 timeout 30s }'))
+        self.assertTrue(events.needs_wake('delete set inet lf_filter b_authorization'))
         for name in ("dns_plaintext4", "dns_split4", "dns_split6"):
             for operation in ("add", "delete"):
                 self.assertFalse(events.needs_wake(f"{operation} element inet lf_filter {name} {{ 192.0.2.53 timeout 2m }}"))
@@ -1325,11 +1439,23 @@ class RulesTests(unittest.TestCase):
         live["elem"] = [{"elem": {"val": "192.0.2.53", "timeout": 2000, "expires": 1000}}]
         actual["nftables"].append({"set": live})
         rules.compare(expected, actual)
+        del live["elem"][0]["elem"]["timeout"]
+        rules.compare(expected, actual)
         live["elem"][0]["elem"]["timeout"] = 121000
         with self.assertRaises(ValueError): rules.compare(expected, actual)
         live["elem"][0]["elem"]["timeout"] = 2000
         live["policy"] = "accept"
         with self.assertRaises(ValueError): rules.compare(expected, actual)
+
+    def test_authorization_lease_keeps_family_and_lifetime_bounds(self):
+        definition = {"family": "inet", "table": "lf_filter", "name": "b_authorization",
+                      "type": "nf_proto", "flags": ["timeout"], "timeout": 120000, "size": 2}
+        element = {'elem': {'val': 'ipv4', 'timeout': 30000, 'expires': 20000}}
+        self.assertEqual(rules.lease_set(dict(definition, elem=[element])), definition)
+        for changes in ({'val': 'inet'}, {'timeout': 121000}, {'expires': 31000}, {'timeout': 0}):
+            invalid = copy.deepcopy(element)
+            invalid['elem'].update(changes)
+            with self.assertRaises(ValueError): rules.lease_set(dict(definition, elem=[invalid]))
 
     def test_static_comparison_keeps_hook_policy_and_order(self):
         expected = policy_document()
@@ -1806,6 +1932,17 @@ class SubscriptionAndStatusTests(unittest.TestCase):
         self.assertNotIn('Approved changes', dict(status.rows(value)))
         for verdict, label in (('deny', 'Denied'), ('unknown', 'Unresolved')):
             self.assertEqual(dict(status.audit_rows({'verdict': verdict}, False))['Update audit'], label)
+
+    def test_firewall_check_reports_warnings_without_calling_them_failed(self):
+        status = module('status')
+        aged = {'fresh': True, 'generation_matches': True, 'age_seconds': 3}
+        for verdict, label in (('ok', 'Passed · 3s ago'), ('degraded', 'Passed · warnings · 3s ago'),
+                               ('failed', 'Not passed · 3s ago'), (None, 'Not passed · 3s ago')):
+            value = {'ready': verdict is not None, 'mode': 'proxy', 'target': 'proxy',
+                     'observations': {'verification': dict(aged)}}
+            if verdict is not None:
+                value['verification'] = verdict
+            self.assertEqual(dict(status.rows(value))['Firewall check'], label, verdict)
 
     def test_ready_status_does_not_claim_publisher_signature_verification(self):
         status = module('status')

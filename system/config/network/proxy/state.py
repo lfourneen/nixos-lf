@@ -30,7 +30,7 @@ def fresh(stamp, now, maximum):
 REFRESH_RESULTS = ('accepted', 'fallback', 'rolled_back', 'refused', 'verifying')
 REFRESH_REASONS = ('configuration invalid', 'input unreadable', 'validation timeout',
                    'snapshot mismatch', 'blocked by audit', 'audit indeterminate',
-                   'unknown', 'node', 'tun', 'dns')
+                   'operator authorization required', 'unknown', 'node', 'tun', 'dns')
 AUDIT_CATEGORIES = frozenset((
     'yaml_structure', 'private_server', 'certificate', 'empty_nodes', 'group_reference',
     'hosts_override', 'provider_change', 'rule_provider_change', 'sensitive_route',
@@ -305,6 +305,14 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
             reasons.append(name + " policy generation differs")
     if policy.get("mode") != target:
         reasons.append("policy is not " + target)
+    authorization = read(root / 'proxy-mode/authorization.json')
+    lease_required = target == 'proxy' and policy.get('authorization_lease_seconds') is not None
+    until = authorization.get('until', 0)
+    lease_active = (type(until) in (int, float) and math.isfinite(until) and until > now
+                    and authorization.get('boot_id') == boot_id
+                    and authorization.get('policy_version') == version)
+    if lease_required and not lease_active:
+        reasons.append('B kernel authorization expired or pending')
     if heartbeat.get("mode") != target:
         reasons.append("heartbeat belongs to a different mode")
     if relay.get("mode") != target:
@@ -320,7 +328,11 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     if target == "direct" and str(dns.get("mode", "")).endswith("plaintext") \
             and dns.get("window_until", 0) <= now and not dns.get("plaintext_override", False):
         reasons.append("plaintext window expired")
-    if verification.get("result") != "ok" or verification.get("version") != version:
+    # A degraded verdict is the verifier's warning channel: policy is installed
+    # and every hard check passed, while an advisory observation did not. Only
+    # a failed verdict raises the alarm. Missing/unknown verdicts, stale data,
+    # generation/boot mismatches and active alarms still block readiness.
+    if verification.get("result") not in ("ok", "degraded") or verification.get("version") != version:
         reasons.append("rules not verified for this generation")
     if not fresh(verification.get("monotonic_seconds"), now, verification_maximum):
         reasons.append("rules verification stale")
@@ -345,6 +357,8 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
             # A failed verdict is reported, not treated as an outage: Mode A keeps
             # a bounded plaintext window while the encrypted path is retried.
             "dns_mode": dns.get("mode", "unknown"),
+            "authorization_lease": {'required': lease_required, 'active': lease_active,
+                                    'remaining': max(0, round(until - now)) if lease_active else 0},
             "dns_verdict": dns.get("dnssec_status", "unknown"),
             "budget_remaining": dns.get("budget_remaining"),
             "window_until": dns.get("window_until", 0),
@@ -355,6 +369,8 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
             "relay_mode": relay.get('mode', 'unknown'),
             "dns_lease_status": permissions.get('status', 'unknown'),
             "dns_encryption": dns.get('encryption_policy', 'unknown'),
+            "dns_validation": ('local-dnssec' if dns.get('local_dnssec') is True else
+                               'mode-a-local' if policy.get('mode') == 'direct' else 'encrypted-core'),
             "dns_local": dns.get('dnssec_probe', {}).get('local', {}).get('status', 'unknown'),
             "dns_transport": dns.get('dnssec_probe', {}).get('transport', {}).get('status', 'unknown'),
             "budget_total": dns.get('budget_total'),

@@ -31,13 +31,7 @@ let
   reserved4 = [ "0.0.0.0/8" "127.0.0.0/8" "169.254.0.0/16" "224.0.0.0/4" "240.0.0.0/4" ]
     ++ m.privateV4 ++ [ m.vmSubnet m.waydroidSubnet ];
 
-in
-{
-  options.my.proxy.managedDns = lib.mkOption {
-    type = lib.types.attrs;
-    internal = true;
-    readOnly = true;
-    default = {
+  encryptedDns = {
       enable = true;
       listen = "127.0.0.1:${toString m.ports.mihomoDns}";
       ipv6 = config.networking.enableIPv6;
@@ -83,13 +77,65 @@ in
           "+.ts.net" = [ "udp://${m.magicDns}:53#DIRECT" ];
         };
     };
+
+in
+{
+  options.my.proxy.managedDnsTransport = lib.mkOption {
+    type = lib.types.attrs;
+    internal = true;
+    readOnly = true;
+    default = {
+      dns = encryptedDns // {
+        listen = "127.0.0.1:${toString m.ports.coreDnsTransport}";
+        enhanced-mode = "normal";
+        use-hosts = false;
+        use-system-hosts = false;
+        nameserver = map (url: url + lib.optionalString p.controlledSources "#lf-remote")
+          encryptedDns.nameserver;
+
+        # Public application queries retain foreign encrypted upstreams. The
+        # domestic split of the non-validating configuration is deliberately
+        # not carried over: only node bootstrap keeps a domestic resolver, so a
+        # domestic name pays the remote round trip once and its validator caches
+        # the answer afterwards.
+        # Node bootstrap retains its own resolver and never waits on itself.
+        nameserver-policy = { };
+      };
+      bootstrap-listen = "127.0.0.1:${toString m.ports.coreDnsBootstrapTransport}";
+    };
   };
+
+  options.my.proxy.managedDns = lib.mkOption {
+    type = lib.types.attrs;
+    internal = true;
+    readOnly = true;
+    default = encryptedDns // lib.optionalAttrs p.localDnssec {
+      use-hosts = false;
+
+      # Two local validators have separate request lists, descriptors and caches.
+      # Endpoint bootstrap must not queue behind application DNS.
+      default-nameserver = [ "tcp://127.0.0.1:${toString m.ports.socketGuestDns}#DIRECT" ];
+      proxy-server-nameserver = [ "tcp://127.0.0.1:${toString m.ports.socketGuestDns}#DIRECT" ];
+      nameserver = [ "tcp://127.0.0.1:${toString m.ports.unbound}#DIRECT" ];
+      nameserver-policy = lib.optionalAttrs config.my.hardening.tailscale.magicDns {
+        "+.ts.net" = [ "udp://${m.magicDns}:53#DIRECT" ];
+      };
+
+      use-system-hosts = false;
+    };
+  };
+
   options.my.proxy.managedProfile = lib.mkOption {
     type = lib.types.attrs;
     internal = true;
     readOnly = true;
     default = {
+      lf-dns-transport = if p.localDnssec then p.managedDnsTransport else null;
       lf-private-targets = {
+        previous-dns = lib.optionalAttrs p.localDnssec (encryptedDns // { use-system-hosts = true; });
+        local-dnssec = if p.localDnssec then "127.0.0.1:${toString m.ports.unbound}" else "";
+        validator-ports = lib.optionals p.localDnssec [ m.ports.unbound m.ports.socketGuestDns
+          m.ports.coreDnsTransport m.ports.coreDnsBootstrapTransport ];
         proxy-only = p.proxyOnly;
         reject-plaintext-credentials = p.controlledSources;
         strict-inlets = lib.optional p.strictBrowser "lf-strict";
@@ -167,10 +213,16 @@ in
 
         # Require DNS interception during profile parsing and controller PATCH.
         "tun.dns-mode" = "hijack";
-      });
+      }) // lib.optionalAttrs (p.localDnssec && p.tunMode) {
+        "tun.exclude-uid" = [ m.uids.unbound ];
+      };
   };
 
   config.assertions = [
+    {
+      assertion = !p.localDnssec || (p.coreNetns && p.dnsEncryption == "strict");
+      message = "Local B DNSSEC requires the managed core namespace and strict DNS encryption.";
+    }
     {
       assertion = lib.all (value: let other = cidr4 value;
         in fake.last < other.first || other.last < fake.first) reserved4;

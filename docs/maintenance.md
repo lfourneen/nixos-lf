@@ -68,6 +68,11 @@ Internal suffixes and literals must also pass leaf authorization.
 Keep this at the actual selected child rather than checking `Unwrap` and dialing a group again.
 Reused UDP associations retain the actual leaf and checked target provenance, validate new mappings, and recheck current inlet/port/grants on cached mappings without resolving every later packet again.
 
+[validated_answers.go](../system/programs/clash/mihomo/guard/validated_answers.go) bounds and shares public dial-target lookups when local DNSSEC is enabled.
+Keep answer reuse below validator TTLs and isolate cached answers and pending queries by policy.
+Replacing a policy must retire its work, while one caller's cancellation must not cancel other consumers.
+Preserve distinct-name limits and the shared A/AAAA deadline, with regression coverage for expiry, zero TTLs, failed families and policy replacement.
+
 Preserve mapped-IP, metadata, all RFC 6052 prefix lengths, custom fake-IP and infrastructure-scope tests.
 `LFRuleDNS` distinguishes rule-routed DNS from internal bootstrap, so `proxyOnly` cannot accidentally exempt application DNS.
 Check metadata, adapter names and group leaves against the direct-dial tests.
@@ -156,6 +161,15 @@ The outer launcher holds its lock through normalization until the GUI process is
 It never creates a missing `option` or interval.
 
 `clash-verge-stage.py` handles candidate checks, snapshot authority and health acceptance.
+[source_refresh.py](../system/programs/clash/service/source_refresh.py) checks registered candidates before restarting a healthy authorized core.
+It uses isolated copies and the same unprivileged parser and audit enforcement as import, without writing live caches or granting authority.
+Keep candidate, source revision, settled baseline and root policy bindings intact through activation.
+
+The authorization lock is released during checks and reacquired to recheck runtime health and bindings.
+Pending acceptance or rollback defers the refresh.
+The fixed `clash-source-guard.service` transaction enters C before restart, with `CAP_NET_ADMIN` kept outside the download/parser service.
+Guard failure must prevent restart. Actual import still validates and audits again, then uses health acceptance or rollback.
+
 `profile-refresh-verify.timer` runs every ten seconds.
 The mode supervisor publishes `/run/proxy-mode/boot-id`, and `refresh.nix` defines the five-minute user notification timer.
 The audit worker and status tools use PyYAML supplied explicitly by Nix.
@@ -176,9 +190,20 @@ Check terminal-error, retry and duplicate-server behavior against the new `forwa
 Keep the real DNS response tests in the network VM.
 
 Unbound uses unmodified `pkgs.unbound-with-systemd`.
-Preserve `--enable-systemd` if introducing a future override: the unit is `Type=notify`.
+Preserve `--enable-systemd` if introducing a future override: the host unit is `Type=notify`.
 Keep DNSSEC/CD behavior, persistent anchor initialization, TLS authentication, reply filtering, stale-cache limits and probe verdicts aligned with [DNS](dns.md).
 Chrony changes must preserve NTS requirement and certificate-time checks.
+
+With `localDnssec`, [core-validator.nix](../system/config/network/dns/core-validator.nix) runs separate application and infrastructure validators in the core namespace.
+Preserve their independent query/resource budgets, persistent anchors and refusal of client CD bypasses.
+Validation and upstream selection are separate: B application DNS keeps Cloudflare/Google DoH, routed through `lf-remote` with controlled sources, and node bootstrap retains its independent encrypted resolver.
+The root-owned `lf-dns-transport` configuration must not inherit Mode A's DoT list.
+Keep the config-parser and executor transport hooks in `patch_mihomo.py`, complete DNSSEC material, TLS verification and raw forwarding without ordinary cache reuse.
+Public application queries keep no domestic split: only node bootstrap uses a domestic resolver, and changes must preserve that separation.
+The private TUN UID exclusion must remain paired with the validator's loopback-only query firewall and denial of application access to all validator/transport ports.
+Mihomo must validate before public fake-IP synthesis and before pinning a public dial target, clear AD on synthetic addresses, and retain HTTPS/SVCB parameters.
+Keep known-profile migration separate from rejection of foreign values and controller weakening.
+Run `proxy-assurance-vm` when changing these paths.
 
 Firefox customization wraps the packaged browser with immutable policy, AutoConfig, fonts, preflight and outer confinement.
 An update can alter Home Manager's final package/wrapper or preference semantics without any source patch failing.
@@ -220,6 +245,18 @@ The explicit migration adds its cleanup to that same transaction without leaving
 A rejected nft transaction must retain the previous policy, and first-load failure must retain the independent bootstrap baseline.
 Stopping the nftables unit must leave protection installed.
 Proxy intent must pass through C before a health proof permits B, including when the core remains alive during reload or migration.
+
+Validating and HTTP-only configurations try `tunProbeNames` in order.
+Synthetic-only TUN configurations use a fresh name instead.
+The client DNS probe allows up to three rounds within a 20-second probe budget.
+Timeouts and unusable answers trigger another attempt, while exhaustion remains a hard failure.
+HTTP-only probes must parse an IPv4 answer rather than accept nonempty diagnostics or a CNAME alone.
+Reserve `degraded` for advisories after every hard check passes, and retain generation, boot, freshness and active-alarm checks in readiness.
+
+When authorization leases are enabled, preserve the kernel timeouts and C request/reply guards in all four expiry chains.
+Only a fresh complete proof bound to boot, configuration, policy generation and sleep epoch may renew the lease, and it must be consumed once even after an ambiguous apply failure.
+Sleep revocation, fresh-proof recovery and cleanup when leases are disabled must remain consistent with readiness and nft event filtering.
+`proxy-assurance-vm` covers frozen/stopped supervisors, existing TCP/UDP in both IP families, bidirectional expiry and retained recovery access.
 
 For changes to nftables, systemd loading or coordination, run `proxy-firewall-vm`, the relevant complete-rule variants, `proxy-control-vm` and `proxy-network-vm`.
 The dedicated VM checks A/C table ownership, external sets and ordered rules, failed transactions, lock contention and reuse of migration target names.
@@ -311,19 +348,22 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 
 | `checks.x86_64-linux.*` | Scope |
 |---|---|
-| `proxy-control` | Temporary-file snapshot authorization, expiry, restart, hostile inputs and permissions |
+| `proxy-control` | Temporary-file snapshot authorization, expiry, restart, hostile inputs and permissions, plus single-use B lease proofs and sleep/generation rejection |
 | `proxy-refresh` | Offline audit, bounded HTTP checks, local update state and notification deduplication |
+| `proxy-source` | Registered fetch/render/review, candidate prechecks, preserved runtime authority and unhealthy-core recovery |
+| `proxy-source-config` | Source/browser configuration, private DNS paths and separation of download and policy capabilities |
 | `proxy-refresh-vm` | Real auto/enforce helper/core: healthy acceptance, rejected-candidate fallback, pinned restarts, rollback and desired-state recovery |
 | `proxy-upgrade-review` | Selected source/dependency/recipe baselines, component coverage, check-name validation and source compatibility checks. The input gate also runs in normal system builds |
 | `network-identity-config` | Identity migration boundaries, actual nmcli parsing/hostname restoration, wired variants, service scope and persistence. Target validation also runs in normal system builds |
 | `network-identity-vm` | Real wired/Wi-Fi DHCPv6 coexistence, fresh dual-stack identities, UUID/epoch/random rotation, stable/fixed/permanent behavior, profile precedence, restore and retained host keys |
-| `proxy-regressions` | Health/state/rules/DNS leases, budget and supervisor regressions |
+| `proxy-regressions` | Health/state/rules/DNS leases, bounded client DNS retries, budget and supervisor regressions |
 | `proxy-profile`, `proxy-gui` | Generated profile variants, policy/template agreement, GUI defaults and process wrapper |
 | `proxy-rules`, `proxy-egress-rules` | Complete compatibility/restricted mode rules parsed by the build-time LKL nft environment |
 | `proxy-firewall-vm` | A/C ownership, external-table preservation, rejected-load rollback, migration locks, idempotence and migration-target name reuse |
 | `proxy-dns-strict-rules` | Complete strict DNS firewall rules parsed in LKL |
-| `proxy-dns-config` | Syntax of generated default/strict DNS coordinator scripts |
+| `proxy-dns-config` | Generated DNS and verifier script syntax across default, strict, dual-stack, IPv6-only and HTTP-only configurations |
 | `proxy-dns-strict-vm` | Real helper/core, shared DNS/proxy filtering, strict outage/override/lease and leftover-set refusal, private split permission and literal portal recovery |
+| `proxy-assurance-vm` | A/B local DNSSEC, bogus/CD and fake-IP/real-target behavior, B proxy DNS independence from incorrect A answers, isolated DNS saturation/recovery, and frozen/stopped/sleep B lease revocation with dual-stack TCP/UDP |
 | `proxy-guest-config`, `proxy-guest-rules` | Production/dedicated-account configuration and rootless launcher syntax. Complete mixed-role rules in LKL. Guest validation is also required by normal system builds |
 | `proxy-guest-vm` | Three real routed networks, DHCP/DNS, IPv4/ULA, spoofed sources, actual pasta/RootlessKit/subuid sockets, fake-IP refusal, stale DNS conntrack, bidirectional grant revocation and C with a live core |
 | `proxy-hermes-containers-vm` | Real legacy/new Docker, socket ACL, offline image, account grants, TCP/UDP, unsupported IPv6 refusal, Hermes host proxy, A/B/C and recovery |
@@ -334,7 +374,7 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 | `tailscale-transport` | Selected upstream Linux bypass constant and expected magicsock/STUN socket marking paths. Also required by normal system builds |
 | `proxy-tailscale-vm` | Real selected Tailscale CLI, isolated dual-stack STUN, both uplinks, socket/packet/UID restrictions, B/C recovery and remote desktop port policy |
 | `proxy-control-config` | Production/test identities, helper capabilities and generated listeners agree |
-| `proxy-core` | Patched core build plus injected parser, router, target, actual adapter-leaf, direct/UDP/DNS and SOCKS Go tests |
+| `proxy-core` | Patched core build plus injected parser, router, target/cache, actual adapter-leaf, direct/UDP/DNS and SOCKS Go tests |
 | `proxy-target-vm` | Real helper/core, distinct local/node loopback traps, HTTP/CONNECT/SOCKS, internal-name pinning, scoped remote grant, Rule/Global and A/C behavior |
 | `proxy-gost` | Patched relay build and vendored HTTP parser tests |
 | `browser-privacy` | Final native browser policy/locks and offline launch behavior |
@@ -342,7 +382,7 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 | `browser-ech-vm` | Confined real Firefox/helper/core, native HTTPS discovery, ECH versus GREASE, key/no-ECH retry, untrusted rejection, certificate errors, cover-name target preservation and A/C behavior |
 | `browser-ech-uniform-vm` | The same real browser paths and policy consumption with `proxyOnly=true` |
 | `proxy-control-vm` | Real production helper/launcher/netns, capabilities, localhost broker, overlap/link/resume recovery, authorization, DNS and bidirectional C revocation |
-| `proxy-managed-netns-vm` | Registered TLS sources, full supervisor readiness, actual strict inlet, C revocation and source switching in the production core namespace |
+| `proxy-managed-netns-vm` | Registered TLS sources, preserved core, authority and established TLS connections after rejection, exact approval, full readiness, strict inlet, C revocation and source switching in the production core namespace |
 | `proxy-uniform-vm` | Production helper/core under uniform proxy policy: fresh TCP/UDP DIRECT refusal, dual-stack UDP, native IPv6 TUN and recovery |
 | `proxy-network-vm` | Broad kernel fault injection: modes, DNS, leases, sleep, guests, TPROXY and recovery |
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	C "github.com/metacubex/mihomo/constant"
+	D "github.com/miekg/dns"
 )
 
 type targetGrant struct {
@@ -27,33 +29,57 @@ type targetGrant struct {
 }
 
 type policy struct {
-	SubscriptionTrust          string        `json:"subscription-trust"`
-	InsecureProxyExceptions    []string      `json:"insecure-proxy-exceptions"`
-	AllowDynamicRemoteGrants   bool          `json:"allow-dynamic-remote-grants"`
-	RejectPlaintextCredentials bool          `json:"reject-plaintext-credentials"`
-	StrictInlets               []string      `json:"strict-inlets"`
-	ProxyOnly                  bool          `json:"proxy-only"`
-	Prefixes                   []string      `json:"prefixes"`
-	AllowedDomains             []string      `json:"allowed-domains"`
-	MagicDNSSuffixFile         string        `json:"magic-dns-suffix-file"`
-	BlockedDomainsFile         string        `json:"blocked-domains-file"`
-	BlockedDomains             []string      `json:"blocked-domains"`
-	BlockExceptions            []string      `json:"blocked-domain-exceptions"`
-	LocalTargetCIDRs           []string      `json:"local-target-cidrs"`
-	RemoteTargetGrants         []targetGrant `json:"remote-target-grants"`
-	NAT64Prefixes              []string      `json:"nat64-prefixes"`
-	FakeIPPrefix               string        `json:"fake-ip-prefix"`
+	ValidatorPorts             []uint16       `json:"validator-ports"`
+	PreviousDNS                map[string]any `json:"previous-dns"`
+	LocalDNSSEC                string         `json:"local-dnssec"`
+	SubscriptionTrust          string         `json:"subscription-trust"`
+	InsecureProxyExceptions    []string       `json:"insecure-proxy-exceptions"`
+	AllowDynamicRemoteGrants   bool           `json:"allow-dynamic-remote-grants"`
+	RejectPlaintextCredentials bool           `json:"reject-plaintext-credentials"`
+	StrictInlets               []string       `json:"strict-inlets"`
+	ProxyOnly                  bool           `json:"proxy-only"`
+	Prefixes                   []string       `json:"prefixes"`
+	AllowedDomains             []string       `json:"allowed-domains"`
+	MagicDNSSuffixFile         string         `json:"magic-dns-suffix-file"`
+	BlockedDomainsFile         string         `json:"blocked-domains-file"`
+	BlockedDomains             []string       `json:"blocked-domains"`
+	BlockExceptions            []string       `json:"blocked-domain-exceptions"`
+	LocalTargetCIDRs           []string       `json:"local-target-cidrs"`
+	RemoteTargetGrants         []targetGrant  `json:"remote-target-grants"`
+	NAT64Prefixes              []string       `json:"nat64-prefixes"`
+	FakeIPPrefix               string         `json:"fake-ip-prefix"`
 	local                      []netip.Prefix
 	nat64                      []netip.Prefix
 	fake                       netip.Prefix
 	parsed                     []netip.Prefix
 	blockedNames               map[string]bool
+	validated                  *validatedCache
 }
 
 var current atomic.Pointer[policy]
 
 // The managed DNS service preserves HTTPS/SVCB discovery even with fake-IP.
 func Managed() bool { return current.Load() != nil }
+
+// The trusted local validator decides secure, insecure (unsigned), or bogus.
+// AD received from an upstream is never used as a validation decision here.
+func ValidateDNS(ctx context.Context, request *D.Msg) (*D.Msg, error) {
+	return validateDNS(ctx, current.Load(), request)
+}
+
+func validateDNS(ctx context.Context, p *policy, request *D.Msg) (*D.Msg, error) {
+	if p == nil || p.LocalDNSSEC == "" || len(request.Question) != 1 ||
+		p.allows(strings.ToLower(strings.TrimSuffix(request.Question[0].Name, "."))) {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	query := request.Copy()
+	query.CheckingDisabled = false
+	client := &D.Client{Net: "tcp", Timeout: 3 * time.Second}
+	reply, _, err := client.ExchangeContext(ctx, query, p.LocalDNSSEC)
+	return reply, err
+}
 
 // Called by the DIRECT adapter before opening TCP or UDP sockets, including
 // named direct adapters and COMPATIBLE. A group selecting DIRECT cannot bypass
@@ -69,6 +95,13 @@ func strictInlet(p *policy, m *C.Metadata) bool {
 
 func CheckDirect(metadata *C.Metadata) error {
 	p := current.Load()
+	if p != nil && !infrastructure(metadata) && metadata.DstIP.Unmap().IsLoopback() {
+		for _, port := range p.ValidatorPorts {
+			if metadata.DstPort == port {
+				return fmt.Errorf("application access to a local DNS validator is refused")
+			}
+		}
+	}
 	if p != nil && (p.ProxyOnly || strictInlet(p, metadata)) && (metadata.Type != C.INNER || metadata.LFRuleDNS) {
 		scope := "application"
 		if metadata.LFRuleDNS {
@@ -98,7 +131,7 @@ func validDomain(domain string) bool {
 
 func Configure(value map[string]any) error {
 	if value == nil {
-		current.Store(nil)
+		installPolicy(nil)
 		return nil
 	}
 	data, err := json.Marshal(value)
@@ -113,6 +146,13 @@ func Configure(value map[string]any) error {
 	}
 	if len(p.Prefixes) == 0 {
 		return fmt.Errorf("managed target guard requires private prefixes")
+	}
+	if p.LocalDNSSEC != "" {
+		host, port, err := net.SplitHostPort(p.LocalDNSSEC)
+		number, portErr := strconv.Atoi(port)
+		if err != nil || portErr != nil || host != "127.0.0.1" || number < 1024 || number > 65535 {
+			return fmt.Errorf("local DNSSEC requires a loopback high-port validator")
+		}
 	}
 	for _, text := range p.Prefixes {
 		prefix, err := netip.ParsePrefix(text)
@@ -183,7 +223,8 @@ func Configure(value map[string]any) error {
 	if err := p.loadBlocklist(); err != nil {
 		return err
 	}
-	current.Store(p)
+	p.validated = newValidatedCache()
+	installPolicy(p)
 	return nil
 }
 
@@ -468,6 +509,12 @@ func Protect(ctx context.Context, original, dial *C.Metadata,
 		return nil, err
 	}
 	result.LFLocalTarget = p.allows(host)
+	localValidation := p.LocalDNSSEC != "" && !result.LFLocalTarget
+	if localValidation {
+		lookup = func(ctx context.Context, host string) ([]netip.Addr, error) {
+			return validatedIPsForPolicy(ctx, p, host)
+		}
+	}
 	if original.DstIP.IsValid() && (p.unsafe(original.DstIP) || (!result.LFLocalTarget && p.blocked(original.DstIP))) {
 		return nil, fmt.Errorf("managed target guard: domain selected a private address")
 	}
@@ -475,7 +522,7 @@ func Protect(ctx context.Context, original, dial *C.Metadata,
 		return nil, fmt.Errorf("managed target guard: no resolver")
 	}
 	ips, err := lookup(ctx, host)
-	if err != nil {
+	if err != nil && !localValidation {
 		ips, err = lookup(ctx, host)
 	}
 	if err != nil || len(ips) == 0 {

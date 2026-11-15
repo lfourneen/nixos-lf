@@ -177,6 +177,13 @@ def rows(state):
     if state.get('reason'):
         yield 'Transition reason', REASONS.get(str(state['reason']).split(':')[0], 'Inspect coordinator state with proxy-inspect')
     yield 'System DNS', DNS.get(state.get('dns_mode'), 'Unknown')
+    if mode == 'proxy':
+        yield 'DNS validation', ('Local DNSSEC · unsigned zones remain unsigned'
+            if state.get('dns_validation') == 'local-dnssec' else 'Encrypted core resolvers')
+        lease = state.get('authorization_lease', {})
+        if lease.get('required'):
+            yield 'Application authorization', (f"Kernel lease · {lease.get('remaining', 0)}s remaining"
+                if lease.get('active') else 'Kernel lease expired or pending')
     if state.get('mode') == 'direct':
         encryption = {'strict': 'Strict encryption', 'opportunistic': 'Bounded plaintext recovery allowed'}.get(state.get('dns_encryption'), 'Unknown policy')
         yield 'DNS policy', encryption
@@ -189,7 +196,7 @@ def rows(state):
         if state.get('plaintext_override'):
             yield 'Manual override', 'Plaintext recovery override enabled'
     observations = state.get('observations', {})
-    for key, label, result in [('verification', 'Firewall check', {'ok': 'Passed'}.get(state.get('verification'), 'Not passed')),
+    for key, label, result in [('verification', 'Firewall check', {'ok': 'Passed', 'degraded': 'Passed · warnings'}.get(state.get('verification'), 'Not passed')),
                                ('relay', 'Local relay', MODES.get(state.get('relay_mode'), 'Unknown')),
                                ('dns_leases', 'DNS leases', 'Applied' if state.get('dns_lease_status') == 'applied' else 'Pending')]:
         observation = observations.get(key, {})

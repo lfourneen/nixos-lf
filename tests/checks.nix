@@ -13,6 +13,7 @@ let
           my.proxy.profileRefreshPolicy = lib.mkForce "strict";
           my.proxy.subscriptionAudit = lib.mkForce "warn";
           my.proxy.subscriptionAuditAllowedHosts = lib.mkForce { };
+          my.proxy.localDnssec = lib.mkForce false;
         }) ];
       }).config.programs.clash-verge.package;
 
@@ -22,6 +23,7 @@ let
           my.proxy.strictBrowser = lib.mkForce false;
           my.proxy.subscriptionTrust = lib.mkForce "source";
           my.proxy.profileRefreshPolicy = lib.mkForce "auto";
+          my.proxy.localDnssec = lib.mkForce false;
           my.proxy.subscriptionAudit = lib.mkForce "enforce";
           my.proxy.subscriptionAuditServerCidrs = [ "100.67.0.1/32" ];
           my.proxy.subscriptionAuditAllowedHosts = lib.mkForce {
@@ -140,7 +142,13 @@ let
           my.machine.dotEndpoints = lib.mkForce [{ address = "2001:db8::53"; authName = "v6.fixture.test"; }];
         }) ]; }).config;
 
-        variants = [ self.nixosConfigurations.lfour.config strictDnsConfig dual v6 ];
+        httpOnly = (self.nixosConfigurations.lfour.extendModules { modules = [ ({ lib, ... }: {
+          my.proxy.localDnssec = lib.mkForce false;
+          my.proxy.tunMode = lib.mkForce false;
+          home-manager.users.lfour.my.firefox.networkPath = lib.mkForce "http-proxy";
+        }) ]; }).config;
+
+        variants = [ self.nixosConfigurations.lfour.config strictDnsConfig dual v6 httpOnly ];
         settings = pkgs.writeText "dns-endpoint-configs.json" (builtins.toJSON (map (c: {
           endpoints = c.my.machine.dotEndpoints;
           port = c.my.machine.ports.dot;
@@ -152,6 +160,8 @@ let
       pkgs.runCommand "dns-policy-config" { } ''
         ${pkgs.python3}/bin/python3 ${./network/dns/check_dns_endpoints.py} ${settings}
         ${pkgs.lib.concatMapStrings (c: "${pkgs.bash}/bin/bash -n ${c.systemd.services.dns-upstream.serviceConfig.ExecStart}\n") variants}
+        ${pkgs.lib.concatMapStrings (c: "${pkgs.bash}/bin/bash -n ${c.systemd.services.nftables-verify.serviceConfig.ExecStart}\n") variants}
+        ${pkgs.bash}/bin/bash -n ${../system/config/network/firewall/client_dns.sh}
         test -e ${dual.my.proxy.expectedRules}
         test -e ${v6.my.proxy.expectedRules}
         touch "$out"
@@ -335,6 +345,12 @@ let
         strictDns = true;
       };
 
+      proxy-assurance-vm = import ./network/proxy/control-vm.nix {
+        inherit pkgs;
+        clashPackage = strictClashPackage;
+        assurance = true;
+      };
+
       proxy-egress-control-vm = import ./network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = strictClashPackage;
@@ -346,6 +362,7 @@ let
       } ''
         export PYTHONDONTWRITEBYTECODE=1
         python3 ${./network/proxy/test_control.py} ${../system/programs/clash/service/clash-verge-stage.py} ${../system/config/network/proxy/health.py}
+        python3 ${./network/proxy/test_authorization.py} ${../system/config/network/proxy/authorization.py}
         touch "$out"
       '';
 
@@ -400,6 +417,10 @@ let
         settings = json.load(open(sys.argv[1]))
         for name in ('core', 'core-dns', 'core-mixed'):
             for listener in settings['groups'][name]:
+                if listener['cgroup'] in ('/system.slice/clash-dns-application.service', '/system.slice/clash-dns-infrastructure.service'):
+                    assert listener['uids'] == [${toString c.users.users.unbound.uid}], listener
+                    assert listener['namespace'] is True, listener
+                    continue
                 assert listener['uids'] == [int(sys.argv[2])], listener
                 assert listener['cgroup'] == '/system.slice/clash-verge.service', listener
                 assert listener['namespace'] is True, listener

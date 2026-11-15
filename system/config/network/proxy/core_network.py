@@ -165,7 +165,7 @@ def render(settings, destination):
     c4, c6, h4, h6 = (s[key] for key in ('core4', 'core6', 'host4', 'host6'))
     reserved = ', '.join(map(str, [53, p['mihomoMixed'], p['mihomoStrict'], p['mihomoDns'],
         p['mihomoTproxy'], p['gostHttp'], p['gostRedirect'], p['dnsmasq'], p['unbound'],
-        p['socketGuestDns'], p['coreLoopback']]))
+        p['socketGuestDns'], p['coreDnsTransport'], p['coreDnsBootstrapTransport'], p['coreLoopback']]))
     inlets = ', '.join(map(str, [p['mihomoMixed'], p['mihomoStrict'], p['mihomoDns']]))
     unsafe4 = ['0.0.0.0/8', '127.0.0.0/8', '169.254.169.254/32', '169.254.170.2/32',
                '100.100.100.200/32', '192.0.0.0/24', '198.18.0.0/15', '224.0.0.0/4', '240.0.0.0/4', s['fake']]
@@ -281,13 +281,28 @@ chain lf_core_snat {{
                 f'{dns4_selector}udp dport 53 dnat to 127.0.0.1')
     dns_out6 = (f'tcp dport 53 dnat to [::1]:{p["coreLoopback"]}\n'
                 f'udp dport 53 dnat to ::1')
+    validator_rules, validator_local = [], {4: '', 6: ''}
+    if s.get('localDnssec'):
+        uid = s['validatorUid']
+        rule = (f'meta skuid {uid} ip daddr 127.0.0.1 tcp dport '
+                f'{{ {p["coreDnsTransport"]}, {p["coreDnsBootstrapTransport"]} }}')
+        validator_rules.append(rule + ' accept')
+        validator_local[4] = rule + ' return'
+        validator_rules += [f'meta skuid {uid} oifname lo ct direction reply '
+                            f'meta l4proto {{ tcp, udp }} th sport {{ {p["unbound"]}, {p["socketGuestDns"]} }} accept',
+                            f'meta skuid {uid} counter drop']
+    validator_policy = ('table inet lf_core_dns { chain output { '
+        'type filter hook output priority -199; policy accept;\n' + '\n'.join(validator_rules) + '\n}\n}\n') if validator_rules else ''
     result['namespace.nft'] = f'''
+destroy table inet lf_core_dns
+{validator_policy}
 destroy table ip lf_core_inlets
 table ip lf_core_inlets {{
  chain ingress {{ type nat hook prerouting priority -120; policy accept;
   ip daddr {c4} meta l4proto {{ tcp, udp }} th dport {{ {inlets} }} dnat to 127.0.0.1
  }}
  chain loopback {{ type nat hook output priority -120; policy accept;
+  {validator_local[4]}
   {dns_out4 if not s['strictDns'] else ''}
   {'ip daddr 127.0.0.1 tcp dport != { ' + reserved + ' } redirect to :' + str(p['coreLoopback']) if permitted_loop(4) else ''}
  }}
@@ -304,6 +319,7 @@ table ip6 lf_core_inlets {{
   ip6 daddr {c6} meta l4proto {{ tcp, udp }} th dport {{ {inlets} }} dnat to ::1
  }}
  chain loopback {{ type nat hook output priority -120; policy accept;
+  {validator_local[6]}
   {dns_out6 if not s['strictDns'] else ''}
   {'ip6 daddr ::1 tcp dport != { ' + reserved + ' } redirect to :' + str(p['coreLoopback']) if permitted_loop(6) else ''}
  }}

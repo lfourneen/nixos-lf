@@ -127,12 +127,36 @@ HTTP 探针须经当前选中代理叶子完成，且日志匹配源端口。
 `scope.udp_data_plane="not-probed"` 明确 UDP 边界：核对监听身份，但不持续证明 UDP 可达性和 association 回程。
 单独的 UDP 故障因此可能让 B 与 TCP 健康结果保持正常。
 
+### B 授权时效
+
+本机设置 `my.proxy.authorizationLeaseSeconds=60`。
+模块默认值为 `null`，此时 B 授权仍依赖运行中的监督器。
+启用内核到期保证时，可选择 30 至 120 秒：
+
+```nix
+my.proxy.authorizationLeaseSeconds = 60;
+```
+
+只有完整成功的健康检查轮次可以续租。
+每份证明只能消费一次，并绑定本次启动、受管配置、策略代次和休眠 epoch。
+续租仅使用证明的剩余有效期，延迟观测及滞回轮次不能重新获得完整租期。
+
+带超时的 nftables 授权覆盖两种 IP 家族。
+到期后，已安装规则在 TUN/重定向及 established 放行前执行 C 的请求与回包守卫，覆盖已有宿主和访客连接。
+C 原有的恢复与链路维护例外继续可用。
+监督器冻结或停止不能保留应用授权，也不会选择直连。
+最后的模式文件可能仍为 `proxy`，就绪检查会独立报告授权租约已过期。
+
+休眠钩子在挂起前撤销授权。
+恢复后需要新的成功证明，休眠前的证明不能续租。
+在重新构建的 generation 中选择 `null`，会明确移除这项内核到期保证。
+
 ## 防火墙生命周期
 
 [default.nix](../../system/config/network/network.nix) 定义静态策略及 B/C 片段。
 [coordinator.nix](../../system/config/network/proxy/coordinator.nix) 在共享锁下以一次 `nft -f` 事务安装静态规则和安全模式，只替换本仓库拥有的宿主表及其中的 `lf_core_*` 链。
 
-Mihomo 管理私有命名空间内的自有表，固定 setup 另安装私有 `lf_core_inlets` 和 `lf_core_local_udp` 表。
+Mihomo 管理私有命名空间内的自有表，固定 setup 另安装私有 `lf_core_inlets` 和 `lf_core_local_udp` 表，启用本地 DNSSEC 时还安装 `lf_core_dns`。
 其它服务的宿主表仍保留。
 
 ### 表归属
@@ -164,13 +188,15 @@ Mihomo 管理私有命名空间内的自有表，固定 setup 另安装私有 `l
 | Output `-201` | NAT 前拒绝显式使用 Gost 透明入口 |
 | Prerouting `-201` | 重定向前限制访客公网目的地 |
 | Prerouting `-199` | 访客源地址、私网目标和网关服务检查 |
+| Prerouting `-198` | B 授权到期时执行 C 的访客入站守卫 |
 | Output `-199` | 跟踪受限 socket 访客账户。将 dnsmasq 上游 DNS 限定到目的地租约。严格模式阻断核心外部 53，仅保留 MagicDNS |
 | Output `-198` | 保留内部 DNS 端口、检查 DNS/代理应答身份、跟踪普通应用连接并检查访客宿主服务回包 |
-| Output `-197` | C guard，位于 conntrack `-200` 之后、auto-redirect `-150` 之前 |
+| Output `-197` | C guard 及 B 授权到期守卫，位于 conntrack `-200` 之后、auto-redirect `-150` 之前 |
 | Output `-196` | 限制独立使用 853 端口的 DoT/DoQ |
 | Output `-195` | B 可选私网/多播授权与 Unbound DoT 关闭，位于 NAT/TUN 前 |
 | Output `-194` | A/B 可选 Chrony 原始目标 CIDR 限制 |
 | Output NAT `-190`、filter `-90` | 将受限 socket 访客 DNS 强制送至 1056，并拒绝旧解析器关联 |
+| Input `-3`、forward `-2` | B 授权到期时执行 C 的接收/转发守卫 |
 | Input `-2`、forward `-1` | 按当前授权检查受限 socket / 转发访客回包 |
 | Input `-1` | C 在 established 放行前切断已解密 tailnet 数据及已跟踪宿主/访客应用回包 |
 
@@ -194,7 +220,7 @@ Tailscale 的 bypass mark 是上游常量 `0x80000`，不会随连接的网络�
 
 [直连例外清单](egress_CN.md)逐项记录主体、目标、端口和模式。
 可选受限 B 按接口/UID/CIDR/端口授权，在 TUN/NAT 前切断撤权后的已有宿主主动连接。
-Unbound 即使在 A 也只能使用声明的 DoT 目标，B 的此项例外可关闭。
+宿主 Unbound 即使在 A 也只能使用声明的 DoT 目标，B 的此项例外可关闭。
 Chrony 可在 A/B 固定目标 CIDR。
 默认保留 LAN 与 NTS 地址变化兼容性。
 
@@ -205,7 +231,7 @@ C 的早期 output guard 在核心重定向前阻断应用，保留 loopback IPC
 
 自测应答例外限定为预期 loopback 源，或 root/core 的 conntrack DNAT reply 且原目的地为 fake-IP HTTP。
 访客 DHCP/DNS 应答按网桥、网关源地址和端口识别，不依赖守护进程 UID。
-Unbound 和普通 tailnet 流量不能外出，包括已有远控连接。
+宿主 Unbound 和普通 tailnet 流量不能外出，包括已有远控连接。
 
 B 的授权不提供 C 远控例外。
 另有入站守卫在 established 放行前丢弃已解密 tailnet 数据，包括切换时仍在到达的数据包。

@@ -117,7 +117,14 @@ GUI 选择与实际来源不同时，检查 `journalctl -u clash-source-select -
 A 中选择或获取不会请求 B，需要显式运行 `clash-on`。
 
 `clash-source refresh` 只准备候选。
-system service 在代理意图有效时还重启受管 helper/核心，timer 每 30 分钟执行。
+system service 在代理意图有效时先检查候选，再决定是否重启受管 helper/核心。
+timer 每 30 分钟执行，导入或回滚尚未收尾时，本次刷新暂缓切换。
+
+当前快照仍获授权且完整，并通过新鲜的完整健康检查、就绪检查及所需 B 租约检查时，
+被拒或未变化的候选保留正在运行的核心和已有连接。
+当前授权失效或健康检查失败时，仍进入 C 恢复。
+实际切换先进入 C，再重启 helper/核心，重新执行导入检查，通过代理健康检查后才返回 B。
+
 worker 失败区分 `fetch`、`parse`、`render`、`pin-addresses`，内容审计结果另见 `proxy-status`。
 
 解析失败最多丢弃 `max(1, node_count // 5)` 个节点，私网答案仍拒绝候选。
@@ -286,6 +293,9 @@ Tailscale 打标失败时，B 仍会阻断未打标的 root UDP。
 跨新代次的检查结果丢弃。
 
 就绪要求模式、DNS、broker、relay 同代次且新鲜，没有告警，并有新鲜验证。
+验证器的 `ok` 和 `degraded` 都表示硬性检查已通过。
+`degraded` 另有观察性警告，显示为 `Passed · warnings`。
+失败或未知结果不算就绪。
 Broker 必须 `applied`，`suspended`/`revoked` 和 DNS `degraded-dot-only` 不算就绪。
 消费者默认有效期 120 秒，验证为 420 秒以容纳五分钟定时器及有界执行。
 Boot identity 和单调时间戳拒绝跨开机、未来与陈旧记录。

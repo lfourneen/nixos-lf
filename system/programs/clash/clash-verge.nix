@@ -37,6 +37,10 @@ let
     audit_policy = config.my.proxy.subscriptionAudit;
     audit_python = "${pkgs.python3.withPackages (p: [ p.pyyaml ])}/bin/python3";
     audit_tool = "${./service/subscription_audit.py}";
+    readiness_tool = "${../../config/network/proxy/state.py}";
+    state_max_age = config.my.proxy.stateMaxAgeSeconds;
+    verification_max_age = config.my.proxy.verificationMaxAgeSeconds;
+    require_tun = config.my.proxy.tunMode;
 
     audit_settings = pkgs.writeText "subscription-audit-settings.json" (builtins.toJSON {
       strict_semantics = config.my.proxy.controlledSources;

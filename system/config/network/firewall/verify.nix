@@ -123,12 +123,19 @@ in
           if [ "$(cat /run/dns-upstream/status)" != proxy ]; then
             warn 'DNS has not converged to mihomo'
           else
-            answer=$(dig +time=2 +tries=1 +short @127.0.0.1 -p ${toString port.dnsmasq} "$(date +%s%N).probe.example.com" A)
-            ${if config.my.proxy.tunMode then ''
-            printf '%s\n' "$answer" | "$RULE_CHECK" address ${lib.escapeShellArg config.my.proxy.fakeIpNet} >/dev/null || live_fail 'client DNS did not return a fake-IP inside the configured CIDR'
+            # Validating and redir-host cores need existing positive names.
+            # Synthetic-only cores can probe a fresh name without public DNS.
+            ${if config.my.proxy.localDnssec || !config.my.proxy.tunMode then ''
+            dns_names=( ${lib.concatMapStringsSep " " lib.escapeShellArg config.my.proxy.tunProbeNames} )
             '' else ''
-            [ -n "$answer" ] || live_fail 'client DNS did not answer'
+            dns_names=( "$(date +%s%N).probe.example.com" )
             ''}
+            DIG=${pkgs.dnsutils}/bin/dig
+            DNS_PORT=${toString port.dnsmasq}
+            source ${./client_dns.sh}
+            if ! client_dns ${lib.escapeShellArg (if config.my.proxy.tunMode then config.my.proxy.fakeIpNet else "0.0.0.0/0")} 20 "''${dns_names[@]}"; then
+              live_fail "client DNS probe failed: $client_dns_error"
+            fi
           fi
           ;;
         blocked)

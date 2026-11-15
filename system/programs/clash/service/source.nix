@@ -85,35 +85,64 @@ in
       };
     };
 
+    # Keep network policy capabilities outside the download/parser service.
+    # The caller holds operator.lock and waits for this fixed C transaction
+    # before it can stop the currently authorized core.
+    systemd.services.clash-source-guard = {
+      description = "Revoke B before activating a checked source";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${config.my.proxy.modeScript} --request-proxy";
+        NoNewPrivileges = true;
+        CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        ReadWritePaths = [ "/run/proxy-mode" "/run/netsec" ];
+        RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
+        TimeoutStartSec = "20s";
+      };
+    };
+
     systemd.services.clash-source-refresh = {
       description = "Fetch registered subscription and immutable provider generation";
       after = [ "network-online.target" "socket-guest-dns.service" ];
       wants = [ "network-online.target" "socket-guest-dns.service" ];
+      environment.LF_MANAGED_PROXY_POLICY = config.systemd.services.clash-verge.environment.LF_MANAGED_PROXY_POLICY;
 
       script = ''
         ${command}/bin/clash-source refresh
         if [ "$(cat /run/proxy-mode/intent 2>/dev/null)" = proxy ]; then
-          ${pkgs.python3}/bin/python3 ${./clash-verge-stage.py} restart-source \
+          ${pkgs.python3}/bin/python3 ${./source_refresh.py} \
             ${config.programs.clash-verge.package.stageSettings} \
-            ${config.programs.clash-verge.package}/bin/verge-mihomo
+            ${config.programs.clash-verge.package}/bin/verge-mihomo \
+            clash-source-guard.service /run/clash-source-check
         fi
       '';
 
       serviceConfig = {
         Type = "oneshot";
         UMask = "0077";
+        RuntimeDirectory = "clash-source-check";
+        RuntimeDirectoryMode = "0755";
         NoNewPrivileges = true;
         ProtectSystem = "strict";
         ProtectHome = true;
         PrivateTmp = true;
-        ReadWritePaths = [ "/var/lib/clash-source" "/run/proxy-mode" ];
+        ReadWritePaths = [
+          "/var/lib/clash-source"
+          "/run/proxy-mode"
+        ];
 
         # Check the core socket after restart without granting DAC override.
         # The download worker clears supplementary groups before execution.
         SupplementaryGroups = [ "clash-core" ];
         CapabilityBoundingSet = [ "CAP_SETUID" "CAP_SETGID" "CAP_SETPCAP" ];
         RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" "AF_NETLINK" ];
-        TimeoutStartSec = "100s";
+        TimeoutStartSec = "180s";
         MemoryMax = "768M";
         TasksMax = 32;
       };

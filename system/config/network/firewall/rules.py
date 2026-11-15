@@ -11,8 +11,9 @@ import sys
 TABLES = {"lf_filter", "lf_nat", "lf_mangle", "lf_proxymode_nat"}
 DYNAMIC_CHAINS = {"proxymode_drops", "proxymode_tail", "proxymode_forward",
                   "lf_blocked_guard", "lf_guest_guard", "proxymode_tproxy",
-                  "lf_host_egress_guard", "lf_host_direct", "lf_tailnet_guard", "lf_strict_reply_guard"}
-LEASE_SETS = {"dns_plaintext4": 4, "dns_split4": 4, "dns_split6": 6}
+                  "lf_host_egress_guard", "lf_host_direct", "lf_tailnet_guard", "lf_strict_reply_guard",
+                  "lf_lease_output", "lf_lease_input", "lf_lease_forward", "lf_lease_ingress"}
+LEASE_SETS = {"dns_plaintext4": 4, "dns_split4": 4, "dns_split6": 6, "b_authorization": None}
 
 
 def lease_set(obj):
@@ -21,6 +22,16 @@ def lease_set(obj):
     for element in value.pop("elem", []):
         data = element.get("elem", {}) if isinstance(element, dict) else {}
         address_value = data.get('val', '')
+        # nft may omit an element's timeout when it uses the set default.
+        # The complete set definition (including that bounded default) still
+        # participates in exact policy comparison.
+        timeout, expires = data.get("timeout", obj.get("timeout", 0)), data.get("expires", 0)
+        if not (0 < timeout <= 120000 and 0 <= expires <= timeout):
+            raise ValueError("unbounded authorization lease")
+        if obj['name'] == 'b_authorization':
+            if address_value not in ('ipv4', 'ipv6', 2, 10):
+                raise ValueError('invalid authorization family')
+            continue
         if obj['name'].startswith('dns_split'):
             parts = address_value.get('concat', []) if isinstance(address_value, dict) else []
             if len(parts) != 2 or not isinstance(parts[0], str) or not re.fullmatch(r'[a-zA-Z0-9_.:-]{1,15}', parts[0]):
@@ -29,9 +40,6 @@ def lease_set(obj):
         address = ipaddress.ip_address(address_value)
         if address.version != LEASE_SETS[obj["name"]] or address.is_multicast or address.is_unspecified:
             raise ValueError("invalid DNS lease address")
-        timeout, expires = data.get("timeout", 0), data.get("expires", 0)
-        if not (0 < timeout <= 120000 and 0 <= expires <= timeout):
-            raise ValueError("unbounded DNS lease")
     return value
 
 # `nft -e` echoes the applied object with the protocol as its number, while

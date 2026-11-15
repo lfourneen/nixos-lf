@@ -202,7 +202,7 @@ class RefreshError(ValueError):
 
 REASONS = {'configuration invalid', 'input unreadable', 'validation timeout',
            'snapshot mismatch', 'blocked by audit', 'audit indeterminate',
-           'unknown', 'node', 'tun', 'dns'}
+           'operator authorization required', 'unknown', 'node', 'tun', 'dns'}
 PIN_TTL = 3600
 HISTORY = 20
 AUDIT_CATEGORIES = frozenset((
@@ -671,6 +671,51 @@ def source_input(settings):
     return dict(settings, gui_data=str(directory), desktop_uid=0), str(directory / 'clash-verge.yaml')
 
 
+def copy_candidate_inputs(settings, candidate_config, candidate, gid):
+    """Copy immutable inputs without touching live cache or snapshot authority."""
+    write_private(candidate / 'clash-verge.yaml', candidate_config, gid)
+    if settings.get('source_root'):
+        write_private(candidate / 'source-manifest.json',
+                      read_input(settings['gui_data'], 'source-manifest.json', settings['desktop_uid']), gid)
+    names = os.listdir(settings['gui_data'])
+    for target, aliases in ASSETS.items():
+        matches = [name for name in names if name.lower() in aliases]
+        if len(matches) > 1:
+            raise ValueError('ambiguous database names: ' + target)
+        if matches:
+            write_private(candidate / target,
+                          read_input(settings['gui_data'], matches[0], settings['desktop_uid']), gid)
+
+
+def enforce_audit(settings, findings):
+    if findings is not None and settings.get('audit_policy') == 'enforce':
+        deny, unknown = findings.get('deny') or {}, findings.get('unknown') or {}
+        if 'audit_error' in deny or 'route_unknown' in unknown:
+            raise RefreshError('audit indeterminate')
+        if deny:
+            raise RefreshError('blocked by audit')
+
+
+def validate_snapshot(settings, real, directory, log):
+    """Run the same unprivileged managed parser for prechecks and imports."""
+    log = Path(log)
+    log.unlink(missing_ok=True)
+    remaining = settings['_prepare_deadline'] - time.monotonic()
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired('managed validation', 11)
+    with log.open('wb') as stream:
+        log.chmod(0o600)
+        result = subprocess.run([
+            settings['setpriv'], '--reuid=clash-validate', '--regid=clash-core', '--clear-groups',
+            '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs',
+            real, '-t', '-d', str(directory), '-f', str(directory / 'clash-verge.yaml')],
+            env=dict(os.environ, LF_MANAGED_PROXY_POLICY=os.environ.get(
+                'LF_MANAGED_PROXY_POLICY', settings['managed_policy'])),
+            stdout=stream, stderr=stream, timeout=remaining)
+    if result.returncode:
+        raise RefreshError('configuration invalid')
+
+
 def stage(settings, config, validate):
     with source_lock(settings):
         return stage_locked(settings, config, validate)
@@ -754,19 +799,8 @@ def stage_locked(settings, config, validate):
 
             candidate = Path(tempfile.mkdtemp(prefix='.candidate-', dir=snapshots))
             private_dir(candidate, gid)
-            write_private(candidate / 'clash-verge.yaml', candidate_config, gid)
             phase = 'input unreadable'
-            if settings.get('source_root'):
-                write_private(candidate / 'source-manifest.json',
-                              read_input(settings['gui_data'], 'source-manifest.json', 0), gid)
-            names = os.listdir(settings['gui_data'])
-            for target, aliases in ASSETS.items():
-                matches = [name for name in names if name.lower() in aliases]
-                if len(matches) > 1:
-                    raise ValueError('ambiguous database names: ' + target)
-                if matches:
-                    write_private(candidate / target,
-                                  read_input(settings['gui_data'], matches[0], settings['desktop_uid']), gid)
+            copy_candidate_inputs(settings, candidate_config, candidate, gid)
             (candidate / 'cache.db').symlink_to(Path(settings['data']) / 'cache.db')
             provider_cache(candidate, settings['data'])
             candidate_digest = snapshot_digest(candidate)
@@ -791,13 +825,7 @@ def stage_locked(settings, config, validate):
                 baseline, baseline_digest, _ = source_baseline(settings, runtime, gid)
             findings = run_audit(settings, candidate, baseline)
             findings, used_approval = apply_semantic_approval(settings, findings, candidate_digest, baseline_digest)
-            if findings is not None and settings.get('audit_policy') == 'enforce':
-                deny = findings.get('deny') or {}
-                unknown = findings.get('unknown') or {}
-                if 'audit_error' in deny or 'route_unknown' in unknown:
-                    raise RefreshError('audit indeterminate')
-                if deny:
-                    raise RefreshError('blocked by audit')
+            enforce_audit(settings, findings)
             if snapshot_digest(candidate) != candidate_digest:
                 raise RefreshError('snapshot mismatch')
             validated = True
@@ -1016,13 +1044,6 @@ def main():
             raise ValueError('proxy intent required')
         restart_core(settings, restart=False)
         return
-    if sys.argv[1] == 'restart-source':
-        settings['launcher'] = sys.argv[3]
-        with (Path(settings['state']) / 'operator.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            if (Path(settings['state']) / 'intent').read_text().strip() == 'proxy':
-                restart_core(settings)
-        return
     if sys.argv[1] == 'verify-refresh':
         settings['launcher'] = sys.argv[3]
         verify_refresh(settings)
@@ -1039,21 +1060,7 @@ def main():
     settings['_prepare_deadline'] = time.monotonic() + 11
     log = Path(settings['runtime']) / 'validator.log'
     def validate(directory):
-        # Parsing does not need TUN/mark capabilities. Keep the untrusted parser
-        # entirely unprivileged, and keep diagnostics inaccessible to other UIDs.
-        log.unlink(missing_ok=True)
-        remaining = settings['_prepare_deadline'] - time.monotonic()
-        if remaining <= 0:
-            raise subprocess.TimeoutExpired('managed validation', 11)
-        with log.open('wb') as stream:
-            log.chmod(0o600)
-            result = subprocess.run([
-                settings['setpriv'], '--reuid=clash-validate', '--regid=clash-core', '--clear-groups',
-                '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs',
-                real, '-t', '-d', str(directory), '-f', str(directory / 'clash-verge.yaml')],
-                stdout=stream, stderr=stream, timeout=remaining)
-        if result.returncode:
-            raise RefreshError('configuration invalid')
+        validate_snapshot(settings, real, directory, log)
     stage(settings, config, validate)
 
 

@@ -6,6 +6,8 @@
   my.proxy.strictBrowser = true;
   my.proxy.subscriptionTrust = "fixed";
   my.proxy.dnsEncryption = "strict";
+  my.proxy.localDnssec = true;
+  my.proxy.authorizationLeaseSeconds = 60;
 
   # Keep the offline content audit in blocking mode for this host. Reusable
   # modules and VM fixtures retain the warn default.

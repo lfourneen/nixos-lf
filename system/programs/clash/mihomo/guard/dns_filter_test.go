@@ -2,7 +2,9 @@ package dns
 
 import (
 	"context"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/metacubex/mihomo/component/fakeip"
 	"github.com/metacubex/mihomo/component/lfguard"
@@ -10,6 +12,90 @@ import (
 	icontext "github.com/metacubex/mihomo/context"
 	D "github.com/miekg/dns"
 )
+
+func TestLFManagedValidationPrecedesSyntheticAnswers(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	server := &D.Server{Listener: listener, Net: "tcp", NotifyStartedFunc: func() { close(started) },
+		Handler: D.HandlerFunc(func(w D.ResponseWriter, r *D.Msg) {
+			if r.CheckingDisabled {
+				t.Error("client CD reached local validator")
+			}
+			reply := new(D.Msg).SetReply(r)
+			switch r.Question[0].Name {
+			case "bogus.example.":
+				reply.Rcode = D.RcodeServerFailure
+			case "missing.example.":
+				reply.Rcode = D.RcodeNameError
+			case "empty.example.":
+				// NOERROR without the requested address is NODATA.
+			case "alias-only.example.":
+				record, _ := D.NewRR("alias-only.example. 60 IN CNAME empty.example.")
+				reply.Answer = []D.RR{record}
+			default:
+				record, _ := D.NewRR(r.Question[0].Name + " 60 IN A 203.0.113.10")
+				reply.Answer = []D.RR{record}
+			}
+			_ = w.WriteMsg(reply)
+		})}
+	go func() { _ = server.ActivateAndServe() }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("validator startup")
+	}
+	t.Cleanup(func() { _ = server.Shutdown(); _ = lfguard.Configure(nil) })
+	if err := lfguard.Configure(map[string]any{"prefixes": []string{"10.0.0.0/8"}, "local-dnssec": listener.Addr().String()}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	handler := lfDomainFilter(func(ctx *icontext.DNSContext, r *D.Msg) (*D.Msg, error) {
+		calls++
+		ctx.SetType(icontext.DNSTypeFakeIP)
+		reply := new(D.Msg).SetReply(r)
+		reply.AuthenticatedData = true
+		return reply, nil
+	})
+	for _, test := range []struct {
+		name  string
+		code  int
+		calls int
+	}{
+		{"bogus.example.", D.RcodeServerFailure, 0}, {"missing.example.", D.RcodeNameError, 0},
+		{"empty.example.", D.RcodeSuccess, 0}, {"alias-only.example.", D.RcodeSuccess, 0},
+		{"unsigned.example.", D.RcodeSuccess, 1},
+	} {
+		r := new(D.Msg)
+		r.SetQuestion(test.name, D.TypeA)
+		r.CheckingDisabled = true
+		reply, err := handler(icontext.NewDNSContext(context.Background()), r)
+		if err != nil || reply.Rcode != test.code || calls != test.calls || reply.AuthenticatedData {
+			t.Fatal(test, reply, err, calls)
+		}
+	}
+	_ = server.Shutdown()
+	for _, size := range []int{0, 2} {
+		request := new(D.Msg)
+		request.SetQuestion("bogus.example.", D.TypeA)
+		if size == 0 {
+			request.Question = nil
+		} else {
+			request.Question = append(request.Question, request.Question[0])
+		}
+		reply, err := handler(icontext.NewDNSContext(context.Background()), request)
+		if err != nil || reply.Rcode != D.RcodeFormatError || calls != 1 {
+			t.Fatal("malformed query bypassed validation", reply, err, calls)
+		}
+	}
+	r := new(D.Msg)
+	r.SetQuestion("unsigned.example.", D.TypeA)
+	if _, err := handler(icontext.NewDNSContext(context.Background()), r); err == nil || calls != 1 {
+		t.Fatal("validator outage bypassed", err, calls)
+	}
+}
 
 func TestLFManagedServiceRecordsThroughFakeIP(t *testing.T) {
 	if err := lfguard.Configure(map[string]any{"prefixes": []string{"10.0.0.0/8"}}); err != nil {

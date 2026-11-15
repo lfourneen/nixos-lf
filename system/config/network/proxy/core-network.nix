@@ -13,6 +13,8 @@ let
     ipv6 = config.networking.enableIPv6;
     tun = p.tunMode;
     strictDns = p.dnsEncryption == "strict";
+    localDnssec = p.localDnssec;
+    validatorUid = config.users.users.unbound.uid;
     localTargets = p.localTargetCidrs;
     nat64 = p.nat64Prefixes;
     fake = p.fakeIpNet;
@@ -54,6 +56,7 @@ let
 
   policy = pkgs.runCommand "clash-network-policy" { nativeBuildInputs = [ pkgs.python3 ]; } ''
     python3 ${./core_network.py} ${settings} render "$out"
+    LD_PRELOAD="${pkgs.lklWithFirewall.lib}/lib/liblkl-hijack.so" ${pkgs.nftables}/bin/nft -c -f "$out/namespace.nft"
   '';
 
   command = pkgs.writeShellScript "clash-network" ''
@@ -62,6 +65,8 @@ let
 
 in
 {
+  imports = [ ../dns/core-validator.nix ];
+
   options.my.proxy = {
     coreNetworkPolicy = lib.mkOption { type = lib.types.path; internal = true; };
     coreNetworkCommand = lib.mkOption { type = lib.types.path; internal = true; };

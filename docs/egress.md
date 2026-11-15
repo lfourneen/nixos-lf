@@ -25,7 +25,7 @@ Guest forwarding and host input have separate policies.
 |---|---|---|
 | Isolated proxy core | Fixed private veth/source, public TCP/UDP or authorized local targets. Host scrubs packet marks and checks return ownership | B and C recovery. Dangerous targets, reserved host services and external port 53 are restricted. Network capabilities apply only inside the core namespace |
 | Tailscale | Root-owned UDP socket, **both** marks equal to upstream `LinuxBypassMarkNum` (`0x80000`), physical `ens1`/`wlo1`. Dynamic peer/STUN targets and ports | B allows hole punching, C blocks it. Normal system builds check the [source contract](../system/config/network/tailscale/transport.nix). This is not authentication against root |
-| Unbound (983) | Configured literal IPv4/IPv6 upstreams, TCP 853 | A/B target guard. B can disable this exception with `unboundDotInProxy=false`. C blocks external DoT. Other ordinary UIDs cannot use TCP/UDP 853. Root diagnostics remain trusted. Port 443 DoH is separate |
+| Host Unbound (983) | Configured literal IPv4/IPv6 upstreams, TCP 853 | A/B target guard. B can disable this exception with `unboundDotInProxy=false`. C blocks external DoT. Other ordinary UIDs cannot use TCP/UDP 853. Root diagnostics remain trusted. Port 443 DoH is separate |
 | Chrony (61) | Physical uplinks, UDP 123 and TCP 4460 | A/B. C blocks. Default permits changing addresses. Optional `timeServerCidrs` bounds original targets before TUN/NAT in A/B. Include NTS-KE and negotiated NTP servers |
 | dnsmasq (985) split DNS | Installed, expiring interface + resolver-address leases, TCP/UDP 53 | Earlier DNS guard enforces the lease. Restricted B retains it, C blocks external queries |
 | Managed DNS continuation | Ordinary physical-uplink TCP/UDP 53, except MagicDNS | Continues into the managed DNS redirect, not an arbitrary direct DNS grant. Earlier lease/internal-port guards still apply |
@@ -39,6 +39,11 @@ Guest forwarding and host input have separate policies.
 Loopback remains local IPC.
 C additionally keeps the bounded recovery/self-test paths in [Network architecture](network.md).
 Ordinary clients cannot escape C through loopback proxy listeners.
+
+With `localDnssec=true`, private validators query only loopback transport listeners inside the core namespace and have no external DNS transport permission.
+Mihomo sends application queries to Cloudflare/Google DoH, through `lf-remote` on this controlled-source host, and keeps encrypted node bootstrap separate.
+The core's existing recovery transport remains available in C.
+`unboundDotInProxy` controls the host Unbound exception and does not disable these private validators.
 
 DNS transport is independently controlled by `my.proxy.dnsEncryption`.
 The default permits leased Mode-A plaintext recovery.
@@ -124,7 +129,7 @@ Extra names never grant extra addresses.
 Gost's TCP fallback preserves the scoped NTS-KE exception.
 Valid targets use the configured route.
 The direct exception additionally requires a physical uplink.
-Disabling B Unbound DoT leaves A recovery and managed B DNS available.
+Disabling host Unbound DoT in B leaves A recovery and managed B DNS available.
 
 ## Validation and boundaries
 

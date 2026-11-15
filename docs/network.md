@@ -131,13 +131,38 @@ Only `ok=true` confirms successful completion.
 `scope.udp_data_plane="not-probed"` makes the UDP boundary explicit: listener identity is checked, while UDP reachability and association return traffic are not continuously proven.
 A UDP-only failure can therefore leave B and its TCP verdict healthy.
 
+### B authorization lifetime
+
+The host sets `my.proxy.authorizationLeaseSeconds=60`.
+The module default is `null`, which leaves B authorization dependent on the running supervisor.
+To enable kernel expiry, choose a lifetime from 30 to 120 seconds:
+
+```nix
+my.proxy.authorizationLeaseSeconds = 60;
+```
+
+Only a complete successful health round can renew authorization.
+Each proof is consumed once and bound to the boot, managed configuration, policy generation and sleep epoch.
+Renewal uses the proof's remaining lifetime.
+A delayed observation or hysteresis round cannot mint a fresh full lease.
+
+Timed nftables permissions cover both IP families.
+When they expire, the installed rules apply C's request and reply guards before TUN/redirection and established-flow accepts, including existing host and guest connections.
+The same C recovery and link-maintenance exceptions remain available.
+A frozen or stopped supervisor cannot retain application authorization or select direct access.
+Its last mode file can still say `proxy`, while readiness independently reports an expired authorization lease.
+
+The sleep hook revokes authorization before suspend.
+Resume requires a new successful proof, and a proof from before sleep cannot renew the lease.
+Selecting `null` in a rebuilt generation explicitly removes this kernel expiry guarantee.
+
 ## Firewall lifecycle
 
 [default.nix](../system/config/network/network.nix) defines the static policy and the B/C fragments.
 [coordinator.nix](../system/config/network/proxy/coordinator.nix) installs the static rules plus a safety fragment in one scoped `nft -f` transaction under a shared lock.
 Only repository-owned host tables are replaced, including their `lf_core_*` chains.
 Mihomo owns its private namespace table.
-Setup also installs private `lf_core_inlets` and `lf_core_local_udp` tables.
+Setup also installs private `lf_core_inlets` and `lf_core_local_udp` tables, plus `lf_core_dns` when local DNSSEC validation is enabled.
 Other services retain their own host tables.
 
 ### Table ownership
@@ -170,13 +195,15 @@ A rejected transaction retains the installed tables and rules.
 | Output `-201` | Reject direct use of Gost's transparent inlet before NAT |
 | Prerouting `-201` | Apply guest public-destination restrictions before redirection |
 | Prerouting `-199` | Guest source, private-target and gateway-service checks |
+| Prerouting `-198` | Apply C's guest ingress guard when B authorization has expired |
 | Output `-199` | Track restricted socket guest accounts. Limit dnsmasq upstream DNS to installed destination leases. Strict mode cuts the core's external port 53 except MagicDNS |
 | Output `-198` | Reserve internal DNS ports, authenticate DNS/proxy replies, track ordinary application connections and recheck guest host-service replies |
-| Output `-197` | C guard, after conntrack at `-200` and before auto-redirect at `-150` |
+| Output `-197` | C guard and expired B authorization guard, after conntrack at `-200` and before auto-redirect at `-150` |
 | Output `-196` | Restrict independent DNS-over-TLS/QUIC on port 853 |
 | Output `-195` | B optional private/multicast grants and optional Unbound DoT cut, before NAT/TUN |
 | Output `-194` | Optional Chrony original-target CIDR bounds in A/B |
 | Output NAT `-190`, filter `-90` | Force restricted socket guest DNS to 1056 and reject stale resolver associations |
+| Input `-3`, forward `-2` | Apply C's receive/forward guards when B authorization has expired |
 | Input `-2`, forward `-1` | Recheck restricted socket / routed guest replies against current grants |
 | Input `-1` | C cuts decrypted tailnet packets and tracked host/guest application replies before established-flow accepts |
 
@@ -201,7 +228,7 @@ If marking fails, B continues to block unmarked root UDP.
 
 The [direct-egress ledger](egress.md) records every actor, target, port and mode.
 Optional restricted B grants use interface/UID/CIDR/ports and cut revoked established host-initiated flows before TUN/NAT.
-Unbound is limited to configured DoT targets even in A.
+Host Unbound is limited to configured DoT targets even in A.
 Its B exception can be disabled.
 Chrony can pin destination CIDRs in A/B.
 Defaults preserve LAN and changing NTS addresses.
@@ -214,7 +241,7 @@ Non-root access to the core/Gost application ports is blocked for TCP and UDP.
 Self-test reply exceptions require the expected loopback source or root/core conntrack DNAT reply to an original fake-IP HTTP destination.
 
 Guest DHCP/DNS replies are bound to bridge, gateway source and port rather than daemon UID.
-Unbound and ordinary tailnet traffic lose external egress, including established remote-desktop flows.
+Host Unbound and ordinary tailnet traffic lose external egress, including established remote-desktop flows.
 B grants provide no C remote-control exception.
 A separate input guard drops decrypted tailnet packets before established-flow accepts, including packets already in flight.
 

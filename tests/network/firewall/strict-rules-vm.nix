@@ -24,6 +24,7 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     import json
     import shlex
+    config_core_netns = ${if config.my.proxy.coreNetns then "True" else "False"}
 
     start_all()
     machine.wait_for_unit("multi-user.target")
@@ -53,7 +54,8 @@ pkgs.testers.runNixOSTest {
             machine.succeed("${config.my.proxy.rulesCheck} compare ${config.my.proxy.expectedRules}/" + mode + ".json /tmp/live.json")
             chain = json.loads(machine.succeed("nft -j list chain inet lf_filter lf_strict_reply_guard"))
             replies = [entry['rule'] for entry in chain['nftables'] if 'rule' in entry]
-            assert len(replies) == (0 if mode == "proxy" else 1), (mode, replies)
+            expected_replies = 0 if mode == "proxy" else (2 if config_core_netns else 1)
+            assert len(replies) == expected_replies, (mode, replies)
             previous = mode
     assert checked_legacy
     machine.succeed("nft add rule inet lf_filter lf_host_egress_guard counter drop")

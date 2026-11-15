@@ -3,12 +3,17 @@ package lfguard
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	C "github.com/metacubex/mihomo/constant"
+	D "github.com/miekg/dns"
 )
 
 func TestSharedDomainFilter(t *testing.T) {
@@ -60,6 +65,25 @@ func ConfigureT(t *testing.T, value map[string]any) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = Configure(nil) })
+}
+
+func TestValidatorBudgetsCannotBeBorrowedThroughApplicationInlets(t *testing.T) {
+	ConfigureT(t, map[string]any{"prefixes": []string{"127.0.0.0/8"},
+		"local-target-cidrs": []string{"127.0.0.0/8", "::1/128"}, "validator-ports": []uint16{1055, 1056, 1057, 1058}})
+	for _, address := range []string{"127.0.0.1", "::1", "::ffff:127.0.0.1"} {
+		for _, network := range []C.NetWork{C.TCP, C.UDP} {
+			for _, port := range []uint16{1055, 1056, 1057, 1058} {
+				m := &C.Metadata{Type: C.SOCKS5, NetWork: network, DstIP: netip.MustParseAddr(address), DstPort: port, LFLocalTarget: true}
+				if err := CheckEgress(m, true, "DIRECT"); err == nil {
+					t.Fatal("application borrowed DNS role", m)
+				}
+				m.Type = C.INNER
+				if err := CheckEgress(m, true, "DIRECT"); err != nil {
+					t.Fatal("internal DNS refused", err)
+				}
+			}
+		}
+	}
 }
 
 func TestProtectedTargets(t *testing.T) {
@@ -482,5 +506,81 @@ func TestPlaintextCredentialsCannotUseCertificateException(t *testing.T) {
 		if err := CheckProxy(node); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// A page load or a GUI delay-test batch asks the validator for the same name
+// many times at once. Both families are asked once, one carrying records is
+// enough, and the answer is shared until the policy changes.
+func TestValidatedAnswersShareOneLookupAndOneFamily(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var queries atomic.Int32
+	started := make(chan struct{})
+	server := &D.Server{Listener: listener, Net: "tcp", NotifyStartedFunc: func() { close(started) },
+		Handler: D.HandlerFunc(func(w D.ResponseWriter, r *D.Msg) {
+			queries.Add(1)
+			// Keep both concurrent callers in flight so they observe the shared
+			// lookup rather than a completed cache entry.
+			time.Sleep(50 * time.Millisecond)
+			name, kind := r.Question[0].Name, r.Question[0].Qtype
+			reply := new(D.Msg).SetReply(r)
+			switch name {
+			case "dual.example.":
+				if kind == D.TypeA {
+					record, _ := D.NewRR(name + " 60 IN A 203.0.113.10")
+					reply.Answer = []D.RR{record}
+				} else {
+					// A failed family must not hide the answer in the other.
+					reply.Rcode = D.RcodeServerFailure
+				}
+			case "v6only.example.":
+				if kind == D.TypeAAAA {
+					record, _ := D.NewRR(name + " 60 IN AAAA 2001:db8::10")
+					reply.Answer = []D.RR{record}
+				}
+			default:
+				reply.Rcode = D.RcodeServerFailure
+			}
+			_ = w.WriteMsg(reply)
+		})}
+	go func() { _ = server.ActivateAndServe() }()
+	defer server.Shutdown()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("validator startup")
+	}
+	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"}, "local-dnssec": listener.Addr().String()})
+
+	var group sync.WaitGroup
+	answers := make([][]netip.Addr, 2)
+	failures := make([]error, 2)
+	for index := range answers {
+		group.Add(1)
+		go func(index int) {
+			defer group.Done()
+			answers[index], failures[index] = validatedIPs(context.Background(), "dual.example")
+		}(index)
+	}
+	group.Wait()
+	if count := queries.Load(); count != 2 {
+		t.Fatal("both families were not asked exactly once", count)
+	}
+	for index := range answers {
+		if failures[index] != nil || len(answers[index]) != 1 || answers[index][0].String() != "203.0.113.10" {
+			t.Fatalf("answer %d: %v %v", index, answers[index], failures[index])
+		}
+	}
+	if _, err := validatedIPs(context.Background(), "dual.example"); err != nil || queries.Load() != 2 {
+		t.Fatal("validated answer was not reused", err, queries.Load())
+	}
+	if ips, err := validatedIPs(context.Background(), "v6only.example"); err != nil || len(ips) != 1 || ips[0].String() != "2001:db8::10" {
+		t.Fatal("NODATA family blocked the answer", ips, err)
+	}
+	if _, err := validatedIPs(context.Background(), "bogus.example"); err == nil {
+		t.Fatal("refused answer authorised a dial")
 	}
 }

@@ -117,7 +117,8 @@
         "browser-ech-vm",
         "browser-ech-uniform-vm",
         "proxy-validation-tools",
-        "proxy-managed-netns-vm"
+        "proxy-managed-netns-vm",
+        "proxy-assurance-vm"
       ],
       "entrypoints": [
         "config/config.go: ParseRawConfig, RawConfig/RawTun schema and controller General",
@@ -247,7 +248,8 @@
         "proxy-dns-strict-vm",
         "proxy-egress-control-vm",
         "proxy-network-vm",
-        "proxy-validation-tools"
+        "proxy-validation-tools",
+        "proxy-assurance-vm"
       ],
       "entrypoints": [
         "dnsmasq src/forward.c: strict-order terminal retry and sent-to index",
@@ -328,7 +330,8 @@
         "proxy-guest-vm",
         "proxy-hermes-containers-vm",
         "proxy-core-netns-vm",
-        "proxy-managed-netns-vm"
+        "proxy-managed-netns-vm",
+        "proxy-assurance-vm"
       ],
       "entrypoints": [
         "nft transaction parsing, socket/conntrack expressions and JSON output",

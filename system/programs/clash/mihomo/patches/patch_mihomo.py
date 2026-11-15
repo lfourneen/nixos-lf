@@ -96,7 +96,15 @@ replace(root / "adapter/parser.go", 'func ParseProxy(mapping map[string]any, opt
         'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {\n'
         '\tif err := lfguard.CheckProxy(mapping); err != nil { return nil, err }')
 replace(root / "config/config.go", "type RawConfig struct {",
-        'type RawConfig struct {\n\tLFPrivateTargets map[string]any `yaml:"lf-private-targets" json:"lf-private-targets"`')
+        'type RawConfig struct {\n\tLFPrivateTargets map[string]any `yaml:"lf-private-targets" json:"lf-private-targets"`\n'
+        '\tLFDNSTransport map[string]any `yaml:"lf-dns-transport" json:"lf-dns-transport"`')
+replace(root / "config/config.go", "type Config struct {",
+        "type Config struct {\n\tLFDNSTransport *LFDNSTransport")
+replace(root / "config/config.go", "\tconfig.DNS = dnsCfg",
+        "\tconfig.DNS = dnsCfg\n\tconfig.LFDNSTransport, err = lfParseDNSTransport(rawCfg, ruleProviders)\n"
+        "\tif err != nil { return nil, err }")
+replace(root / "hub/executor/executor.go", "\tupdateDNS(cfg.DNS, cfg.General.IPv6)",
+        "\tupdateDNS(cfg.DNS, cfg.General.IPv6)\n\tupdateManagedDNSTransport(cfg.LFDNSTransport, cfg.General.IPv6)")
 # allow-lan=false keeps the ordinary inbounds on loopback. The TPROXY inbound
 # is different: it must accept packets addressed to the original destination,
 # so a 127.0.0.1 socket can never receive them. Honor an explicit "*" bind for
@@ -222,8 +230,14 @@ replace(root / "common/utils/range.go",
 source = Path(__file__).parent.parent
 (root / "dns/lf_filter.go").write_text((source / "guard/dns_filter.go").read_text())
 (root / "dns/lf_filter_test.go").write_text((source / "guard/dns_filter_test.go").read_text())
+(root / "dns/lf_transport.go").write_text((source / "guard/dns_transport.go").read_text())
+(root / "dns/lf_transport_test.go").write_text((source / "guard/dns_transport_test.go").read_text())
+(root / "config/lf_dns_transport.go").write_text((source / "config/dns_transport.go").read_text())
+(root / "hub/executor/lf_dns_transport.go").write_text((source / "controller/dns_transport.go").read_text())
 (root / "component/lfguard").mkdir()
 (root / "component/lfguard/guard.go").write_text((source / "guard/target_guard.go").read_text())
+(root / "component/lfguard/validated_answers.go").write_text((source / "guard/validated_answers.go").read_text())
+(root / "component/lfguard/validated_answers_test.go").write_text((source / "guard/validated_answers_test.go").read_text())
 (root / "component/lfguard/guard_test.go").write_text((source / "guard/target_guard_test.go").read_text())
 (root / "adapter/lf_managed_target_test.go").write_text((source / "tests/managed_target_test.go").read_text())
 (root / "adapter/outbound/lf_managed_direct_test.go").write_text((source / "tests/managed_direct_test.go").read_text())

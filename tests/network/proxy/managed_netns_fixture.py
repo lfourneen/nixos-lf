@@ -1,6 +1,7 @@
 """Actual registered-source and strict-browser paths across the core netns."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import http.client
+import importlib.util
 import ipaddress
 import json
 import os
@@ -40,7 +41,15 @@ def source():
             'proxy-groups': [{'name': 'Choice', 'type': 'select', 'proxies': ['Fixture']}],
             'rules': ['MATCH,Choice']}
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.1'
         def do_GET(self):
+            if self.path.startswith('/echo?'):
+                body = self.path.split('?', 1)[1].encode()
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if self.path not in ('/one', '/two'):
                 self.send_error(404)
                 return
@@ -54,7 +63,9 @@ def source():
             self.wfile.write(body)
         def log_message(self, *args):
             pass
-    server = ThreadingHTTPServer(('1.1.1.1', 443), Handler)
+    # Bootstrap resolves to 1.1.1.1 while B's application resolver uses
+    # 203.0.113.10. Both addresses belong to this isolated fixture namespace.
+    server = ThreadingHTTPServer(('0.0.0.0', 443), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(Path(SETTINGS['tls'])/'trusted.pem', Path(SETTINGS['tls'])/'trusted.key')
     server.socket = context.wrap_socket(server.socket, server_side=True)
@@ -119,15 +130,44 @@ def recover():
     source = Path('/var/lib/clash-source/selected')
     settled = source / 'approved/settled.json'
     wait(settled.exists, 90)
-    baseline = json.loads(settled.read_text())['digest']
     state = Path('/run/proxy-mode')
+    def accepted_and_healthy():
+        health = json.loads((state / 'health.json').read_text())
+        policy = json.loads((state / 'state.json').read_text())
+        return (not (state / 'profile-refresh-verifying.json').exists()
+                and health.get('ok') is True and health.get('policy_version') == policy.get('policy_version')
+                and ready())
+    wait(accepted_and_healthy, 90)
+    baseline = json.loads(settled.read_text())['digest']
     marker = Path('/run/managed-source-change')
+    spec = importlib.util.spec_from_file_location('refresh_stage', SETTINGS['stage'])
+    stage = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stage)
+    stage_settings = json.loads(Path(SETTINGS['stageSettings']).read_text())
+    before_pid = stage.service_request(stage_settings, 'GET', '/status')['core_pid']
+    before_version = json.loads((state / 'state.json').read_text())['policy_version']
+    before_authority = (state / 'authorized-config').read_bytes()
+    context = ssl.create_default_context(cafile=str(Path(SETTINGS['tls']) / 'ca.pem'))
+    stream = http.client.HTTPSConnection('127.0.0.1', 7897, timeout=6, context=context)
+    stream.set_tunnel('source.fixture.example', 443)
+    stream.request('GET', '/echo?before-refresh')
+    assert stream.getresponse().read() == b'before-refresh'
+    held_socket = stream.sock
+    assert held_socket is not None
     marker.touch()
     try:
         run('systemctl', 'start', 'clash-source-refresh.service')
         wait(ready, 90)
         rejection = json.loads((state / 'profile-refresh.json').read_text())
         assert rejection['result'] == 'fallback' and rejection['audit']['deny']['node_identity'] == 1
+        assert stage.service_request(stage_settings, 'GET', '/status')['core_pid'] == before_pid
+        assert json.loads((state / 'state.json').read_text())['policy_version'] == before_version
+        assert (state / 'authorized-config').read_bytes() == before_authority
+        stream.request('GET', '/echo?after-refresh')
+        assert stream.getresponse().read() == b'after-refresh'
+        assert stream.sock is held_socket
+        stream.close()
+        print('Rejected source kept the same core, B generation, authority and established TLS stream')
         run('proxy-control', 'off')
         wait(lambda: state_is('direct'))
         assert not (state / 'authorized-config').exists()
@@ -166,7 +206,15 @@ def recover():
         assert (source / 'current').resolve() == generation, 'apply downloaded a different generation'
         assert not (source / 'approval.json').exists() and not (source / 'review.json').exists()
         print('Installed diff/apply commands applied exactly the reviewed candidate without another download')
+    except Exception:
+        # This VM contains synthetic source data only.
+        for name in ('profile-refresh.json', 'source-validator.log'):
+            path = state / name
+            if path.exists():
+                print(name, path.read_text()[-8192:], flush=True)
+        raise
     finally:
+        stream.close()
         marker.unlink(missing_ok=True)
 
 
@@ -244,13 +292,20 @@ def strict():
 
 
 def switch():
+    # Readiness precedes the asynchronous health-acceptance commit. A refresh
+    # deliberately defers while that worker owns an import or rollback.
+    state = Path('/run/proxy-mode')
+    wait(lambda: not any((state / name).exists() for name in (
+        'profile-refresh-verifying.json', 'profile-refresh-restart.json',
+        'profile-refresh-commit.json')), 90)
     original = json.loads(Path('/run/clash-verge-rev/effective/source-manifest.json').read_text())
     assert original['source_id'] == 'one'
     index = GUI/'profiles.yaml'
     index.write_text('current: uid-two\nitems: [{uid: uid-two, url: https://unregistered.invalid/}]\n')
     os.chown(index, 1000, pwd.getpwnam('lfour').pw_gid)
     run('clash-source', 'gui-select')
-    run(sys.executable, SETTINGS['stage'], 'restart-source', SETTINGS['stageSettings'], SETTINGS['launcher'])
+    assert Path('/var/lib/clash-source/selected').resolve().name == 'two'
+    run('systemctl', 'start', 'clash-source-refresh.service')
     wait(lambda: json.loads(Path('/run/clash-verge-rev/effective/source-manifest.json').read_text())['source_id'] == 'two')
     wait(ready, 90)
     browser_request()

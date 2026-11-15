@@ -124,8 +124,14 @@ In A, selection and fetching do not request B.
 Use `clash-on` deliberately.
 
 `clash-source refresh` only prepares a candidate.
-The system service also restarts the managed helper/core while proxy intent is active.
-Its timer runs every 30 minutes.
+The system service checks it before deciding whether to restart the managed helper/core while proxy intent is active.
+Its timer runs every 30 minutes. Refresh defers while an import or rollback is being settled.
+
+If the current snapshot remains authorized and intact, with fresh full health, readiness and any required B lease,
+a rejected or unchanged candidate leaves the running core and existing connections in place.
+Invalid current authority or failed health follows C recovery instead.
+Activation enters C before restarting the helper/core, repeats import checks and requires proxy health before B returns.
+
 Worker failures identify `fetch`, `parse`, `render` or `pin-addresses`.
 Content-audit findings appear separately in `proxy-status`.
 Unresolvable nodes may be dropped up to `max(1, node_count // 5)`.
@@ -304,6 +310,9 @@ Kernel-policy commits change `policy_version`, also exposed as `version`.
 Results spanning a newer generation are discarded.
 
 Readiness requires current-generation mode, DNS, broker and relay observations, no active alarm and fresh verification.
+Verifier results `ok` and `degraded` both confirm that the hard checks passed.
+`degraded` retains an advisory and appears as `Passed · warnings`.
+Failed or unknown results block readiness.
 Broker state must be `applied`.
 `suspended`/`revoked` and DNS `degraded-dot-only` are not ready.
 Consumer freshness defaults to 120 seconds.

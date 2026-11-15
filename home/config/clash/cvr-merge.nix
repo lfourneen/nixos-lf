@@ -133,7 +133,7 @@ in
         include-interface: []
         exclude-interface: []
         include-uid: []
-        exclude-uid: []
+        exclude-uid: ${builtins.toJSON (osConfig.my.proxy.managedProfile."tun.exclude-uid" or [ ])}
         include-uid-range: []
         exclude-uid-range: []
       ${lib.optionalString tunMode ''
@@ -353,6 +353,7 @@ in
         if (config) httpsHealthChecks(config);
         if (config) dropInsecureProxies(config);
         if (config) config["lf-private-targets"] = ${builtins.toJSON osConfig.my.proxy.managedProfile.lf-private-targets};
+        if (config) config["lf-dns-transport"] = ${builtins.toJSON osConfig.my.proxy.managedProfile.lf-dns-transport};
         // Replace the DNS object, including nested policy entries. Per-profile
         // extensions still run later; the core's final parser rejects any drift.
         if (config) config.dns = ${builtins.toJSON (osConfig.my.proxy.managedDns // {

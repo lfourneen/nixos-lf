@@ -110,6 +110,31 @@ in
     '';
   };
 
+  options.my.proxy.localDnssec = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Validate managed B DNS locally in isolated Unbound instances, including before fake-IP allocation. Requires strict encryption and the managed core namespace. Unsigned zones and explicit private DNS exceptions remain distinct.";
+  };
+
+  options.my.proxy.dnsQueryBudget = {
+    application = lib.mkOption {
+      type = lib.types.ints.between 32 4096;
+      default = 256;
+      description = "Concurrent recursive queries in B's application validator, separate from bootstrap and recovery DNS.";
+    };
+    infrastructure = lib.mkOption {
+      type = lib.types.ints.between 8 1024;
+      default = 64;
+      description = "Concurrent recursive queries reserved for core endpoint and encrypted-resolver bootstrap.";
+    };
+  };
+
+  options.my.proxy.authorizationLeaseSeconds = lib.mkOption {
+    type = lib.types.nullOr (lib.types.ints.between 30 120);
+    default = null;
+    description = "Optional kernel lifetime of B application authorization after the last successful health proof. Expiry applies C's request and reply cuts while preserving its existing recovery exceptions. Sleep revokes the lease before suspend.";
+  };
+
   options.my.proxy.blockedDomainExceptions = lib.mkOption {
     type = lib.types.listOf lib.types.str;
     default = [ ];
