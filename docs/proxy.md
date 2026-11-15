@@ -93,7 +93,9 @@ Fresh lookups therefore require the Unbound DoT path in B as well; `unboundDotIn
 | Colluding operators | Additional correlations. Local health probes cannot establish their honesty |
 
 Status reports `controlled-fetch`, `legacy-unverified` or unknown provenance separately from mode, routing and availability.
-Upstream signatures remain unverified.
+The panel separates the latest update's audit findings from explicitly approved changes.
+HTTPS certificate checks authenticate the download connection.
+Publisher content signatures remain unchecked because this configuration has no publisher signature verifier.
 TLS protects authenticated content, while ECH and separate profiles do not hide accounts, destination IPs or timing.
 An operator can still log or collude.
 

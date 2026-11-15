@@ -69,6 +69,7 @@ class RegistryTests(unittest.TestCase):
         first = self.register('one')
         source = self.root / 'sources/one'
         b.atomic(source / 'approval.json', b'{"fixture":true}')
+        b.atomic(source / 'review.json', b'{"fixture":true}')
         (source / 'approved').mkdir()
         b.atomic(source / 'approved/settled.json', b'{"digest":"fixture"}')
         entries = [json.loads(first), {'id': 'two', 'subscription': {'url': 'https://subscription.example/two'}}]
@@ -78,6 +79,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(b.selected(self.root).name, 'one')
         self.assertEqual((source / 'registry.json').read_bytes(), first)
         self.assertTrue((source / 'approval.json').exists())
+        self.assertTrue((source / 'review.json').exists())
         self.assertTrue((source / 'approved/settled.json').exists())
         with self.assertRaises(ValueError):
             b.register(self.root, first, b.digest(data), b.digest(first))
@@ -98,11 +100,13 @@ class RegistryTests(unittest.TestCase):
         a = self.register('one')
         self.register('two')
         self.assertEqual(b.selected(self.root).name, 'one')
+        b.atomic(self.root / 'sources/two/review.json', b'{}')
         with patch.object(b, 'refresh', side_effect=ValueError('fetch')):
             with self.assertRaises(ValueError): b.use({}, self.root, 'two')
         self.assertEqual(b.selected(self.root).name, 'one')
         with patch.object(b, 'refresh') as refresh:
             self.assertTrue(b.use({}, self.root, 'two'))
+            self.assertFalse((self.root / 'sources/two/review.json').exists())
             refresh.assert_called_once_with({}, self.root / 'sources/two')
             self.assertTrue(b.use({}, self.root, 'one', b.digest(a)))
             for identity in ('../one', 'missing', '/one', 'ONE'):

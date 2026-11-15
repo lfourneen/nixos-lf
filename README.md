@@ -96,6 +96,8 @@ Keep `stateVersion` unchanged unless you have reviewed and migrated the affected
 | `clash-on` | Request proxy access and start the managed core |
 | `clash-off` | Select direct access |
 | `proxy-status` | Show mode, DNS and readiness |
+| `clash-diff` | Compare a source update with its accepted baseline |
+| `clash-apply` | Approve and apply the update just reviewed |
 | `firefox-identity` | Open the separate browser profile through the strict proxy inlet |
 | `firefox-portal http://192.168.1.1/` | Open a temporary portal session in direct mode |
 

@@ -213,6 +213,16 @@ in
       ^proxy-status ...$args
     }
 
+    ${if osConfig.my.proxy.controlledSources then ''
+    def --wrapped clash-diff [...args: string] {
+      ^clash-diff ...$args
+    }
+
+    def --wrapped clash-apply [...args: string] {
+      ^clash-apply ...$args
+    }
+    '' else ""}
+
     # True while the Clash Verge GUI runs in the user session. The root
     # clash-verge-service helper and the verge-mihomo core live in
     # system.slice/clash-verge.service, the user helper selects only GUI processes.

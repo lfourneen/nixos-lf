@@ -7,6 +7,7 @@ pkgs.runCommand "controlled-source-checks" {
   export SOURCE_AUDIT=${../../../system/programs/clash/service/subscription_audit.py}
   python3 ${./test_source.py} ${../../../system/programs/clash/service/source_worker.py}
   python3 ${./test_source_registry.py} ${../../../system/programs/clash/service/source_broker.py} ${../../../system/programs/clash/service/source_worker.py}
+  python3 ${./test_source_review.py} ${../../../system/programs/clash/service/source_review.py} ${../../../system/programs/clash/service/source_broker.py}
   python3 ${./test_isolation.py} ${../../../home/programs/firefox/network.py}
   touch "$out"
 ''

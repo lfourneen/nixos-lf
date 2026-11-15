@@ -78,10 +78,12 @@ pkgs.testers.runNixOSTest {
     services.unbound.settings.server.local-zone = lib.mkIf managedSources [
       ''"source.fixture.example." static''
       ''"source-node.fixture.example." static''
+      ''"source-node-updated.fixture.example." static''
     ];
     services.unbound.settings.server.local-data = lib.mkIf managedSources [
       ''"source.fixture.example. 60 IN A 1.1.1.1"''
       ''"source-node.fixture.example. 60 IN A 1.1.1.1"''
+      ''"source-node-updated.fixture.example. 60 IN A 1.1.1.1"''
     ];
     systemd.timers.clash-source-refresh.wantedBy = lib.mkIf managedSources (lib.mkForce [ ]);
     my.proxy.proxyOnly = uniformProxy;

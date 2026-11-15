@@ -137,17 +137,42 @@ DNS does not downgrade automatically.
 
 ### Approve a changed source
 
-For an intentional semantic change, inspect the private source diff and the sanitized candidate/settled digests, then approve only the required categories:
+Run the comparison command:
 
 ```sh
-sudo clash-source approve --digest CANDIDATE_DIGEST --baseline SOURCE_SETTLED_DIGEST --categories node_identity
-sudo systemctl start clash-source-refresh.service
+clash-diff
 ```
 
-Read the selected source’s baseline digest from `sudo clash-source list`.
-Supported approval categories are `node_identity`, `node_authentication`, `node_transport`, `sensitive_route`.
-Approval expires after one hour, is consumed on commit and does not bypass static safety checks.
-Check `proxy-status` and actual B readiness after the observation window.
+It shows changes from the selected source's accepted baseline, including node addresses, ports, TLS names, groups and rules.
+Authentication values and nested transport options are hidden.
+The command uses sudo to read the private source state and records the candidate displayed, without approving it.
+
+After confirming the changes, apply that candidate:
+
+```sh
+clash-apply
+```
+
+`clash-diff` compares local snapshots in A, B and C without changing network mode.
+`clash-apply` uses the current operator intent:
+
+| State | Apply behavior |
+|---|---|
+| A, requested A | Record approval and keep direct access. `clash-on` activates the candidate later |
+| B, requested B | Restart with the reviewed candidate, passing through C until proxy health recovers |
+| C, requested B | Attempt to start the reviewed candidate. Failed health checks keep C |
+| C, requested A | Record approval without starting the core or changing the request |
+
+The command does not download another candidate.
+It serializes with `clash-on`, `clash-off` and refresh, then checks that the reviewed candidate still matches.
+The normal parser, static checks, health observation and rollback still apply.
+Use `proxy-status` to see readiness and final acceptance.
+
+The comparison expires after one hour.
+A different candidate, accepted baseline, source registration or policy requires another `clash-diff`.
+Switching sources also clears the comparison.
+Certificate, hosts, private-target and malformed-input failures cannot be approved.
+Both commands accept `--json` for structured output.
 
 ### Portal login
 
@@ -191,6 +216,8 @@ Starting only `clash-verge` in A does not authorize a core.
 | Tool | Output |
 |---|---|
 | `proxy-status` | Mode, egress policy, DNS, readiness, alarms and the latest preparation result |
+| `clash-diff` | Candidate changes against the selected source's accepted baseline |
+| `clash-apply` | Approve and apply the candidate just displayed by `clash-diff` |
 | `proxy-status --plain` | Plain text suitable for logs |
 | `proxy-status --json` | Structured status |
 | `proxy-inspect` | Passive service, link, queue and resource diagnostics |

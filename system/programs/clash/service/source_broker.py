@@ -2,6 +2,7 @@
 import argparse
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -153,6 +154,7 @@ def selected(root):
 
 
 def select(root, path):
+    (path / 'review.json').unlink(missing_ok=True)
     temporary = root / '.selected'
     temporary.unlink(missing_ok=True)
     temporary.symlink_to(Path('sources') / path.name)
@@ -254,7 +256,7 @@ def register(root, data, expected, previous):
     atomic(path / 'registry.json', data)
     # A crash after registration cannot authorize the old download: stage also
     # binds its manifest to this exact registry revision.
-    for name in ('current', 'approval.json', 'status.json'):
+    for name in ('current', 'approval.json', 'review.json', 'status.json'):
         (path / name).unlink(missing_ok=True)
     if not (root / 'selected').is_symlink():
         select(root, path)
@@ -338,6 +340,60 @@ class SourceFailure(ValueError):
     pass
 
 
+def review_module(settings):
+    spec = importlib.util.spec_from_file_location('source_review', settings['review'])
+    result = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(result)
+    return result
+
+
+def acquire(stream, operation=fcntl.LOCK_EX):
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            fcntl.flock(stream, operation | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError('source operation is busy') from None
+            time.sleep(.05)
+
+
+def apply_reviewed(settings, root, review):
+    stage_settings = json.loads(Path(settings['stageSettings']).read_text())
+    state = Path(stage_settings['state'])
+    # Match the operator/verifier lock order. The helper takes a shared source
+    # lock while staging, so retain a shared lock across restart, never EX.
+    with (state / 'operator.lock').open('a') as operator, (root / 'source.lock').open('a') as source_lock:
+        acquire(operator)
+        acquire(source_lock)
+        migrate(root)
+        acquire(source_lock, fcntl.LOCK_SH)
+        source = selected(root)  # Re-read after flock's non-atomic downgrade.
+        intent = (state / 'intent').read_text().strip()
+        if intent not in ('direct', 'proxy'):
+            raise review.ReviewError('Network intent is unavailable. Check proxy-status.')
+        with (state / 'authorization.lock').open('a') as authorization:
+            acquire(authorization)
+            signature, stage, stage_settings = review.approve_reviewed(settings, source, read_private, atomic)
+        try:
+            if intent == 'proxy':
+                # Arm C before stopping a working core; do not depend on a
+                # later observation of its disappearance to revoke B.
+                subprocess.run([settings['mode_script'], '--request-proxy'], check=True, timeout=15)
+                stage_settings['launcher'] = settings['launcher']
+                stage.restart_core(stage_settings)
+                if stage.snapshot_digest(Path(stage_settings['runtime']) / 'effective') != signature['candidate']:
+                    raise review.ReviewError('The reviewed candidate was not applied. Inspect proxy-status.')
+            (source / 'review.json').unlink(missing_ok=True)
+            return dict(source=source.name, candidate=signature['candidate'],
+                        intent=intent, mode=stage.read_record(state / 'state.json').get('mode', 'unknown'),
+                        result='applied' if intent == 'proxy' else 'approved')
+        except BaseException:
+            (source / 'approval.json').unlink(missing_ok=True)
+            raise
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('settings')
@@ -350,6 +406,8 @@ def main():
             p.add_argument('--digest', required=True)
             p.add_argument('--previous', required=True, help='current digest, or none for first registration')
     sub.add_parser('refresh')
+    sub.add_parser('diff')
+    sub.add_parser('apply-reviewed')
     choose = sub.add_parser('use')
     choose.add_argument('id')
     choose.add_argument('--revision')
@@ -368,9 +426,31 @@ def main():
     settings = json.loads(Path(args.settings).read_text())
     root = Path(settings['root'])
     state_root(root)
+    review = review_module(settings) if args.action in ('diff', 'apply-reviewed') else None
+    if args.action == 'apply-reviewed':
+        try:
+            print(json.dumps(apply_reviewed(settings, root, review)))
+        except review.ReviewError as error:
+            print(str(error), file=sys.stderr)
+            raise SystemExit(1)
+        return
     with (root / 'source.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        if args.action == 'diff':
+            acquire(lock)
+        else:
+            fcntl.flock(lock, fcntl.LOCK_EX)
         migrate(root)
+        if args.action == 'diff':
+            state = Path(json.loads(Path(settings['stageSettings']).read_text())['state'])
+            with (state / 'authorization.lock').open('a') as authorization:
+                acquire(authorization)
+                try:
+                    report = review.compare(settings, selected(root), read_private, atomic)
+                except review.ReviewError as error:
+                    print(str(error), file=sys.stderr)
+                    raise SystemExit(1)
+            print(json.dumps(report, ensure_ascii=False))
+            return
         if args.action == 'list':
             active = selected(root).name if (root / 'selected').is_symlink() else None
             print(json.dumps({'selected': active, 'sources': [
@@ -428,6 +508,12 @@ def main():
 if __name__ == '__main__':
     try:
         main()
+    except KeyboardInterrupt:
+        print('Source operation interrupted.', file=sys.stderr)
+        raise SystemExit(130)
+    except TimeoutError:
+        print('Source operation is busy. Wait for the current operation, then retry.', file=sys.stderr)
+        raise SystemExit(1)
     except SourceFailure as error:
         print(str(error) + '; prior selection and runtime retained', file=sys.stderr)
         raise SystemExit(1)

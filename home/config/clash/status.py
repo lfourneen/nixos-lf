@@ -22,6 +22,7 @@ REASONS = {'node': 'Proxy request failed', 'dns': 'Probe name resolution failed'
            'policy-repair-backoff': 'Waiting to retry policy repair', 'interrupted': 'Probe cancelled by supervisor'}
 PHASES = {'prepare-policy': 'Certificate or subscription policy rejected', 'prepare-profile': 'Desktop profile missing or invalid',
           'prepare-assets': 'Required assets missing', 'prepare-core': 'Core configuration validation failed', 'prepared': 'Configuration checks passed'}
+APPROVAL_CATEGORIES = frozenset(('node_identity', 'node_authentication', 'node_transport', 'sensitive_route'))
 
 
 def clean(value):
@@ -116,6 +117,31 @@ def refresh_text(value):
     return f"{policy} · {label} · {reason} · running snapshot from {stamp(value['snapshot_at'])}"
 
 
+def audit_rows(findings, controlled):
+    # These categories enter warn only when an exact semantic approval moves
+    # them out of deny. Other warnings still need their original visibility.
+    warnings = dict(findings.get('warn') or {})
+    approved = sum(warnings.pop(key, 0) for key in APPROVAL_CATEGORIES) if controlled else 0
+    counts = []
+    for values, label in ((findings.get('deny') or {}, 'denied'), (warnings, 'warnings'),
+                          (findings.get('unknown') or {}, 'unresolved')):
+        count = sum(values.values())
+        if count:
+            if label == 'warnings' and count == 1:
+                label = 'warning'
+            counts.append(f'{count} {label}')
+    if counts:
+        result = ' · '.join(counts)
+    elif approved and findings.get('verdict') in ('pass', 'warn'):
+        result = 'Approved'
+    else:
+        result = {'pass': 'Passed', 'warn': 'Warnings recorded', 'deny': 'Denied',
+                  'unknown': 'Unresolved'}.get(findings.get('verdict'), 'Unknown')
+    yield 'Update audit', result
+    if approved:
+        yield 'Approved changes', f'{approved} · explicit approval for this update'
+
+
 def rows(state):
     ready, mode = state.get('ready', False), state.get('mode', 'unknown')
     yield 'Network status', ('Ready' if ready else 'Protected · waiting for recovery' if mode == 'blocked' else 'Not ready')
@@ -127,13 +153,11 @@ def rows(state):
     yield 'Source provenance', trust.get('provenance', 'unknown')
     if trust.get('source_id'):
         yield 'Active source', trust['source_id']
-    yield 'Upstream signature', 'not verified · health is availability evidence'
+    yield 'Publisher signature', 'Not checked · verification is not implemented'
     if state.get('profile_refresh'):
         findings = state['profile_refresh'].get('audit')
-        if findings and findings.get('verdict') != 'pass':
-            counts = [f'{name} {sum(findings.get(name, {}).values())}'
-                      for name in ('deny', 'warn', 'unknown') if findings.get(name)]
-            yield 'Content audit', findings['verdict'] + ' · ' + ', '.join(counts)
+        if findings:
+            yield from audit_rows(findings, trust.get('provenance') == 'controlled-fetch')
         yield 'Profile refresh', refresh_text(state['profile_refresh'])
         yield 'Update result', update_result_text(state['profile_refresh'])
     runtime = state.get('profile_vs_runtime') or {}

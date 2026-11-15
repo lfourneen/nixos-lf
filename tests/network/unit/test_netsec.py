@@ -1784,6 +1784,34 @@ class SubscriptionAndStatusTests(unittest.TestCase):
         self.assertIn('Certificate or subscription policy rejected',rendered)
         self.assertIn('rejected 16',rendered)
 
+    def test_status_separates_approved_update_changes_from_other_warnings(self):
+        status = module('status')
+        findings = {'verdict': 'warn', 'deny': {}, 'warn': {'node_identity': 45}, 'unknown': {}}
+        value = {'ready': True, 'mode': 'proxy', 'target': 'proxy',
+                 'source_trust': {'provenance': 'controlled-fetch'},
+                 'profile_refresh': {'result': 'accepted', 'policy': 'auto', 'reason': None,
+                                     'at': 1000, 'snapshot_at': 900, 'audit': findings}}
+        before = copy.deepcopy(value)
+        displayed = dict(status.rows(value))
+        self.assertEqual(displayed['Update audit'], 'Approved')
+        self.assertEqual(displayed['Approved changes'], '45 · explicit approval for this update')
+        self.assertEqual(value, before)
+        findings['warn']['rule_volume'] = 1
+        displayed = dict(status.rows(value))
+        self.assertEqual(displayed['Update audit'], '1 warning')
+        self.assertIn('45', displayed['Approved changes'])
+        findings.update(deny={'certificate': 2}, unknown={'route_unknown': 1})
+        self.assertEqual(dict(status.rows(value))['Update audit'], '2 denied · 1 warning · 1 unresolved')
+        value['source_trust']['provenance'] = 'legacy-unverified'
+        self.assertNotIn('Approved changes', dict(status.rows(value)))
+        for verdict, label in (('deny', 'Denied'), ('unknown', 'Unresolved')):
+            self.assertEqual(dict(status.audit_rows({'verdict': verdict}, False))['Update audit'], label)
+
+    def test_ready_status_does_not_claim_publisher_signature_verification(self):
+        status = module('status')
+        displayed = dict(status.rows({'ready': True, 'mode': 'proxy', 'target': 'proxy'}))
+        self.assertEqual(displayed['Publisher signature'], 'Not checked · verification is not implemented')
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -13,6 +13,10 @@ let
     probe_domains = p.probeDomains;
     python = "${python}/bin/python3";
     worker = ./source_worker.py;
+    broker = ./source_broker.py;
+    review = ./source_review.py;
+    launcher = "${config.programs.clash-verge.package}/bin/verge-mihomo";
+    mode_script = "${config.my.proxy.modeScript}";
     setpriv = "${pkgs.util-linux}/bin/setpriv";
     systemctl = "${pkgs.systemd}/bin/systemctl";
     desktop_uid = config.users.users.${config.my.machine.desktopUser}.uid;
@@ -39,12 +43,20 @@ in
       group = "clash-fetch";
       uid = config.my.machine.uids.clashFetch;
     };
+
     assertions = [{
       assertion = config.my.machine.uids.clashFetch > 0
         && lib.count (u: u.uid == config.my.machine.uids.clashFetch) (lib.attrValues config.users.users) == 1;
       message = "Controlled source downloads require a dedicated fixed clash-fetch UID.";
     }];
-    environment.systemPackages = [ command ];
+
+    environment.systemPackages = [ command ] ++ map (entry: pkgs.writeShellScriptBin entry.name ''
+      exec ${python}/bin/python3 -I ${./source_review.py} ${settings} ${entry.action} "$@"
+    '') [
+      { name = "clash-diff"; action = "diff"; }
+      { name = "clash-apply"; action = "apply-reviewed"; }
+    ];
+
     systemd.tmpfiles.rules = [ "d /var/lib/clash-source 0700 root root -" ];
 
     systemd.paths.clash-source-select = {

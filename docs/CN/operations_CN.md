@@ -127,17 +127,42 @@ DNS 不自动降级。
 
 ### 批准来源变化
 
-确需变更节点身份等语义时，审核私有来源差异及已脱敏的候选/settled 摘要，仅批准需要的分类：
+先运行比较命令：
 
 ```sh
-sudo clash-source approve --digest CANDIDATE_DIGEST --baseline SOURCE_SETTLED_DIGEST --categories node_identity
-sudo systemctl start clash-source-refresh.service
+clash-diff
 ```
 
-用 `sudo clash-source list` 查看选中来源的基线摘要。
-支持 `node_identity`、`node_authentication`、`node_transport`、`sensitive_route`。
-批准一小时后失效，提交后消费，不跳过静态安全检查。
-观察期后检查 `proxy-status` 和真实 B 就绪状态。
+它显示所选来源相对已接受基线的变化，包括节点地址、端口、TLS 名称、分组和规则。
+认证值和嵌套传输选项会隐藏。
+命令通过 sudo 读取私有来源状态，并记录本次展示的候选，不会批准它。
+
+确认变化后，应用这份候选：
+
+```sh
+clash-apply
+```
+
+`clash-diff` 在 A、B、C 中都只比较本机快照，不改变网络模式。
+`clash-apply` 按当前请求的意图处理：
+
+| 状态 | 应用行为 |
+|---|---|
+| A，请求 A | 记录批准，保持直连。下次 `clash-on` 激活候选 |
+| B，请求 B | 用已核对候选重启核心，经过 C，健康恢复后回到 B |
+| C，请求 B | 尝试启动已核对候选。健康检查失败时保持 C |
+| C，请求 A | 只记录批准，不启动核心，也不改变请求 |
+
+命令不重新下载候选。
+它与 `clash-on`、`clash-off` 及刷新串行处理，再检查已核对候选是否仍然一致。
+原有的解析、静态检查、健康观察和回退机制继续生效。
+用 `proxy-status` 查看就绪状态及最终是否接受。
+
+比较记录一小时后过期。
+候选、已接受基线、来源登记或策略变化后，需要重新运行 `clash-diff`。
+切换来源也会清除比较记录。
+证书、hosts、私网目标和格式错误不能批准。
+两个命令都支持 `--json` 结构化输出。
 
 ### 门户登录
 
@@ -179,6 +204,8 @@ A 中仅启动 `clash-verge` 不会授权核心。
 | 工具 | 输出 |
 |---|---|
 | `proxy-status` | 模式、出站策略、DNS、就绪、告警和最近的准备结果 |
+| `clash-diff` | 比较候选与所选来源已接受基线的差异 |
+| `clash-apply` | 批准并应用 `clash-diff` 刚展示的候选 |
 | `proxy-status --plain` | 适合日志的纯文本 |
 | `proxy-status --json` | 结构化状态 |
 | `proxy-inspect` | 服务、链路、队列和资源的被动诊断 |

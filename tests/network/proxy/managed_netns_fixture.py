@@ -46,7 +46,7 @@ def source():
                 return
             candidate = json.loads(json.dumps(data))
             if self.path == '/one' and Path('/run/managed-source-change').exists():
-                candidate['proxies'][0]['port'] = 18081
+                candidate['proxies'][0]['server'] = 'source-node-updated.fixture.example'
             body = json.dumps(candidate).encode()
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
@@ -151,6 +151,21 @@ def recover():
         assert rejection['result'] == 'fallback' and rejection['audit']['deny']['node_identity'] == 1
         assert json.loads(settled.read_text())['digest'] == baseline
         print('Off restores dual-stack main routing and direct TLS/DNS; on retains the settled baseline after audit denial')
+        unreviewed = subprocess.run(['clash-apply', '--json'], text=True, capture_output=True, timeout=15)
+        assert unreviewed.returncode != 0 and 'clash-diff' in unreviewed.stderr
+        reviewed = json.loads(run('clash-diff', '--json').stdout)
+        assert reviewed['can_apply'] and reviewed['audit']['deny'] == {'node_identity': 1}
+        assert reviewed['nodes'][0]['changes'] == [{'field': 'logical-server', 'hidden': False,
+            'before': 'source-node.fixture.example', 'after': 'source-node-updated.fixture.example'}]
+        assert not (source / 'approval.json').exists(), 'comparison approved the update'
+        generation = (source / 'current').resolve()
+        applied = json.loads(run('clash-apply', '--json').stdout)
+        assert applied['result'] == 'applied' and applied['candidate'] == reviewed['candidate']
+        wait(ready, 90)
+        assert (state / 'authorized-config').read_text().strip() == reviewed['candidate']
+        assert (source / 'current').resolve() == generation, 'apply downloaded a different generation'
+        assert not (source / 'approval.json').exists() and not (source / 'review.json').exists()
+        print('Installed diff/apply commands applied exactly the reviewed candidate without another download')
     finally:
         marker.unlink(missing_ok=True)
 

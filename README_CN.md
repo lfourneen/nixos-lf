@@ -94,6 +94,8 @@ sudo nixos-rebuild switch --flake .#lfour
 | `clash-on` | 请求代理并启动受管核心 |
 | `clash-off` | 切换到直连 |
 | `proxy-status` | 查看模式、DNS 和就绪状态 |
+| `clash-diff` | 对比来源更新与已接受基线 |
+| `clash-apply` | 批准并应用刚核对过的更新 |
 | `firefox-identity` | 通过严格代理入口打开独立身份 profile |
 | `firefox-portal http://192.168.1.1/` | 在直连模式打开临时门户会话 |
 

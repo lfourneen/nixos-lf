@@ -5,6 +5,7 @@ let
   h = c.home-manager.users.${c.my.machine.desktopUser};
   entries = builtins.filter (p: builtins.elem (p.name or "") [ "firefox-identity" "firefox-portal" ]) h.home.packages;
   command = builtins.head (builtins.filter (p: (p.pname or (p.name or "")) == "clash-source") c.environment.systemPackages);
+  reviewCommands = builtins.filter (p: builtins.elem (p.pname or (p.name or "")) [ "clash-diff" "clash-apply" ]) c.environment.systemPackages;
 
 in
 assert c.my.proxy.controlledSources && c.my.proxy.strictBrowser;
@@ -21,9 +22,11 @@ assert c.users.users.clash-fetch.uid == c.my.machine.uids.clashFetch;
 assert c.systemd.services.socket-guest-dns.enable;
 assert builtins.elem "socket-guest-dns.service" c.systemd.services.clash-source-refresh.after;
 assert builtins.elem "clash-core" c.systemd.services.clash-source-refresh.serviceConfig.SupplementaryGroups;
+assert builtins.length reviewCommands == 2;
 
 pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3 ]; } ''
   test -x ${command}/bin/clash-source
+  ${pkgs.lib.concatMapStringsSep "\n" (p: "${p}/bin/${p.name} --help >/dev/null") reviewCommands}
   ${pkgs.lib.concatMapStringsSep "\n" (p: "test -d ${p}/bin") entries}
   python3 - <<'PY'
   import json
