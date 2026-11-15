@@ -125,7 +125,15 @@ Use `clash-on` deliberately.
 
 `clash-source refresh` only prepares a candidate.
 The system service checks it before deciding whether to restart the managed helper/core while proxy intent is active.
-Its timer runs every 30 minutes. Refresh defers while an import or rollback is being settled.
+An explicit `clash-on` uses the accepted snapshot when available and records one pending update request.
+The coordinator starts that background request after B passes its health and enforcement checks.
+Automatic jobs triggered during C record `deferred`, preserve the request for B and make no download attempt.
+This does not relax C or give the download account a public-egress exception.
+Its root timer starts about two minutes after boot and then runs every 30 minutes, independently of the GUI.
+Each background job retries a failed download up to three times with 15 seconds between attempts.
+The 180-second service timeout caps the job; it does not delay foreground startup.
+Refresh defers while an import or rollback is being settled.
+The GUI's `update_interval` controls only its display copy: startup raises existing intervals shorter than 1440 minutes to 1440 and preserves longer intervals and disabled schedules.
 
 If the current snapshot remains authorized and intact, with fresh full health, readiness and any required B lease,
 a rejected or unchanged candidate leaves the running core and existing connections in place.
@@ -133,7 +141,8 @@ Invalid current authority or failed health follows C recovery instead.
 Activation enters C before restarting the helper/core, repeats import checks and requires proxy health before B returns.
 
 Worker failures identify `fetch`, `parse`, `render` or `pin-addresses`.
-Content-audit findings appear separately in `proxy-status`.
+`Subscription download` in `proxy-status` adds a fixed DNS, TLS, connection or HTTP failure category and an HTTP status when available.
+A completed download does not establish runtime acceptance. Content audit and health results appear separately.
 Unresolvable nodes may be dropped up to `max(1, node_count // 5)`.
 Private answers still refuse the candidate.
 Fetch/parse/audit failure preserves a valid runtime fallback.
@@ -141,44 +150,27 @@ No fallback leaves C.
 If C prevents source recovery, deliberately select A, fetch the registered source, then request B.
 DNS does not downgrade automatically.
 
-### Approve a changed source
+### Inspect subscription changes
 
-Run the comparison command:
+Normal node rotation is imported automatically on this host.
+To inspect the selected source's candidate against its accepted baseline, run:
 
 ```sh
 clash-diff
 ```
 
-It shows changes from the selected source's accepted baseline, including node addresses, ports, TLS names, groups and rules.
-Authentication values and nested transport options are hidden.
-The command uses sudo to read the private source state and records the candidate displayed, without approving it.
+The command reads local snapshots through sudo and does not download, write review or approval records, or change network mode in A, B or C.
+It shows node addresses, ports, TLS names, groups and rules, with authentication values and nested transport values hidden.
+Use `clash-diff --json` for structured output.
+This is an optional diagnostic command, not an update prerequisite.
 
-After confirming the changes, apply that candidate:
-
-```sh
-clash-apply
-```
-
-`clash-diff` compares local snapshots in A, B and C without changing network mode.
-`clash-apply` uses the current operator intent:
-
-| State | Apply behavior |
-|---|---|
-| A, requested A | Record approval and keep direct access. `clash-on` activates the candidate later |
-| B, requested B | Restart with the reviewed candidate, passing through C until proxy health recovers |
-| C, requested B | Attempt to start the reviewed candidate. Failed health checks keep C |
-| C, requested A | Record approval without starting the core or changing the request |
-
-The command does not download another candidate.
-It serializes with `clash-on`, `clash-off` and refresh, then checks that the reviewed candidate still matches.
-The normal parser, static checks, health observation and rollback still apply.
-Use `proxy-status` to see readiness and final acceptance.
-
-The comparison expires after one hour.
-A different candidate, accepted baseline, source registration or policy requires another `clash-diff`.
-Switching sources also clears the comparison.
-Certificate, hosts, private-target and malformed-input failures cannot be approved.
-Both commands accept `--json` for structured output.
+`proxy-status` shows `Profile refresh` with its result and reason, audit categories and counts, and `Last auto approval` with categories, unique node count and time.
+`fallback` means the rejected candidate was not imported and an earlier snapshot remains active.
+`verifying` means import is waiting for health acceptance.
+A structural block requires correcting the source content or the relevant local policy, rather than approving routine rotation.
+The five-minute desktop notification timer reports only download failures, refused imports, rollbacks and health failures through Noctalia.
+Successful updates and nonblocking audit findings remain in `proxy-status` without popups.
+Notifications use fixed categories without node names, subscription URLs or credentials.
 
 ### Portal login
 
@@ -221,9 +213,8 @@ Starting only `clash-verge` in A does not authorize a core.
 
 | Tool | Output |
 |---|---|
-| `proxy-status` | Mode, egress policy, DNS, readiness, alarms and the latest preparation result |
+| `proxy-status` | Mode, DNS, readiness, refresh reason, audit counts and last automatic approval |
 | `clash-diff` | Candidate changes against the selected source's accepted baseline |
-| `clash-apply` | Approve and apply the candidate just displayed by `clash-diff` |
 | `proxy-status --plain` | Plain text suitable for logs |
 | `proxy-status --json` | Structured status |
 | `proxy-inspect` | Passive service, link, queue and resource diagnostics |
@@ -296,12 +287,13 @@ Dedicated guest accounts retain their separate boundary.
 | `/run/netsec/alerts/*.json` | Per-owner alarms. `/run/netsec/failed` lists owners |
 | `/run/proxy-mode/intent`, `core-seen` | Boot-scoped operator intent and crash-detection marker |
 | `/run/proxy-mode/authorized-config`, `config-digest`, `authorize-window` | Root-only snapshot authority and single-use import grant |
-| `/run/proxy-mode/profile-refresh.json` | Last refresh result, digests, fixed reason, sanitized audit counts and 20-entry history. Mode 0644 |
-| `/run/proxy-mode/profile-refresh-pin.json` | Rejected candidate digest and one-hour TTL. Mode 0644 |
+| `/run/proxy-mode/profile-refresh.json` | Last refresh result, digests, fixed reason, audit counts, last automatic approval and 20-entry history. Mode 0644 |
+| `/run/proxy-mode/profile-refresh-pin.json` | Rejected candidate digest, health-failure marker and one-hour TTL. Mode 0644 |
+| `/run/proxy-mode/source-fetch.json` | Boot-bound download outcome, fixed failure category and optional HTTP status. Mode 0644 |
 | `/run/proxy-mode/profile-refresh-verifying.json` | Root-only pending transaction with the previous snapshot path |
 | `/run/proxy-mode/profile-refresh-settled.json`, `profile-refresh-commit.json`, `profile-refresh-restart.json` | Root-only settled authority, interrupted commit recovery and pending core recovery |
 | `/run/proxy-mode/effective-config.json`, `boot-id` | Normalized effective YAML digest bound to the shared boot identity. `effective-config-sha256` is a compatibility mirror |
-| `/run/proxy-mode/health-failure.json` | Last failed probe with fixed reason, layer timings, boot identity and snapshot digest |
+| `/run/proxy-mode/health-failure.json` | Last failed probe with fixed reason, optional sanitized `failure_stage`, layer timings, boot identity and snapshot digest. Preserved after recovery |
 
 Atomic JSON is the consumer interface.
 Separate `status`, `reason`, `version`, `result` and `verified-version` files are compatibility mirrors.
@@ -380,11 +372,18 @@ Packet volume changes numeric totals only.
 
 ### Refresh status
 
-`proxy-status` reports the update schedule in `Auto update`, the latest refresh in `Profile refresh` and `Update result`, and the GUI-to-snapshot digest comparison in `Profile vs runtime`.
+`proxy-status` reports the update schedule in `Auto update`, the latest refresh in `Profile refresh` and `Update result`, and GUI-copy information in `Profile vs runtime`.
+Controlled sources treat the GUI copy as display-only. Compatibility imports show the GUI-to-snapshot digest comparison.
 `proxy-policy` includes `profile_refresh`.
 `proxy-inspect` exposes up to 20 sanitized refresh history entries.
 
+`Subscription download` reports fetching and download errors separately from import.
+`deferred` means network protection postponed the attempt; it is not a failed download and does not trigger a popup.
+`Content audit` reports automatic content approval without claiming health acceptance.
+`restored` means startup reused an accepted snapshot under the current policy.
 `verifying` means the imported snapshot is awaiting its health result.
+A failed latest update is shown separately from subscription age, preserving the previous acceptance time.
+Controlled sources use root records for these decisions; GUI update timestamps do not report root success.
 `fallback` means the candidate was rejected and the prior authorized snapshot was retained.
 `rolled_back` means snapshot authority was restored and a helper restart was requested.
 Check the network readiness fields to confirm that the core recovered.
@@ -399,10 +398,9 @@ If protected routes remain indeterminate, `enforce` retains the prior snapshot.
 Use the audit categories to identify the constraint before changing policy.
 
 The user notification timer reads local files every five minutes.
-It combines refresh failures, content-audit findings, overdue updates, content drift and stale subscriptions into one message per round.
-Refresh failures are deduplicated by full result and digest.
-Overdue and drift reminders follow state transitions.
-Stale reminders are limited to once per day.
+It combines update and health failures into one message per round.
+Refresh failures are deduplicated by full result and digest, download failures by attempt time, and health failures by state transition.
+Successful updates, health recovery, audit warnings, age and GUI-copy differences do not trigger popups.
 Deduplication state is stored privately in `$XDG_STATE_HOME/clash-verge/refresh-notified.json` and advances only after delivery succeeds.
 The timer does not fetch subscriptions.
 

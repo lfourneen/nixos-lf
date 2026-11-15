@@ -118,58 +118,51 @@ A 中选择或获取不会请求 B，需要显式运行 `clash-on`。
 
 `clash-source refresh` 只准备候选。
 system service 在代理意图有效时先检查候选，再决定是否重启受管 helper/核心。
-timer 每 30 分钟执行，导入或回滚尚未收尾时，本次刷新暂缓切换。
+显式运行 `clash-on` 时，有已接受快照便先用它启动，并记录一次待处理的更新请求。
+B 通过健康与执行策略检查后，协调器启动这项后台请求。
+自动任务在 C 中触发时记录 `deferred`，保留请求等待 B，不尝试下载。
+这不会放宽 C，也不给下载账号增加公网外联豁免。
+root timer 在开机约两分钟后启动，此后每 30 分钟执行，不依赖 GUI。
+每轮后台任务最多尝试下载三次，失败尝试之间间隔 15 秒。
+服务的 180 秒超时限制任务总时长，不会延迟前台启动。
+导入或回滚尚未收尾时，本次刷新暂缓切换。
+GUI 的 `update_interval` 只影响展示副本：启动时将已存在且短于 1440 分钟的间隔提升至 1440，保留更长间隔和已禁用的计划。
 
 当前快照仍获授权且完整，并通过新鲜的完整健康检查、就绪检查及所需 B 租约检查时，
 被拒或未变化的候选保留正在运行的核心和已有连接。
 当前授权失效或健康检查失败时，仍进入 C 恢复。
 实际切换先进入 C，再重启 helper/核心，重新执行导入检查，通过代理健康检查后才返回 B。
 
-worker 失败区分 `fetch`、`parse`、`render`、`pin-addresses`，内容审计结果另见 `proxy-status`。
+worker 失败区分 `fetch`、`parse`、`render`、`pin-addresses`。
+`proxy-status` 的 `Subscription download` 另显示固定的 DNS、TLS、连接或 HTTP 失败分类，以及可用的 HTTP 状态码。
+下载完成不代表运行配置已接受，内容审计和健康结果分别显示。
 
 解析失败最多丢弃 `max(1, node_count // 5)` 个节点，私网答案仍拒绝候选。
 下载、解析和审计失败保留有效的运行回退，没有回退则保持 C。
 若 C 阻止来源恢复，须主动选 A 获取已登记来源，再请求 B。
 DNS 不自动降级。
 
-### 批准来源变化
+### 只读查看订阅变化
 
-先运行比较命令：
+本机自动导入正常节点轮换。
+需要查看所选来源候选与已接受基线的差异时，运行：
 
 ```sh
 clash-diff
 ```
 
-它显示所选来源相对已接受基线的变化，包括节点地址、端口、TLS 名称、分组和规则。
-认证值和嵌套传输选项会隐藏。
-命令通过 sudo 读取私有来源状态，并记录本次展示的候选，不会批准它。
+命令通过 sudo 读取本机快照，不下载候选、不写入审阅或批准记录，在 A、B、C 中都不改变网络模式。
+它显示节点地址、端口、TLS 名称、分组和规则，隐藏认证值与嵌套传输参数值。
+`clash-diff --json` 提供结构化输出。
+这是可选诊断命令，不是更新前置步骤。
 
-确认变化后，应用这份候选：
-
-```sh
-clash-apply
-```
-
-`clash-diff` 在 A、B、C 中都只比较本机快照，不改变网络模式。
-`clash-apply` 按当前请求的意图处理：
-
-| 状态 | 应用行为 |
-|---|---|
-| A，请求 A | 记录批准，保持直连。下次 `clash-on` 激活候选 |
-| B，请求 B | 用已核对候选重启核心，经过 C，健康恢复后回到 B |
-| C，请求 B | 尝试启动已核对候选。健康检查失败时保持 C |
-| C，请求 A | 只记录批准，不启动核心，也不改变请求 |
-
-命令不重新下载候选。
-它与 `clash-on`、`clash-off` 及刷新串行处理，再检查已核对候选是否仍然一致。
-原有的解析、静态检查、健康观察和回退机制继续生效。
-用 `proxy-status` 查看就绪状态及最终是否接受。
-
-比较记录一小时后过期。
-候选、已接受基线、来源登记或策略变化后，需要重新运行 `clash-diff`。
-切换来源也会清除比较记录。
-证书、hosts、私网目标和格式错误不能批准。
-两个命令都支持 `--json` 结构化输出。
+`proxy-status` 的 `Profile refresh` 显示刷新结果和原因，并列出审计类别与计数。
+`Last auto approval` 显示上次自动批准的类别、去重节点数和时间。
+`fallback` 表示候选未导入，仍运行此前快照，`verifying` 表示导入后等待健康接受。
+结构阻断需要修正来源内容或相应本地策略，不通过批准日常轮换来解决。
+每五分钟运行的桌面通知仅经 Noctalia 提示下载失败、导入被拒、回滚和健康失败。
+成功更新及非阻断的审计结果保留在 `proxy-status`，不弹窗。
+通知使用固定分类，不包含节点名、订阅 URL 或凭据。
 
 ### 门户登录
 
@@ -210,9 +203,8 @@ A 中仅启动 `clash-verge` 不会授权核心。
 
 | 工具 | 输出 |
 |---|---|
-| `proxy-status` | 模式、出站策略、DNS、就绪、告警和最近的准备结果 |
+| `proxy-status` | 模式、DNS、就绪、刷新原因、审计计数和上次自动批准 |
 | `clash-diff` | 比较候选与所选来源已接受基线的差异 |
-| `clash-apply` | 批准并应用 `clash-diff` 刚展示的候选 |
 | `proxy-status --plain` | 适合日志的纯文本 |
 | `proxy-status --json` | 结构化状态 |
 | `proxy-inspect` | 服务、链路、队列和资源的被动诊断 |
@@ -280,12 +272,13 @@ Tailscale 打标失败时，B 仍会阻断未打标的 root UDP。
 | `/run/netsec/alerts/*.json` | 各 owner 告警。`/run/netsec/failed` 汇总 owner |
 | `/run/proxy-mode/intent`、`core-seen` | 单次开机意图和崩溃检测标记 |
 | `/run/proxy-mode/authorized-config`、`config-digest`、`authorize-window` | root 私有快照授权与一次性导入凭据 |
-| `/run/proxy-mode/profile-refresh.json` | 最近刷新结果、digest、固定原因、脱敏审计计数和 20 条历史，权限 0644 |
-| `/run/proxy-mode/profile-refresh-pin.json` | 被拒候选 digest 与一小时 TTL，权限 0644 |
+| `/run/proxy-mode/profile-refresh.json` | 最近刷新结果、digest、固定原因、审计计数、上次自动批准和 20 条历史，权限 0644 |
+| `/run/proxy-mode/profile-refresh-pin.json` | 被拒候选 digest、健康失败标记与一小时 TTL，权限 0644 |
+| `/run/proxy-mode/source-fetch.json` | 绑定本次启动的下载结果、固定失败分类与可用的 HTTP 状态码，权限 0644 |
 | `/run/proxy-mode/profile-refresh-verifying.json` | root 私有待验证事务及上一快照路径 |
 | `/run/proxy-mode/profile-refresh-settled.json`、`profile-refresh-commit.json`、`profile-refresh-restart.json` | root 私有 settled 授权、提交中断恢复和待完成内核恢复 |
 | `/run/proxy-mode/effective-config.json`、`boot-id` | 绑定共享 boot identity 的 effective YAML 摘要。`effective-config-sha256` 是兼容镜像 |
-| `/run/proxy-mode/health-failure.json` | 最近失败探针的固定原因、分层耗时、boot identity 与快照摘要 |
+| `/run/proxy-mode/health-failure.json` | 最近失败探针的固定原因、可用的脱敏 `failure_stage`、分层耗时、boot identity 与快照摘要，恢复后仍保留 |
 
 消费者读取原子 JSON，独立 `status`、`reason`、`version`、`result`、`verified-version` 是兼容镜像。
 仅原因变化更新 `revision`。
@@ -359,10 +352,17 @@ policy 记录包含所观测模式、转换原因和代次。
 
 ### 刷新状态
 
-`proxy-status` 的 `Auto update` 显示更新调度，`Profile refresh` 和 `Update result` 显示最近刷新，`Profile vs runtime` 比较 GUI 与已导入快照的摘要。
+`proxy-status` 的 `Auto update` 显示更新调度，`Profile refresh` 和 `Update result` 显示最近刷新，`Profile vs runtime` 显示 GUI 副本信息。
+受控来源将 GUI 副本视为展示用途，兼容导入则比较 GUI 与已导入快照的摘要。
 `proxy-policy` 包含 `profile_refresh`，`proxy-inspect` 提供最多 20 条脱敏刷新历史。
 
+`Subscription download` 将下载进度和错误与导入结果分开显示。
+`deferred` 表示网络保护使本次尝试延期，不是下载失败，也不触发弹窗。
+`Content audit` 显示内容自动批准，不表示健康检查已经接受。
+`restored` 表示启动时复用了符合当前策略的已接受快照。
 `verifying` 表示已导入快照正在等待健康结果。
+最近更新失败与订阅年龄分别显示，原有接受时间予以保留。
+受控来源以 root 记录为依据，GUI 更新时间不代表 root 更新成功。
 `fallback` 表示候选被拒绝，旧授权快照保留。
 `rolled_back` 表示已恢复快照授权并请求 helper 重启。
 核心是否恢复须查看网络就绪字段。
@@ -373,8 +373,9 @@ policy 记录包含所观测模式、转换原因和代次。
 探测目标和预期路由均可配置。
 受保护路由仍无法确定时，`enforce` 保留旧快照，应先根据审计分类定位约束，再决定策略。
 
-用户通知 timer 每五分钟读取本地文件，将刷新失败、内容审计结果、更新逾期、内容差异和订阅 stale 合并为每轮一条消息。
-刷新失败按结果与完整摘要去重，逾期和内容差异按状态迁移提醒，stale 每天最多提醒一次。
+用户通知 timer 每五分钟读取本地文件，将更新和健康失败合并为每轮一条消息。
+刷新失败按结果与完整摘要去重，下载失败按尝试时间去重，健康失败按状态迁移提醒。
+成功更新、健康恢复、审计警告、订阅年龄及 GUI 副本差异不触发弹窗。
 去重状态私有存于 `$XDG_STATE_HOME/clash-verge/refresh-notified.json`，发送成功后才推进。
 timer 不下载订阅。
 

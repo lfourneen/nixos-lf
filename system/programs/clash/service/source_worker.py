@@ -4,6 +4,7 @@ Input is supplied only by the root broker on stdin. Never import desktop scripts
 proxy environment, GUI indexes or cached provider files. Errors contain no URLs.
 """
 import hashlib
+import errno
 import http.client
 import ipaddress
 import json
@@ -22,7 +23,37 @@ TOTAL = 32 * 1024 * 1024
 
 
 class Refused(ValueError):
-    pass
+    def __init__(self, message, reason=None, http_status=None):
+        super().__init__(message)
+        self.reason, self.http_status = reason, http_status
+
+
+FAILURE_REASONS = frozenset(('dns lookup failed', 'certificate rejected', 'tls failed',
+    'connection timeout', 'connection refused', 'connection reset', 'network unreachable',
+    'http rejected', 'encoding unsupported', 'redirect refused', 'destination refused',
+    'response limit', 'yaml invalid', 'configuration unsupported', 'node resolution failed', 'worker failure'))
+
+
+def failure_reason(error, phase):
+    if isinstance(error, Refused) and error.reason in FAILURE_REASONS:
+        return error.reason
+    for kind, reason in ((socket.gaierror, 'dns lookup failed'),
+                         (ssl.SSLCertVerificationError, 'certificate rejected'),
+                         (ssl.SSLError, 'tls failed'), (TimeoutError, 'connection timeout'),
+                         (ConnectionRefusedError, 'connection refused'),
+                         (ConnectionResetError, 'connection reset')):
+        if isinstance(error, kind):
+            return reason
+    if isinstance(error, OSError) and error.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH):
+        return 'network unreachable'
+    if isinstance(error, Refused):
+        reason = {'redirect': 'redirect refused', 'redirect count': 'redirect refused',
+                  'destination': 'destination refused', 'response size': 'response limit',
+                  'deadline': 'connection timeout'}.get(str(error))
+        if reason:
+            return reason
+    return {'parse': 'yaml invalid', 'render': 'configuration unsupported',
+            'pin-addresses': 'node resolution failed'}.get(phase, 'worker failure')
 
 
 class Loader(yaml.SafeLoader):
@@ -125,7 +156,9 @@ def real_resolver(settings):
                 except dns.resolver.NoAnswer:
                     continue
                 except dns.exception.DNSException:
-                    raise socket.gaierror(socket.EAI_AGAIN, 'real-address DNS unavailable') from None
+                    # A validated answer for one RR type remains usable when
+                    # the other family is unavailable. Never switch resolvers.
+                    continue
                 addresses.extend(ipaddress.ip_address(item.address) for item in answer)
         if not addresses:
             raise socket.gaierror(socket.EAI_NONAME, 'real-address DNS has no address')
@@ -133,6 +166,16 @@ def real_resolver(settings):
                  '', (str(ip), port) if ip.version == 4 else (str(ip), port, 0, 0))
                 for ip in addresses]
     return lookup
+
+
+def public_addresses(resolver, host, port):
+    values = {item[4][0] for item in resolver(host, port, type=socket.SOCK_STREAM)}
+    if not values or not all(public_address(ip) for ip in values):
+        raise Refused('destination')
+    # Prefer IPv4 when both are present; keep IPv6-only sources supported.
+    # The old lexical ordering could select an unreachable IPv6 address first.
+    return sorted(values, key=lambda value: (ipaddress.ip_address(value).version,
+                                           int(ipaddress.ip_address(value))))
 
 
 def fetch(spec, deadline, budget, resolver=socket.getaddrinfo, connection=Connection):
@@ -151,19 +194,28 @@ def fetch(spec, deadline, budget, resolver=socket.getaddrinfo, connection=Connec
     context = ssl.create_default_context()
     for _ in range(5):
         host, port, path, query = endpoint(url)
-        addresses = sorted({item[4][0] for item in resolver(host, port, type=socket.SOCK_STREAM)})
-        if not addresses or not all(public_address(ip) for ip in addresses):
-            raise Refused('destination')
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise Refused('deadline')
-        conn = connection(host, addresses[0], min(remaining, 10), context)
+        addresses = public_addresses(resolver, host, port)
+        response = conn = None
+        failure = None
+        for index, address in enumerate(addresses):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Refused('deadline')
+            # Reserve time for other validated addresses, under one deadline.
+            conn = connection(host, address, min(10, remaining / (len(addresses) - index)), context)
+            try:
+                request_headers = dict(headers)
+                if (host, port) == credentials_origin:
+                    request_headers.update(extra)
+                conn.request('GET', path + ('?' + query if query else ''), headers=request_headers)
+                response = conn.getresponse()
+                break
+            except (OSError, http.client.HTTPException) as error:
+                failure = error
+                conn.close()
+        if response is None:
+            raise failure or Refused('http connection')
         try:
-            request_headers = dict(headers)
-            if (host, port) == credentials_origin:
-                request_headers.update(extra)
-            conn.request('GET', path + ('?' + query if query else ''), headers=request_headers)
-            response = conn.getresponse()
             if response.status in (301, 302, 303, 307, 308):
                 target = urljoin(url, response.getheader('Location', ''))
                 endpoint(target)
@@ -175,8 +227,10 @@ def fetch(spec, deadline, budget, resolver=socket.getaddrinfo, connection=Connec
                     headers['User-Agent'] = 'clash.meta'
                 url = target
                 continue
-            if response.status != 200 or response.getheader('Content-Encoding', 'identity') != 'identity':
-                raise Refused('http response')
+            if response.status != 200:
+                raise Refused('http response', 'http rejected', response.status)
+            if response.getheader('Content-Encoding', 'identity') != 'identity':
+                raise Refused('http response', 'encoding unsupported', response.status)
             size = response.getheader('Content-Length')
             if size is not None and (not size.isdecimal() or int(size) > min(LIMIT, budget[0])):
                 raise Refused('response size')
@@ -349,14 +403,12 @@ def pin_servers(config, resolver=socket.getaddrinfo):
         if not isinstance(server, str) or type(port) is not int or not 1 <= port <= 65535:
             raise Refused('node endpoint')
         try:
-            addresses = sorted({item[4][0] for item in resolver(server, port, type=socket.SOCK_STREAM)})
+            addresses = public_addresses(resolver, server, port)
         except OSError:
             # Never leave an unpinned name for the core to resolve later; an
             # unavailable endpoint is dropped and counted, not silently dialed.
             dropped.append(node.get('name'))
             continue
-        if not addresses or not all(public_address(ip) for ip in addresses):
-            raise Refused('node destination')
         node['lf-source-server'] = server
         node['server'] = addresses[0]
         if node.get('tls') or node.get('type') in ('trojan', 'hysteria2', 'tuic'):
@@ -380,8 +432,8 @@ def pin_servers(config, resolver=socket.getaddrinfo):
 def step(phase, function, *args):
     try:
         return function(*args)
-    except Exception:
-        raise Refused(phase) from None
+    except Exception as error:
+        raise Refused(phase, failure_reason(error, phase), getattr(error, 'http_status', None)) from None
 
 
 def prepare(request, download=None, resolver=socket.getaddrinfo):
@@ -422,7 +474,10 @@ if __name__ == '__main__':
         main()
     except Refused as error:
         phase = str(error) if str(error) in ('fetch', 'parse', 'render', 'pin-addresses') else 'worker'
-        print(json.dumps({'error': phase}))
+        result = dict(error=phase, reason=failure_reason(error, phase))
+        if type(error.http_status) is int and 100 <= error.http_status <= 599:
+            result['http_status'] = error.http_status
+        print(json.dumps(result))
         raise SystemExit(1)
     except Exception:
         print('subscription fetch refused', file=sys.stderr)

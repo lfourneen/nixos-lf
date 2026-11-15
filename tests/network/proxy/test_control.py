@@ -369,6 +369,31 @@ class SnapshotTests(unittest.TestCase):
         self.settle(ok=False, reason='no-tun')
         self.assertEqual(self.record()['reason'], 'tun')
 
+    def test_early_rollback_requires_repeated_fresh_full_health_for_this_candidate(self):
+        old = self.auto_baseline()
+        self.config.write_text(self.config.read_text() + '# failed candidate\n')
+        self.restart()
+        pending_path = self.state / 'profile-refresh-verifying.json'
+        pending = self.record(pending_path.name)
+        pending['monotonic_seconds'] -= 21
+        pending_path.write_text(json.dumps(pending))
+        (self.state / 'state.json').write_text(json.dumps(dict(mode='blocked', reason='obs', policy_version=7)))
+        health = dict(ok=False, reason='obs', at=time.time(), boot_id=pending['boot_id'],
+            digest=pending['digest'], policy_version=7, failure_streak=2,
+            scope={'requests': ['mixed-tcp', 'fake-ip-tcp']})
+        self.settings['require_tun'] = True
+        for wrong in (dict(ok=True), dict(boot_id='other'), dict(digest=old), dict(failure_streak=1),
+                      dict(policy_version=6), dict(at=time.time() - 30), dict(scope={'requests': []})):
+            (self.state / 'health.json').write_text(json.dumps(dict(health, **wrong)))
+            stage.verify_refresh(self.settings, restart=lambda: self.fail('insufficient proof'))
+            self.assertEqual(self.record()['result'], 'verifying')
+        (self.state / 'health.json').write_text(json.dumps(health))
+        restarted = []
+        stage.verify_refresh(self.settings, restart=lambda: restarted.append(self.verify()))
+        self.assertEqual(restarted, [old])
+        self.assertEqual((self.record()['result'], self.record()['reason']), ('rolled_back', 'obs'))
+        self.assertTrue(self.record('profile-refresh-pin.json')['health'])
+
     def test_consecutive_refreshes_during_probation_keep_last_settled_snapshot(self):
         old = self.auto_baseline()
         for suffix in ('first', 'second'):

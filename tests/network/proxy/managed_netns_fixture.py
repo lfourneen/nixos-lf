@@ -53,9 +53,14 @@ def source():
             if self.path not in ('/one', '/two'):
                 self.send_error(404)
                 return
+            if Path('/run/managed-source-unavailable').exists():
+                self.send_error(503)
+                return
             candidate = json.loads(json.dumps(data))
             if self.path == '/one' and Path('/run/managed-source-change').exists():
                 candidate['proxies'][0]['server'] = 'source-node-updated.fixture.example'
+                if Path('/run/managed-source-block').exists():
+                    candidate['hosts'] = {'blocked.fixture.example': '1.1.1.1'}
             body = json.dumps(candidate).encode()
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
@@ -155,11 +160,14 @@ def recover():
     held_socket = stream.sock
     assert held_socket is not None
     marker.touch()
+    blocked = Path('/run/managed-source-block')
+    blocked.touch()
     try:
         run('systemctl', 'start', 'clash-source-refresh.service')
         wait(ready, 90)
         rejection = json.loads((state / 'profile-refresh.json').read_text())
         assert rejection['result'] == 'fallback' and rejection['audit']['deny']['node_identity'] == 1
+        assert rejection['audit']['deny']['hosts_override'] == 1
         assert stage.service_request(stage_settings, 'GET', '/status')['core_pid'] == before_pid
         assert json.loads((state / 'state.json').read_text())['policy_version'] == before_version
         assert (state / 'authorized-config').read_bytes() == before_authority
@@ -184,28 +192,51 @@ def recover():
             '--resolve', 'source.fixture.example:443:1.1.1.1', 'https://source.fixture.example/one')
         wait(lambda: '1.1.1.1' in run('dig', '+short', '+time=1', '+tries=1',
              '@127.0.0.1', '-p', '1054', 'source.fixture.example', 'A').stdout, 60)
+        unavailable = Path('/run/managed-source-unavailable')
+        unavailable.touch()
         run('proxy-control', 'on')
+        wait(ready, 30)
+        wait(lambda: json.loads((state / 'source-fetch.json').read_text()).get('result') == 'failed', 15)
+        restored = json.loads((state / 'profile-refresh.json').read_text())
+        assert restored['result'] == 'restored' and restored['digest'] == baseline, restored
+        assert not (state / 'profile-refresh-verifying.json').exists()
+        download = json.loads((state / 'source-fetch.json').read_text())
+        assert download['reason'] == 'http rejected' and download['http_status'] == 503, download
+        status = run('setpriv', '--reuid=1000', '--clear-groups', 'proxy-status', '--plain').stdout
+        assert 'restored accepted snapshot' in status and 'HTTP 503' in status
+        print('Explicit on restored accepted source while cached input was rejected and background download returned HTTP 503')
+        unavailable.unlink()
+        run('systemctl', 'stop', 'clash-source-refresh.service')
+        run('systemctl', 'reset-failed', 'clash-source-refresh.service')
+        run('systemctl', 'start', 'clash-source-refresh.service')
         wait(ready, 90)
         assert (state / 'authorized-config').read_text().strip() == baseline
         rejection = json.loads((state / 'profile-refresh.json').read_text())
         assert rejection['result'] == 'fallback' and rejection['audit']['deny']['node_identity'] == 1
         assert json.loads(settled.read_text())['digest'] == baseline
         print('Off restores dual-stack main routing and direct TLS/DNS; on retains the settled baseline after audit denial')
-        unreviewed = subprocess.run(['clash-apply', '--json'], text=True, capture_output=True, timeout=15)
-        assert unreviewed.returncode != 0 and 'clash-diff' in unreviewed.stderr
         reviewed = json.loads(run('clash-diff', '--json').stdout)
-        assert reviewed['can_apply'] and reviewed['audit']['deny'] == {'node_identity': 1}
+        assert reviewed['audit_current'] and reviewed['audit']['deny'] == {'node_identity': 1, 'hosts_override': 1}
         assert reviewed['nodes'][0]['changes'] == [{'field': 'logical-server', 'hidden': False,
             'before': 'source-node.fixture.example', 'after': 'source-node-updated.fixture.example'}]
         assert not (source / 'approval.json').exists(), 'comparison approved the update'
-        generation = (source / 'current').resolve()
-        applied = json.loads(run('clash-apply', '--json').stdout)
-        assert applied['result'] == 'applied' and applied['candidate'] == reviewed['candidate']
+        assert not (source / 'review.json').exists(), 'read-only comparison wrote a review'
+        assert (state / 'authorized-config').read_text().strip() == baseline
+        blocked.unlink()
+        run('systemctl', 'start', 'clash-source-refresh.service')
         wait(ready, 90)
-        assert (state / 'authorized-config').read_text().strip() == reviewed['candidate']
-        assert (source / 'current').resolve() == generation, 'apply downloaded a different generation'
+        wait(accepted_and_healthy, 90)
+        imported = json.loads((state / 'profile-refresh.json').read_text())
+        assert imported['result'] == 'accepted', imported
+        assert imported['audit']['deny'] == {}, imported
+        assert imported['last_auto_approval']['categories'] == {'node_identity': 1}
+        assert imported['last_auto_approval']['nodes'] == 1
+        assert (state / 'authorized-config').read_text().strip() != baseline
         assert not (source / 'approval.json').exists() and not (source / 'review.json').exists()
-        print('Installed diff/apply commands applied exactly the reviewed candidate without another download')
+        status = run('setpriv', '--reuid=1000', '--clear-groups', 'proxy-status', '--plain').stdout
+        assert 'Last auto approval:' in status and 'node_identity=1' in status
+        browser_request()
+        print('Root refresh auto-imported node rotation through normal audit and health gates; read-only diff retained authority')
     except Exception:
         # This VM contains synthetic source data only.
         for name in ('profile-refresh.json', 'source-validator.log'):
@@ -216,6 +247,7 @@ def recover():
     finally:
         stream.close()
         marker.unlink(missing_ok=True)
+        Path('/run/managed-source-unavailable').unlink(missing_ok=True)
 
 
 def receive_queue():
@@ -266,8 +298,27 @@ def strict():
     try:
         run('systemctl', 'stop', 'control-http-8080.service')
         wait(lambda: state_is('blocked'), 90)
+        pending = Path('/run/proxy-mode/source-refresh-pending')
+        assert not pending.exists()
+        # The guard acquires the policy lock. Exercise it before freezing a
+        # coordinator that might otherwise be stopped while holding that lock.
+        run('systemctl', 'start', 'clash-source-guard.service')
+        assert not pending.exists(), 'an update activation guard must not enqueue another download'
         coordinator = int(run('systemctl', 'show', '-p', 'MainPID', '--value', 'proxy-mode.service').stdout)
         os.kill(coordinator, signal.SIGSTOP)
+        source_status = Path('/var/lib/clash-source/selected/status.json')
+        before_download = source_status.read_bytes()
+        before_authority = Path('/run/proxy-mode/authorized-config').read_bytes()
+        run('systemctl', 'start', 'clash-source-refresh.service')
+        download = json.loads(Path('/run/proxy-mode/source-fetch.json').read_text())
+        assert download['result'] == 'deferred' and download['reason'] == 'network protection active', download
+        assert source_status.read_bytes() == before_download
+        assert Path('/run/proxy-mode/authorized-config').read_bytes() == before_authority
+        assert pending.exists()
+        # This subtest holds C to inspect receive revocation. Startup's B
+        # trigger is covered by recover(); cancel this separate test request.
+        pending.unlink()
+        print('C deferred automatic source download without changing candidate or runtime authority', flush=True)
         Path('/run/managed-stream-release').touch()
         time.sleep(.8)
         assert receive_queue() == 0, 'strict core replies entered the stopped host relay in C'

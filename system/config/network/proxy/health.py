@@ -20,6 +20,27 @@ from urllib.parse import urlsplit
 SNAPSHOT_TOOLS = {}
 
 
+def failure_stage(detail):
+    """Persist the failed step without addresses, node names or curl output."""
+    for prefix, stage in (
+        ('mixed HTTP request failed', 'mixed-request'),
+        ('no exact-source-port route log', 'mixed-route-log'),
+        ('fake-IP TCP probe failed', 'tun-request'),
+        ('fake-IP TCP probe for', 'tun-route-log'),
+        ('recorded leaf no longer', 'selection'),
+        ('controller reply unavailable', 'controller'),
+        ('managed DNS did not return', 'fake-ip-dns'),
+        ('TUN DNS self-test', 'tun-dns'),
+        ('total probe deadline', 'deadline'),
+        ('configuration changed', 'configuration'),
+        ('managed TCP/UDP listener', 'listener'),
+        ('authorized snapshot', 'snapshot'),
+        ('cannot verify the authorized snapshot', 'snapshot')):
+        if detail.startswith(prefix):
+            return stage
+    return 'unknown'
+
+
 class ProbeFailure(Exception):
     def __init__(self, layer, detail):
         self.layer, self.detail = layer, detail
@@ -376,14 +397,19 @@ def main():
     try:
         result.update(ok=True, reason="", fingerprint=probe.run(fast=fast))
     except ProbeFailure as error:
-        result.update(reason=error.layer, detail=error.detail)
+        result.update(reason=error.layer, detail=error.detail, failure_stage=failure_stage(error.detail))
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         result.update(detail=f"probe error: {type(error).__name__}")
     result.update(duration_ms=round((time.monotonic() - probe.start) * 1000), layers=probe.timings)
     if os.geteuid() == 0 and not result['ok'] and result.get('reason') != 'interrupted':
+        classification = result.get('reason')
+        if classification not in ('node', 'tun', 'dns', 'config', 'route', 'obs', 'direct-mode', 'no-tun', 'core-gone'):
+            classification = 'obs'
+        print('proxy health warning: ' + classification, file=sys.stderr)
         # Keep the last failure even after a later probe succeeds. Raw details,
         # targets, policy chains and parser output stay out of this record.
         record = {key: result[key] for key in ('ok', 'reason', 'duration_ms', 'layers')}
+        record['failure_stage'] = result.get('failure_stage', 'unknown')
         record['at'] = time.time()
         path = None
         try:

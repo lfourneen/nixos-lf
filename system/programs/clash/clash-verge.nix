@@ -33,8 +33,10 @@ let
     runtime = "/run/clash-verge-rev";
     state = "/run/proxy-mode";
     refresh_policy = config.my.proxy.profileRefreshPolicy;
+    refresh_failure_grace_seconds = config.my.proxy.profileRefreshFailureGraceSeconds;
     systemctl = "${pkgs.systemd}/bin/systemctl";
     audit_policy = config.my.proxy.subscriptionAudit;
+    audit_auto_approve = config.my.proxy.subscriptionAuditAutoApprove;
     audit_python = "${pkgs.python3.withPackages (p: [ p.pyyaml ])}/bin/python3";
     audit_tool = "${./service/subscription_audit.py}";
     readiness_tool = "${../../config/network/proxy/state.py}";

@@ -94,13 +94,15 @@ sudo nixos-rebuild switch --flake .#lfour
 | `clash-on` | 请求代理并启动受管核心 |
 | `clash-off` | 切换到直连 |
 | `proxy-status` | 查看模式、DNS 和就绪状态 |
-| `clash-diff` | 对比来源更新与已接受基线 |
-| `clash-apply` | 批准并应用刚核对过的更新 |
+| `clash-diff` | 只读查看来源变化，不改变网络模式 |
 | `firefox-identity` | 通过严格代理入口打开独立身份 profile |
 | `firefox-portal http://192.168.1.1/` | 在直连模式打开临时门户会话 |
 
 A 表示直连，B 表示代理健康可用，C 在代理不可用时阻断应用流量。
 关闭 GUI 不会切换到 A。
+运行 `clash-on` 时，受控订阅优先恢复已接受快照。进入健康 B 后，再在后台获取启动更新。
+已登记订阅也会每 30 分钟刷新，正常节点轮换自动批准。
+成功更新不弹窗，失败通过桌面通知和 `proxy-status` 提示。
 来源管理、诊断和离线恢复见[操作与诊断](docs/CN/operations_CN.md)。
 
 ## Hermes 与密钥

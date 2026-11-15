@@ -96,13 +96,15 @@ Keep `stateVersion` unchanged unless you have reviewed and migrated the affected
 | `clash-on` | Request proxy access and start the managed core |
 | `clash-off` | Select direct access |
 | `proxy-status` | Show mode, DNS and readiness |
-| `clash-diff` | Compare a source update with its accepted baseline |
-| `clash-apply` | Approve and apply the update just reviewed |
+| `clash-diff` | Inspect source changes without changing network mode |
 | `firefox-identity` | Open the separate browser profile through the strict proxy inlet |
 | `firefox-portal http://192.168.1.1/` | Open a temporary portal session in direct mode |
 
 A is direct access, B is healthy proxy access, and C blocks application traffic while proxy access is unavailable.
 Closing the GUI does not select A.
+With `clash-on`, controlled subscriptions prefer their accepted snapshot. Startup fetching waits until B is healthy.
+Registered subscriptions also refresh every 30 minutes, with routine node rotation approved automatically.
+Successful updates stay silent; failures appear in desktop notifications and `proxy-status`.
 See [operations and recovery](docs/operations.md) for source management, diagnostics and offline recovery.
 
 ## Hermes and secrets

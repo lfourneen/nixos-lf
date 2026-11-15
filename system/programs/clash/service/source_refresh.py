@@ -22,6 +22,27 @@ def module(name, path):
     return result
 
 
+def automatic_download_ready(settings, stage):
+    """C protects the downloader too; defer without reporting a fetch error."""
+    state = Path(settings['state'])
+    mode = stage.read_record(state / 'state.json').get('mode')
+    try:
+        intent = (state / 'intent').read_text().strip()
+    except FileNotFoundError:
+        intent = 'auto'
+    allowed = (mode == 'direct' and intent != 'proxy' or mode == 'proxy' and intent == 'proxy')
+    pending = state / 'source-refresh-pending'
+    if allowed:
+        pending.unlink(missing_ok=True)
+        return True
+    # The coordinator retries this request after a verified transition to B.
+    # Keep it pending during C instead of spending the network retry budget.
+    stage.atomic_text(pending, '1\n')
+    stage.atomic_record(state / 'source-fetch.json', dict(at=time.time(),
+        boot_id=stage.boot_id(state), result='deferred', reason='network protection active'))
+    return False
+
+
 def healthy_runtime(settings, stage):
     """An intact snapshot alone does not prove that keeping its core is safe."""
     try:
@@ -115,7 +136,16 @@ def check_candidate(settings, stage, validate):
             phase = 'snapshot mismatch'
             if stage.snapshot_digest(candidate) != digest:
                 raise stage.RefreshError('snapshot mismatch')
+            previous = stage.read_record(state / 'profile-refresh.json')
+            pin = stage.read_record(state / 'profile-refresh-pin.json')
+            if (pin.get('health') is True or previous.get('result') in ('rolled_back', 'fallback')
+                    and previous.get('digest') == digest and previous.get('reason') in
+                    ('node', 'tun', 'dns', 'obs', 'recent health failure')) and stage.pinned(state, digest):
+                raise stage.RefreshError('recent health failure')
             findings = stage.run_audit(settings, candidate, copied_baseline)
+            if source_binding(settings, stage)[3] != identity:
+                raise stage.RefreshError('snapshot mismatch')
+            stage.auto_approve_semantics(settings, findings, digest, identity['baseline'])
             findings, _ = stage.apply_semantic_approval(settings, findings, digest, identity['baseline'])
             stage.enforce_audit(settings, findings)
             if stage.snapshot_digest(candidate) != digest:
@@ -140,6 +170,18 @@ def restart_source(settings, stage, validate=None, activate=None):
             subprocess.run([settings['systemctl'], 'start', settings['guard_service']],
                            check=True, timeout=25)
             stage.restart_core(settings)
+    # An explicit start is bringing its accepted baseline online. Let it
+    # establish live health before a background fetch can replace it. No
+    # operator/authority lock is held during this bounded grace period.
+    startup_deadline = time.monotonic() + 20
+    while time.monotonic() < startup_deadline:
+        restored = stage.read_record(state / 'profile-refresh.json')
+        if (restored.get('result') != 'restored' or
+                not 0 <= time.time() - restored.get('at', 0) < 20 or
+                (state / 'intent').read_text().strip() != 'proxy' or
+                healthy_runtime(settings, stage) is not None):
+            break
+        time.sleep(.25)
     with (state / 'operator.lock').open('a') as operator:
         fcntl.flock(operator, fcntl.LOCK_EX)
         # A competing network fetch must not hold up clash-off behind this lock.
@@ -197,6 +239,10 @@ def restart_source(settings, stage, validate=None, activate=None):
 def main():
     if os.geteuid() != 0:
         raise ValueError('source refresh requires root')
+    if sys.argv[1] == 'download-ready':
+        settings = json.loads(Path(sys.argv[2]).read_text())
+        stage = module('source_stage', settings['snapshot_tool'])
+        raise SystemExit(0 if automatic_download_ready(settings, stage) else 1)
     settings = json.loads(Path(sys.argv[1]).read_text())
     settings.update(launcher=sys.argv[2], guard_service=sys.argv[3], core_gid=grp.getgrnam('clash-core').gr_gid)
     if len(sys.argv) > 4:

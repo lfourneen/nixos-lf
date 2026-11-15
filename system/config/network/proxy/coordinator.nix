@@ -556,11 +556,22 @@ NFT_OFF
       if ! $JQ -e 'has("ok") and has("duration_ms")' "$output" >/dev/null 2>&1; then
         rm -f "$output"; return 1
       fi
+      if [ "''${health_streak_digest:-}" != "$health_digest" ] || [ "''${health_streak_version:-}" != "$decision_version" ]; then
+        health_failure_streak=0
+        health_streak_digest="$health_digest"
+        health_streak_version="$decision_version"
+      fi
+      if $JQ -e '.ok == true' "$output" >/dev/null; then
+        health_failure_streak=0
+      else
+        health_failure_streak=$(( ''${health_failure_streak:-0} + 1 ))
+      fi
       $JQ --arg digest "$health_digest" --argjson at "$health_at" \
         --argjson monotonic "$proof_time" --arg proof "$proof_id" --argjson version "$decision_version" \
+        --argjson streak "$health_failure_streak" \
         --arg epoch "$proof_epoch" \
         --arg boot "$($CAT /run/proxy-mode/boot-id)" \
-        '. + {digest:$digest, at:$at, boot_id:$boot,monotonic_seconds:$monotonic,proof_id:$proof,policy_version:$version,authorization_epoch:$epoch}' "$output" > "$output.stamped"
+        '. + {digest:$digest, at:$at, boot_id:$boot,monotonic_seconds:$monotonic,proof_id:$proof,policy_version:$version,authorization_epoch:$epoch,failure_streak:$streak}' "$output" > "$output.stamped"
       mv -f "$output.stamped" /run/proxy-mode/health.json
       rm -f "$output"
       health_gate=$($JQ -r '.reason' /run/proxy-mode/health.json)
@@ -822,6 +833,13 @@ NFT_OFF
         changed=0
       fi
       unlock_state
+      ${lib.optionalString config.my.proxy.controlledSources ''
+      # A request is consumed before downloading. Core restarts caused by an
+      # import therefore cannot trigger an endless fetch / restart cycle.
+      if [ "$ok" = 1 ] && [ "$mode" = proxy ] && [ -f /run/proxy-mode/source-refresh-pending ]; then
+        $SYSTEMCTL start --no-block clash-source-refresh.service >/dev/null 2>&1 || true
+      fi
+      ''}
       [ "$ok" = 1 ]
     }
 
@@ -917,7 +935,7 @@ NFT_OFF
           fi
           if [ "$1" = on ]; then
             ${lib.optionalString config.programs.clash-verge.enable ''
-            ${pkgs.coreutils}/bin/env LF_MANAGED_PROXY_POLICY=${lib.escapeShellArg config.systemd.services.clash-verge.environment.LF_MANAGED_PROXY_POLICY} ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/preflight.py} ${config.programs.clash-verge.package.stageSettings}
+            ${pkgs.coreutils}/bin/env LF_MANAGED_PROXY_POLICY=${lib.escapeShellArg config.systemd.services.clash-verge.environment.LF_MANAGED_PROXY_POLICY} ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/preflight.py} ${config.programs.clash-verge.package.stageSettings} --startup
             ''}
             # An explicit operator action authorizes the configuration the GUI
             # currently holds. The window is single-use: the first core start
@@ -926,11 +944,16 @@ NFT_OFF
             systemctl stop clash-verge.service
             exec 9>/run/proxy-mode/authorization.lock
             flock -x -w 30 9
-            ${pkgs.python3}/bin/python3 -c 'import importlib.util; s=importlib.util.spec_from_file_location("stage", "${../../../programs/clash/service/clash-verge-stage.py}"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.clear_refresh("/run/proxy-mode", "/run/clash-verge-rev")'
+            ${pkgs.python3}/bin/python3 -c 'import importlib.util; s=importlib.util.spec_from_file_location("stage", "${../../../programs/clash/service/clash-verge-stage.py}"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.clear_refresh("/run/proxy-mode", "/run/clash-verge-rev", keep_health_pin=${if config.my.proxy.controlledSources then "True" else "False"})'
             # The helper runs with ProtectProc=invisible and cannot read
             # /proc/sys/kernel/random/boot_id. Publish the identity from this
             # unrestricted context before any launcher can stage a profile.
             ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/clash-verge-stage.py} initialize-boot /run/proxy-mode
+            ${lib.optionalString config.my.proxy.controlledSources ''
+            # Only an explicit start requests a fetch. The source activation
+            # guard also requests proxy intent and must not enqueue an update.
+            (umask 077; : > /run/proxy-mode/source-refresh-pending)
+            ''}
             (umask 077; : > /run/proxy-mode/authorize-window)
             flock -u 9
             ${lib.optionalString config.my.proxy.coreNetns ''
@@ -953,7 +976,10 @@ NFT_OFF
             flock -x -w 30 9
             rm -f /run/proxy-mode/authorized-config /run/proxy-mode/config-digest \
               /run/proxy-mode/authorize-window /run/proxy-mode/effective-config-sha256 /run/proxy-mode/effective-config.json ${frontSock}
-            ${pkgs.python3}/bin/python3 -c 'import importlib.util; s=importlib.util.spec_from_file_location("stage", "${../../../programs/clash/service/clash-verge-stage.py}"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.clear_refresh("/run/proxy-mode", "/run/clash-verge-rev")'
+            ${lib.optionalString config.my.proxy.controlledSources ''
+            rm -f /run/proxy-mode/source-refresh-pending
+            ''}
+            ${pkgs.python3}/bin/python3 -c 'import importlib.util; s=importlib.util.spec_from_file_location("stage", "${../../../programs/clash/service/clash-verge-stage.py}"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.clear_refresh("/run/proxy-mode", "/run/clash-verge-rev", keep_health_pin=${if config.my.proxy.controlledSources then "True" else "False"})'
             flock -u 9
             if [ -f /run/clash-verge-rev/forwarder.pid ]; then
               forwarder_pid=$(cat /run/clash-verge-rev/forwarder.pid 2>/dev/null || true)
@@ -973,6 +999,7 @@ NFT_OFF
             fi
             ${modeScript} --once
           fi
+          flock -u 8
           systemctl start --no-block proxy-net-wake.service
           ;;
         preflight)

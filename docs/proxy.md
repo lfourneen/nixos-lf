@@ -70,21 +70,37 @@ Applying a changed candidate enters C before restarting the core and must pass s
 Without a compatible fallback, C remains in effect.
 
 `clash-off` revokes runtime authority while preserving the source's accepted baseline.
-The next `clash-on` restores that baseline if a newer candidate is refused.
-Stopping and restarting does not approve the refused changes.
+With automatic refresh, the next `clash-on` prefers that baseline under the current managed policy and records `restored`.
+It repeats parser, content-audit and digest checks, and fresh live health still gates B.
+The startup update request stays pending during C. After the coordinator verifies B, the background service consumes the request and starts fetching.
+The request is coalesced so an update restarting the core does not cause repeated downloads.
+A periodic attempt during C defers without reporting a download failure.
+Neither waiting nor downloading blocks foreground core startup or requires waiting for the boot timer.
+A first import without an accepted baseline uses the available candidate and the ordinary health observation window.
+Stopping and restarting does not waive structural checks.
 
-Same-name identity, transport and credential changes are compared against that source's own settled baseline, including after switching away and back.
-Validated DNS rotation with the same logical server identity remains automatic.
-Changing the logical server or TLS name still requires review even when its pinned IP is unchanged.
-Sensitive routes are compared in both directions.
-Exact approval binds candidate, baseline, revision, policy and one-hour expiry.
-It cannot waive certificate, hosts, private-target or malformed-input failures.
+Node identity, authentication and transport changes are compared against that source's own accepted baseline, including after switching sources or rebooting.
+This host automatically approves `node_identity`, `node_authentication` and `node_transport` changes, including logical-server and TLS-name rotation.
+The same policy applies to the first `clash-on` after reboot and to the root refresh timer.
+Routine updates require no manual review.
+
+The reusable `my.proxy.subscriptionAuditAutoApprove` option defaults to an empty list, which disables automatic approval.
+Automatic approval requires controlled sources, `profileRefreshPolicy="auto"`, `subscriptionAudit="enforce"` and an accepted baseline.
+Every deny category must belong to the configured list, and there must be no unresolved findings.
+Private or metadata addresses, certificate-validation bypasses, plaintext credentials, unauthorized hosts overrides, protected-route changes and malformed input continue to block import.
+Sensitive-route changes in either direction are also excluded from automatic approval.
+
+Each automatic record expires after five minutes and binds the candidate, baseline, source revision, managed policy, validator policy and audit policy.
+Import repeats the normal parser, approval checks and blocking audit before health acceptance or rollback.
+Changing the option to `[]` disables automatic approval without weakening checks on existing records.
 See [source registration](operations.md#source-registration).
 
 Source downloads and node-address pinning use the filtered real-address gateway on `127.0.0.1:1056`, independently of B's fake-IP answers.
 Only the dedicated `clash-fetch` account and root can query that port directly.
 The worker still rejects non-public answers and verifies HTTPS certificates.
-If the gateway or its Unbound upstream is unavailable, refresh fails without falling back to system DNS.
+A usable DNS family can be used when the other family is unavailable.
+Downloads validate the entire address set before connecting and retry public addresses within one deadline, preserving HTTPS hostname and certificate checks.
+If no usable answer remains, refresh fails without falling back to system DNS.
 Fresh lookups therefore require the Unbound DoT path in B as well; `unboundDotInProxy=false` leaves only eligible cached answers.
 
 ## Visibility and trust
@@ -98,9 +114,11 @@ Fresh lookups therefore require the Unbound DoT path in B as well; `unboundDotIn
 | Colluding operators | Additional correlations. Local health probes cannot establish their honesty |
 
 Status reports `controlled-fetch`, `legacy-unverified` or unknown provenance separately from mode, routing and availability.
-The panel separates the latest update's audit findings from explicitly approved changes.
+The panel shows the latest refresh result, audit categories and counts, and the last automatic approval with its unique node count and time.
 HTTPS certificate checks authenticate the download connection.
 Publisher content signatures remain unchecked because this configuration has no publisher signature verifier.
+Automatic content checks can reject identifiable risks, but cannot establish who initiated a rotation or authenticate the publisher.
+A domain comparison cannot distinguish an operator rotation from a malicious replacement.
 TLS protects authenticated content, while ECH and separate profiles do not hide accounts, destination IPs or timing.
 An operator can still log or collude.
 
@@ -184,18 +202,26 @@ A validated candidate enters `verifying`.
 Success records `accepted` and establishes the settled baseline.
 Consecutive imports during observation retain that baseline.
 Failure restores it and its authority, restarts the helper and records `rolled_back`.
+
+With a settled fallback, at least two consecutive fresh full-health failures for the same candidate and policy allow rollback after `my.proxy.profileRefreshFailureGraceSeconds`.
+This option defaults to 20 seconds and accepts 20–60 seconds; rollback occurs on the next verifier run.
+Missing or stale failure proofs retain the 60-second window, and successful acceptance always requires that full window.
 If no settled baseline exists, the failure is recorded as `refused` and the health gate continues protecting the host.
 Use `proxy-status` to confirm service recovery.
 The helper unit being active alone does not prove core readiness.
+GUI delay history can be empty after a core restart, and C also blocks GUI latency requests.
+Readiness uses fresh mixed-port and TUN requests, independently of the GUI delay list.
 
 At startup, candidate read or validation failures under `auto` preserve an intact authorized snapshot, record `fallback` and start the core from that snapshot.
 Without a valid fallback, startup fails with exit 78.
 The launcher always runs the effective snapshot.
 Rejected candidate digests are pinned for one hour, so ordinary restarts reuse the rejection without extending its lifetime.
-`clash-on` and `clash-off` clear the pin and pending health check.
+Controlled sources with automatic approval enabled recheck audit rejections against the current policy.
+Within the current boot, controlled sources retain health-failure pins across `clash-on` and `clash-off` for the remaining TTL, preventing the same failed candidate from being approved again.
+Both commands cancel pending health checks. Compatibility GUI imports also clear their pins.
 
 `/run/proxy-mode/profile-refresh.json` is published atomically with mode 0644.
-It contains the policy, latest result, candidate and previous digests, fixed failure reason, snapshot time, last acceptance time, content-audit categories and up to 20 history entries.
+It contains the policy, latest result, candidate and previous digests, fixed failure reason, snapshot time, last acceptance time, content-audit categories, last automatic approval and up to 20 history entries.
 Displayed digests use 12 characters.
 The record excludes subscription URLs, credentials, node names, private paths and raw parser output.
 

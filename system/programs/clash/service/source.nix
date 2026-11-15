@@ -15,8 +15,6 @@ let
     worker = ./source_worker.py;
     broker = ./source_broker.py;
     review = ./source_review.py;
-    launcher = "${config.programs.clash-verge.package}/bin/verge-mihomo";
-    mode_script = "${config.my.proxy.modeScript}";
     setpriv = "${pkgs.util-linux}/bin/setpriv";
     systemctl = "${pkgs.systemd}/bin/systemctl";
     desktop_uid = config.users.users.${config.my.machine.desktopUser}.uid;
@@ -50,12 +48,9 @@ in
       message = "Controlled source downloads require a dedicated fixed clash-fetch UID.";
     }];
 
-    environment.systemPackages = [ command ] ++ map (entry: pkgs.writeShellScriptBin entry.name ''
-      exec ${python}/bin/python3 -I ${./source_review.py} ${settings} ${entry.action} "$@"
-    '') [
-      { name = "clash-diff"; action = "diff"; }
-      { name = "clash-apply"; action = "apply-reviewed"; }
-    ];
+    environment.systemPackages = [ command (pkgs.writeShellScriptBin "clash-diff" ''
+      exec ${python}/bin/python3 -I ${./source_review.py} ${settings} "$@"
+    '') ];
 
     systemd.tmpfiles.rules = [ "d /var/lib/clash-source 0700 root root -" ];
 
@@ -114,7 +109,21 @@ in
       environment.LF_MANAGED_PROXY_POLICY = config.systemd.services.clash-verge.environment.LF_MANAGED_PROXY_POLICY;
 
       script = ''
-        ${command}/bin/clash-source refresh
+        # Bound transient download retries within this job, without rate
+        # limiting a later explicit start or retrying a rejected import.
+        for attempt in 1 2 3; do
+          if ! ${pkgs.python3}/bin/python3 ${./source_refresh.py} download-ready \
+            ${config.programs.clash-verge.package.stageSettings}; then
+            exit 0
+          fi
+          if ${command}/bin/clash-source refresh; then break; fi
+          if ! ${pkgs.python3}/bin/python3 ${./source_refresh.py} download-ready \
+            ${config.programs.clash-verge.package.stageSettings}; then
+            exit 0
+          fi
+          if [ "$attempt" = 3 ]; then exit 1; fi
+          sleep 15
+        done
         if [ "$(cat /run/proxy-mode/intent 2>/dev/null)" = proxy ]; then
           ${pkgs.python3}/bin/python3 ${./source_refresh.py} \
             ${config.programs.clash-verge.package.stageSettings} \

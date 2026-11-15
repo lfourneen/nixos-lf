@@ -1,15 +1,14 @@
-"""Reviewed-update binding and credential-free terminal output."""
+"""Read-only source diagnostics, credential hiding and retired-command refusal."""
 import contextlib
-import copy
-import fcntl
+import hashlib
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -17,84 +16,100 @@ from types import SimpleNamespace
 spec = importlib.util.spec_from_file_location('review', sys.argv.pop(1))
 r = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(r)
-broker_path = sys.argv.pop(1) if len(sys.argv) > 1 else Path(r.__file__).with_name('source_broker.py')
-spec = importlib.util.spec_from_file_location('broker', broker_path)
-b = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(b)
+broker_path = Path(sys.argv.pop(1))
 
 
-class ReviewTests(unittest.TestCase):
+class ComparisonTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.source = Path(temp.name)
-        self.signature = dict(source_id='one', candidate='1' * 64, baseline='2' * 64,
-            generation='3' * 64, revision='4' * 64, policy='5' * 64,
-            categories=['node_identity'], audit={'deny': {'node_identity': 1}, 'unknown': {}})
-        self.report = {'can_apply': True}
-        context = patch.object(r, 'context', side_effect=lambda *_: (
-            copy.deepcopy(self.signature), self.report, None, None))
-        context.start()
-        self.addCleanup(context.stop)
-
-    @staticmethod
-    def private(path):
-        return path.read_bytes()
-
-    @staticmethod
-    def atomic(path, data):
-        path.write_bytes(data)
-        path.chmod(0o600)
+        self.root = Path(temp.name)
+        self.source = self.root / 'one'
+        self.source.mkdir()
+        self.state = self.root / 'state'
+        self.state.mkdir()
+        (self.state / 'state.json').write_text('{"mode":"proxy"}')
+        (self.state / 'intent').write_text('proxy')
+        stage_settings = self.root / 'stage.json'
+        stage_settings.write_text(json.dumps(dict(state=str(self.state), snapshot_tool='stage')))
+        self.settings = dict(stageSettings=str(stage_settings), worker='worker')
+        self.before = {'proxies': [{'name': 'Fixture', 'type': 'vless', 'server': '1.1.1.1',
+            'lf-source-server': 'old.example', 'port': 443, 'uuid': 'secret'}],
+            'proxy-groups': [], 'rules': ['MATCH,Fixture']}
+        self.candidate = self.source / 'candidate'
+        self.candidate.mkdir()
+        after = json.loads(json.dumps(self.before))
+        after['proxies'][0]['lf-source-server'] = 'new.example'
+        (self.candidate / 'clash-verge.yaml').write_text(json.dumps(after))
+        baseline_id = hashlib.sha256(json.dumps(self.before).encode()).hexdigest()
+        self.baseline = self.source / 'approved' / baseline_id
+        self.baseline.mkdir(parents=True)
+        (self.baseline / 'clash-verge.yaml').write_text(json.dumps(self.before))
+        (self.baseline / 'source-manifest.json').write_text('{"source_id":"one"}')
+        (self.source / 'approved/settled.json').write_text(json.dumps(dict(digest=baseline_id)))
+        self.stage = SimpleNamespace(
+            source_input=lambda _: ({}, self.candidate / 'clash-verge.yaml'),
+            source_directory=lambda _: self.source,
+            snapshot_metadata=lambda _: None,
+            snapshot_digest=lambda directory: hashlib.sha256((directory / 'clash-verge.yaml').read_bytes()).hexdigest(),
+            read_record=lambda path: json.loads(path.read_text()))
+        self.findings = dict(verdict='deny', deny={'node_identity': 1}, warn={}, unknown={})
+        self.record = dict(digest=self.stage.snapshot_digest(self.candidate), audit=self.findings, result='fallback')
+        (self.state / 'profile-refresh.json').write_text(json.dumps(self.record))
+        modules = patch.object(r, 'module', side_effect=lambda name, _: (
+            self.stage if name == 'review_stage' else SimpleNamespace(load=json.loads)))
+        modules.start()
+        self.addCleanup(modules.stop)
 
     def compare(self):
-        return r.compare({}, self.source, self.private, self.atomic)
+        return r.compare(self.settings, self.source, lambda path, *_: path.read_bytes())
 
-    def apply(self):
-        return r.approve_reviewed({}, self.source, self.private, self.atomic)
+    def test_comparison_leaves_snapshots_mode_and_old_records_untouched(self):
+        (self.source / 'review.json').write_text('{"retired":"review"}')
+        (self.source / 'approval.json').write_text('{"old":"approval"}')
+        before = {str(p): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        report = self.compare()
+        self.assertTrue(report['audit_current'])
+        self.assertEqual(report['audit'], self.findings)
+        self.assertNotIn('can_apply', report)
+        self.assertEqual(report['nodes'][0]['changes'], [dict(field='logical-server', hidden=False,
+            before='old.example', after='new.example')])
+        self.assertEqual({str(p): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}, before)
 
-    def test_comparison_creates_a_private_review_without_approval(self):
-        self.compare()
-        self.assertTrue((self.source / 'review.json').exists())
-        self.assertEqual((self.source / 'review.json').stat().st_mode & 0o777, 0o600)
-        self.assertFalse((self.source / 'approval.json').exists())
-        self.apply()
-        approved = json.loads((self.source / 'approval.json').read_bytes())
-        for key in ('candidate', 'baseline', 'revision', 'policy', 'categories'):
-            self.assertEqual(approved[key], self.signature[key])
+    def test_diagnostics_do_not_attach_another_candidates_audit(self):
+        self.record['digest'] = '0' * 64
+        (self.state / 'profile-refresh.json').write_text(json.dumps(self.record))
+        report = self.compare()
+        self.assertFalse(report['audit_current'])
+        self.assertEqual(report['audit'], {})
 
-    def test_apply_requires_a_prior_comparison(self):
-        with self.assertRaisesRegex(r.ReviewError, 'clash-diff'):
-            self.apply()
-        self.assertFalse((self.source / 'approval.json').exists())
+    def test_changed_baseline_and_source_are_refused(self):
+        original = (self.baseline / 'clash-verge.yaml').read_bytes()
+        (self.baseline / 'clash-verge.yaml').write_text('{}')
+        with self.assertRaisesRegex(r.ReviewError, 'baseline has changed'):
+            self.compare()
+        (self.baseline / 'clash-verge.yaml').write_bytes(original)
+        self.stage.source_directory = lambda _: self.root / 'other'
+        with self.assertRaisesRegex(r.ReviewError, 'Source changed'):
+            self.compare()
 
-    def test_changed_context_refuses_the_reviewed_update(self):
-        original = copy.deepcopy(self.signature)
-        for key in ('source_id', 'candidate', 'baseline', 'generation', 'revision', 'policy', 'categories', 'audit'):
-            with self.subTest(field=key):
-                self.signature = copy.deepcopy(original)
-                self.compare()
-                self.signature[key] = [] if isinstance(original[key], list) else {} if isinstance(original[key], dict) else 'changed'
-                with self.assertRaisesRegex(r.ReviewError, 'changed or expired'):
-                    self.apply()
-                self.assertFalse((self.source / 'approval.json').exists())
+    def test_retired_approval_commands_are_rejected_before_reading_private_state(self):
+        for command in ('approve', 'apply-reviewed'):
+            result = subprocess.run([sys.executable, str(broker_path), '/nonexistent/settings', command],
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('invalid choice', result.stderr)
 
-    def test_expired_or_future_review_does_not_grant_approval(self):
-        for expires in (time.time() - 1, time.time() + 7200):
-            with self.subTest(expires=expires):
-                self.compare()
-                path = self.source / 'review.json'
-                path.write_text(json.dumps(dict(self.signature, expires=expires)))
-                with self.assertRaises(r.ReviewError):
-                    self.apply()
-                self.assertFalse((self.source / 'approval.json').exists())
-
-    def test_blocked_candidate_clears_an_earlier_review(self):
-        self.compare()
-        self.report['can_apply'] = False
-        self.compare()
-        self.assertFalse((self.source / 'review.json').exists())
-        with self.assertRaises(r.ReviewError):
-            self.apply()
+    def test_cli_only_dispatches_read_only_comparison(self):
+        self.settings.update(python=sys.executable, broker=str(broker_path))
+        settings = self.root / 'settings.json'
+        settings.write_text(json.dumps(self.settings))
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['clash-diff', str(settings), '--json']), contextlib.redirect_stdout(output), \
+                patch.object(r.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout='{"mode":"proxy"}')) as run:
+            r.main()
+        self.assertEqual(run.call_args.args[0][-2:], [str(settings), 'diff'])
+        self.assertEqual(json.loads(output.getvalue()), {'mode': 'proxy'})
 
     def test_identity_comparison_hides_authentication_and_nested_options(self):
         before = {'name': '节点', 'type': 'vless', 'server': '1.1.1.1', 'lf-source-server': 'old.example',
@@ -112,8 +127,7 @@ class ReviewTests(unittest.TestCase):
 
     def test_terminal_output_wraps_unicode_and_removes_control_characters(self):
         report = dict(source='one', baseline='1' * 64, candidate='2' * 64,
-            before_nodes=1, after_nodes=1, audit={'deny': {'node_identity': 1}}, can_apply=True,
-            blocked_categories=[], nodes=[{'name': '节点' * 40 + '\x1b[31m', 'added': False,
+            before_nodes=1, after_nodes=1, audit={'deny': {'node_identity': 1}}, audit_current=True, nodes=[{'name': '节点' * 40 + '\x1b[31m', 'added': False,
             'changes': [{'field': 'logical-server', 'hidden': False,
                          'before': 'old.example', 'after': 'new.example'}]}],
             removed_nodes=[], removed_groups=[], rules=[], groups=[])
@@ -124,90 +138,6 @@ class ReviewTests(unittest.TestCase):
         self.assertIn('old.example', output.getvalue())
         self.assertIn('new.example', output.getvalue())
         self.assertTrue(all(r.width(line) <= 50 for line in output.getvalue().splitlines()))
-
-
-class ApplyModesTests(unittest.TestCase):
-    def setUp(self):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        self.root = Path(temp.name)
-        self.source = self.root / 'sources/one'
-        self.source.mkdir(parents=True, mode=0o700)
-        self.state = self.root / 'state'
-        self.state.mkdir()
-        (self.root / 'selected').symlink_to('sources/one')
-        b.atomic(self.source / 'registry.json', b'{"id":"one"}')
-        self.stage_settings = {'state': str(self.state), 'runtime': str(self.root / 'runtime')}
-        settings_file = self.root / 'stage.json'
-        settings_file.write_text(json.dumps(self.stage_settings))
-        self.settings = {'stageSettings': str(settings_file), 'launcher': '/fixed/core', 'mode_script': '/fixed/mode'}
-        self.signature = dict(source_id='one', candidate='1' * 64, baseline='2' * 64,
-            generation='3' * 64, revision='4' * 64, policy='5' * 64,
-            categories=['node_identity'], audit={'deny': {'node_identity': 1}, 'unknown': {}})
-        self.stage = SimpleNamespace(restart_core=unittest.mock.Mock(side_effect=self.restart),
-            snapshot_digest=lambda _: self.signature['candidate'],
-            read_record=lambda path: json.loads(path.read_text()))
-        self.locks_checked = 0
-        self.requests = unittest.mock.Mock(side_effect=self.request_proxy)
-        for target, replacement in (
-            (r, ('context', lambda *_: (copy.deepcopy(self.signature), {'can_apply': True}, self.stage, self.stage_settings))),
-            (b, ('read_private', lambda path, *_: path.read_bytes())),
-            (b.subprocess, ('run', self.requests)),
-        ):
-            context = patch.object(target, *replacement)
-            context.start()
-            self.addCleanup(context.stop)
-        r.compare(self.settings, self.source, b.read_private, b.atomic)
-
-    def request_proxy(self, command, **kwargs):
-        self.assertEqual(command, ['/fixed/mode', '--request-proxy'])
-        (self.state / 'state.json').write_text('{"mode":"blocked"}')
-
-    def restart(self, settings):
-        self.assertEqual(json.loads((self.state / 'state.json').read_text())['mode'], 'blocked')
-        # Helper staging must be able to take SH, while refresh/selection and
-        # another on/off/apply cannot enter the same transaction.
-        with (self.root / 'source.lock').open('a') as shared:
-            fcntl.flock(shared, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        for path in (self.root / 'source.lock', self.state / 'operator.lock'):
-            with path.open('a') as exclusive, self.assertRaises(BlockingIOError):
-                fcntl.flock(exclusive, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with (self.state / 'authorization.lock').open('a') as authorization:
-            fcntl.flock(authorization, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        self.locks_checked += 1
-        (self.source / 'approval.json').unlink()  # The real stage consumes it.
-
-    def test_modes_follow_the_latest_operator_intent(self):
-        for mode, intent in (('direct', 'direct'), ('proxy', 'proxy'),
-                             ('blocked', 'proxy'), ('blocked', 'direct')):
-            with self.subTest(mode=mode, intent=intent):
-                (self.state / 'state.json').write_text(json.dumps({'mode': mode}))
-                (self.state / 'intent').write_text(intent)
-                self.stage.restart_core.reset_mock()
-                self.requests.reset_mock()
-                r.compare(self.settings, self.source, b.read_private, b.atomic)
-                result = b.apply_reviewed(self.settings, self.root, r)
-                self.assertEqual(result['mode'], 'blocked' if intent == 'proxy' else mode)
-                self.assertEqual(result['intent'], intent)
-                self.assertEqual(result['result'], 'applied' if intent == 'proxy' else 'approved')
-                self.assertEqual(self.stage.restart_core.call_count, int(intent == 'proxy'))
-                self.assertEqual(self.requests.call_count, int(intent == 'proxy'))
-                self.assertEqual((self.state / 'intent').read_text(), intent)
-                self.assertFalse((self.source / 'review.json').exists())
-                self.assertEqual((self.source / 'approval.json').exists(), intent == 'direct')
-                with (self.state / 'operator.lock').open('a') as operator:
-                    fcntl.flock(operator, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        self.assertEqual(self.locks_checked, 2)
-
-    def test_failed_restart_removes_unused_approval(self):
-        (self.state / 'intent').write_text('proxy')
-        for error in (OSError('fixture restart failure'), KeyboardInterrupt()):
-            with self.subTest(error=type(error).__name__):
-                self.stage.restart_core.side_effect = error
-                with self.assertRaises(type(error)):
-                    b.apply_reviewed(self.settings, self.root, r)
-                self.assertFalse((self.source / 'approval.json').exists())
-                self.assertTrue((self.source / 'review.json').exists())
 
 
 if __name__ == '__main__':

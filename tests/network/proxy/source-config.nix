@@ -5,7 +5,7 @@ let
   h = c.home-manager.users.${c.my.machine.desktopUser};
   entries = builtins.filter (p: builtins.elem (p.name or "") [ "firefox-identity" "firefox-portal" ]) h.home.packages;
   command = builtins.head (builtins.filter (p: (p.pname or (p.name or "")) == "clash-source") c.environment.systemPackages);
-  reviewCommands = builtins.filter (p: builtins.elem (p.pname or (p.name or "")) [ "clash-diff" "clash-apply" ]) c.environment.systemPackages;
+  diagnosticCommands = builtins.filter (p: builtins.elem (p.pname or (p.name or "")) [ "clash-diff" ]) c.environment.systemPackages;
 
 in
 assert c.my.proxy.controlledSources && c.my.proxy.strictBrowser;
@@ -25,11 +25,13 @@ assert builtins.elem "clash-core" c.systemd.services.clash-source-refresh.servic
 assert !(builtins.elem "CAP_NET_ADMIN" c.systemd.services.clash-source-refresh.serviceConfig.CapabilityBoundingSet);
 assert c.systemd.services.clash-source-guard.serviceConfig.CapabilityBoundingSet == [ "CAP_NET_ADMIN" ];
 assert c.systemd.services.clash-source-guard.serviceConfig.NoNewPrivileges;
-assert builtins.length reviewCommands == 2;
+assert builtins.length diagnosticCommands == 1;
+assert !(builtins.any (p: (p.pname or (p.name or "")) == "clash-apply") c.environment.systemPackages);
+assert !(pkgs.lib.hasInfix "clash-apply" h.programs.nushell.extraConfig);
 
 pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3 ]; } ''
   test -x ${command}/bin/clash-source
-  ${pkgs.lib.concatMapStringsSep "\n" (p: "${p}/bin/${p.name} --help >/dev/null") reviewCommands}
+  ${pkgs.lib.concatMapStringsSep "\n" (p: "${p}/bin/${p.name} --help >/dev/null") diagnosticCommands}
   ${pkgs.lib.concatMapStringsSep "\n" (p: "test -d ${p}/bin") entries}
   python3 - <<'PY'
   import json
@@ -37,6 +39,8 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   stage = json.loads(Path('${c.programs.clash-verge.package.stageSettings}').read_text())
   browser = json.loads(Path('${h.programs.firefox.finalPackage.netsec.settings}').read_text())
   assert stage['source_root'] == '/var/lib/clash-source'
+  assert stage['audit_auto_approve'] == ['node_identity', 'node_authentication', 'node_transport']
+  assert '${c.systemd.timers.clash-source-refresh.timerConfig.OnUnitActiveSec}' == '30min'
   assert browser['requireProxy'] is False and browser['proxyPort'] == 18080
   ${pkgs.lib.concatMapStringsSep "\n" (p: ''
   isolated = json.loads(Path('${p.netsec.settings}').read_text())

@@ -1,11 +1,13 @@
 """Selection transactions with synthetic root-approved registries and no network."""
 import importlib.util
+import fcntl
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('broker', sys.argv.pop(1))
@@ -15,6 +17,64 @@ worker = sys.argv.pop(1)
 
 
 class RegistryTests(unittest.TestCase):
+    def test_network_wait_releases_publication_lock_and_rechecks_registration_and_selection(self):
+        self.register('one')
+        self.register('two')
+        source = self.root / 'sources/one'
+        policy = self.root / 'policy.json'
+        policy.write_text('{}')
+        settings = dict(root=str(self.root), policy=str(policy), forced_domains=[], assets={},
+                        setpriv='/fixed/setpriv', python='/fixed/python', worker=worker, ca='/fixed/ca')
+        def download(*args, **kwargs):
+            with (self.root / 'source.lock').open('a') as foreground:
+                fcntl.flock(foreground, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            kwargs['stdout'].write(json.dumps(dict(yaml='proxies: []\n', responses=[], dropped=0)).encode())
+            return SimpleNamespace(returncode=0)
+        with (self.root / 'source.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            settings['_fetch_lock'] = lock
+            with patch.object(b.subprocess, 'run', side_effect=download):
+                b.refresh(settings, source)
+            current = (source / 'current').readlink()
+            original = (source / 'registry.json').read_bytes()
+            def revoked(*args, **kwargs):
+                result = download(*args, **kwargs)
+                b.atomic(source / 'registry.json', original + b'\n')
+                return result
+            with patch.object(b.subprocess, 'run', side_effect=revoked), self.assertRaisesRegex(ValueError, 'changed during download'):
+                b.refresh(settings, source)
+            self.assertEqual((source / 'current').readlink(), current)
+            b.atomic(source / 'registry.json', original)
+            def switched(*args, **kwargs):
+                result = download(*args, **kwargs)
+                b.select(self.root, self.root / 'sources/two')
+                return result
+            with patch.object(b.subprocess, 'run', side_effect=switched), self.assertRaisesRegex(ValueError, 'changed during download'):
+                b.refresh(settings, source)
+            self.assertEqual((source / 'current').readlink(), current)
+
+    def test_fetch_diagnostics_follow_worker_outcome_without_private_error_text(self):
+        state = self.root / 'state'
+        state.mkdir()
+        (state / 'boot-id').write_text('fixture-boot')
+        settings_file = self.root / 'stage.json'
+        settings_file.write_text(json.dumps(dict(state=str(state))))
+        settings = dict(stageSettings=str(settings_file))
+        with patch.object(b, 'refresh_generation'):
+            b.refresh(settings, self.root)
+        self.assertEqual(json.loads((state / 'source-fetch.json').read_text())['result'], 'downloaded')
+        with patch.object(b, 'refresh_generation', side_effect=b.SourceFailure(
+                'https://private.invalid/token', 'fetch', 'http rejected', 503)):
+            with self.assertRaises(b.SourceFailure):
+                b.refresh(settings, self.root)
+        record = json.loads((state / 'source-fetch.json').read_text())
+        self.assertEqual((record['result'], record['reason'], record['http_status']), ('failed', 'http rejected', 503))
+        self.assertNotIn('private', json.dumps(record))
+        (state / 'boot-id').unlink()
+        with patch.object(b, 'refresh_generation') as generation:
+            b.refresh(settings, self.root)
+        generation.assert_called_once()
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

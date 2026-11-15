@@ -6,7 +6,7 @@ let
 in
 {
   systemd.user.services.clash-profile-refresh-notify = {
-    Unit.Description = "Remind about rejected or stale local subscription updates";
+    Unit.Description = "Notify about failed subscription updates and proxy health";
     Service = {
       Type = "oneshot";
       ExecStart = "${python}/bin/python3 ${./refresh_notify.py} ${../../../system/config/network/proxy/state.py} ${pkgs.libnotify}/bin/notify-send";
@@ -16,7 +16,7 @@ in
   };
 
   systemd.user.timers.clash-profile-refresh-notify = {
-    Unit.Description = "Check local subscription health every five minutes";
+    Unit.Description = "Check local subscription update failures every five minutes";
     Timer = {
       OnStartupSec = "5m";
       OnUnitActiveSec = "5m";

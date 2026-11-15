@@ -1,5 +1,6 @@
 """Root-only source registration and publication. Secrets never enter argv/logs."""
 import argparse
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import importlib.util
@@ -262,7 +263,61 @@ def register(root, data, expected, previous):
         select(root, path)
 
 
+def publish_fetch(settings, result, phase=None, reason=None, http_status=None):
+    try:
+        _publish_fetch(settings, result, phase, reason, http_status)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass  # A missing diagnostic directory must not block the downloader.
+
+
+def _publish_fetch(settings, result, phase=None, reason=None, http_status=None):
+    """Separate download outcome from the runtime's import/health decision."""
+    if not settings.get('stageSettings'):
+        return
+    state = Path(json.loads(Path(settings['stageSettings']).read_text())['state'])
+    if not state.is_dir():
+        return
+    value = dict(at=time.time(), boot_id=(state / 'boot-id').read_text().strip(), result=result)
+    if phase in ('fetch', 'parse', 'render', 'pin-addresses', 'worker'):
+        value['phase'] = phase
+    if reason in FETCH_REASONS:
+        value['reason'] = reason
+    if type(http_status) is int and 100 <= http_status <= 599:
+        value['http_status'] = http_status
+    atomic(state / 'source-fetch.json', (json.dumps(value) + '\n').encode(), mode=0o644)
+
+
 def refresh(settings, root):
+    publish_fetch(settings, 'fetching')
+    try:
+        refresh_generation(settings, root)
+    except SourceFailure as error:
+        publish_fetch(settings, 'failed', error.phase, error.reason, error.http_status)
+        raise
+    except Exception:
+        publish_fetch(settings, 'failed', 'worker', 'worker failure')
+        raise
+    publish_fetch(settings, 'downloaded')
+
+
+@contextmanager
+def download_window(settings):
+    lock = settings.get('_fetch_lock')
+    if lock is None:
+        yield
+        return
+    # Never queue another download while holding the publication lock: the
+    # first worker must reacquire that lock before it can finish.
+    with (Path(settings['root']) / 'download.lock').open('a') as download:
+        fcntl.flock(download, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        try:
+            yield
+        finally:
+            acquire(lock)
+
+
+def refresh_generation(settings, root):
     raw = read_private(root / 'registry.json')
     registry = json.loads(raw)
     request = json.dumps(dict(registry=registry, policy=json.loads(Path(settings['policy']).read_text()),
@@ -276,16 +331,24 @@ def refresh(settings, root):
     def limits():
         resource.setrlimit(resource.RLIMIT_FSIZE, (48 * 1024 * 1024,) * 2)
         resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-    with tempfile.TemporaryFile() as output:
-        process = subprocess.run(argv, input=request, stdout=output, stderr=subprocess.DEVNULL,
-                                timeout=50, env={'PATH': '', 'SSL_CERT_FILE': settings['ca']}, preexec_fn=limits)
-        output.seek(0)
-        data = output.read(48 * 1024 * 1024 + 1)
+    with download_window(settings):
+        with tempfile.TemporaryFile() as output:
+            process = subprocess.run(argv, input=request, stdout=output, stderr=subprocess.DEVNULL,
+                                    timeout=50, env={'PATH': '', 'SSL_CERT_FILE': settings['ca']}, preexec_fn=limits)
+            output.seek(0)
+            data = output.read(48 * 1024 * 1024 + 1)
+    # Downloading grants no authority. Registration and selection can change
+    # while the worker runs, so reject its result before touching generations.
+    if read_private(root / 'registry.json') != raw or (settings.get('_fetch_lock') is not None
+            and selected(Path(settings['root'])) != root):
+        raise ValueError('source registration or selection changed during download')
     if len(data) > 48 * 1024 * 1024:
         raise ValueError('source worker refused')
     result = json.loads(data)
     if isinstance(result, dict) and result.get('error') in ('fetch', 'parse', 'render', 'pin-addresses', 'worker'):
-        raise SourceFailure('source ' + result['error'] + ' refused')
+        reason = result.get('reason') if result.get('reason') in FETCH_REASONS else 'worker failure'
+        raise SourceFailure('source ' + result['error'] + ' refused (' + reason + ')',
+                            result['error'], reason, result.get('http_status'))
     if process.returncode or not isinstance(result, dict) or 'yaml' not in result:
         raise ValueError('source worker refused')
     config = result['yaml'].encode()
@@ -336,8 +399,16 @@ def refresh(settings, root):
             shutil.rmtree(candidate)
 
 
+FETCH_REASONS = frozenset(('dns lookup failed', 'certificate rejected', 'tls failed',
+    'connection timeout', 'connection refused', 'connection reset', 'network unreachable',
+    'http rejected', 'encoding unsupported', 'redirect refused', 'destination refused',
+    'response limit', 'yaml invalid', 'configuration unsupported', 'node resolution failed', 'worker failure'))
+
+
 class SourceFailure(ValueError):
-    pass
+    def __init__(self, message, phase='worker', reason='worker failure', http_status=None):
+        super().__init__(message)
+        self.phase, self.reason, self.http_status = phase, reason, http_status
 
 
 def review_module(settings):
@@ -359,41 +430,6 @@ def acquire(stream, operation=fcntl.LOCK_EX):
             time.sleep(.05)
 
 
-def apply_reviewed(settings, root, review):
-    stage_settings = json.loads(Path(settings['stageSettings']).read_text())
-    state = Path(stage_settings['state'])
-    # Match the operator/verifier lock order. The helper takes a shared source
-    # lock while staging, so retain a shared lock across restart, never EX.
-    with (state / 'operator.lock').open('a') as operator, (root / 'source.lock').open('a') as source_lock:
-        acquire(operator)
-        acquire(source_lock)
-        migrate(root)
-        acquire(source_lock, fcntl.LOCK_SH)
-        source = selected(root)  # Re-read after flock's non-atomic downgrade.
-        intent = (state / 'intent').read_text().strip()
-        if intent not in ('direct', 'proxy'):
-            raise review.ReviewError('Network intent is unavailable. Check proxy-status.')
-        with (state / 'authorization.lock').open('a') as authorization:
-            acquire(authorization)
-            signature, stage, stage_settings = review.approve_reviewed(settings, source, read_private, atomic)
-        try:
-            if intent == 'proxy':
-                # Arm C before stopping a working core; do not depend on a
-                # later observation of its disappearance to revoke B.
-                subprocess.run([settings['mode_script'], '--request-proxy'], check=True, timeout=15)
-                stage_settings['launcher'] = settings['launcher']
-                stage.restart_core(stage_settings)
-                if stage.snapshot_digest(Path(stage_settings['runtime']) / 'effective') != signature['candidate']:
-                    raise review.ReviewError('The reviewed candidate was not applied. Inspect proxy-status.')
-            (source / 'review.json').unlink(missing_ok=True)
-            return dict(source=source.name, candidate=signature['candidate'],
-                        intent=intent, mode=stage.read_record(state / 'state.json').get('mode', 'unknown'),
-                        result='applied' if intent == 'proxy' else 'approved')
-        except BaseException:
-            (source / 'approval.json').unlink(missing_ok=True)
-            raise
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('settings')
@@ -406,8 +442,7 @@ def main():
             p.add_argument('--digest', required=True)
             p.add_argument('--previous', required=True, help='current digest, or none for first registration')
     sub.add_parser('refresh')
-    sub.add_parser('diff')
-    sub.add_parser('apply-reviewed')
+    sub.add_parser('diff', help='read-only comparison of local source snapshots')
     choose = sub.add_parser('use')
     choose.add_argument('id')
     choose.add_argument('--revision')
@@ -415,42 +450,31 @@ def main():
     sub.add_parser('gui-select')
     revoke = sub.add_parser('revoke')
     revoke.add_argument('id')
-    approval = sub.add_parser('approve')
-    approval.add_argument('--digest', required=True)
-    approval.add_argument('--baseline', required=True)
-    approval.add_argument('--categories', nargs='+', required=True,
-                          choices=['node_identity', 'node_authentication', 'node_transport', 'sensitive_route'])
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise ValueError('root required')
     settings = json.loads(Path(args.settings).read_text())
     root = Path(settings['root'])
     state_root(root)
-    review = review_module(settings) if args.action in ('diff', 'apply-reviewed') else None
-    if args.action == 'apply-reviewed':
-        try:
-            print(json.dumps(apply_reviewed(settings, root, review)))
-        except review.ReviewError as error:
-            print(str(error), file=sys.stderr)
-            raise SystemExit(1)
-        return
+    review = review_module(settings) if args.action == 'diff' else None
     with (root / 'source.lock').open('a') as lock:
         if args.action == 'diff':
             acquire(lock)
         else:
             fcntl.flock(lock, fcntl.LOCK_EX)
-        migrate(root)
         if args.action == 'diff':
             state = Path(json.loads(Path(settings['stageSettings']).read_text())['state'])
             with (state / 'authorization.lock').open('a') as authorization:
                 acquire(authorization)
                 try:
-                    report = review.compare(settings, selected(root), read_private, atomic)
+                    source = selected(root) if (root / 'selected').is_symlink() else root
+                    report = review.compare(settings, source, read_private)
                 except review.ReviewError as error:
                     print(str(error), file=sys.stderr)
                     raise SystemExit(1)
             print(json.dumps(report, ensure_ascii=False))
             return
+        migrate(root)
         if args.action == 'list':
             active = selected(root).name if (root / 'selected').is_symlink() else None
             print(json.dumps({'selected': active, 'sources': [
@@ -472,27 +496,9 @@ def main():
             shutil.rmtree(path)
             print('inactive source revoked; other sources retained')
             return
-        if args.action in ('approve', 'refresh'):
-            root = selected(root)
-        if args.action == 'approve':
-            stage = json.loads(Path(settings['stageSettings']).read_text())
-            runtime_state = Path(stage['state'])
-            with (runtime_state / 'authorization.lock').open('a') as authorization:
-                fcntl.flock(authorization, fcntl.LOCK_EX)
-                last = json.loads((runtime_state / 'profile-refresh.json').read_text())
-                settled = json.loads(read_private(root / 'approved' / 'settled.json'))
-                if (not re.fullmatch('[0-9a-f]{64}', args.digest) or last.get('digest') != args.digest or
-                        last.get('result') not in ('fallback', 'refused') or settled.get('digest') != args.baseline):
-                    raise ValueError('approval candidate or baseline changed')
-                value = dict(candidate=args.digest, baseline=args.baseline,
-                             revision=digest(read_private(root / 'registry.json')),
-                             policy=digest(Path(stage['managed_policy']).read_bytes()),
-                             categories=sorted(set(args.categories)), expires=time.time() + 3600)
-                atomic(root / 'approval.json', json.dumps(value).encode())
-            print('exact semantic difference approved for one hour; refresh to retry')
-            return
         if args.action == 'refresh':
-            refresh(settings, root)
+            settings['_fetch_lock'] = lock
+            refresh(settings, selected(root))
             print('source candidate prepared; runtime validation remains required')
             return
         values = definitions(read_private(args.file), args.source_id)

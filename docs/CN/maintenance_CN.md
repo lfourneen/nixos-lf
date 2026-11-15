@@ -148,6 +148,22 @@ Helper 串行处理启动，对相同请求复用最近 30 秒内完成的结果
 [source_refresh.py](../../system/programs/clash/service/source_refresh.py) 在重启健康且已授权的核心前检查登记候选。
 它使用隔离副本，复用导入时的非特权解析器与审计执行规则，不改写运行缓存，也不授予运行权限。
 候选、来源版本、settled 基线和 root 策略的绑定须保持到实际切换。
+符合策略的节点变化生成 root 私有、有效期五分钟的 `approval.json`，实际导入仍由原有批准读取器校验。
+记录还绑定审计和验证器策略，结构类别及未确定结果不能参与自动批准。
+
+启动时恢复符合当前受管策略的已接受来源，更新请求保持待处理，直到 B 通过验证。恢复仍重复静态检查，进入 B 仍要求实际健康证明。
+仅显式 `on` 与 C 中延期的自动任务创建 `source-refresh-pending`。服务在下载前消费请求，显式 `off` 时清除。
+内部代理意图保护动作不排队更新。这些规则防止激活触发下载与重启循环。
+自动任务在 C 中延期，不消耗下载重试，也不放宽应用防护。
+该路径与刷新预检须保持一致。
+
+定时下载在网络等待期间释放来源发布锁，重新加锁后核对登记和所选来源，再发布候选。
+须保留这项复核，使前台能够启动，同时阻止已撤销输入被发布。
+
+本次启动内，显式 on/off 操作保留健康失败 pin 的剩余 TTL。连续的新鲜完整失败证明可在配置的宽限期后触发回滚，成功接受仍保留完整的 60 秒观察期。
+
+已有精确 `approval.json` 记录仍按原有绑定要求校验。
+来源比较不提供批准或激活动作。
 
 检查期间释放授权锁，重新加锁后再次核对运行健康和输入绑定。
 接受或回滚事务尚未收尾时，本次刷新暂缓处理。
@@ -331,7 +347,7 @@ VM 检查运行在隔离的虚拟机中，硬件加速需要 KVM 权限。
 |---|---|
 | `proxy-control` | 临时文件验证快照授权、过期、重启、恶意输入和权限，以及 B 租约证明单次消费、休眠/代次拒绝 |
 | `proxy-refresh` | 离线审计、有界 HTTP 检查、本地更新状态和通知去重 |
-| `proxy-source` | 登记来源下载、渲染、审阅、候选预检、运行授权保留及异常核心恢复 |
+| `proxy-source` | 登记来源下载与渲染、只读比较、自动批准绑定、重启导入、候选预检及运行恢复 |
 | `proxy-source-config` | 来源与浏览器配置、私有 DNS 路径、下载和策略能力分离 |
 | `proxy-refresh-vm` | 真实 auto/enforce helper 与核心：健康接受、坏候选回退、pin 重启、回滚及 desired-state 恢复 |
 | `proxy-upgrade-review` | 所选源码/依赖/recipe 基线、组件覆盖、检查名称及源码兼容性检查。输入检查也接入正常系统构建 |
@@ -362,7 +378,7 @@ VM 检查运行在隔离的虚拟机中，硬件加速需要 KVM 权限。
 | `browser-sandbox-vm` | 真实 Wayland Firefox、系统根 TLS 与无效证书拒绝、父进程隔离、音频、门户授权、链接复用、代次/重启及总线代理故障阻断 |
 | `browser-ech-vm` | 真实 Firefox/helper/核心、原生 HTTPS 发现、ECH 与 GREASE、密钥/无 ECH 重试、不可信拒绝、证书错误、掩护名不改目标及 A/C 行为 |
 | `browser-ech-uniform-vm` | 在 `proxyOnly=true` 下验证相同真实浏览器路径及策略消费 |
-| `proxy-managed-netns-vm` | 登记 TLS 来源、拒绝候选后保持核心、授权与已有 TLS 连接，精确批准，以及生产核心 namespace 的完整就绪、严格入口、C 撤权和来源切换 |
+| `proxy-managed-netns-vm` | 登记 TLS 来源、拒绝候选后保持核心、授权与已有 TLS 连接，自动轮换与结构阻断，以及生产核心 namespace 的完整就绪、严格入口、C 撤权和来源切换 |
 | `proxy-control-vm` | 真实 helper/launcher、生产 netns/宿主权限边界、localhost 双栈 TCP/UDP、地址冲突、断链/恢复、授权、DNS、TUN 与 C→B 恢复 |
 | `proxy-uniform-vm` | 统一代理下的生产 helper/核心：全新 TCP/UDP 的 DIRECT 拒绝、双栈 UDP、原生 IPv6 TUN 和恢复 |
 | `proxy-network-vm` | 广泛内核故障注入：模式、DNS、租约、休眠、访客、TPROXY 和恢复 |

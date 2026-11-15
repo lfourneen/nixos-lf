@@ -12,6 +12,7 @@
   # Keep the offline content audit in blocking mode for this host. Reusable
   # modules and VM fixtures retain the warn default.
   my.proxy.subscriptionAudit = "enforce";
+  my.proxy.subscriptionAuditAutoApprove = [ "node_identity" "node_authentication" "node_transport" ];
   my.proxy.remoteOnlyCatchAll = true;
 
   # Subscription hosts overrides are limited to these public time services.

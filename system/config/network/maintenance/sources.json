@@ -390,13 +390,16 @@
       "entrypoints": [
         "system/programs/clash/service/source_worker.py",
         "system/programs/clash/service/source_broker.py",
-        "system/programs/clash/service/clash-verge-stage.py"
+        "system/programs/clash/service/clash-verge-stage.py",
+        "system/programs/clash/service/source_refresh.py",
+        "system/programs/clash/service/subscription_audit.py"
       ],
       "invariants": [
         "Only a root-registered source and deterministic conversion can publish controlled candidates; GUI files cannot authorize provenance.",
         "Provider contents and responses belong to immutable snapshots; settled authority persists across boots.",
         "Each registered source retains its own baseline and approvals; desktop selection accepts only root-approved GUI UID mappings.",
-        "Cross-origin credentials, private/translated targets, unsupported providers and semantic identity changes fail closed."
+        "Cross-origin credentials, private/translated targets, unsupported providers and structural audit findings fail closed.",
+        "Configured node identity/authentication/transport changes use short-lived approvals bound to candidate, settled baseline, source revision and policies; startup and refresh retain the same parser, audit and health gates."
       ]
     },
     "browser-isolation": {

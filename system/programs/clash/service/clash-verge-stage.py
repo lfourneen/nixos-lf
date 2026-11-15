@@ -202,9 +202,10 @@ class RefreshError(ValueError):
 
 REASONS = {'configuration invalid', 'input unreadable', 'validation timeout',
            'snapshot mismatch', 'blocked by audit', 'audit indeterminate',
-           'operator authorization required', 'unknown', 'node', 'tun', 'dns'}
+           'operator authorization required', 'recent health failure', 'unknown', 'node', 'tun', 'dns', 'obs'}
 PIN_TTL = 3600
 HISTORY = 20
+AUTO_APPROVAL_CATEGORIES = frozenset(('node_identity', 'node_authentication', 'node_transport'))
 AUDIT_CATEGORIES = frozenset((
     'yaml_structure', 'private_server', 'certificate', 'empty_nodes', 'group_reference',
     'hosts_override', 'provider_change', 'rule_provider_change', 'sensitive_route',
@@ -258,12 +259,31 @@ def clean_findings(findings):
                 return None
             kept[str(key)] = value
         result[field] = kept
+    nodes = findings.get('changed_nodes')
+    if type(nodes) is int and 0 <= nodes <= 10000:
+        result['changed_nodes'] = nodes
+    automatic = clean_auto_approval(findings.get('auto_approval'))
+    if automatic:
+        result['auto_approval'] = automatic
     return result
+
+
+def clean_auto_approval(value):
+    if not isinstance(value, dict):
+        return None
+    categories, nodes, at = value.get('categories'), value.get('nodes'), value.get('at')
+    if (not isinstance(categories, dict) or not categories or
+            not set(categories) <= AUTO_APPROVAL_CATEGORIES or any(
+                type(count) is not int or not 1 <= count <= 10000 for count in categories.values()) or
+            type(nodes) is not int or not max(categories.values()) <= nodes <= min(10000, sum(categories.values())) or
+            type(at) not in (int, float) or not 0 < at <= time.time()):
+        return None
+    return dict(categories=categories, nodes=nodes, at=at)
 
 
 def audit(state, result, policy, digest='', previous_digest='', reason=None, snapshot_at=0,
           findings=None, event_at=None):
-    if result not in ('accepted', 'verifying') and reason is None:
+    if result not in ('accepted', 'verifying', 'restored') and reason is None:
         reason = 'unknown'
     record = dict(at=time.time() if event_at is None else event_at, boot_id=boot_id(state), result=result, policy=policy,
                   digest=digest, previous_digest=previous_digest,
@@ -272,6 +292,9 @@ def audit(state, result, policy, digest='', previous_digest='', reason=None, sna
     if findings is not None:
         record['audit'] = findings
     previous = read_record(state / 'profile-refresh.json')
+    automatic = (findings or {}).get('auto_approval') or clean_auto_approval(previous.get('last_auto_approval'))
+    if automatic:
+        record['last_auto_approval'] = automatic
     if all(previous.get(key) == record[key] for key in ('at', 'boot_id', 'result', 'digest')):
         return previous
     last_accepted = previous.get('last_accepted_at')
@@ -279,6 +302,8 @@ def audit(state, result, policy, digest='', previous_digest='', reason=None, sna
         last_accepted = 0
     if result == 'accepted':
         last_accepted = record['at']
+    elif result == 'restored' and type(snapshot_at) in (int, float) and 0 < snapshot_at <= record['at']:
+        last_accepted = max(last_accepted, snapshot_at)
     record['last_accepted_at'] = last_accepted
     history = previous.get('history')
     history = history if isinstance(history, list) else []
@@ -373,7 +398,7 @@ def apply_semantic_approval(settings, findings, candidate, baseline):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
             return findings, False
         value = json.loads(read_input(root, 'approval.json', 0))
-        if (value.get('candidate') != candidate or value.get('baseline') != baseline or
+        if (not isinstance(value, dict) or value.get('candidate') != candidate or value.get('baseline') != baseline or
                 value.get('revision') != hashlib.sha256(read_input(root, 'registry.json', 0)).hexdigest() or
                 value.get('policy') != hashlib.sha256(Path(settings['managed_policy']).read_bytes()).hexdigest() or
                 not 0 <= value.get('expires', 0) - time.time() <= 3600):
@@ -382,6 +407,19 @@ def apply_semantic_approval(settings, findings, candidate, baseline):
         categories = set(value['categories'])
         if not categories or not categories <= allowed:
             return findings, False
+        automatic = value.get('origin') == 'automatic'
+        if automatic:
+            configured = set(settings.get('audit_auto_approve', [])) & AUTO_APPROVAL_CATEGORIES
+            summary = clean_auto_approval(value)
+            # Automatic records never waive another finding, even if the
+            # worker's result or the configured audit policy has changed.
+            if (settings.get('refresh_policy') != 'auto' or settings.get('audit_policy') != 'enforce' or
+                    not baseline or not summary or not categories <= configured or
+                    findings.get('unknown') or findings.get('deny') != value['categories'] or
+                    findings.get('changed_nodes') != value['nodes'] or
+                    value.get('audit_policy') != hashlib.sha256(Path(settings['audit_settings']).read_bytes()).hexdigest() or
+                    value.get('validator_policy') != validator_policy_digest(settings)):
+                return findings, False
         approved = json.loads(json.dumps(findings))
         for category in categories:
             count = approved['deny'].pop(category, 0)
@@ -389,9 +427,43 @@ def apply_semantic_approval(settings, findings, candidate, baseline):
                 approved['warn'][category] = count
         approved['verdict'] = ('deny' if approved['deny'] else 'unknown' if approved['unknown']
                                else 'warn' if approved['warn'] else 'pass')
+        if automatic:
+            approved['auto_approval'] = summary
         return approved, True
     except (OSError, ValueError, TypeError, KeyError):
         return findings, False
+
+
+def validator_policy_digest(settings):
+    return hashlib.sha256(Path(os.environ.get(
+        'LF_MANAGED_PROXY_POLICY', settings['managed_policy'])).read_bytes()).hexdigest()
+
+
+def auto_approve_semantics(settings, findings, candidate, baseline):
+    """Publish a short-lived exact approval; only the existing reader grants it."""
+    if (not settings.get('source_root') or not baseline or
+            settings.get('refresh_policy') != 'auto' or settings.get('audit_policy') != 'enforce'):
+        return
+    checked = clean_findings(findings)
+    configured = set(settings.get('audit_auto_approve', [])) & AUTO_APPROVAL_CATEGORIES
+    if (not checked or not checked['deny'] or checked['unknown'] or
+            not set(checked['deny']) <= configured):
+        return
+    # Preserve a still-valid manual or automatic record, including its expiry.
+    _, used = apply_semantic_approval(settings, findings, candidate, baseline)
+    if used:
+        return
+    root = source_directory(settings)
+    at = time.time()
+    value = dict(candidate=candidate, baseline=baseline,
+        revision=hashlib.sha256(read_input(root, 'registry.json', 0)).hexdigest(),
+        policy=hashlib.sha256(Path(settings['managed_policy']).read_bytes()).hexdigest(),
+        validator_policy=validator_policy_digest(settings),
+        audit_policy=hashlib.sha256(Path(settings['audit_settings']).read_bytes()).hexdigest(),
+        categories=checked['deny'], nodes=checked.get('changed_nodes'),
+        origin='automatic', at=at, expires=at + 300)
+    if clean_auto_approval(value):
+        atomic_record(root / 'approval.json', value, mode=0o600)
 
 
 def atomic_text(path, text, mode=0o644):
@@ -419,9 +491,9 @@ def publish_effective(runtime, state):
                   dict(boot_id=boot_id(state), yaml_digest=hashlib.sha256(data).hexdigest()))
 
 
-def pin_candidate(state, digest):
+def pin_candidate(state, digest, health=False):
     atomic_record(state / 'profile-refresh-pin.json',
-                  dict(digest=digest, at=time.time(), ttl=PIN_TTL))
+                  dict(digest=digest, at=time.time(), ttl=PIN_TTL, health=health))
 
 
 def pinned(state, digest):
@@ -434,7 +506,7 @@ def pinned(state, digest):
     return False
 
 
-def clear_refresh(state, runtime=None):
+def clear_refresh(state, runtime=None, keep_health_pin=False):
     state = Path(state)
     commit = state / 'profile-refresh-commit.json'
     if commit.exists():
@@ -445,7 +517,10 @@ def clear_refresh(state, runtime=None):
         else:
             commit.unlink()
     (state / 'profile-refresh-restart.json').unlink(missing_ok=True)
-    for name in ('profile-refresh-pin.json', 'profile-refresh-verifying.json'):
+    if not keep_health_pin or not (read_record(state / 'profile-refresh-pin.json').get('health') is True or
+                                   read_record(state / 'profile-refresh.json').get('result') == 'rolled_back'):
+        (state / 'profile-refresh-pin.json').unlink(missing_ok=True)
+    for name in ('profile-refresh-verifying.json',):
         (Path(state) / name).unlink(missing_ok=True)
     # Do not leave a public verifying verdict with no pending transaction.
     path = Path(state) / 'profile-refresh.json'
@@ -621,7 +696,7 @@ def complete_commit(runtime, state):
               snapshot_at=record['snapshot_at'], findings=record.get('audit'), event_at=record['at'])
     else:
         if not pinned(state, record['digest']):
-            pin_candidate(state, record['digest'])
+            pin_candidate(state, record['digest'], health=True)
         audit(state, 'rolled_back', record['policy'], record['digest'], record['previous_digest'],
               record['rollback_reason'], record['previous_snapshot_at'], record.get('audit'),
               event_at=commit['at'])
@@ -671,6 +746,29 @@ def source_input(settings):
     return dict(settings, gui_data=str(directory), desktop_uid=0), str(directory / 'clash-verge.yaml')
 
 
+def startup_input(settings):
+    """Prefer an intact accepted source under the current managed policy."""
+    source = source_directory(settings)
+    try:
+        record = json.loads(read_input(source / 'approved', 'settled.json', 0))
+    except FileNotFoundError:
+        return source_input(settings)
+    value = record.get('digest') if isinstance(record, dict) else None
+    if not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value):
+        raise RefreshError('snapshot mismatch')
+    directory = source / 'approved' / value
+    snapshot_metadata(directory)
+    if directory.is_symlink() or snapshot_digest(directory) != value:
+        raise RefreshError('snapshot mismatch')
+    manifest = json.loads(read_input(directory, 'source-manifest.json', 0))
+    registry = json.loads(read_input(source, 'registry.json', 0))
+    if manifest.get('source_id') != registry['id']:
+        raise RefreshError('snapshot mismatch')
+    if manifest.get('policy') != validator_policy_digest(settings):
+        return source_input(settings)  # A root policy change still needs a current import.
+    return dict(settings, gui_data=str(directory), desktop_uid=0, _accepted_startup=True), str(directory / 'clash-verge.yaml')
+
+
 def copy_candidate_inputs(settings, candidate_config, candidate, gid):
     """Copy immutable inputs without touching live cache or snapshot authority."""
     write_private(candidate / 'clash-verge.yaml', candidate_config, gid)
@@ -690,7 +788,7 @@ def copy_candidate_inputs(settings, candidate_config, candidate, gid):
 def enforce_audit(settings, findings):
     if findings is not None and settings.get('audit_policy') == 'enforce':
         deny, unknown = findings.get('deny') or {}, findings.get('unknown') or {}
-        if 'audit_error' in deny or 'route_unknown' in unknown:
+        if 'audit_error' in deny or unknown:
             raise RefreshError('audit indeterminate')
         if deny:
             raise RefreshError('blocked by audit')
@@ -746,7 +844,7 @@ def stage_locked(settings, config, validate):
             pass
         window.unlink(missing_ok=True)
         if authorized:
-            clear_refresh(state, runtime)
+            clear_refresh(state, runtime, keep_health_pin=bool(settings.get('source_root')))
 
         previous, previous_digest, previous_at = None, '', 0
         # Never fall back to an unverified/tampered snapshot. Explicit grants
@@ -766,7 +864,8 @@ def stage_locked(settings, config, validate):
         phase = 'input unreadable'
         try:
             if settings.get('source_root'):
-                settings, config = source_input(settings)
+                settings, config = (startup_input(settings) if authorized and policy == 'auto'
+                                    else source_input(settings))
             # Keep a fingerprint even when UTF-8/controller normalization fails.
             relative = Path(os.path.abspath(config)).relative_to(settings['gui_data'])
             raw = read_input(settings['gui_data'], relative, settings['desktop_uid'])
@@ -805,7 +904,9 @@ def stage_locked(settings, config, validate):
             provider_cache(candidate, settings['data'])
             candidate_digest = snapshot_digest(candidate)
             if not authorized and policy == 'auto' and pinned(state, candidate_digest) and not (
-                    settings.get('source_root') and (source_directory(settings) / 'approval.json').exists()):
+                    settings.get('source_root') and ((source_directory(settings) / 'approval.json').exists() or
+                    (settings.get('audit_auto_approve') and read_record(state / 'profile-refresh.json').get('reason')
+                     in ('blocked by audit', 'audit indeterminate')))):
                 # Preserve rolled_back and the original sanitized rejection on
                 # GUI/helper restarts; do not extend the pin's TTL.
                 verify(effective, digest, auth)
@@ -824,10 +925,19 @@ def stage_locked(settings, config, validate):
             if settings.get('source_root'):
                 baseline, baseline_digest, _ = source_baseline(settings, runtime, gid)
             findings = run_audit(settings, candidate, baseline)
+            auto_approve_semantics(settings, findings, candidate_digest, baseline_digest)
             findings, used_approval = apply_semantic_approval(settings, findings, candidate_digest, baseline_digest)
             enforce_audit(settings, findings)
             if snapshot_digest(candidate) != candidate_digest:
                 raise RefreshError('snapshot mismatch')
+            if settings.get('_accepted_startup') and candidate_digest == baseline_digest:
+                # Static policy and audit are repeated. Live health still gates
+                # B, but an already accepted snapshot needs no new probation.
+                switch_snapshot(runtime, state, baseline, baseline_digest)
+                audit(state, 'restored', policy, baseline_digest, baseline_digest,
+                      snapshot_at=read_record(source_directory(settings) / 'approved/settled.json')['snapshot_at'],
+                      findings=findings)
+                return
             validated = True
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             reason = ('validation timeout' if isinstance(error, subprocess.TimeoutExpired) else
@@ -899,7 +1009,7 @@ def verify_refresh(settings, restart=None):
                     record = None
                 elif not record or record.get('boot_id') != boot_id(state):
                     return
-                if record and time.monotonic() - record['monotonic_seconds'] < 60:
+                if record and time.monotonic() - record['monotonic_seconds'] < 60 and not early_health_failure(settings, record):
                     return
                 if (state / 'intent').read_text().strip() != 'proxy':
                     clear_refresh(state, runtime)
@@ -925,6 +1035,21 @@ def verify_refresh(settings, restart=None):
             recovery.unlink(missing_ok=True)
 
 
+def early_health_failure(settings, record):
+    state = Path(settings['state'])
+    if not record.get('previous') or time.monotonic() - record['monotonic_seconds'] < settings.get('refresh_failure_grace_seconds', 20):
+        return False
+    health = read_record(state / 'health.json')
+    mode = read_record(state / 'state.json')
+    at, streak = health.get('at'), health.get('failure_streak')
+    requests = {'mixed-tcp'} | ({'fake-ip-tcp'} if settings.get('require_tun') else set())
+    return (health.get('ok') is False and health.get('boot_id') == record['boot_id']
+        and health.get('digest') == record['digest'] and type(streak) is int and streak >= 2
+        and type(health.get('policy_version')) is int and health['policy_version'] == mode.get('policy_version')
+        and type(at) in (int, float) and record['at'] <= at <= time.time() and time.time() - at <= 15
+        and requests <= set(health.get('scope', {}).get('requests', [])))
+
+
 def verify_pending_refresh(settings, record):
     runtime, state = Path(settings['runtime']), Path(settings['state'])
     pending_path = state / 'profile-refresh-verifying.json'
@@ -948,8 +1073,8 @@ def verify_pending_refresh(settings, record):
         return
     reason = mode.get('reason', '').split(':')[0] or health.get('reason')
     reason = ('tun' if reason in ('tun', 'no-tun', 'core-gone', 'config') else
-              'dns' if reason == 'dns' else 'node')
-    pin_candidate(state, current)
+              reason if reason in ('dns', 'obs') else 'node')
+    pin_candidate(state, current, health=True)
     if previous is None:
         # No history exists on first import: C continues to protect the
         # host. There is no safe snapshot we could invent here.

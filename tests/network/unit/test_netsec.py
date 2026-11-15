@@ -67,11 +67,13 @@ guest_policy = module('guest_policy')
 SOURCE = (ROOT / "system/config/network/proxy/coordinator.nix").read_text()
 
 
-def shell_function(name):
+def shell_function(name, controlled_sources=False):
     match = re.search(r"^    " + name + r"\(\) \{\n.*?^    \}", SOURCE, re.M | re.S)
     if not match:
         raise AssertionError(f"missing shell function {name}")
-    return match.group(0).replace("''${", "${")
+    body = match.group(0).replace("''${", "${")
+    return re.sub(r"\$\{lib\.optionalString config\.my\.proxy\.controlledSources ''\n(.*?)^\s*''\}",
+                  lambda value: value.group(1) if controlled_sources else '', body, flags=re.M | re.S)
 
 
 class ClientDNSProbeTests(unittest.TestCase):
@@ -257,6 +259,34 @@ class GuestPolicyTests(unittest.TestCase):
 
 
 class HealthTests(unittest.TestCase):
+    def test_failure_step_survives_recovery_without_persisting_private_details(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = root / 'settings.json'
+            digest = root / 'digest'
+            digest.write_text('a' * 64)
+            (root / 'boot-id').write_text('fixture-boot')
+            settings.write_text(json.dumps(dict(runtime=str(root), digest_file=str(digest), budget_seconds=12)))
+            for detail, expected in (('mixed HTTP request failed', 'mixed-request'),
+                    ('no exact-source-port route log for this target', 'mixed-route-log'),
+                    ('fake-IP TCP probe failed for private-address: private-token', 'tun-request'),
+                    ('https://private.invalid/token', 'unknown')):
+                with patch.object(health.sys, 'argv', ['health', str(settings)]), \
+                        patch.object(health.signal, 'signal'), patch.object(health.os, 'geteuid', return_value=0), \
+                        patch.object(health.Probe, 'run', side_effect=health.ProbeFailure('obs', detail)), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(health.main(), 1)
+                path = root / 'health-failure.json'
+                before = path.read_bytes()
+                record = json.loads(before)
+                self.assertEqual(record['failure_stage'], expected)
+                self.assertNotIn('private', before.decode())
+                with patch.object(health.sys, 'argv', ['health', str(settings)]), \
+                        patch.object(health.signal, 'signal'), patch.object(health.Probe, 'run', return_value='fixture'), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(health.main(), 0)
+                self.assertEqual(path.read_bytes(), before)
+
     def test_health_json_never_claims_udp_data_plane_proof(self):
         with tempfile.TemporaryDirectory() as temporary:
             settings = Path(temporary) / 'settings.json'
@@ -1477,6 +1507,47 @@ class RulesTests(unittest.TestCase):
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_verified_b_consumes_a_pending_fetch_once_after_unlocking_policy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            pending = directory / 'source-refresh-pending'
+            pending.write_text('1')
+            body = shell_function('sync_pass', controlled_sources=True).replace(
+                '/run/proxy-mode/source-refresh-pending', str(pending))
+            script = self.setup_shell(directory) + body + '''
+requests=0; locked=0
+lock_state() { locked=1; }; unlock_state() { locked=0; }
+systemctl_stub() {
+ [ "$locked" = 0 ] || exit 91
+ [ "$*" = 'start --no-block clash-source-refresh.service' ] || exit 92
+ requests=$((requests+1))
+ rm -f source-refresh-pending
+}
+SYSTEMCTL=systemctl_stub
+sync_pass
+[ "$requests" = 1 ] || exit 93
+sync_pass
+[ "$requests" = 1 ]
+'''
+            self.run_shell(script, directory)
+
+    def test_internal_proxy_intent_guard_never_enqueues_an_update(self):
+        branch = re.search(r'^      --request-proxy\|--request-direct\)\n(.*?)^        ;;', SOURCE, re.M | re.S)
+        self.assertIsNotNone(branch)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            body = branch.group(1).replace('/run/proxy-mode', str(directory)).replace("''${", "${")
+            script = self.setup_shell(directory) + f'''
+set -e
+INTENT={str(directory / 'intent')!r}
+atomic_write() {{ printf '%s\\n' "$2" > "$1"; }}
+set -- --request-proxy
+''' + body
+            self.run_shell(script, directory)
+            self.assertEqual((directory / 'intent').read_text().strip(), 'proxy')
+            self.assertEqual((directory / 'status').read_text().strip(), 'blocked')
+            self.assertFalse((directory / 'source-refresh-pending').exists())
+
     def run_shell(self, script, directory):
         result = subprocess.run(["bash", "-c", script], cwd=directory, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
@@ -1919,19 +1990,19 @@ class SubscriptionAndStatusTests(unittest.TestCase):
                                      'at': 1000, 'snapshot_at': 900, 'audit': findings}}
         before = copy.deepcopy(value)
         displayed = dict(status.rows(value))
-        self.assertEqual(displayed['Update audit'], 'Approved')
+        self.assertEqual(displayed['Content audit'], 'Approved')
         self.assertEqual(displayed['Approved changes'], '45 · explicit approval for this update')
         self.assertEqual(value, before)
         findings['warn']['rule_volume'] = 1
         displayed = dict(status.rows(value))
-        self.assertEqual(displayed['Update audit'], '1 warning')
+        self.assertEqual(displayed['Content audit'], '1 warning')
         self.assertIn('45', displayed['Approved changes'])
         findings.update(deny={'certificate': 2}, unknown={'route_unknown': 1})
-        self.assertEqual(dict(status.rows(value))['Update audit'], '2 denied · 1 warning · 1 unresolved')
+        self.assertEqual(dict(status.rows(value))['Content audit'], '2 denied · 1 warning · 1 unresolved')
         value['source_trust']['provenance'] = 'legacy-unverified'
         self.assertNotIn('Approved changes', dict(status.rows(value)))
         for verdict, label in (('deny', 'Denied'), ('unknown', 'Unresolved')):
-            self.assertEqual(dict(status.audit_rows({'verdict': verdict}, False))['Update audit'], label)
+            self.assertEqual(dict(status.audit_rows({'verdict': verdict}, False))['Content audit'], label)
 
     def test_firewall_check_reports_warnings_without_calling_them_failed(self):
         status = module('status')
@@ -1943,6 +2014,24 @@ class SubscriptionAndStatusTests(unittest.TestCase):
             if verdict is not None:
                 value['verification'] = verdict
             self.assertEqual(dict(status.rows(value))['Firewall check'], label, verdict)
+
+    def test_status_shows_automatic_counts_and_fallback_cause(self):
+        status = module('status')
+        summary = dict(at=1000, nodes=45, categories={'node_identity': 45})
+        value = dict(ready=True, mode='proxy', target='proxy',
+            source_trust={'provenance': 'controlled-fetch'},
+            profile_refresh=dict(policy='auto', result='fallback', reason='blocked by audit',
+                at=1100, snapshot_at=900, last_auto_approval=summary,
+                audit=dict(verdict='deny', deny={'hosts_override': 1}, warn={}, unknown={})))
+        rows = dict(status.rows(value))
+        self.assertIn('fallback', rows['Profile refresh'])
+        self.assertIn('blocked by audit', rows['Profile refresh'])
+        self.assertEqual(rows['Audit denied'], 'hosts_override=1')
+        self.assertIn('45 nodes · node_identity=45', rows['Last auto approval'])
+        value['profile_refresh']['audit'] = dict(verdict='warn', deny={}, warn={'node_identity': 45}, unknown={}, auto_approval=summary)
+        rows = dict(status.rows(value))
+        self.assertEqual(rows['Content audit'], 'Auto-approved')
+        self.assertNotIn('Approved changes', rows)
 
     def test_ready_status_does_not_claim_publisher_signature_verification(self):
         status = module('status')

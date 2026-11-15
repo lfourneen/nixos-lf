@@ -166,7 +166,7 @@ def auto():
         wait(lambda: record().get('result') == 'rolled_back' and digest() == settled)
         wait(ready, timeout=20)
         elapsed = time.time() - transaction['at']
-        assert 60 <= elapsed <= 95, elapsed
+        assert 20 <= elapsed < 60, elapsed
         assert request('GET', '/status')[1]['data']['core_pid'] != bad_pid
         assert not (STATE / 'profile-refresh-restart.json').exists()
         assert record('profile-refresh-pin.json')['digest'] == rejected

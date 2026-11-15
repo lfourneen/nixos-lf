@@ -65,7 +65,8 @@ def inspect_unlocked(settings):
     issues = []
     try:
         if settings.get('source_root'):
-            settings, _ = snapshot.source_input(settings)
+            settings, _ = (snapshot.startup_input(settings) if settings.get('_startup') and settings.get('refresh_policy') == 'auto'
+                           else snapshot.source_input(settings))
         data = snapshot.config_input(settings, str(Path(settings['gui_data']) / 'clash-verge.yaml'))
         parse = [settings['yq'], '-o=json', '-I=0', '.', '-']
         if os.geteuid() == 0:
@@ -179,6 +180,7 @@ def publish(result, settings):
 
 def main():
     settings = json.loads(Path(sys.argv[1]).read_text())
+    settings['_startup'] = '--startup' in sys.argv[2:]
     result = inspect(settings)
     publish(result, settings)
     print(json.dumps(result, separators=(',', ':')))

@@ -67,6 +67,18 @@ class StateTests(unittest.TestCase):
         self.assertEqual(len(value['history']), 20)
         self.assertNotIn('https://', json.dumps(value))
 
+    def test_automatic_summary_only_publishes_counts_categories_and_time(self):
+        automatic = dict(at=1000, nodes=45, categories={'node_identity': 45},
+                         url='https://private.invalid/token', names=['private-node'])
+        self.write_refresh(last_auto_approval=automatic)
+        value = state.profile_refresh(self.root, now=1100, boot=BOOT)
+        self.assertEqual(value['last_auto_approval'], dict(at=1000, nodes=45, categories={'node_identity': 45}))
+        self.assertNotIn('private', json.dumps(value))
+        for invalid in (dict(automatic, categories={'certificate': 1}),
+                        dict(automatic, nodes=46), dict(automatic, at=1200)):
+            self.write_refresh(last_auto_approval=invalid)
+            self.assertNotIn('last_auto_approval', state.profile_refresh(self.root, now=1100, boot=BOOT))
+
     def test_history_entries_without_policy_inherit_the_record_policy(self):
         entry = {'at': 1000, 'boot_id': BOOT, 'result': 'accepted',
                  'reason': 'unknown', 'digest': 'c' * 64, 'snapshot_at': 900}
@@ -103,7 +115,35 @@ class StateTests(unittest.TestCase):
         self.assertFalse(value['stale'])
         failed = state.subscription_health(
             self.profiles, {'result': 'fallback', 'last_accepted_at': 1000}, now=1100)
-        self.assertTrue(failed['stale'])
+        self.assertFalse(failed['stale'])
+        self.assertTrue(failed['update_failed'])
+
+    def test_download_outcome_is_sanitized_boot_bound_and_separate_from_acceptance(self):
+        path = self.root / 'proxy-mode/source-fetch.json'
+        record = dict(at=1000, boot_id=BOOT, result='failed', phase='fetch', reason='http rejected',
+                      http_status=503, url='https://private.invalid/token')
+        path.write_text(json.dumps(record))
+        value = state.source_fetch(self.root, now=1100)
+        self.assertEqual(value, dict(at=1000, result='failed', phase='fetch', reason='http rejected', http_status=503))
+        self.assertIsNone(state.source_fetch(self.root, boot='other', now=1100))
+        path.write_text(json.dumps(dict(record, reason=record['url'], http_status=True)))
+        self.assertNotIn('reason', state.source_fetch(self.root, now=1100))
+        self.assertNotIn('http_status', state.source_fetch(self.root, now=1100))
+        refresh = dict(result='restored', last_accepted_at=900, at=950)
+        health = state.subscription_health('/missing/profiles', refresh, now=1100, fetch=value)
+        self.assertFalse(health['stale'])
+        self.assertTrue(health['update_failed'])
+        refresh.update(result='accepted', at=1050)
+        self.assertFalse(state.subscription_health('/missing/profiles', refresh, now=1100, fetch=value)['update_failed'])
+
+    def test_protection_deferral_is_visible_without_claiming_a_download_failure(self):
+        path = self.root / 'proxy-mode/source-fetch.json'
+        path.write_text(json.dumps(dict(at=1000, boot_id=BOOT, result='deferred', reason='network protection active')))
+        value = state.source_fetch(self.root, now=1100)
+        self.assertEqual(value['result'], 'deferred')
+        self.assertEqual(value['reason'], 'network protection active')
+        result = state.subscription_health('/missing/profiles', dict(result='restored', at=950), now=1100, fetch=value)
+        self.assertFalse(result['update_failed'])
 
     def test_profile_vs_runtime_digest_reconciliation(self):
         (self.root / 'clash-verge.yaml').write_text(

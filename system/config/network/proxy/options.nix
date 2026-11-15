@@ -208,6 +208,18 @@ in
     description = "Offline content audit for imported profiles. off disables only the additional audit: -t, the managed profile and digest checks always apply. warn records and notifies content risks; enforce additionally refuses deny verdicts and protected-route unknowns.";
   };
 
+  options.my.proxy.profileRefreshFailureGraceSeconds = lib.mkOption {
+    type = lib.types.ints.between 20 60;
+    default = 20;
+    description = "Minimum startup grace before repeated fresh full-health failures can roll back a candidate. Successful imports still require the full 60-second observation window. Missing or stale failure proofs retain that window.";
+  };
+
+  options.my.proxy.subscriptionAuditAutoApprove = lib.mkOption {
+    type = lib.types.listOf (lib.types.enum [ "node_identity" "node_authentication" "node_transport" ]);
+    default = [ ];
+    description = "Automatically approve only these node changes for controlled sources under auto refresh and enforce audit. Any other deny or unknown finding blocks approval. Empty disables automatic approval. This does not verify publisher identity.";
+  };
+
   options.my.proxy.sensitiveDomains = lib.mkOption {
     type = lib.types.listOf (lib.types.strMatching "([A-Za-z0-9_-]+\\.)*[A-Za-z0-9_-]+");
     default = [ ];

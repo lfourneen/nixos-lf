@@ -27,10 +27,14 @@ def fresh(stamp, now, maximum):
         return False
 
 
-REFRESH_RESULTS = ('accepted', 'fallback', 'rolled_back', 'refused', 'verifying')
+REFRESH_RESULTS = ('accepted', 'fallback', 'rolled_back', 'refused', 'verifying', 'restored')
 REFRESH_REASONS = ('configuration invalid', 'input unreadable', 'validation timeout',
                    'snapshot mismatch', 'blocked by audit', 'audit indeterminate',
-                   'operator authorization required', 'unknown', 'node', 'tun', 'dns')
+                   'operator authorization required', 'recent health failure', 'unknown', 'node', 'tun', 'dns', 'obs')
+FETCH_REASONS = frozenset(('dns lookup failed', 'certificate rejected', 'tls failed',
+    'connection timeout', 'connection refused', 'connection reset', 'network unreachable',
+    'http rejected', 'encoding unsupported', 'redirect refused', 'destination refused',
+    'response limit', 'yaml invalid', 'configuration unsupported', 'node resolution failed', 'worker failure', 'network protection active'))
 AUDIT_CATEGORIES = frozenset((
     'yaml_structure', 'private_server', 'certificate', 'empty_nodes', 'group_reference',
     'hosts_override', 'provider_change', 'rule_provider_change', 'sensitive_route',
@@ -69,7 +73,23 @@ def clean_audit(value):
                 return None
             kept[str(key)] = count
         result[field] = kept
+    automatic = clean_auto_approval(value.get('auto_approval'))
+    if automatic:
+        result['auto_approval'] = automatic
     return result
+
+
+def clean_auto_approval(value, now=None):
+    if not isinstance(value, dict):
+        return None
+    categories, nodes = value.get('categories'), value.get('nodes')
+    if (not isinstance(categories, dict) or not categories or not set(categories) <= {
+            'node_identity', 'node_authentication', 'node_transport'} or any(
+            type(count) is not int or not 1 <= count <= 10000 for count in categories.values()) or
+            type(nodes) is not int or not max(categories.values()) <= nodes <= min(10000, sum(categories.values())) or
+            not fresh(value.get('at'), time.time() if now is None else now, 365 * 86400)):
+        return None
+    return dict(categories=categories, nodes=nodes, at=value['at'])
 
 
 def source_trust(root, boot):
@@ -82,6 +102,24 @@ def source_trust(root, boot):
             'source_id': source_id if isinstance(source_id, str) and re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', source_id) else '',
             'revision': revision[:12] if isinstance(revision, str) and re.fullmatch('[0-9a-f]{64}', revision) else '',
             'upstream_signature': 'not-verified'}
+
+
+def source_fetch(root=Path('/run'), boot=None, now=None):
+    value = read(Path(root) / 'proxy-mode/source-fetch.json')
+    boot = boot_identity(root) if boot is None else boot
+    if (not boot or value.get('boot_id') != boot or
+            value.get('result') not in ('fetching', 'downloaded', 'failed', 'deferred') or
+            not fresh(value.get('at'), time.time() if now is None else now, 7 * 86400)):
+        return None
+    result = {key: value[key] for key in ('at', 'result')}
+    if value.get('phase') in ('fetch', 'parse', 'render', 'pin-addresses', 'worker'):
+        result['phase'] = value['phase']
+    if value.get('reason') in FETCH_REASONS:
+        result['reason'] = value['reason']
+    status = value.get('http_status')
+    if type(status) is int and 100 <= status <= 599:
+        result['http_status'] = status
+    return result
 
 
 def clean_refresh(value, now, maximum, full_digests=False):
@@ -104,6 +142,9 @@ def clean_refresh(value, now, maximum, full_digests=False):
     audit = clean_audit(value.get('audit'))
     if audit is not None:
         result['audit'] = audit
+    automatic = clean_auto_approval(value.get('last_auto_approval'), now)
+    if automatic:
+        result['last_auto_approval'] = automatic
     return result
 
 
@@ -253,7 +294,7 @@ def auto_update(profiles, now=None, running=None):
     return result
 
 
-def subscription_health(profiles, refresh=None, now=None):
+def subscription_health(profiles, refresh=None, now=None, fetch=None):
     """Read only local update timestamps; subscriptions are never fetched here."""
     now = time.time() if now is None else now
     document = profile_index(profiles)
@@ -270,7 +311,8 @@ def subscription_health(profiles, refresh=None, now=None):
     accepted = refresh.get('last_accepted_at') if refresh else 0
     reference = max([value for value in (last_update, accepted) if value] or [0]) or None
     failed = bool(refresh and refresh['result'] in ('fallback', 'rolled_back', 'refused'))
-    return dict(stale=failed or (reference is not None and now - reference > 3 * 86400),
+    failed |= bool(fetch and fetch['result'] == 'failed' and fetch['at'] >= (refresh or {}).get('at', 0))
+    return dict(stale=reference is not None and now - reference > 3 * 86400, update_failed=failed,
                 last_update=last_update, last_accepted=accepted or None,
                 age_days=int((now - reference) // 86400) if reference is not None else None)
 
@@ -379,6 +421,7 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
             "last_preflight": preflight,
             "last_proxy_health": read(root / 'proxy-mode/health.json'),
             "profile_refresh": profile_refresh(root, boot=boot_id),
+            "source_fetch": source_fetch(root, boot=boot_id),
             "source_trust": source_trust(root, boot_id),
             "phase": "ready" if not reasons else
                      "unenforced" if policy.get("mode") == "unenforced" else

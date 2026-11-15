@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,30 @@ DENY = dict(verdict='deny', deny={'node_identity': 1}, warn={}, unknown={})
 
 
 class SourceRefreshTests(unittest.TestCase):
+    def test_automatic_download_defers_in_c_then_consumes_one_pending_request_in_b(self):
+        (self.state / 'state.json').write_text('{"mode":"blocked"}')
+        with patch.object(refresh.subprocess, 'run', side_effect=AssertionError('C must not try a download')):
+            self.assertFalse(refresh.automatic_download_ready(self.settings, stage))
+        pending = self.state / 'source-refresh-pending'
+        self.assertTrue(pending.exists())
+        record = json.loads((self.state / 'source-fetch.json').read_text())
+        self.assertEqual((record['result'], record['reason']), ('deferred', 'network protection active'))
+        self.assertEqual(record['boot_id'], self.boot)
+        (self.state / 'state.json').write_text('{"mode":"proxy"}')
+        self.assertTrue(refresh.automatic_download_ready(self.settings, stage))
+        self.assertFalse(pending.exists(), 'activation must not enqueue another download on its own B transition')
+        self.assertTrue(refresh.automatic_download_ready(self.settings, stage))
+        self.assertFalse(pending.exists())
+
+    def test_automatic_download_requires_a_mode_matching_operator_intent(self):
+        for mode, intent, expected in (('direct', 'direct', True), ('direct', 'auto', True),
+                ('direct', 'proxy', False), ('proxy', 'direct', False),
+                ('unenforced', 'proxy', False), ('blocked', 'proxy', False)):
+            (self.state / 'state.json').write_text(json.dumps(dict(mode=mode)))
+            (self.state / 'intent').write_text(intent)
+            with self.subTest(mode=mode, intent=intent):
+                self.assertEqual(refresh.automatic_download_ready(self.settings, stage), expected)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -62,9 +87,12 @@ class SourceRefreshTests(unittest.TestCase):
             path.write_text(json.dumps(value))
         seed = self.root / 'seed'
         seed.mkdir()
-        self.original = 'external-controller-unix: /run/clash-verge-rev/core/mihomo.sock\nmode: rule\n'
+        self.original = ('external-controller-unix: /run/clash-verge-rev/core/mihomo.sock\nmode: rule\n'
+            'proxies: [{name: Fixture, type: vless, server: 1.1.1.1, lf-source-server: old-prefix.entry.example, port: 443, uuid: old-secret}]\n'
+            "proxy-groups: [{name: Choice, type: select, proxies: [Fixture]}]\nrules: ['MATCH,Choice']\n")
         (seed / 'clash-verge.yaml').write_text(self.original)
-        manifest = dict(source_id='one', revision=hashlib.sha256((self.source / 'registry.json').read_bytes()).hexdigest())
+        manifest = dict(source_id='one', revision=hashlib.sha256((self.source / 'registry.json').read_bytes()).hexdigest(),
+                        policy=hashlib.sha256(self.policy.read_bytes()).hexdigest())
         (seed / 'source-manifest.json').write_text(json.dumps(manifest))
         self.old = stage.snapshot_digest(seed)
         self.baseline = self.source / 'approved' / self.old
@@ -176,6 +204,190 @@ class SourceRefreshTests(unittest.TestCase):
             self.run_refresh()
         self.activate.assert_called_once()
         self.assertTrue(approval.exists(), 'precheck consumed the import approval')
+
+    def enable_automatic(self):
+        audit = module('automatic_audit', os.environ['SOURCE_AUDIT'])
+        audit_settings = self.root / 'audit-settings.json'
+        audit_settings.write_text('{"strict_semantics":true}')
+        self.settings.update(audit_auto_approve=sorted(stage.AUTO_APPROVAL_CATEGORIES),
+                             audit_settings=str(audit_settings))
+        # Keep real file and permission checks; map only root ownership to the
+        # unprivileged builder. The VM exercises actual root-owned approvals.
+        read, lstat = stage.read_input, Path.lstat
+        def owned_input(directory, relative, uid):
+            return read(directory, relative, os.getuid() if uid == 0 else uid)
+        def owned_stat(path):
+            info = lstat(path)
+            if path.name == 'approval.json':
+                fields = list(info)
+                fields[4] = 0
+                return os.stat_result(fields)
+            return info
+        def findings(settings, candidate, baseline):
+            return audit.audit(audit.load(candidate / 'clash-verge.yaml'),
+                audit.load(baseline / 'clash-verge.yaml'), {'strict_semantics': True,
+                    'protected_routes': {'account.example': 'proxy'}})
+        for target, name, replacement in ((stage, 'read_input', owned_input),
+                (Path, 'lstat', owned_stat), (stage, 'run_audit', findings)):
+            context = patch.object(target, name, replacement)
+            context.start()
+            self.addCleanup(context.stop)
+        self.changed = self.original.replace('old-prefix.entry', 'new-prefix.entry')
+        (self.candidate / 'clash-verge.yaml').write_text(self.changed)
+
+    def test_rotation_is_automatically_bound_then_consumed_by_normal_import(self):
+        self.enable_automatic()
+        self.run_refresh()
+        self.activate.assert_called_once()
+        approval = self.source / 'approval.json'
+        record = json.loads(approval.read_text())
+        self.assertEqual(record['origin'], 'automatic')
+        self.assertEqual(record['categories'], {'node_identity': 1})
+        self.assertEqual(record['nodes'], 1)
+        self.assertEqual(record['baseline'], self.old)
+        self.assertEqual(stat.S_IMODE(approval.stat().st_mode), 0o600)
+        self.assertLessEqual(record['expires'] - time.time(), 300)
+        data = self.root / 'data'
+        data.mkdir()
+        (data / 'cache.db').touch()
+        self.settings['data'] = str(data)
+        (self.source / 'approved/settled.json').write_text(json.dumps(dict(digest=self.old, snapshot_at=time.time())))
+        stage.stage(self.settings, str(self.candidate / 'clash-verge.yaml'), self.validate)
+        self.assertFalse(approval.exists(), 'normal import must consume the approval')
+        imported = json.loads((self.state / 'profile-refresh.json').read_text())
+        self.assertEqual(imported['result'], 'verifying')
+        self.assertEqual(imported['last_auto_approval']['nodes'], 1)
+        self.assertEqual(imported['audit']['deny'], {})
+        self.assertEqual(imported['audit']['warn'], {'node_identity': 1})
+        self.assertNotEqual(imported['digest'], self.old)
+
+    def test_auto_approval_counts_each_changed_node_once(self):
+        self.enable_automatic()
+        changed = self.changed.replace('old-secret', 'new-secret').replace('port: 443', 'port: 8443, tls: true')
+        (self.candidate / 'clash-verge.yaml').write_text(changed)
+        self.run_refresh()
+        value = json.loads((self.source / 'approval.json').read_text())
+        self.assertEqual(value['nodes'], 1)
+        self.assertEqual(value['categories'], dict(node_identity=1, node_authentication=1, node_transport=1))
+
+    def test_first_clash_on_after_reboot_restores_accepted_then_imports_in_background(self):
+        self.enable_automatic()
+        data = self.root / 'data'
+        data.mkdir()
+        (data / 'cache.db').touch()
+        self.settings['data'] = str(data)
+        (self.source / 'approved/settled.json').write_text(json.dumps(dict(digest=self.old, snapshot_at=time.time())))
+        for name in ('authorized-config', 'config-digest', 'health.json'):
+            (self.state / name).unlink()
+        (self.state / 'authorize-window').touch()
+        self.assertFalse((self.source / 'approval.json').exists())
+        stage.stage(self.settings, str(self.candidate / 'clash-verge.yaml'), self.validate)
+        record = json.loads((self.state / 'profile-refresh.json').read_text())
+        self.assertEqual(record['result'], 'restored')
+        self.assertEqual(record['digest'], self.old)
+        self.assertGreater(record['last_accepted_at'], 0)
+        self.assertFalse((self.state / 'profile-refresh-verifying.json').exists())
+        self.assertFalse((self.source / 'approval.json').exists())
+        # The background activation has no operator grant. It still audits
+        # and observes the new candidate before accepting it.
+        stage.stage(self.settings, str(self.candidate / 'clash-verge.yaml'), self.validate)
+        record = json.loads((self.state / 'profile-refresh.json').read_text())
+        self.assertEqual(record['result'], 'verifying')
+        self.assertEqual(record['last_auto_approval']['categories'], {'node_identity': 1})
+        self.assertNotEqual(record['digest'], self.old)
+        self.assertFalse((self.source / 'approval.json').exists())
+
+    def test_startup_does_not_restore_corrupt_or_obsolete_policy_snapshots(self):
+        self.enable_automatic()
+        self.assertTrue(stage.startup_input(self.settings)[0]['_accepted_startup'])
+        (self.baseline / 'clash-verge.yaml').write_text('tampered')
+        with self.assertRaisesRegex(ValueError, 'snapshot mismatch'):
+            stage.startup_input(self.settings)
+        (self.baseline / 'clash-verge.yaml').write_text(self.original)
+        self.policy.write_text('{"changed":true}')
+        selected, path = stage.startup_input(self.settings)
+        self.assertNotIn('_accepted_startup', selected)
+        self.assertEqual(Path(path).parent, self.candidate)
+
+    def test_health_rejection_pin_survives_an_explicit_restart_and_cannot_be_auto_approved(self):
+        self.enable_automatic()
+        digest = stage.snapshot_digest(self.candidate)
+        stage.pin_candidate(self.state, digest, health=True)
+        pin = (self.state / 'profile-refresh-pin.json').read_bytes()
+        stage.clear_refresh(self.state, self.runtime, keep_health_pin=True)
+        self.run_refresh()
+        self.assert_unchanged()
+        self.assertEqual(pin, (self.state / 'profile-refresh-pin.json').read_bytes())
+        self.assertFalse((self.source / 'approval.json').exists())
+        record = json.loads((self.state / 'profile-refresh.json').read_text())
+        self.assertEqual(record['reason'], 'recent health failure')
+
+    def test_auto_approval_refuses_structural_and_unknown_findings(self):
+        self.enable_automatic()
+        for category in sorted(stage.AUDIT_CATEGORIES - stage.AUTO_APPROVAL_CATEGORIES):
+            for field in ('deny', 'unknown'):
+                findings = dict(verdict='deny', deny={'node_identity': 1}, warn={}, unknown={}, changed_nodes=1)
+                findings[field][category] = 1
+                with self.subTest(category=category, field=field), patch.object(stage, 'run_audit', return_value=findings):
+                    self.run_refresh()
+                self.assert_unchanged()
+                self.assertFalse((self.source / 'approval.json').exists())
+
+    def test_injected_content_risks_still_fall_back_without_approval(self):
+        self.enable_automatic()
+        for text in (self.changed.replace('1.1.1.1', '169.254.169.254'),
+                     self.changed.replace('port: 443', 'port: 443, skip-cert-verify: true'),
+                     self.changed + 'hosts: {account.example: 1.1.1.1}\n',
+                     self.changed.replace("rules: ['MATCH,Choice']", "rules: ['DOMAIN,account.example,DIRECT', 'MATCH,Choice']"),
+                     self.changed + 'rules: [MATCH,DIRECT]\n'):
+            (self.candidate / 'clash-verge.yaml').write_text(text)
+            self.run_refresh()
+            self.assert_unchanged()
+            self.assertFalse((self.source / 'approval.json').exists())
+        self.assertEqual(json.loads((self.state / 'profile-refresh.json').read_text())['result'], 'fallback')
+
+    def test_binding_expiry_permissions_and_policy_changes_reject_auto_records(self):
+        self.enable_automatic()
+        self.run_refresh()
+        approval = self.source / 'approval.json'
+        original = approval.read_bytes()
+        findings = dict(DENY, changed_nodes=1)
+        candidate = stage.snapshot_digest(self.candidate)
+        for field, bad in (('candidate', '0' * 64), ('baseline', '0' * 64), ('revision', '0' * 64),
+                ('policy', '0' * 64), ('validator_policy', '0' * 64), ('audit_policy', '0' * 64),
+                ('expires', time.time() - 1), ('expires', time.time() + 7200),
+                ('categories', {'certificate': 1}), ('nodes', 99)):
+            value = json.loads(original)
+            value[field] = bad
+            approval.write_text(json.dumps(value))
+            with self.subTest(field=field, bad=bad):
+                self.assertFalse(stage.apply_semantic_approval(self.settings, findings, candidate, self.old)[1])
+        approval.write_bytes(original)
+        approval.chmod(0o644)
+        self.assertFalse(stage.apply_semantic_approval(self.settings, findings, candidate, self.old)[1])
+        approval.chmod(0o600)
+        for override in ({'audit_auto_approve': []}, {'refresh_policy': 'strict'}, {'audit_policy': 'off'}):
+            self.assertFalse(stage.apply_semantic_approval(dict(self.settings, **override), findings, candidate, self.old)[1])
+        self.assertTrue(stage.apply_semantic_approval(self.settings, findings, candidate, self.old)[1])
+        # Older manual records retain their original list-based format.
+        legacy = json.loads(original)
+        for key in ('origin', 'at', 'nodes', 'audit_policy', 'validator_policy'):
+            legacy.pop(key)
+        legacy['categories'] = ['node_identity']
+        approval.write_text(json.dumps(legacy))
+        self.assertTrue(stage.apply_semantic_approval(dict(self.settings, audit_auto_approve=[]), findings, candidate, self.old)[1])
+
+    def test_empty_allowlist_preserves_denial_and_rejects_changed_source_binding(self):
+        self.enable_automatic()
+        self.settings['audit_auto_approve'] = []
+        self.run_refresh()
+        self.assert_unchanged()
+        self.assertFalse((self.source / 'approval.json').exists())
+        self.settings['audit_auto_approve'] = ['node_identity']
+        self.validate.side_effect = lambda _: self.policy.write_text('{"changed":true}')
+        self.run_refresh()
+        self.assert_unchanged()
+        self.assertFalse((self.source / 'approval.json').exists())
 
     def test_corrupt_baseline_is_not_treated_as_a_first_import(self):
         for value in ('{}', '{"digest":null}', '[]', 'not-json'):

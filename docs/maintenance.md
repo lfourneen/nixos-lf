@@ -158,6 +158,22 @@ It never creates a missing `option` or interval.
 [source_refresh.py](../system/programs/clash/service/source_refresh.py) checks registered candidates before restarting a healthy authorized core.
 It uses isolated copies and the same unprivileged parser and audit enforcement as import, without writing live caches or granting authority.
 Keep candidate, source revision, settled baseline and root policy bindings intact through activation.
+Eligible node changes create a root-private five-minute `approval.json`, which the normal approval reader checks again during import.
+The record also binds audit and validator policies, and automatic approval never includes structural or unresolved findings.
+
+Startup restores an accepted source under the current managed policy and leaves an update request pending until B is verified. Static checks repeat on restore, and live health still gates B.
+Only explicit `on` and automatic attempts deferred during C create `source-refresh-pending`. The service consumes it before fetching, and explicit `off` clears it.
+The shared proxy-intent guard must not enqueue updates. These rules prevent activation from causing a fetch/restart loop.
+Automatic attempts in C defer rather than using retries or weakening the application guard.
+Keep that path and refresh prechecks consistent.
+
+Periodic downloads release the source publication lock during network waits, then recheck registration and selection under the lock before publishing.
+Preserve that recheck so foreground startup stays available without allowing revoked input to be published.
+
+Within the current boot, health-failure pins survive explicit on/off requests for their remaining TTL. Repeated fresh full failures can roll back after the configured grace, while successful acceptance keeps the full 60-second window.
+
+Existing exact `approval.json` records retain their binding checks.
+Source comparison has no approval or activation action.
 
 The authorization lock is released during checks and reacquired to recheck runtime health and bindings.
 Pending acceptance or rollback defers the refresh.
@@ -344,7 +360,7 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 |---|---|
 | `proxy-control` | Temporary-file snapshot authorization, expiry, restart, hostile inputs and permissions, plus single-use B lease proofs and sleep/generation rejection |
 | `proxy-refresh` | Offline audit, bounded HTTP checks, local update state and notification deduplication |
-| `proxy-source` | Registered fetch/render/review, candidate prechecks, preserved runtime authority and unhealthy-core recovery |
+| `proxy-source` | Registered fetch/render, read-only comparison, automatic approval bindings, reboot import, candidate prechecks and runtime recovery |
 | `proxy-source-config` | Source/browser configuration, private DNS paths and separation of download and policy capabilities |
 | `proxy-refresh-vm` | Real auto/enforce helper/core: healthy acceptance, rejected-candidate fallback, pinned restarts, rollback and desired-state recovery |
 | `proxy-upgrade-review` | Selected source/dependency/recipe baselines, component coverage, check-name validation and source compatibility checks. The input gate also runs in normal system builds |
@@ -376,7 +392,7 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 | `browser-ech-vm` | Confined real Firefox/helper/core, native HTTPS discovery, ECH versus GREASE, key/no-ECH retry, untrusted rejection, certificate errors, cover-name target preservation and A/C behavior |
 | `browser-ech-uniform-vm` | The same real browser paths and policy consumption with `proxyOnly=true` |
 | `proxy-control-vm` | Real production helper/launcher/netns, capabilities, localhost broker, overlap/link/resume recovery, authorization, DNS and bidirectional C revocation |
-| `proxy-managed-netns-vm` | Registered TLS sources, preserved core, authority and established TLS connections after rejection, exact approval, full readiness, strict inlet, C revocation and source switching in the production core namespace |
+| `proxy-managed-netns-vm` | Registered TLS sources, preserved core, authority and established TLS connections after rejection, automatic rotation, structural rejection, full readiness, strict inlet, C revocation and source switching in the production core namespace |
 | `proxy-uniform-vm` | Production helper/core under uniform proxy policy: fresh TCP/UDP DIRECT refusal, dual-stack UDP, native IPv6 TUN and recovery |
 | `proxy-network-vm` | Broad kernel fault injection: modes, DNS, leases, sleep, guests, TPROXY and recovery |
 

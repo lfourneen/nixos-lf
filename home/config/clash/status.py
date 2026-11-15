@@ -68,7 +68,7 @@ def stamp(at):
 def auto_update_text(value):
     state = value.get('state')
     if state == 'controlled':
-        return 'root source timer · every 30m · GUI schedule is display-only'
+        return 'root · on startup and every 30m · GUI copy is display-only'
     if state == 'ok':
         return (f"every {value['interval']}m · last fetch {stamp(value['updated'])}"
                 f" · next ~{stamp(value['next_due'])}")
@@ -87,10 +87,10 @@ def update_result_text(value):
     if not value:
         return 'unknown'
     reason = {'node': 'node health failed', 'tun': 'tun health failed',
-              'dns': 'dns health failed'}.get(value['reason'], value['reason'])
-    label = {'accepted': 'accepted', 'verifying': 'verifying', 'fallback': 'rejected',
+              'dns': 'dns health failed', 'obs': 'probe observation failed'}.get(value['reason'], value['reason'])
+    label = {'accepted': 'health accepted', 'verifying': 'waiting for health', 'restored': 'restored accepted snapshot', 'fallback': 'fallback',
              'rolled_back': 'rolled back', 'refused': 'refused'}[value['result']]
-    if value['result'] in ('accepted', 'verifying'):
+    if value['result'] in ('accepted', 'verifying', 'restored'):
         return f"{label} · {stamp(value['at'])}"
     return f"{label} · {reason} · {stamp(value['at'])}"
 
@@ -106,14 +106,17 @@ def runtime_text(value):
 def refresh_text(value):
     stamp = lambda at: time.strftime('%H:%M', time.localtime(at)) if at else 'unknown'
     policy, result = value['policy'], value['result']
-    if policy == 'strict' and result == 'refused':
+    if policy == 'strict' and result == 'refused' and value['reason'] == 'operator authorization required':
         return 'strict · refused · run clash-on'
-    reason = {'node': 'node health failed', 'tun': 'tun health failed', 'dns': 'dns health failed'}.get(value['reason'], value['reason'])
+    reason = {'node': 'node health failed', 'tun': 'tun health failed', 'dns': 'dns health failed',
+              'obs': 'probe observation failed'}.get(value['reason'], value['reason'])
     if result == 'accepted':
         return f"{policy} · accepted {stamp(value['at'])} · snapshot from {stamp(value['snapshot_at'])}"
+    if result == 'restored':
+        return f"{policy} · restored accepted snapshot from {stamp(value['snapshot_at'])}"
     if result == 'verifying':
         return f"{policy} · verifying · snapshot from {stamp(value['snapshot_at'])}"
-    label = {'fallback': 'rejected', 'rolled_back': 'rolled back', 'refused': 'refused'}[result]
+    label = {'fallback': 'fallback', 'rolled_back': 'rolled back', 'refused': 'refused'}[result]
     return f"{policy} · {label} · {reason} · running snapshot from {stamp(value['snapshot_at'])}"
 
 
@@ -121,6 +124,7 @@ def audit_rows(findings, controlled):
     # These categories enter warn only when an exact semantic approval moves
     # them out of deny. Other warnings still need their original visibility.
     warnings = dict(findings.get('warn') or {})
+    automatic = findings.get('auto_approval')
     approved = sum(warnings.pop(key, 0) for key in APPROVAL_CATEGORIES) if controlled else 0
     counts = []
     for values, label in ((findings.get('deny') or {}, 'denied'), (warnings, 'warnings'),
@@ -133,13 +137,17 @@ def audit_rows(findings, controlled):
     if counts:
         result = ' · '.join(counts)
     elif approved and findings.get('verdict') in ('pass', 'warn'):
-        result = 'Approved'
+        result = 'Auto-approved' if automatic else 'Approved'
     else:
         result = {'pass': 'Passed', 'warn': 'Warnings recorded', 'deny': 'Denied',
                   'unknown': 'Unresolved'}.get(findings.get('verdict'), 'Unknown')
-    yield 'Update audit', result
-    if approved:
+    yield 'Content audit', result
+    if approved and not automatic:
         yield 'Approved changes', f'{approved} · explicit approval for this update'
+    for field, label in (('deny', 'Audit denied'), ('warn', 'Audit warnings'), ('unknown', 'Audit unresolved')):
+        values = findings.get(field) or {}
+        if values:
+            yield label, ', '.join(f'{key}={count}' for key, count in sorted(values.items()))
 
 
 def rows(state):
@@ -154,16 +162,31 @@ def rows(state):
     if trust.get('source_id'):
         yield 'Active source', trust['source_id']
     yield 'Publisher signature', 'Not checked · verification is not implemented'
+    fetch = state.get('source_fetch') or {}
+    if fetch:
+        label = {'fetching': 'fetching', 'downloaded': 'downloaded · import and health are separate',
+                 'failed': 'failed', 'deferred': 'waiting for network mode'}[fetch['result']]
+        detail = fetch.get('reason') or fetch.get('phase') or ''
+        if fetch.get('http_status'):
+            detail += f" · HTTP {fetch['http_status']}"
+        yield 'Subscription download', label + (' · ' + detail if detail else '') + ' · ' + stamp(fetch['at'])
     if state.get('profile_refresh'):
         findings = state['profile_refresh'].get('audit')
         if findings:
             yield from audit_rows(findings, trust.get('provenance') == 'controlled-fetch')
         yield 'Profile refresh', refresh_text(state['profile_refresh'])
         yield 'Update result', update_result_text(state['profile_refresh'])
+        automatic = state['profile_refresh'].get('last_auto_approval')
+        if automatic:
+            categories = ', '.join(f'{key}={count}' for key, count in sorted(automatic['categories'].items()))
+            yield 'Last auto approval', f"{automatic['nodes']} nodes · {categories} · {stamp(automatic['at'])}"
     runtime = state.get('profile_vs_runtime') or {}
     if runtime:
         yield 'Profile vs runtime', runtime_text(runtime)
     subscription = state.get('subscription_health', {})
+    if subscription.get('update_failed'):
+        yield 'Subscription update', ('latest update failed · previous acceptance retained'
+            if subscription.get('last_accepted') else 'latest update failed · no accepted update observed')
     if subscription.get('stale'):
         age_days = subscription.get('age_days')
         yield 'Subscription health', ('stale · last successful activity ' + str(age_days) + 'd ago'
@@ -281,7 +304,8 @@ def main():
     state = source.readiness(target='auto', maximum=args.max_age, verification_maximum=args.verification_max_age)
     state['proxy_only'] = args.proxy_only
     state['subscription_health'] = source.subscription_health(
-        '/nonexistent/controlled-source-profiles' if args.controlled_source else args.profiles, state.get('profile_refresh'))
+        '/nonexistent/controlled-source-profiles' if args.controlled_source else args.profiles, state.get('profile_refresh'),
+        fetch=state.get('source_fetch'))
     state['auto_update'] = source.auto_update(args.profiles)
     state['profile_vs_runtime'] = source.profile_vs_runtime(args.profiles)
     if args.controlled_source:

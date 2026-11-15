@@ -148,6 +148,7 @@ def route(document, host, suffix=False):
 def audit(candidate, baseline=None, settings=None):
     settings = settings or {}
     deny, warn, unknown = Counter(), Counter(), Counter()
+    changed_nodes = set()
     try:
         nodes, groups, providers = graph(candidate)
         old_nodes, _, _ = graph(baseline) if baseline is not None else ({}, {}, {})
@@ -162,10 +163,13 @@ def audit(candidate, baseline=None, settings=None):
                     if (old.get('lf-source-server', old.get('server')) != node.get('lf-source-server', node.get('server')) or
                             any(old.get(k) != node.get(k) for k in ('type', 'port', 'servername', 'sni', 'public-key'))):
                         deny['node_identity'] += 1
+                        changed_nodes.add(node['name'])
                     if any(old.get(k) != node.get(k) for k in ('password', 'username', 'uuid', 'private-key', 'token')):
                         deny['node_authentication'] += 1
+                        changed_nodes.add(node['name'])
                     if any(old.get(k) != node.get(k) for k in ('tls', 'network', 'plugin', 'plugin-opts', 'ws-opts', 'grpc-opts', 'reality-opts')):
                         deny['node_transport'] += 1
+                        changed_nodes.add(node['name'])
             server = node.get('server')
             if isinstance(server, str):
                 try:
@@ -265,7 +269,7 @@ def audit(candidate, baseline=None, settings=None):
     except (ValueError, TypeError, KeyError, RecursionError):
         deny['yaml_structure'] += 1
     return dict(verdict='deny' if deny else 'unknown' if unknown else 'warn' if warn else 'pass',
-                deny=dict(deny), warn=dict(warn), unknown=dict(unknown))
+                deny=dict(deny), warn=dict(warn), unknown=dict(unknown), changed_nodes=len(changed_nodes))
 
 
 def main():

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import ssl
 import sys
 import time
 import unittest
@@ -33,6 +34,65 @@ class Response:
 
 
 class SourceTests(unittest.TestCase):
+    def test_a_validated_family_survives_an_unavailable_other_family(self):
+        import dns.resolver
+        class Backend:
+            def resolve(self, host, kind, **kwargs):
+                if kind == 'AAAA':
+                    raise dns.resolver.NoNameservers()
+                return [SimpleNamespace(address='1.1.1.1')]
+        with patch('dns.resolver.Resolver', return_value=Backend()), patch.object(
+                socket, 'getaddrinfo', side_effect=AssertionError('unsafe system DNS fallback')):
+            lookup = w.real_resolver({'address': '127.0.0.1', 'port': 1056})
+            self.assertEqual(lookup('source.example', 443)[0][4], ('1.1.1.1', 443))
+
+    def test_fetch_tries_other_validated_addresses_without_reresolving(self):
+        addresses = ['2606:4700:4700::1111', '8.8.8.8', '1.1.1.1']
+        resolver = unittest.mock.Mock(return_value=[(socket.AF_INET, 1, 6, '', (ip, 443)) for ip in addresses])
+        contacted = []
+        class Connection:
+            sock = None
+            def __init__(self, host, ip, timeout, context):
+                self.ip = ip
+                contacted.append((host, ip, timeout))
+            def request(self, *args, **kwargs):
+                if self.ip == '1.1.1.1':
+                    raise ConnectionRefusedError('private endpoint must stay out of diagnostics')
+            def getresponse(self): return Response()
+            def close(self): pass
+        data = w.fetch({'url': 'https://source.example/sub'}, time.monotonic()+5, [w.TOTAL], resolver, Connection)
+        self.assertTrue(data)
+        resolver.assert_called_once()
+        self.assertEqual([ip for _,ip,_ in contacted], ['1.1.1.1', '8.8.8.8'])
+        self.assertTrue(all(host == 'source.example' and 0 < timeout <= 5 for host,_,timeout in contacted))
+        resolver.return_value.append((socket.AF_INET, 1, 6, '', ('169.254.169.254', 443)))
+        contacted.clear()
+        with self.assertRaises(w.Refused):
+            w.fetch({'url': 'https://source.example/sub'}, time.monotonic()+5, [w.TOTAL], resolver, Connection)
+        self.assertEqual(contacted, [], 'all addresses must be checked before any connection')
+
+    def test_node_pinning_prefers_ipv4_and_keeps_ipv6_only_nodes(self):
+        def resolver(*args, **kwargs):
+            return [(socket.AF_INET6, 1, 6, '', ('2606:4700:4700::1111', 443)),
+                    (socket.AF_INET, 1, 6, '', ('8.8.8.8', 443))]
+        config, _ = w.pin_servers(json.dumps(DOC).encode(), resolver)
+        self.assertEqual(w.load(config)['proxies'][0]['server'], '8.8.8.8')
+        config, _ = w.pin_servers(json.dumps(DOC).encode(), lambda *a,**k: resolver()[0:1])
+        self.assertEqual(w.load(config)['proxies'][0]['server'], '2606:4700:4700::1111')
+
+    def test_failure_diagnostics_use_only_fixed_categories(self):
+        for error, reason in ((socket.gaierror('secret-domain'), 'dns lookup failed'),
+                (ssl.SSLCertVerificationError('secret-certificate'), 'certificate rejected'),
+                (ConnectionRefusedError('secret-address'), 'connection refused'),
+                (TimeoutError('secret-url'), 'connection timeout'),
+                (w.Refused('http response', 'http rejected', 403), 'http rejected')):
+            def fail(): raise error
+            with self.assertRaises(w.Refused) as result:
+                w.step('fetch', fail)
+            self.assertEqual(str(result.exception), 'fetch')
+            self.assertEqual(result.exception.reason, reason)
+            self.assertNotIn('secret', str(result.exception))
+
     def test_real_resolver_uses_only_the_fixed_gateway(self):
         import dns.resolver
 

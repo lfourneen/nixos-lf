@@ -217,10 +217,6 @@ in
     def --wrapped clash-diff [...args: string] {
       ^clash-diff ...$args
     }
-
-    def --wrapped clash-apply [...args: string] {
-      ^clash-apply ...$args
-    }
     '' else ""}
 
     # True while the Clash Verge GUI runs in the user session. The root
