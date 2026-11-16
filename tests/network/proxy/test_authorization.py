@@ -53,7 +53,9 @@ class AuthorizationTests(unittest.TestCase):
         self.assertEqual(len(self.transactions), 2)
 
     def test_stale_failed_cross_boot_generation_digest_and_future_proofs(self):
-        invalid = [dict(ok=False), dict(boot_id='old'), dict(digest='old'), dict(policy_version=6),
+        invalid = [dict(ok=False), dict(ok=False, data_plane_ok=True, dns_ok=False, tun_ok=False),
+                   dict(ok=False, data_plane_ok=True, dns_ok=True, tun_ok=False),
+                   dict(boot_id='old'), dict(digest='old'), dict(policy_version=6),
                    dict(monotonic_seconds=0), dict(monotonic_seconds=120), dict(monotonic_seconds=float('nan')),
                    dict(proof_id=''), dict(authorization_epoch='old')]
         for change in invalid:

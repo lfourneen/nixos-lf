@@ -232,6 +232,12 @@ def rows(state):
     if mode in ('proxy', 'blocked') and health:
         value = 'Passed' if health.get('ok') else REASONS.get(health.get('reason'), 'Incomplete')
         yield 'Last proxy probe', value + f" · duration {health.get('duration_ms', '?')} ms"
+        fields = [('data_plane_ok', 'Mixed HTTP'), ('route_ok', 'Route'),
+                  ('dns_ok', 'DNS'), ('tun_ok', 'TUN')]
+        if any(key in health for key, _ in fields):
+            yield 'Probe layers', ' · '.join(label + ': ' +
+                ('Passed' if health.get(key) is True else 'Failed' if health.get(key) is False else 'Not proven')
+                for key, label in fields)
     preflight = state.get('last_preflight', {})
     if preflight:
         yield 'Last preparation', PHASES.get(preflight.get('phase'), 'Incomplete')

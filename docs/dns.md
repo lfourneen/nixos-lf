@@ -2,7 +2,7 @@
 
 English | [简体中文](CN/dns_CN.md) | [Documentation](README.md)
 
-The host selects `dnsEncryption="strict"` and `localDnssec=true` in `host.nix`, so managed public DNS uses local DNSSEC validation in both A and B.
+The host selects `dnsEncryption="strict"` and `localDnssec=true` in `host.nix`: A validates DNSSEC locally through Unbound and its 360 DoT endpoints; B validates through the core validators, resolving `geosite:cn` through 360 DoH over a direct connection and other names through Cloudflare/Google DoH behind the remote proxy.
 The module default for `localDnssec` is `false`.
 Opportunistic leases and recovery budgets described below remain module compatibility behavior.
 Strict grants no public plaintext recovery or runtime force-plaintext override.
@@ -165,14 +165,13 @@ They maintain separate persistent RFC 5011 anchors seeded from locked `dns-root-
 Each validator forwards over TCP loopback to a private Mihomo transport listener: application queries use port 1057 and bootstrap queries use 1058.
 These listeners carry raw DNSSEC material without hosts substitution, fake-IP synthesis or reuse of ordinary resolver cache entries.
 
-Application transport uses Cloudflare/Google DoH.
-On this host, controlled sources bind those queries to the `lf-remote` group, so they travel through a remote proxy.
+Application transport keeps a domestic split: `geosite:cn` uses 360 DoH over a direct connection, and other names use Cloudflare/Google DoH.
+With controlled sources, the foreign queries bind to the `lf-remote` group and travel through a remote proxy.
 Configurations without controlled sources retain `respect-rules` selection.
 Node bootstrap retains its independent encrypted proxy-server and literal-address bootstrap resolvers.
 Ordinary application names are not sent to that bootstrap path.
-Public application transport keeps no domestic split: names assigned to domestic resolvers in the compatibility configuration use the same foreign DoH here.
-Only node bootstrap keeps a domestic resolver.
-Cold application lookups can require several remote exchanges for validation, and cache reuse remains limited by validation and TTLs.
+The domestic DoH endpoints come from `my.machine.mihomoDomesticValidatingDnsUpstreams` and must return complete DNSSEC material; the default 360 endpoints do, while the non-validating AliDNS path does not.
+Cold foreign lookups can require several remote exchanges for validation, while domestic lookups stay on a domestic round trip.
 Mode A's `my.machine.dotEndpoints` list is independent of both B roles.
 TLS certificate checks remain enabled in Mihomo, and upstream failure grants no plaintext fallback.
 

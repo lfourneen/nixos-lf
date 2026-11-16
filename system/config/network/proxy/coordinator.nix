@@ -160,6 +160,7 @@ let
     runtime = "/run/proxy-mode";
     budget_seconds = config.my.proxy.healthBudgetSeconds;
     request_timeout_seconds = config.my.proxy.healthRequestTimeoutSeconds;
+    dns_timeout_seconds = config.my.proxy.healthDnsTimeoutSeconds;
     urls = config.my.proxy.nodeProbeUrls;
     mixed_port = port.mihomoMixed;
     dns_port = port.mihomoDns;
@@ -167,6 +168,7 @@ let
     fake_ip_net = config.my.proxy.fakeIpNet;
     tun_probe_name = tunProbeName;
     tun_probe_names = config.my.proxy.tunProbeNames;
+    tun_route_classes = config.my.proxy.subscriptionAuditProtectedRoutes;
 
     expected = {
       managed-policy = builtins.hashString "sha256" (builtins.toJSON config.my.proxy.managedProfile);
@@ -320,7 +322,7 @@ let
 
     mode=""
     reason=""           # "no-tun" | "direct-mode" | "node" | "core-gone" | "obs" | ""
-    obs_fails=0         # consecutive `obs` health failures (2-strike hysteresis)
+    obs_fails=0         # consecutive `obs` / `dns` health failures (3-strike hysteresis)
     fails=0
     once=0
     changed=1
@@ -494,7 +496,7 @@ NFT_OFF
     }
     # Full health gate. All three must hold:
     #  (1) the core answers a proxied HTTP request through its mixed port, and
-    #      Clash's own log for that connection does not say `using DIRECT` --
+    #      its exact-source log or live connection record proves a remote leaf --
     #      this catches direct mode, a rule profile that is effectively
     #      all-DIRECT, and a group/slot selected to DIRECT;
     #  (2) the successful request's recorded leaf matches the current policy
@@ -502,7 +504,7 @@ NFT_OFF
     #  (3) a fake-ip answer is reachable through the TUN, proving the TUN really
     #      carries packets (shape-only checks cannot see a stuck sing-tun).
     # health_gate names the failing layer for the reason file:
-    #   obs   = the route could not be read (probe code / log line / group list)
+    #   obs   = an HTTP request or its route observation could not be completed
     #   route = the probe was routed DIRECT or REJECT (no real node)
     #   tun   = the TUN does not carry packets
     stop_health() {
@@ -679,12 +681,13 @@ NFT_OFF
             # the node is picked up the moment it recovers. The reason names the
             # failing layer (a/b/c) for `proxy-status`.
             #
-            # Hysteresis for the `obs` layer ONLY: a transient inability to read
-            # the route (a probe hiccup, an empty delay answer while the node is
-            # fine) must not blackhole the whole host; require two consecutive
-            # `obs` failures. Route/config/TUN failures keep an immediate cut.
-            # HTTP timeouts are observations; a full successful request and its
-            # exact-source route log prove the selected node without /delay.
+            # Hysteresis for the `obs` and `dns` layers: a transient inability
+            # to read the route, or a cold DNSSEC lookup that outlives one
+            # probe, must not blackhole the whole host; require three
+            # consecutive soft failures. Route/config/TUN failures keep an
+            # immediate cut. HTTP timeouts are observations; a full successful
+            # request and its exact-source route proof establish the selected node
+            # without /delay.
             if health_ok; then
               proof_renew=1
               obs_fails=0
@@ -699,11 +702,11 @@ NFT_OFF
               else
                 obs_fails=0
               fi
-              if { [ "$health_gate" = "obs" ] || [ "$health_gate" = "dns" ]; } && [ "$mode" = "proxy" ] && [ "$obs_fails" -lt 2 ]; then
-                want=proxy; want_reason="obs:$obs_fails/2"
+              if { [ "$health_gate" = "obs" ] || [ "$health_gate" = "dns" ]; } && [ "$mode" = "proxy" ] && [ "$obs_fails" -lt 3 ]; then
+                want=proxy; want_reason="obs:$obs_fails/3"
               else
                 want=blocked
-                [ "$health_gate" = "obs" ] && want_reason="obs:2/2" || want_reason="$health_gate"
+                [ "$health_gate" = "obs" ] && want_reason="obs:3/3" || want_reason="$health_gate"
               fi
             fi
           fi
@@ -827,7 +830,7 @@ NFT_OFF
 
       # Back off only when the mode is stable and the post-condition holds; any
       # change or mismatch keeps the loop at the fast interval.
-      if [ "$mode" != "$prev" ] || [ "$ok" != "1" ] || [ "$reason" = "obs:1/2" ]; then
+      if [ "$mode" != "$prev" ] || [ "$ok" != "1" ] || [ "$reason" = "obs:1/3" ] || [ "$reason" = "obs:2/3" ]; then
         changed=1
       else
         changed=0

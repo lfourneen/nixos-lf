@@ -214,10 +214,10 @@ Chrony changes must preserve NTS requirement and certificate-time checks.
 
 With `localDnssec`, [core-validator.nix](../system/config/network/dns/core-validator.nix) runs separate application and infrastructure validators in the core namespace.
 Preserve their independent query/resource budgets, persistent anchors and refusal of client CD bypasses.
-Validation and upstream selection are separate: B application DNS keeps Cloudflare/Google DoH, routed through `lf-remote` with controlled sources, and node bootstrap retains its independent encrypted resolver.
-The root-owned `lf-dns-transport` configuration must not inherit Mode A's DoT list.
+Validation and upstream selection are separate: B application DNS keeps a domestic split, with `geosite:cn` using the domestic validating DoH endpoints directly and other names using Cloudflare/Google DoH routed through `lf-remote` with controlled sources, while node bootstrap retains its independent encrypted resolver.
+The root-owned `lf-dns-transport` configuration keeps its own upstream list (`mihomoDomesticValidatingDnsUpstreams`) and must not inherit Mode A's DoT list.
 Keep the config-parser and executor transport hooks in `patch_mihomo.py`, complete DNSSEC material, TLS verification and raw forwarding without ordinary cache reuse.
-Public application queries keep no domestic split: only node bootstrap uses a domestic resolver, and changes must preserve that separation.
+Public application queries keep a domestic split: `geosite:cn` uses domestic validating DoH over a direct connection, and other names use the remote-proxied Cloudflare/Google DoH. The domestic endpoints must return complete DNSSEC material, and changes must preserve both the split and that requirement.
 The private TUN UID exclusion must remain paired with the validator's loopback-only query firewall and denial of application access to all validator/transport ports.
 Mihomo must validate before public fake-IP synthesis and before pinning a public dial target, clear AD on synthetic addresses, and retain HTTPS/SVCB parameters.
 Keep known-profile migration separate from rejection of foreign values and controller weakening.

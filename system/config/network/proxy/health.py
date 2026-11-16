@@ -1,6 +1,8 @@
 """Bounded, cancellable Mihomo health probe. Never changes the core configuration."""
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 import importlib.util
 import http.client
 import ipaddress
@@ -25,8 +27,10 @@ def failure_stage(detail):
     for prefix, stage in (
         ('mixed HTTP request failed', 'mixed-request'),
         ('no exact-source-port route log', 'mixed-route-log'),
+        ('mixed route proof unavailable', 'mixed-route-proof'),
         ('fake-IP TCP probe failed', 'tun-request'),
         ('fake-IP TCP probe for', 'tun-route-log'),
+        ('TUN route proof unavailable', 'tun-route-proof'),
         ('recorded leaf no longer', 'selection'),
         ('controller reply unavailable', 'controller'),
         ('managed DNS did not return', 'fake-ip-dns'),
@@ -117,8 +121,10 @@ def check_config(config, settings):
     return hashlib.sha256(json.dumps(view, sort_keys=True).encode()).hexdigest()
 
 
-def effective_policy(text, proxies):
+def effective_policy(text, proxies, route_class='proxy'):
     """Validate the connection's recorded leaf, never substitute a later `now`."""
+    if route_class not in {'proxy', 'direct', 'reject'}:
+        raise ProbeFailure('config', 'invalid approved probe route class')
     def group(item):
         return "all" in item or "now" in item
 
@@ -138,8 +144,12 @@ def effective_policy(text, proxies):
     if len(candidates) != 1:
         raise ProbeFailure("obs", "connection policy is absent or ambiguous")
     outer, leaf = candidates[0]
-    forbidden = {"direct", "reject", "reject-drop", "pass", "compatible"}
-    if leaf.lower() in forbidden or str(proxies[leaf].get("type", "")).lower() in forbidden:
+    kind = str(proxies[leaf].get("type", "")).lower()
+    direct = leaf.lower() in {'direct', 'compatible'} or kind in {'direct', 'compatible'}
+    if route_class == 'direct' and not direct:
+        raise ProbeFailure('route', 'probe did not use the approved direct policy')
+    if (route_class == 'proxy' and direct) or leaf.lower() in {'reject', 'reject-drop', 'pass'} \
+            or kind in {'reject', 'reject-drop', 'pass'} or route_class == 'reject':
         raise ProbeFailure("route", "probe selected a non-proxy policy")
 
     pending = [(outer, frozenset())]
@@ -164,9 +174,11 @@ def effective_policy(text, proxies):
     raise ProbeFailure("obs", "recorded leaf no longer matches the current selection")
 
 
-def route_line(contents, host, port, address='127.0.0.1'):
-    pattern = re.compile(r'(?<![0-9A-Za-z:.])' + re.escape(address) + ':' + re.escape(str(port)) + r" --> "
-                         + re.escape(host) + r"(?::[0-9]+)?(?:\s|$)")
+def route_line(contents, host, port, address='127.0.0.1', destination_port=None):
+    source = '[' + address + ']' if ':' in address else address
+    destination = r':[0-9]+' if destination_port is None else ':' + re.escape(str(destination_port))
+    pattern = re.compile(r'\[TCP\] ' + re.escape(source) + ':' + re.escape(str(port)) + r" --> "
+                         + re.escape(host) + destination + r"(?:\s|$)")
     result = None
     for line in contents.splitlines():
         try:
@@ -186,6 +198,10 @@ class Probe:
         self.timings = {}
         self.target_slots = 1
         self.fake_ips = {}
+        self.fake_ip_failures = {}
+        self.diagnostics = dict.fromkeys(('data_plane_ok', 'dns_ok', 'tun_ok', 'route_ok',
+                                         'config_ok', 'listener_ok'))
+        self.route_sources = {}
 
     def remaining(self, maximum):
         remaining = min(maximum, self.deadline - self.clock())
@@ -229,6 +245,8 @@ class Probe:
             value = response.read(8 * 1024 * 1024 + 1)
             if len(value) > 8 * 1024 * 1024:
                 raise ValueError("controller response too large")
+            if response.status != 200:
+                raise ValueError('controller request failed')
             return json.loads(value)
         except (OSError, ValueError, http.client.HTTPException):
             raise ProbeFailure("obs", "controller reply unavailable or invalid") from None
@@ -244,117 +262,211 @@ class Probe:
         finally:
             self.timings[name] = round((self.clock() - start) * 1000)
 
+    def request(self, argv, maximum, host, port):
+        """Retain bounded live records while curl still owns its connection."""
+        records = {}
+        stopped = threading.Event()
+        started = time.time()
+
+        def observe():
+            while not stopped.is_set():
+                try:
+                    value = self.api('/connections', 0.25)
+                    for item in value.get('connections') or []:
+                        metadata = item.get('metadata') or {}
+                        if metadata.get('host') != host or metadata.get('network') != 'tcp' \
+                                or str(metadata.get('destinationPort')) != str(port):
+                            continue
+                        # Ignore pre-existing flows even if a source port is reused.
+                        stamp = datetime.fromisoformat(item['start'].replace('Z', '+00:00'))
+                        if stamp.tzinfo is None or stamp.timestamp() < started:
+                            continue
+                        if len(records) < 64 and isinstance(item.get('id'), str):
+                            records[item['id']] = {key: item.get(key) for key in
+                                ('metadata', 'chains', 'rule', 'rulePayload')}
+                except (ProbeFailure, ValueError, KeyError, TypeError, AttributeError):
+                    pass
+                stopped.wait(0.05)
+
+        worker = threading.Thread(target=observe, daemon=True)
+        worker.start()
+        try:
+            output = self.command(argv, maximum)
+        finally:
+            stopped.set()
+            worker.join()
+        return output, list(records.values())
+
+    def prove_route(self, log_path, host, port, address, records, stage, route_class='proxy', destination_port=80):
+        until = self.clock() + self.remaining(2.5)
+        proxies = None
+        while True:
+            policy = route_line(log_path.read_text(errors='replace'), host, port, address,
+                                destination_port) if log_path else None
+            matches = [item for item in records if (item.get('metadata') or {}).get('sourceIP') == address
+                       and str((item.get('metadata') or {}).get('sourcePort')) == str(port)
+                       and (item.get('metadata') or {}).get('host') == host
+                       and (item.get('metadata') or {}).get('network') == 'tcp'
+                       and str((item.get('metadata') or {}).get('destinationPort')) == str(destination_port)]
+            if policy or matches:
+                if proxies is None:
+                    proxies = self.api('/proxies').get('proxies', {})
+                # An observed forbidden leaf is terminal, even if another source disagrees.
+                proven = []
+                errors = []
+                for source, text in ([('log', policy)] if policy else []) + [
+                        ('connections', self.connection_policy(item)) for item in matches]:
+                    if text is None:
+                        continue
+                    try:
+                        effective_policy(text, proxies, route_class)
+                        proven.append(source)
+                    except ProbeFailure as error:
+                        if error.layer == 'route':
+                            raise
+                        errors.append(error)
+                if proven:
+                    self.route_sources[stage] = proven[0]
+                    return
+                if errors:
+                    raise errors[-1]
+            remaining = until - self.clock()
+            if remaining <= 0:
+                raise ProbeFailure('obs', f'{stage} route proof unavailable for the exact source and target')
+            time.sleep(min(0.05, remaining))
+
+    @staticmethod
+    def connection_policy(item):
+        chains = item.get('chains')
+        if not isinstance(chains, list) or not chains or len(chains) > 32 \
+                or not all(isinstance(name, str) and name for name in chains) \
+                or not isinstance(item.get('rule'), str) or not isinstance(item.get('rulePayload'), str):
+            return None
+        return chains[0] if len(chains) == 1 else chains[-1] + '[' + chains[0] + ']'
+
     def tun_test(self, log_path=None):
         if not self.settings["require_tun"]:
             return
         failures = []
+        self.diagnostics['tun_ok'] = False
         for name in self.settings.get('tun_probe_names', [self.settings['tun_probe_name']]):
             try:
-                return self.tun_target(name, log_path)
+                self.tun_target(name, log_path)
+                self.diagnostics['tun_ok'] = True
+                return
             except ProbeFailure as error:
-                if error.layer in {'config', 'route'}:
+                if error.layer in {'config', 'route', 'interrupted'}:
                     raise
                 failures.append(error)
-        raise failures[-1]
+        # DNS failures take precedence over a later observation deadline.
+        raise next((error for error in failures if error.layer == 'dns'), failures[-1])
 
     def fake_ip(self, name):
         if name in self.fake_ips:
             return self.fake_ips[name]
+        if name in self.fake_ip_failures:
+            raise self.fake_ip_failures[name]
         dig = self.settings['dig']
-        answer = self.command([dig, "+time=1", "+tries=1", "+short", "@127.0.0.1",
-                               "-p", str(self.settings["dns_port"]), name, "A"], 1.5)
+        timeout = self.settings.get("dns_timeout_seconds", 3)
         network = ipaddress.ip_network(self.settings["fake_ip_net"], strict=False)
-        fake_ip = None
-        for line in answer.splitlines():
+        for _ in range(2):
             try:
-                address = ipaddress.ip_address(line.strip())
-            except ValueError:
-                continue
-            if address in network:
-                fake_ip = str(address)
+                answer = self.command([dig, f"+time={int(timeout)}", "+tries=1", "+short", "@127.0.0.1",
+                                       "-p", str(self.settings["dns_port"]), name, "A"], timeout)
+            except ProbeFailure as error:
+                if error.layer != 'obs':
+                    raise
                 break
-        if not fake_ip:
-            raise ProbeFailure("dns", "managed DNS did not return a fake IP")
-        self.fake_ips[name] = fake_ip
-        return fake_ip
+            for line in answer.splitlines():
+                try:
+                    address = ipaddress.ip_address(line.strip())
+                except ValueError:
+                    continue
+                if address in network:
+                    self.fake_ips[name] = str(address)
+                    return str(address)
+        error = ProbeFailure("dns", "managed DNS did not return a fake IP")
+        self.fake_ip_failures[name] = error
+        raise error
 
     def application_dns(self):
         if not self.settings.get('require_tun'):
             return
+        self.diagnostics['dns_ok'] = False
         failures = []
-        for name in self.settings.get('tun_probe_names', [self.settings['tun_probe_name']]):
-            try:
-                self.fake_ip(name)
-                return
-            except ProbeFailure as error:
-                failures.append(error)
-        raise failures[-1]
+        names = list(dict.fromkeys(self.settings.get('tun_probe_names', [self.settings['tun_probe_name']])))
+        # Warm every candidate before TUN TCP, without serial cold-query delays.
+        with ThreadPoolExecutor(max_workers=min(4, len(names))) as workers:
+            pending = [workers.submit(self.fake_ip, name) for name in names]
+            for future in pending:
+                try:
+                    future.result()
+                except ProbeFailure as error:
+                    failures.append(error)
+        if not self.fake_ips:
+            raise failures[-1]
 
     def tun_target(self, name, log_path):
         fake_ip = self.fake_ip(name)
         dig = self.settings['dig']
-        if not self.command([dig, "+time=1", "+tries=1", "+short", "@" + fake_ip,
-                             "-p", "53", name, "A"], 1.5).strip():
+        timeout = self.settings.get("dns_timeout_seconds", 3)
+        answered = False
+        for _ in range(2):
+            try:
+                answer = self.command([dig, f"+time={int(timeout)}", "+tries=1", "+short", "@" + fake_ip,
+                                       "-p", "53", name, "A"], timeout)
+            except ProbeFailure as error:
+                if error.layer != 'obs':
+                    raise
+                break
+            if any(line.strip() == fake_ip for line in answer.splitlines()):
+                answered = True
+                break
+        if not answered:
             raise ProbeFailure("dns", "TUN DNS self-test did not answer")
+        self.diagnostics['dns_ok'] = True
         # A root fake-IP TCP flow is excluded from gost's REDIRECT. It exercises
         # the core's effective TUN/auto-redirect data path as well as DNS hijack.
         # Let the kernel allocate a fresh ephemeral port. A small, repeatedly
         # scanned range reuses ports across different fake-IP candidates; their
         # redirects share one endpoint and conntrack can then rewrite a port.
-        output = self.command([self.settings["curl"], "--noproxy", "*", "--head", "-sS",
+        output, records = self.timed('tun_http', lambda: self.request([self.settings["curl"], "--noproxy", "*", "--head", "-sS",
                                "-o", "/dev/null", "--max-time", "2.5", "--max-filesize", "1048576",
                                "--resolve", name + ":80:" + fake_ip,
-                               "-w", "%{http_code} %{local_port}", "http://" + name + "/"], 2.7)
+                               "-w", "%{http_code} %{local_port} %{local_ip}", "http://" + name + "/"], 2.7, name, 80))
         fields = output.split()
-        if len(fields) != 2 or fields[0] not in {"200", "204", "301", "302", "307", "308"} \
+        if len(fields) != 3 or fields[0] not in {"200", "204", "301", "302", "307", "308"} \
                 or not fields[1].isdigit():
             detail = getattr(self, "last_error", "") or output.strip()[:120] or "empty reply"
             raise ProbeFailure("obs", f"fake-IP TCP probe failed for {fake_ip}: {detail}")
-        if log_path is None:
-            raise ProbeFailure("obs", "TUN data probe has no route observation")
-        pattern = re.compile(r":" + re.escape(fields[1]) + r" --> " + re.escape(name) + r":80(?:\s|$)")
-        until = self.clock() + self.remaining(0.6)
-        while self.clock() < until:
-            for line in log_path.read_text(errors="replace").splitlines():
-                try:
-                    payload = json.loads(line).get("payload", "")
-                except (ValueError, AttributeError):
-                    continue
-                if isinstance(payload, str) and pattern.search(payload) and "using " in payload:
-                    return
-            time.sleep(0.05)
-        raise ProbeFailure("obs", f"fake-IP TCP probe for {fake_ip}:{fields[1]} has no exact-source route log")
+        self.timed('tun_route', lambda: self.prove_route(log_path, name, fields[1], fields[2], records, 'TUN',
+                         self.settings.get('tun_route_classes', {}).get(name, 'proxy')))
 
     def target(self, url, log_path):
-        host = urlsplit(url).hostname
+        parsed = urlsplit(url)
+        host = parsed.hostname
         if not host:
             raise ProbeFailure("config", "invalid health target URL")
         # Fresh source ports disambiguate the log from other local applications.
         timeout = self.remaining(min(self.settings["request_timeout_seconds"],
                                      self.remaining(30) / self.target_slots))
-        output = self.command([self.settings["curl"], "-sS", "-o", "/dev/null", "-w",
+        if self.diagnostics['data_plane_ok'] is None:
+            self.diagnostics['data_plane_ok'] = False
+        self.diagnostics['route_ok'] = False
+        output, records = self.timed('mixed_http', lambda: self.request([self.settings["curl"], "-sS", "-o", "/dev/null", "-w",
                                "%{http_code} %{local_port}", "--max-time", str(timeout),
                                "--noproxy", "", "--local-port", "15010-15090",
                                "--interface", self.settings.get('source_address', '127.0.0.1'), "-x",
-                               f"http://127.0.0.1:{self.settings['mixed_port']}", url], timeout + 0.2)
+                               f"http://127.0.0.1:{self.settings['mixed_port']}", url], timeout + 0.2,
+                                      host, parsed.port or (443 if parsed.scheme == 'https' else 80)))
         fields = output.split()
         if len(fields) != 2 or fields[0] not in {"200", "204"} or not fields[1].isdigit():
             raise ProbeFailure("obs", "mixed HTTP request failed")
-        until = self.clock() + self.remaining(0.6)
-        policy = None
-        while self.clock() < until:
-            policy = route_line(log_path.read_text(errors="replace"), host, fields[1],
-                                self.settings.get('source_address', '127.0.0.1'))
-            if policy:
-                break
-            time.sleep(0.05)
-        if not policy:
-            raise ProbeFailure("obs", "no exact-source-port route log for this target")
-        proxies = self.api("/proxies").get("proxies", {})
-        # This successful request already exercised the recorded leaf. A second
-        # /delay call mutates Mihomo's alive/history state and can change URLTest
-        # selection, so the supervisor only reads and validates the live graph.
-        effective_policy(policy, proxies)
+        self.diagnostics['data_plane_ok'] = True
+        self.timed('mixed_route', lambda: self.prove_route(log_path, host, fields[1],
+                         self.settings.get('source_address', '127.0.0.1'), records, 'mixed',
+                         destination_port=parsed.port or (443 if parsed.scheme == 'https' else 80)))
+        self.diagnostics['route_ok'] = True
 
     def run(self, fast=False):
         def listeners():
@@ -363,11 +475,14 @@ class Probe:
                                capture_output=True, timeout=self.remaining(4.5), check=True)
             except (OSError, subprocess.SubprocessError):
                 raise ProbeFailure('config', 'managed TCP/UDP listener identity mismatch') from None
+        self.diagnostics['listener_ok'] = False
         self.timed('listeners', listeners)
+        self.diagnostics['listener_ok'] = True
+        self.diagnostics['config_ok'] = False
         fingerprint = self.timed("config", lambda: check_config(self.api("/configs"), self.settings))
+        self.diagnostics['config_ok'] = True
         if fast:
             return fingerprint
-        self.timed('application_dns', self.application_dns)
         with tempfile.TemporaryDirectory(prefix="health-", dir=self.settings["runtime"]) as temporary:
             log_path = Path(temporary) / "logs"
             with log_path.open("w") as stream:
@@ -384,15 +499,18 @@ class Probe:
                         self.timed(f"target_{number}", lambda: self.target(url, log_path))
                         break
                     except ProbeFailure as error:
-                        if error.layer in {"route", "config"}:
+                        if error.layer in {"route", "config", "interrupted"}:
                             raise
                         failures.append(error)
                 else:
                     raise failures[-1]
+                self.timed('application_dns', self.application_dns)
                 self.timed("tun", lambda: self.tun_test(log_path))
+                self.diagnostics['config_ok'] = False
                 final = check_config(self.api("/configs"), self.settings)
                 if final != fingerprint:
                     raise ProbeFailure("obs", "configuration changed during the probe")
+                self.diagnostics['config_ok'] = True
                 return final
             finally:
                 reader.terminate()
@@ -422,7 +540,8 @@ def main():
         result.update(reason=error.layer, detail=error.detail, failure_stage=failure_stage(error.detail))
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         result.update(detail=f"probe error: {type(error).__name__}")
-    result.update(duration_ms=round((time.monotonic() - probe.start) * 1000), layers=probe.timings)
+    result.update(probe.diagnostics, route_sources=probe.route_sources,
+                  duration_ms=round((time.monotonic() - probe.start) * 1000), layers=probe.timings)
     if os.geteuid() == 0 and not fast and result.get('reason') != 'interrupted':
         classification = result.get('reason')
         if classification not in ('node', 'tun', 'dns', 'config', 'route', 'obs', 'direct-mode', 'no-tun', 'core-gone'):
@@ -430,6 +549,7 @@ def main():
         if not result['ok']:
             print('proxy health warning: ' + classification, file=sys.stderr)
         record = {key: result[key] for key in ('ok', 'reason', 'duration_ms', 'layers')}
+        record.update(probe.diagnostics, route_sources=probe.route_sources)
         record['failure_stage'] = result.get('failure_stage', 'unknown')
         record['at'] = time.time()
         path = None

@@ -2,6 +2,7 @@
 
 let
   dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || managedSources || assurance || ech != null);
+  fixturePython = pkgs.python3.withPackages (p: [ p.pyyaml ] ++ pkgs.lib.optional assurance p.dnspython);
   maskSupervisor = "mkdir -p /run/systemd/system.control; ln -s /dev/null /run/systemd/system.control/proxy-mode.service; systemctl daemon-reload; systemctl stop proxy-mode.service; test $(systemctl show -p LoadState --value proxy-mode.service) = masked";
   unmaskSupervisor = "unlink /run/systemd/system.control/proxy-mode.service; systemctl daemon-reload";
   sourceTls = import ../../home/firefox/tls-fixture.nix {
@@ -38,6 +39,7 @@ pkgs.testers.runNixOSTest {
                 nameserver = [ "https://203.0.113.53/dns-query#Fixture" ];
                 default-nameserver = [ "tls://203.0.113.53:853" ];
                 proxy-server-nameserver = [ "https://203.0.113.53/dns-query#DIRECT" ];
+                nameserver-policy = { };
               };
             };
           };
@@ -88,6 +90,8 @@ pkgs.testers.runNixOSTest {
     my.proxy.remoteOnlyCatchAll = managedSources;
     my.proxy.nodeProbeUrls = [ "http://node.fixture.example:8080/" ];
     my.proxy.tunProbeName = "tun.fixture.example";
+    my.proxy.subscriptionAuditProtectedRoutes."tun.fixture.example" = lib.mkIf (!uniformProxy && !managedSources) "direct";
+    my.proxy.healthBudgetSeconds = lib.mkIf assurance 18;
     my.proxy.dnsEncryption = if strictDns || managedSources || assurance then "strict" else "opportunistic";
     security.pki.certificateFiles = lib.optional (managedSources || assurance) "${sourceTls}/ca.pem";
     services.unbound.settings.server.local-zone = lib.mkIf managedSources [
@@ -166,8 +170,8 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-refresh.py".source = ./refresh_fixture.py;
     environment.etc."netsec-dataplane.py".source = ./dataplane_fixture.py;
     environment.etc."netsec-resilience.py" = lib.mkIf dataplane { source = ./resilience_fixture.py; };
-    environment.etc."netsec-health.py" = lib.mkIf dataplane { source = ../../../system/config/network/proxy/health.py; };
-    environment.etc."netsec-health.json" = lib.mkIf dataplane { source = config.my.proxy.healthSettings; };
+    environment.etc."netsec-health.py" = lib.mkIf (dataplane || assurance) { source = ../../../system/config/network/proxy/health.py; };
+    environment.etc."netsec-health.json" = lib.mkIf (dataplane || assurance) { source = config.my.proxy.healthSettings; };
     environment.etc."netsec-blocked.nft" = lib.mkIf dataplane { text = config.my.proxy.blockedModeRules; };
     environment.etc."netsec-lifecycle.py" = lib.mkIf dataplane { source = ../integration/lifecycle_fixture.py; };
 
@@ -192,7 +196,7 @@ pkgs.testers.runNixOSTest {
     };
 
     environment.systemPackages = [
-      (pkgs.python3.withPackages (p: [ p.pyyaml ] ++ lib.optional assurance p.dnspython))
+      fixturePython
       pkgs.curl pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.nftables pkgs.util-linux
     ] ++ lib.optionals (ech != null) [ pkgs.nssTools ]
       ++ lib.optionals dataplane [ pkgs.conntrack-tools ];
@@ -264,7 +268,7 @@ pkgs.testers.runNixOSTest {
     ''}
     machine.succeed("systemd-run --unit=control-dns ${pkgs.lib.optionalString (ech != null) "--property=StandardOutput=append:/run/netsec-ech/dns.log"} ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-dns.py server 15354 --dns-answer 203.0.113.10 ${pkgs.lib.optionalString (ech != null) "--ech-config /run/netsec-ech/dns.json"}")
     for port in (80, 8080):
-        machine.succeed(f"systemd-run --unit=control-http-{port} ip netns exec outside ${pkgs.python3}/bin/python3 -m http.server {port} --bind 0.0.0.0")
+        machine.succeed(f"systemd-run --unit=control-http-{port} ip netns exec outside ${fixturePython}/bin/python3 ${if assurance then "/etc/netsec-assurance.py http" else "-m http.server"} {port} ${pkgs.lib.optionalString (!assurance) "--bind 0.0.0.0"}")
     ${pkgs.lib.optionalString uniformProxy ''
     machine.succeed("systemd-run --unit=uniform-http6 ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-integration.py http6; systemd-run --unit=uniform-udp ip netns exec outside ${pkgs.python3}/bin/python3 /etc/netsec-dns.py server 15353")
     machine.wait_until_succeeds("ip netns exec outside ss -uln | grep -q :15353", timeout=20)
@@ -494,6 +498,7 @@ pkgs.testers.runNixOSTest {
     ${pkgs.lib.optionalString assurance ''
     with subtest("local DNSSEC, isolated DNS budgets and expiring kernel authorization"):
         try:
+            print(machine.succeed("python3 -u /etc/netsec-assurance.py health", timeout=90))
             print(machine.succeed("python3 -u /etc/netsec-assurance.py dns", timeout=90))
             print(machine.succeed("ip netns exec lf-clash-core python3 -u /etc/netsec-assurance.py pressure", timeout=60))
             wait_proxy()

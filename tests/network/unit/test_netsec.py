@@ -259,6 +259,189 @@ class GuestPolicyTests(unittest.TestCase):
 
 
 class HealthTests(unittest.TestCase):
+    graph = {'Group': {'type': 'Selector', 'now': 'Good'}, 'Good': {'type': 'Shadowsocks'},
+             'DIRECT': {'type': 'Direct'}}
+
+    def connection(self, **metadata):
+        return dict(metadata=dict({'network': 'tcp', 'sourceIP': '127.0.0.1', 'sourcePort': '15010',
+                    'host': 'probe.example', 'destinationPort': '80'}, **metadata),
+                    chains=['Good', 'Group'], rule='Domain', rulePayload='probe.example')
+
+    def test_delayed_logs_and_live_connections_prove_the_same_exact_flow(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / 'logs'
+            log.write_text('')
+            now = [0.]
+            probe = health.Probe({'budget_seconds': 18}, clock=lambda: now[0])
+            probe.api = lambda *_args: {'proxies': self.graph}
+            def delayed(seconds):
+                now[0] += seconds
+                if now[0] >= 1.2:
+                    log.write_text(json.dumps({'payload':
+                        '[TCP] 127.0.0.1:15010 --> probe.example:80 using Group[Good]'}))
+            with patch.object(health.time, 'sleep', side_effect=delayed):
+                probe.prove_route(log, 'probe.example', 15010, '127.0.0.1', [], 'mixed')
+            self.assertGreaterEqual(now[0], 1.2)
+            self.assertEqual(probe.route_sources, {'mixed': 'log'})
+            log.write_text('')
+            probe.prove_route(log, 'probe.example', 15010, '127.0.0.1', [self.connection()], 'mixed')
+            self.assertEqual(probe.route_sources, {'mixed': 'connections'})
+
+    def test_missing_mismatched_and_forbidden_connection_proofs_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / 'logs'
+            log.write_text('')
+            invalid = [[], [self.connection(sourcePort='15011')], [self.connection(sourceIP='127.0.0.2')],
+                       [self.connection(host='probe.example.evil')], [self.connection(network='udp')],
+                       [self.connection(destinationPort='443')], [dict(self.connection(), chains=[])],
+                       [dict(self.connection(), rulePayload=None)]]
+            for records in invalid:
+                now = [0.]
+                probe = health.Probe({'budget_seconds': 18}, clock=lambda: now[0])
+                probe.api = lambda *_args: {'proxies': self.graph}
+                with self.subTest(records=records), patch.object(health.time, 'sleep',
+                        side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)):
+                    with self.assertRaises(health.ProbeFailure) as failure:
+                        probe.prove_route(log, 'probe.example', 15010, '127.0.0.1', records, 'mixed')
+                self.assertEqual(failure.exception.layer, 'obs')
+                self.assertAlmostEqual(now[0], 2.5)
+            direct = dict(self.connection(), chains=['DIRECT'])
+            with self.assertRaises(health.ProbeFailure) as failure:
+                probe.prove_route(log, 'probe.example', 15010, '127.0.0.1', [direct], 'mixed')
+            self.assertEqual(failure.exception.layer, 'route')
+            # A successful source cannot erase the other source's DIRECT evidence.
+            log.write_text(json.dumps({'payload':
+                '[TCP] 127.0.0.1:15010 --> probe.example:80 using Group[Good]'}))
+            with self.assertRaises(health.ProbeFailure) as failure:
+                probe.prove_route(log, 'probe.example', 15010, '127.0.0.1', [direct], 'mixed')
+            self.assertEqual(failure.exception.layer, 'route')
+            health.effective_policy('DIRECT', self.graph, 'direct')
+
+    def test_connection_observation_happens_before_curl_returns_and_excludes_old_flows(self):
+        probe = health.Probe({'budget_seconds': 18})
+        observed = threading.Event()
+        def api(path, *_args):
+            self.assertEqual(path, '/connections')
+            item = dict(self.connection(), id='fresh', start=health.datetime.now().astimezone().isoformat())
+            observed.set()
+            return {'connections': [item, dict(item, id='old', start='2000-01-01T00:00:00Z'),
+                                    dict(item, id='other', metadata=dict(item['metadata'], host='other.example'))]}
+        probe.api = api
+        def command(*_args):
+            self.assertTrue(observed.wait(1), 'the connection must be read while curl is running')
+            return '204 15010'
+        probe.command = command
+        output, records = probe.request(['curl'], 2, 'probe.example', 80)
+        self.assertEqual(output, '204 15010')
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['chains'], ['Good', 'Group'])
+        self.assertNotIn('start', records[0])
+
+    def test_warm_all_dns_names_retry_once_and_preserve_tcp_candidate_order(self):
+        probe = health.Probe(dict(budget_seconds=18, require_tun=True, dig='dig', dns_port=1053,
+                    fake_ip_net='198.18.0.0/16', tun_probe_name='global.example',
+                    tun_probe_names=['global.example', 'domestic.example']))
+        attempts = []
+        def command(argv, maximum):
+            name = argv[-2]
+            attempts.append((name, maximum))
+            if name == 'global.example' and attempts.count((name, maximum)) == 1:
+                return ''
+            return '198.18.0.2' if name == 'global.example' else '198.18.0.3'
+        probe.command = command
+        probe.application_dns()
+        self.assertEqual(attempts.count(('global.example', 3)), 2)
+        self.assertEqual(attempts.count(('domestic.example', 3)), 1)
+        self.assertEqual(len(probe.fake_ips), 2)
+        self.assertFalse(probe.diagnostics['dns_ok'], 'warmup alone must not claim TUN DNS')
+        order = []
+        def tun_target(name, _log):
+            order.append(name)
+            self.assertIn(name, probe.fake_ips)
+            if name == 'global.example':
+                raise health.ProbeFailure('obs', 'fake-IP TCP probe failed')
+            probe.diagnostics['dns_ok'] = True
+        probe.tun_target = tun_target
+        probe.tun_test()
+        self.assertEqual(order, ['global.example', 'domestic.example'])
+        self.assertTrue(probe.diagnostics['tun_ok'])
+
+    def test_dns_retry_is_capped_by_the_shared_deadline(self):
+        now = [0.]
+        probe = health.Probe(dict(budget_seconds=4, dig='dig', dns_port=1053,
+                    fake_ip_net='198.18.0.0/16'), clock=lambda: now[0])
+        def timeout(argv, **kwargs):
+            now[0] += kwargs['timeout']
+            raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+        with patch.object(health.subprocess, 'run', side_effect=timeout) as run:
+            with self.assertRaises(health.ProbeFailure) as failure:
+                probe.fake_ip('probe.example')
+        self.assertEqual(failure.exception.layer, 'dns')
+        self.assertEqual([call.kwargs['timeout'] for call in run.call_args_list], [3, 1])
+        self.assertEqual(now[0], 4)
+
+    def test_full_probe_requires_mixed_route_dns_tun_and_final_configuration(self):
+        for outage in (None, 'one-dns', 'mixed', 'dns', 'tun-dns', 'tun', 'route', 'config'):
+            with self.subTest(outage=outage), tempfile.TemporaryDirectory() as temporary:
+                probe = health.Probe(dict(budget_seconds=18, runtime=temporary, listener_check='check',
+                    expected={}, require_tun=True, curl='curl', socket='controller', urls=['http://probe.example/'],
+                    request_timeout_seconds=5, mixed_port=7897, dig='dig', dns_port=1053,
+                    fake_ip_net='198.18.0.0/16', tun_probe_name='tun.example'))
+                if outage == 'one-dns':
+                    probe.settings['tun_probe_names'] = ['cold.example', 'tun.example']
+                reads = []
+                lookups = []
+                def api(path, *_args):
+                    reads.append(path)
+                    if path == '/proxies':
+                        return {'proxies': self.graph}
+                    return {'mode': 'global' if outage == 'config' and reads.count('/configs') > 1 else 'rule'}
+                probe.api = api
+                def command(argv, _maximum):
+                    lookups.append(argv[-2])
+                    if outage == 'dns' or (outage == 'tun-dns' and '@198.18.0.2' in argv) \
+                            or (outage == 'one-dns' and argv[-2] == 'cold.example'):
+                        return ''
+                    return '198.18.0.2'
+                probe.command = command
+                def request(argv, _maximum, host, _port):
+                    if (host == 'probe.example' and outage == 'mixed') or (host == 'tun.example' and outage == 'tun'):
+                        return '000 15010', []
+                    log = next(Path(temporary).glob('health-*/logs'))
+                    policy = 'DIRECT' if outage == 'route' else 'Group[Good]'
+                    log.write_text(json.dumps({'payload': f'[TCP] 127.0.0.1:15010 --> {host}:80 using {policy}'}))
+                    return '204 15010' + (' 127.0.0.1' if host == 'tun.example' else ''), []
+                probe.request = request
+                output = io.StringIO()
+                settings = Path(temporary) / 'settings'
+                settings.write_text(json.dumps(probe.settings))
+                with patch.object(health, 'Probe', return_value=probe), \
+                     patch.object(health.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)), \
+                     patch.object(health.subprocess, 'Popen'), patch.object(health.time, 'sleep'), \
+                     patch.object(health.os, 'geteuid', return_value=1000), patch.object(health.signal, 'signal'), \
+                     patch.object(health.sys, 'argv', ['health', str(settings)]), contextlib.redirect_stdout(output):
+                    self.assertEqual(health.main(), int(outage not in (None, 'one-dns')))
+                result = json.loads(output.getvalue())
+                self.assertEqual(result['ok'], outage in (None, 'one-dns'))
+                if outage in (None, 'one-dns'):
+                    self.assertTrue(all(result[key] is True for key in probe.diagnostics))
+                if outage == 'one-dns':
+                    self.assertEqual(lookups.count('cold.example'), 2)
+                if outage in ('dns', 'tun-dns'):
+                    self.assertEqual(result['reason'], 'dns')
+                    self.assertTrue(result['data_plane_ok'])
+                    self.assertTrue(result['route_ok'])
+                    self.assertFalse(result['dns_ok'])
+                if outage == 'mixed':
+                    self.assertFalse(result['data_plane_ok'])
+                    self.assertIsNone(result['dns_ok'])
+                    self.assertEqual(result['failure_stage'], 'mixed-request')
+                if outage == 'route':
+                    self.assertEqual(result['reason'], 'route')
+                    self.assertFalse(result['route_ok'])
+                if outage == 'config':
+                    self.assertFalse(result['config_ok'])
+
     def test_failure_step_survives_recovery_without_persisting_private_details(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -380,6 +563,8 @@ class HealthTests(unittest.TestCase):
             probe.command = lambda *_args: "204 15010"
             calls = []
             def api(endpoint, *_args):
+                if endpoint == '/connections':
+                    return {'connections': []}
                 calls.append(endpoint)
                 self.assertEqual(endpoint, "/proxies", "health must not call the mutating delay API")
                 return {"proxies": graph}
@@ -1641,17 +1826,19 @@ sync_pass
             script = self.setup_shell(directory) + shell_function("sync_pass") + '''
 health_ok() { health_gate=obs; return 1; }
 sync_pass
-[ "$mode" = proxy ] && [ "$reason" = obs:1/2 ] && [ "$changed" = 1 ] || exit 1
+[ "$mode" = proxy ] && [ "$reason" = obs:1/3 ] && [ "$changed" = 1 ] || exit 1
 [ "$(read_version)" = 10 ] || exit 2
 health_ok() { return 0; }
 sync_pass
 [ "$mode" = proxy ] && [ "$reason" = "" ] && [ "$obs_fails" = 0 ] || exit 3
 health_ok() { health_gate=obs; return 1; }
 sync_pass
-[ "$mode" = proxy ] && [ "$reason" = obs:1/2 ] || exit 4
+[ "$mode" = proxy ] && [ "$reason" = obs:1/3 ] || exit 4
 sync_pass
-[ "$mode" = blocked ] && [ "$installed" = blocked ] && [ "$reason" = obs:2/2 ] || exit 5
-[ "$(read_version)" = 11 ] || exit 6
+[ "$mode" = proxy ] && [ "$reason" = obs:2/3 ] || exit 5
+sync_pass
+[ "$mode" = blocked ] && [ "$installed" = blocked ] && [ "$reason" = obs:3/3 ] || exit 6
+[ "$(read_version)" = 11 ] || exit 7
 health_ok() { return 0; }
 sync_pass
 [ "$mode" = proxy ] && [ "$reason" = "" ] && [ "$(read_version)" = 12 ]
@@ -1757,7 +1944,7 @@ atomic_write() {{ printf '%s\\n' "$2" > "$1"; }}
 request_verify() {{ verifies=$((verifies+1)); }}
 ''' + source + '''
 publish_state
-reason=obs:1/2; publish_state observation
+reason=obs:1/3; publish_state observation
 reason=""; publish_state observation
 [ "$(jq -r '.policy_version' ''' + str(directory / "state.json") + ''')" = 1 ] && [ "$verifies" = 1 ]
 '''
@@ -1985,6 +2172,18 @@ class SubscriptionAndStatusTests(unittest.TestCase):
                 self.assertNotIn('\x1b',rendered)
                 self.assertIn('Network status',rendered)
             self.assertNotIn('╭',status.render(value,plain=True))
+
+    def test_probe_layers_explain_partial_failure_without_claiming_readiness(self):
+        status = module('status')
+        value = dict(mode='blocked', target='proxy', ready=False, observations={},
+                     last_proxy_health=dict(ok=False, reason='dns', data_plane_ok=True,
+                                            route_ok=True, dns_ok=False, tun_ok=None))
+        rows = dict(status.rows(value))
+        self.assertIn('Mixed HTTP: Passed', rows['Probe layers'])
+        self.assertIn('DNS: Failed', rows['Probe layers'])
+        self.assertIn('TUN: Not proven', rows['Probe layers'])
+        self.assertNotEqual(rows['Last proxy probe'], 'Passed')
+        self.assertFalse(value['ready'])
 
     def test_status_keeps_last_preflight_failure_separate_from_current_readiness(self):
         status = module('status')

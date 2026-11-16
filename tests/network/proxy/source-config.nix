@@ -53,8 +53,9 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   assert policy['lf-private-targets']['strict-inlets'] == ['lf-strict']
   assert policy['listeners'][0]['port'] == ${toString c.my.machine.ports.mihomoStrict}
   transport = policy['lf-dns-transport']['dns']
+  domestic = ${builtins.toJSON (map (ip: "https://${ip}/dns-query#DIRECT") c.my.machine.mihomoDomesticValidatingDnsUpstreams)}
   assert transport['nameserver'] == ['https://1.1.1.1/dns-query#lf-remote', 'https://8.8.8.8/dns-query#lf-remote']
-  assert transport['nameserver-policy'] == {}
+  assert transport['nameserver-policy'] == {'geosite:cn': domestic}
   assert transport['proxy-server-nameserver'] == ['https://223.5.5.5/dns-query']
   for role, path in ${builtins.toJSON (pkgs.lib.mapAttrs (_: path: toString path) c.my.proxy.coreValidatorConfigs)}.items():
       validator = Path(path).read_text()

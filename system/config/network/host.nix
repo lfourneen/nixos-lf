@@ -6,8 +6,18 @@
   my.proxy.strictBrowser = true;
   my.proxy.subscriptionTrust = "fixed";
   my.proxy.dnsEncryption = "strict";
+
+  # B validates DNSSEC through the core validators and keeps a domestic split:
+  # `geosite:cn` uses 360 DoH over a direct connection, everything else the
+  # remote-proxied Cloudflare/Google DoH. A validates through Unbound and the
+  # same 360 endpoints over DoT.
   my.proxy.localDnssec = true;
+
   my.proxy.authorizationLeaseSeconds = 60;
+
+  # Cold foreign DNSSEC validation can outlive the module's 12 s probe budget;
+  # leave room for the 3 s fake-IP lookups plus the HTTP/TUN checks.
+  my.proxy.healthBudgetSeconds = 18;
 
   # Keep the offline content audit in blocking mode for this host. Reusable
   # modules and VM fixtures retain the warn default.

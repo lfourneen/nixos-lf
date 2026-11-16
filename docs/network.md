@@ -119,12 +119,19 @@ It is an error status, not another protected mode.
 Applications using the shared readiness check refuse it.
 
 The core's service cgroup, namespace-specific passive TCP/UDP listener identities, managed controller values, private TUN and host veth routes and actual unmarked IPv6 selection for root and the desktop UID feed the health decision.
-With TUN enabled, the application DNS check runs first and reuses its fake-IP within the same probe.
-HTTP probes must complete through the currently selected proxy leaf with matching source-port logs.
-Another real HTTP request to a fake-IP proves the transparent TCP path.
-The default shared deadline is 12 seconds.
+The mixed-port HTTP request runs before DNS/TUN checks so its result can be diagnosed independently.
+With TUN enabled, all configured candidate names are warmed concurrently and their fake-IPs are reused within the same probe.
+TUN TCP tries those candidates in the configured order, with at least one candidate required to pass fake-IP DNS, TUN DNS hijack and real HTTP.
+HTTP route proof uses an exact source address, source port and destination match from the core log or a connection-table record captured while the request is running.
+The recorded leaf must match the current policy graph. Mixed HTTP requires a remote proxy; TUN follows the root-approved route class for its target.
+Log delivery may take up to 2.5 seconds within the shared deadline.
+The module default shared deadline is 12 seconds; this host sets 18 seconds to fit cold DNSSEC lookups.
 Definite configuration, route or TUN failures block immediately.
-Unavailable observations use two consecutive rounds, at least two seconds apart.
+Unavailable observations and DNS failures use three consecutive rounds, at least two seconds apart.
+Each fake-IP lookup and TUN DNS self-test uses `my.proxy.healthDnsTimeoutSeconds`, default 3 seconds per attempt, with one retry within the shared deadline.
+
+`data_plane_ok`, `route_ok`, `dns_ok` and `tun_ok` report separate diagnostic results; `null` means unproven or outside the probe's scope.
+They cannot authorize B or renew its lease. Only the complete `ok=true` verdict can do so.
 
 `health.json.scope` declares the invocation's coverage.
 Only `ok=true` confirms successful completion.

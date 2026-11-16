@@ -166,6 +166,15 @@
       description = "Mihomo's domestic/bootstrap resolvers, independent of Mode-A Unbound.";
     };
 
+    mihomoDomesticValidatingDnsUpstreams = lib.mkOption {
+      type = lib.types.nonEmptyListOf lib.types.str;
+      default = [ "101.226.4.6" "218.30.118.6" "123.125.81.6" ];
+      description = ''
+        Mihomo's domestic DoH endpoints for the core validator transport.
+        Each must serve DoH on 443 and return complete DNSSEC material.
+      '';
+    };
+
     dotTransportFallback = lib.mkOption {
       type = lib.types.nonEmptyListOf lib.types.str;
       default = [ "1.1.1.1" "1.0.0.1" ];

@@ -279,7 +279,7 @@ Dedicated guest accounts retain their separate boundary.
 | File | Meaning |
 |---|---|
 | `/run/proxy-mode/state.json` | Atomic mode, reason, policy version, revision and update time |
-| `/run/proxy-mode/health.json` | Probe scope, verdict and per-layer durations |
+| `/run/proxy-mode/health.json` | Probe scope, full verdict, separate HTTP/route/DNS/TUN diagnostics, proof sources and per-layer durations |
 | `/run/proxy-mode/heartbeat.json` | Last successful supervisor round |
 | `/run/netsec/state.json` | Verification verdict, checked generation and freshness |
 | `/run/dns-upstream/state.json` | DNS mode/reason, encryption policy, session, budget, deadline and override |
@@ -320,7 +320,7 @@ Boot identity and monotonic timestamps reject cross-boot, future and stale recor
 | `no-tun`, `tun` | Device, managed routing table/rules, real route selection and fake-IP HTTP path |
 | `config` | Snapshot digest, managed API values and TCP/UDP listener identity |
 | `route` | Actual logged leaf is DIRECT/REJECT or inconsistent with the selected graph |
-| `obs`, `obs:1/2`, `obs:2/2` | HTTP completion, exact source-port log and selection observations |
+| `obs`, `obs:1/3`, `obs:2/3`, `obs:3/3` | HTTP completion, exact source-port log and selection observations |
 | `resolver-error`, `split-error` | DNS listener identity or approved Wi-Fi profile/lease |
 
 ```sh

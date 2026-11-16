@@ -93,13 +93,15 @@ in
         nameserver = map (url: url + lib.optionalString p.controlledSources "#lf-remote")
           encryptedDns.nameserver;
 
-        # Public application queries retain foreign encrypted upstreams. The
-        # domestic split of the non-validating configuration is deliberately
-        # not carried over: only node bootstrap keeps a domestic resolver, so a
-        # domestic name pays the remote round trip once and its validator caches
-        # the answer afterwards.
-        # Node bootstrap retains its own resolver and never waits on itself.
-        nameserver-policy = { };
+        # The validator needs raw DNSSEC material and a domestic resolver's
+        # view of domestic names. 360's DoH endpoints provide both (the
+        # non-validating AliDNS path strips RRSIGs), and #DIRECT keeps the
+        # authoritative server from seeing the proxy's address. Foreign names
+        # keep the remote-proxied Cloudflare/Google upstreams.
+        nameserver-policy = {
+          "geosite:cn" = map (ip: "https://${ip}/dns-query#DIRECT")
+            m.mihomoDomesticValidatingDnsUpstreams;
+        };
       };
       bootstrap-listen = "127.0.0.1:${toString m.ports.coreDnsBootstrapTransport}";
     };

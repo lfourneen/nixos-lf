@@ -116,12 +116,19 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 使用共用就绪检查的应用会拒绝该状态。
 
 健康判断检查核心 cgroup、所属命名空间内的 TCP/UDP 监听身份、受管 API、私有 TUN 与宿主 veth 路由，以及 root/桌面 UID 未打标 IPv6 的实际选路。
-启用 TUN 时先检查应用 DNS，并在同一轮探测中复用得到的 fake-IP。
-HTTP 探针须经当前选中代理叶子完成，且日志匹配源端口。
-另向 fake-IP 发真实 HTTP 请求证明透明 TCP 路径。
-默认共享截止为 12 秒。
+先执行 mixed 入口的 HTTP 请求，使其结果可以与 DNS/TUN 检查分别诊断。
+启用 TUN 时并发预热全部候选名称，并在同一轮探测中复用得到的 fake-IP。
+TUN TCP 按配置顺序尝试候选，至少一个名称须完成 fake-IP DNS、TUN DNS hijack 和真实 HTTP 请求。
+HTTP 路由证明使用核心日志，或请求仍在进行时采集的连接表记录，精确匹配源地址、源端口和目标。
+记录的叶子必须符合当前策略图。Mixed HTTP 要求远程代理，TUN 遵循 root 为目标批准的路由类别。
+日志最多等待 2.5 秒，仍受共享截止约束。
+模块默认共享截止为 12 秒；本机设为 18 秒以容纳冷 DNSSEC 查询。
 明确的配置、路由或 TUN 失败立即阻断。
-观测不可用需连续两轮，间隔至少两秒。
+观测不可用和 DNS 失败需连续三轮，间隔至少两秒。
+每次 fake-IP 查询和 TUN DNS 自检使用 `my.proxy.healthDnsTimeoutSeconds`，默认每次尝试 3 秒，在共享截止内重试一次。
+
+`data_plane_ok`、`route_ok`、`dns_ok` 和 `tun_ok` 分别报告诊断结果，`null` 表示未证明或不在本次检查范围内。
+这些字段不授权 B，也不续租，只有完整的 `ok=true` 结论才可以。
 
 `health.json.scope` 声明本次调用的检查范围，只有 `ok=true` 才证明这些检查完成。
 `scope.requests` 列出 TCP 请求路径，`--fast` 时为空。

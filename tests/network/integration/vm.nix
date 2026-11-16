@@ -89,6 +89,7 @@ pkgs.testers.runNixOSTest {
     my.proxy.blockedDomains = [ "ads.fixture.example" "blocked.fixture.test" ];
     my.proxy.blockedDomainExceptions = [ "ok.blocked.fixture.test" ];
     my.proxy.tunProbeName = "tun.fixture.example";
+    my.proxy.subscriptionAuditProtectedRoutes."tun.fixture.example" = "direct";
     services.tailscale.enable = lib.mkForce false;
     services.avahi.enable = lib.mkForce false;
     my.machine.dotUpstreams = [ "127.0.0.2" ];

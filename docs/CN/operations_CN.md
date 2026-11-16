@@ -264,7 +264,7 @@ Tailscale 打标失败时，B 仍会阻断未打标的 root UDP。
 | 文件 | 含义 |
 |---|---|
 | `/run/proxy-mode/state.json` | 原子模式、原因、策略代次、revision 和更新时间 |
-| `/run/proxy-mode/health.json` | 探针覆盖范围、结论与分层耗时 |
+| `/run/proxy-mode/health.json` | 探针覆盖范围、完整结论、HTTP/路由/DNS/TUN 独立诊断、证明来源与分层耗时 |
 | `/run/proxy-mode/heartbeat.json` | 最近成功监督轮次 |
 | `/run/netsec/state.json` | 验证结论、所验证代次与新鲜度 |
 | `/run/dns-upstream/state.json` | DNS 模式/原因、加密策略、会话、预算、截止和 override |
@@ -302,7 +302,7 @@ Boot identity 和单调时间戳拒绝跨开机、未来与陈旧记录。
 | `no-tun`、`tun` | 设备、受管表/规则、实际选路与 fake-IP HTTP |
 | `config` | 快照摘要、受管 API 和 TCP/UDP 监听身份 |
 | `route` | 日志实际叶子为 DIRECT/REJECT 或与选择图不符 |
-| `obs`、`obs:1/2`、`obs:2/2` | HTTP 完成、精确源端口日志和选择观测 |
+| `obs`、`obs:1/3`、`obs:2/3`、`obs:3/3` | HTTP 完成、精确源端口日志和选择观测 |
 | `resolver-error`、`split-error` | DNS 身份或批准 Wi-Fi profile/租约 |
 
 ```sh

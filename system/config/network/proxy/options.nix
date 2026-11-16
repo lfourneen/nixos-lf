@@ -328,6 +328,12 @@ in
     description = "Maximum seconds for each real HTTP health request, capped by the shared probe deadline.";
   };
 
+  options.my.proxy.healthDnsTimeoutSeconds = lib.mkOption {
+    type = lib.types.ints.between 1 10;
+    default = 3;
+    description = "Maximum seconds per fake-IP or TUN DNS attempt. Each lookup retries once within the shared probe deadline.";
+  };
+
   options.my.proxy.guestInterfaces = lib.mkOption {
     type = lib.types.nonEmptyListOf lib.types.str;
     default = [ config.my.machine.vmBridge config.my.machine.waydroidBridge ]
@@ -448,7 +454,7 @@ in
   options.my.proxy.tunProbeNames = lib.mkOption {
     type = lib.types.nonEmptyListOf (lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]");
     default = lib.unique [ config.my.proxy.tunProbeName "cp.cloudflare.com" ];
-    description = "Independent TUN DNS/HTTP probe candidates under the shared health deadline.";
+    description = "TUN DNS/HTTP candidates under the shared health deadline. All names are warmed; TCP tries candidates in this order.";
   };
 
   options.my.proxy.tunProbeName = lib.mkOption {

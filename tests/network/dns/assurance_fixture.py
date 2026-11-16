@@ -1,5 +1,7 @@
 """Isolated VM checks using the real validators, core and kernel policy."""
 import json
+import importlib.util
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import select
@@ -121,6 +123,83 @@ def configure():
     value = json.loads(path.read_text())
     value['rules'].insert(0, 'IP-CIDR,127.0.0.0/8,DIRECT,no-resolve')
     path.write_text(json.dumps(value))
+
+
+def http():
+    class Handler(SimpleHTTPRequestHandler):
+        def end_headers(self):
+            if Path('/run/netsec-health-hold').exists():
+                time.sleep(.4)
+            super().end_headers()
+    ThreadingHTTPServer(('0.0.0.0', int(sys.argv[2])), Handler).serve_forever()
+
+
+def health_checks():
+    spec = importlib.util.spec_from_file_location('health', '/etc/netsec-health.py')
+    health = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(health)
+    settings = json.loads(Path('/etc/netsec-health.json').read_text())
+    original_line = health.route_line
+    probe = health.Probe(settings)
+    probe.run()
+    assert all(probe.diagnostics.values()), probe.diagnostics
+
+    # Exercise delayed delivery with actual core logs and no table fallback.
+    seen = {}
+    def delayed(*args):
+        key = args[1:]
+        first = seen.setdefault(key, time.monotonic())
+        return original_line(*args) if time.monotonic() - first > 1.1 else None
+    health.route_line = delayed
+    probe = health.Probe(settings)
+    original_request = probe.request
+    def logs_only(*args):
+        output, _records = original_request(*args)
+        return output, []
+    probe.request = logs_only
+    probe.run()
+    assert set(probe.route_sources.values()) == {'log'}, probe.route_sources
+    assert probe.timings['mixed_route'] >= 1000 and probe.timings['tun_route'] >= 1000, probe.timings
+
+    # Hold real HTTP replies long enough to read both live controller records.
+    health.route_line = lambda *_args: None
+    hold = Path('/run/netsec-health-hold')
+    hold.touch()
+    try:
+        probe = health.Probe(settings)
+        probe.run()
+        assert probe.route_sources == {'mixed': 'connections', 'TUN': 'connections'}, probe.route_sources
+    finally:
+        hold.unlink()
+        health.route_line = original_line
+
+    # A cold timeout retries the actual DNS path within the same full probe.
+    probe = health.Probe(settings)
+    command = probe.command
+    attempts = set()
+    def cold(argv, maximum):
+        if argv[0] == settings['dig'] and '@127.0.0.1' in argv and argv[-2] not in attempts:
+            attempts.add(argv[-2])
+            time.sleep(3)
+            return ''
+        return command(argv, maximum)
+    probe.command = cold
+    probe.run()
+    assert attempts == set(settings['tun_probe_names']), attempts
+    assert all(probe.diagnostics.values()), probe.diagnostics
+
+    # Partial mixed proof cannot complete the health contract on DNS failure.
+    probe = health.Probe(settings)
+    command = probe.command
+    probe.command = lambda argv, maximum: '' if argv[0] == settings['dig'] else command(argv, maximum)
+    try:
+        probe.run()
+        raise AssertionError('DNS outage accepted')
+    except health.ProbeFailure as error:
+        assert error.layer == 'dns', error
+        assert probe.diagnostics['data_plane_ok'] and probe.diagnostics['route_ok'], probe.diagnostics
+        assert not probe.diagnostics['dns_ok'], probe.diagnostics
+    print('Health: delayed logs, live /connections, all-name cold DNS retry and DNS-outage refusal passed', flush=True)
 
 
 def pressure():
@@ -295,4 +374,5 @@ def lease():
 
 if __name__ == '__main__':
     {'configure': configure, 'direct': direct, 'dns': dns_checks, 'pressure': pressure,
+     'http': http, 'health': health_checks,
      'lease': lease, 'peer': peer, 'client': client}[sys.argv[1]]()

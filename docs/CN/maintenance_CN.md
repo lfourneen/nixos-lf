@@ -203,10 +203,10 @@ Chrony 仍须强制 NTS 和证书时间校验。
 
 启用 `localDnssec` 时，[core-validator.nix](../../system/config/network/dns/core-validator.nix) 在核心命名空间中分别运行应用与基础设施验证器。
 保留独立查询/资源预算、持久信任锚，以及对客户端 CD 绕过的拒绝。
-本地验证与上游选择分别配置：B 应用 DNS 保留 Cloudflare/Google DoH，启用受控来源时经 `lf-remote` 传输，节点引导保留独立加密解析器。
-Root 管理的 `lf-dns-transport` 不得继承 A 的 DoT 列表。
+本地验证与上游选择分别配置：B 应用 DNS 保留国内分流，`geosite:cn` 直连使用国内验证用 DoH 端点，其余使用经 `lf-remote` 传输的 Cloudflare/Google DoH，节点引导保留独立加密解析器。
+Root 管理的 `lf-dns-transport` 使用独立上游列表（`mihomoDomesticValidatingDnsUpstreams`），不得继承 A 的 DoT 列表。
 保留 `patch_mihomo.py` 中的配置解析及 executor 传输接入点、完整 DNSSEC 材料、TLS 校验，以及不复用普通缓存的原始转发。
-公网应用查询不保留国内分流：只有节点引导使用国内解析器，变更须保留这项隔离。
+公网应用查询保留国内分流：`geosite:cn` 经国内验证用 DoH 端点直连解析，其余使用经远程代理的 Cloudflare/Google DoH。国内端点必须回传完整 DNSSEC 材料，变更须同时保留分流与该要求。
 私有 TUN 的 UID 排除必须与验证器仅向 loopback 查询的防火墙、应用访问全部验证器/传输端口的拒绝配套保留。
 Mihomo 必须在公网 fake-IP 合成和公网拨号地址固定之前验证，清除合成地址的 AD，并保留 HTTPS/SVCB 参数。
 已知 profile 迁移与外来值、controller 弱化写入的拒绝须保持独立。

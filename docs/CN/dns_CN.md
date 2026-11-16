@@ -2,7 +2,7 @@
 
 [English](../dns.md) | 简体中文 | [文档目录](README_CN.md)
 
-本机在 `host.nix` 选择 `dnsEncryption="strict"` 和 `localDnssec=true`，使 A/B 的受管公网 DNS 均在本地验证 DNSSEC。
+本机在 `host.nix` 选择 `dnsEncryption="strict"` 和 `localDnssec=true`：A 由 Unbound 和 360 DoT 端点本地验证 DNSSEC；B 由核心验证器本地验证，`geosite:cn` 经 360 DoH 直连解析，其余经远程代理走 Cloudflare/Google DoH。
 模块的 `localDnssec` 默认值为 `false`。
 下文 opportunistic 租约及恢复额度属于模块兼容策略。
 strict 不授予公共明文恢复，也不接受运行时 force-plaintext。
@@ -157,14 +157,13 @@ HTTP-only（`tunMode=false`）采用 redir-host。
 每个验证器通过 TCP loopback 转交私有 Mihomo 传输监听：应用查询使用 1057，引导查询使用 1058。
 这些监听传递完整 DNSSEC 材料，不使用 hosts 替换、fake-IP 合成或普通解析器缓存。
 
-应用传输使用 Cloudflare/Google DoH。
-本机受控来源将这些查询绑定到 `lf-remote` 组，经远程代理传输。
+应用传输保留国内分流：`geosite:cn` 经 360 DoH 直连解析，其余使用 Cloudflare/Google DoH。
+启用受控来源时，这些海外查询绑定到 `lf-remote` 组，经远程代理传输。
 未启用受控来源的配置保留 `respect-rules` 选路。
 节点引导保留独立的加密 proxy-server 解析器和字面地址引导解析器。
 普通应用域名不会送到该引导路径。
-公网应用传输不保留国内分流：兼容配置中会交给国内解析器的域名，在这里同样经海外 DoH 解析。
-只有节点引导保留国内解析器。
-应用冷查询可能需要多次远程交换以完成验证，缓存复用受验证结果及 TTL 限制。
+国内 DoH 端点来自 `my.machine.mihomoDomesticValidatingDnsUpstreams`，必须回传完整 DNSSEC 材料；默认的 360 端点满足，非验证路径的 AliDNS 不满足。
+海外冷查询可能需要多次远程交换以完成验证，国内查询则保持国内往返。
 A 的 `my.machine.dotEndpoints` 列表与 B 的两类角色相互独立。
 Mihomo 保持 TLS 证书校验，上游故障不授予明文回退。
 
