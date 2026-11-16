@@ -185,6 +185,7 @@ class Probe:
         self.deadline = self.start + settings["budget_seconds"]
         self.timings = {}
         self.target_slots = 1
+        self.fake_ips = {}
 
     def remaining(self, maximum):
         remaining = min(maximum, self.deadline - self.clock())
@@ -256,7 +257,9 @@ class Probe:
                 failures.append(error)
         raise failures[-1]
 
-    def tun_target(self, name, log_path):
+    def fake_ip(self, name):
+        if name in self.fake_ips:
+            return self.fake_ips[name]
         dig = self.settings['dig']
         answer = self.command([dig, "+time=1", "+tries=1", "+short", "@127.0.0.1",
                                "-p", str(self.settings["dns_port"]), name, "A"], 1.5)
@@ -272,6 +275,24 @@ class Probe:
                 break
         if not fake_ip:
             raise ProbeFailure("dns", "managed DNS did not return a fake IP")
+        self.fake_ips[name] = fake_ip
+        return fake_ip
+
+    def application_dns(self):
+        if not self.settings.get('require_tun'):
+            return
+        failures = []
+        for name in self.settings.get('tun_probe_names', [self.settings['tun_probe_name']]):
+            try:
+                self.fake_ip(name)
+                return
+            except ProbeFailure as error:
+                failures.append(error)
+        raise failures[-1]
+
+    def tun_target(self, name, log_path):
+        fake_ip = self.fake_ip(name)
+        dig = self.settings['dig']
         if not self.command([dig, "+time=1", "+tries=1", "+short", "@" + fake_ip,
                              "-p", "53", name, "A"], 1.5).strip():
             raise ProbeFailure("dns", "TUN DNS self-test did not answer")
@@ -346,6 +367,7 @@ class Probe:
         fingerprint = self.timed("config", lambda: check_config(self.api("/configs"), self.settings))
         if fast:
             return fingerprint
+        self.timed('application_dns', self.application_dns)
         with tempfile.TemporaryDirectory(prefix="health-", dir=self.settings["runtime"]) as temporary:
             log_path = Path(temporary) / "logs"
             with log_path.open("w") as stream:
@@ -401,13 +423,12 @@ def main():
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         result.update(detail=f"probe error: {type(error).__name__}")
     result.update(duration_ms=round((time.monotonic() - probe.start) * 1000), layers=probe.timings)
-    if os.geteuid() == 0 and not result['ok'] and result.get('reason') != 'interrupted':
+    if os.geteuid() == 0 and not fast and result.get('reason') != 'interrupted':
         classification = result.get('reason')
         if classification not in ('node', 'tun', 'dns', 'config', 'route', 'obs', 'direct-mode', 'no-tun', 'core-gone'):
             classification = 'obs'
-        print('proxy health warning: ' + classification, file=sys.stderr)
-        # Keep the last failure even after a later probe succeeds. Raw details,
-        # targets, policy chains and parser output stay out of this record.
+        if not result['ok']:
+            print('proxy health warning: ' + classification, file=sys.stderr)
         record = {key: result[key] for key in ('ok', 'reason', 'duration_ms', 'layers')}
         record['failure_stage'] = result.get('failure_stage', 'unknown')
         record['at'] = time.time()
@@ -416,11 +437,24 @@ def main():
             runtime = Path(settings['runtime'])
             record['boot_id'] = (runtime / 'boot-id').read_text().strip()
             record['digest'] = Path(settings['digest_file']).read_text().strip()
+            observations = runtime / 'health-observations.json'
+            try:
+                history = json.loads(observations.read_text())
+                history = [item for item in history if isinstance(item, dict)
+                           and item.get('boot_id') == record['boot_id']][-19:]
+            except (OSError, ValueError, TypeError):
+                history = []
             with tempfile.NamedTemporaryFile(mode='w', prefix='.health-failure-', dir=runtime, delete=False) as stream:
                 path = Path(stream.name)
-                json.dump(record, stream)
+                json.dump(history + [record], stream)
             path.chmod(0o644)
-            path.replace(runtime / 'health-failure.json')
+            path.replace(observations)
+            if not result['ok']:
+                with tempfile.NamedTemporaryFile(mode='w', prefix='.health-failure-', dir=runtime, delete=False) as stream:
+                    path = Path(stream.name)
+                    json.dump(record, stream)
+                path.chmod(0o644)
+                path.replace(runtime / 'health-failure.json')
         except (OSError, KeyError):
             # Failure to persist diagnostics cannot turn a failed probe into ok.
             pass

@@ -2,6 +2,12 @@
 
 let
   inherit (pkgs) lib;
+  blocklistPolicy = file: (import ../../../system/config/network/proxy/profile.nix {
+    inherit lib;
+    config = config // {
+      my = config.my // { proxy = config.my.proxy // { dnsBlocklistFile = file; }; };
+    };
+  }).options.my.proxy.managedProfile.default;
   render = { name, overrides ? { }, baseConfig ? config, ipv6 ? config.networking.enableIPv6 }:
     let
       proxy = baseConfig.my.proxy // overrides;
@@ -56,6 +62,8 @@ let
   ]));
 
 in
+assert blocklistPolicy /nix/store/old-blocklist == blocklistPolicy /nix/store/new-blocklist;
+assert (blocklistPolicy null).lf-private-targets.blocked-domains-file == "";
 pkgs.runCommand "proxy-profile-tests" {
   nativeBuildInputs = [ (pkgs.python3.withPackages (p: [ p.pyyaml ])) pkgs.nodejs ];
 } ''

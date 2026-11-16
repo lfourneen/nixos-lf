@@ -746,6 +746,27 @@ def source_input(settings):
     return dict(settings, gui_data=str(directory), desktop_uid=0), str(directory / 'clash-verge.yaml')
 
 
+def accepted_policy(settings, directory, manifest):
+    """Permit only a blocklist-location difference in an accepted policy."""
+    path = Path(os.environ.get('LF_MANAGED_PROXY_POLICY', settings['managed_policy']))
+    raw = path.read_bytes()
+    if manifest.get('policy') == hashlib.sha256(raw).hexdigest():
+        return True
+    policy = json.loads(raw)
+    targets = policy.get('lf-private-targets', {})
+    if targets.get('blocked-domains-file') != '/etc/netsec/dns-blocklist.txt':
+        return False
+    result = subprocess.run([settings['yq'], '-o=json',
+        '."lf-private-targets"."blocked-domains-file"', str(directory / 'clash-verge.yaml')],
+        capture_output=True, text=True, check=True, timeout=2)
+    previous = json.loads(result.stdout)
+    if not isinstance(previous, str) or not re.fullmatch('/nix/store/[a-z0-9]{32}-dns-blocklist.txt', previous):
+        return False
+    targets['blocked-domains-file'] = previous
+    rebound = json.dumps(policy, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+    return manifest.get('policy') == hashlib.sha256(rebound).hexdigest()
+
+
 def startup_input(settings):
     """Prefer an intact accepted source under the current managed policy."""
     source = source_directory(settings)
@@ -764,7 +785,7 @@ def startup_input(settings):
     registry = json.loads(read_input(source, 'registry.json', 0))
     if manifest.get('source_id') != registry['id']:
         raise RefreshError('snapshot mismatch')
-    if manifest.get('policy') != validator_policy_digest(settings):
+    if not accepted_policy(settings, directory, manifest):
         return source_input(settings)  # A root policy change still needs a current import.
     return dict(settings, gui_data=str(directory), desktop_uid=0, _accepted_startup=True), str(directory / 'clash-verge.yaml')
 
@@ -977,6 +998,7 @@ def stage_locked(settings, config, validate):
                 candidate.rename(destination)
             stamp = time.time()
             transaction = dict(at=stamp, boot_id=boot_id(state), policy=policy, digest=candidate_digest,
+                               startup=authorized,
                                previous_digest=settled_digest, snapshot_at=stamp, audit=findings,
                                previous=str(settled) if settled else None,
                                previous_snapshot_at=settled_at, monotonic_seconds=time.monotonic())
@@ -1037,7 +1059,7 @@ def verify_refresh(settings, restart=None):
 
 def early_health_failure(settings, record):
     state = Path(settings['state'])
-    if not record.get('previous') or time.monotonic() - record['monotonic_seconds'] < settings.get('refresh_failure_grace_seconds', 20):
+    if record.get('startup') or not record.get('previous') or time.monotonic() - record['monotonic_seconds'] < settings.get('refresh_failure_grace_seconds', 20):
         return False
     health = read_record(state / 'health.json')
     mode = read_record(state / 'state.json')
@@ -1113,12 +1135,16 @@ def service_request(settings, method, endpoint, payload=None, timeout=15):
 
 
 def restart_core(settings, restart=True):
-    if restart:
+    try:
+        status = service_request(settings, 'GET', '/status', timeout=1)
+    except (OSError, http.client.HTTPException):
+        # Recover the unit only when its IPC transport is unavailable.
         subprocess.run([settings['systemctl'], 'restart', 'clash-verge.service'], check=True, timeout=30)
+        status = None
     deadline = time.monotonic() + 18
     # A missing or stale desired-state must not leave only the helper running.
     # The IPC request uses fixed root-supplied paths, never a GUI-supplied core.
-    while True:
+    while status is None:
         try:
             status = service_request(settings, 'GET', '/status', timeout=1)
             break
@@ -1126,6 +1152,13 @@ def restart_core(settings, restart=True):
             if time.monotonic() >= deadline:
                 raise ValueError('managed helper recovery timed out') from None
             time.sleep(0.05)
+    if restart:
+        # DELETE persists the stopped desired-state and joins the watchdog
+        # before POST can launch the replacement. The IPC listener stays up.
+        service_request(settings, 'DELETE', '/clash/stop')
+        status = service_request(settings, 'GET', '/status', timeout=1)
+        if status.get('core_pid') not in (None, 0):
+            raise ValueError('managed core did not stop')
     pid = status.get('core_pid')
     if type(pid) is not int or pid <= 0:
         payload = dict(core_config=dict(core_path=settings['launcher'], config_dir=settings['gui_data'],

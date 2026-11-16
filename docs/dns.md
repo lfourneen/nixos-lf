@@ -269,7 +269,8 @@ It does not disable routing or the private-IP guard.
 
 Explicit split-server entries also participate in [dnsmasq's domain precedence](https://dnsmasq.org/docs/dnsmasq-man.html), so an approved private namespace can supersede a broader block.
 
-The root managed policy owns the core's file path, additions and exceptions.
+The root managed policy owns the core's stable `/etc/netsec/dns-blocklist.txt` path, additions and exceptions.
+The path resolves to the immutable build-validated snapshot. Its content checks remain independent of subscription policy identity.
 Cached GUI profiles inherit them during parsing, and controller writes cannot replace them.
 Missing or invalid list data rejects a new configuration while preserving the active filter.
 Application dial checks run before internal-suffix permissions.

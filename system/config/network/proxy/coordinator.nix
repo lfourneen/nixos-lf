@@ -834,6 +834,9 @@ NFT_OFF
       fi
       unlock_state
       ${lib.optionalString config.my.proxy.controlledSources ''
+      if [ "$ok" != 1 ] || [ "$mode" != proxy ]; then
+        rm -f /run/proxy-mode/source-refresh-stable.json
+      fi
       # A request is consumed before downloading. Core restarts caused by an
       # import therefore cannot trigger an endless fetch / restart cycle.
       if [ "$ok" = 1 ] && [ "$mode" = proxy ] && [ -f /run/proxy-mode/source-refresh-pending ]; then
@@ -953,6 +956,7 @@ NFT_OFF
             # Only an explicit start requests a fetch. The source activation
             # guard also requests proxy intent and must not enqueue an update.
             (umask 077; : > /run/proxy-mode/source-refresh-pending)
+            rm -f /run/proxy-mode/source-refresh-stable.json
             ''}
             (umask 077; : > /run/proxy-mode/authorize-window)
             flock -u 9
@@ -977,7 +981,7 @@ NFT_OFF
             rm -f /run/proxy-mode/authorized-config /run/proxy-mode/config-digest \
               /run/proxy-mode/authorize-window /run/proxy-mode/effective-config-sha256 /run/proxy-mode/effective-config.json ${frontSock}
             ${lib.optionalString config.my.proxy.controlledSources ''
-            rm -f /run/proxy-mode/source-refresh-pending
+            rm -f /run/proxy-mode/source-refresh-pending /run/proxy-mode/source-refresh-stable.json
             ''}
             ${pkgs.python3}/bin/python3 -c 'import importlib.util; s=importlib.util.spec_from_file_location("stage", "${../../../programs/clash/service/clash-verge-stage.py}"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.clear_refresh("/run/proxy-mode", "/run/clash-verge-rev", keep_health_pin=${if config.my.proxy.controlledSources then "True" else "False"})'
             flock -u 9

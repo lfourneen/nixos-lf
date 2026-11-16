@@ -31,7 +31,7 @@ A build failure after an upgrade is a request to compare upstream behavior, not 
 | Vendored sing-tun | [patch_sing_tun.py](../system/programs/clash/mihomo/patches/patch_sing_tun.py) | TUN-bound OUTPUT TCP DNAT and guest TPROXY socket preservation |
 | Vendored Gost HTTP handler | [patch_gost.py](../system/programs/gost/patches/patch_gost.py), [gost_http.go](../system/programs/gost/src/gost_http.go) | Bare numeric IPv6 CONNECT compatibility with upstream Go HTTP parsing |
 | Clash Verge helper | [patch_clash_service.py](../system/programs/clash/service/patch_clash_service.py) | Pin root execution, fixed managed logs and constrained socket/startup file operations |
-| Clash Verge package/launch | [clash-verge.nix](../system/programs/clash/clash-verge.nix), [core launcher](../system/programs/clash/service/clash-verge-core-launcher.sh), [stage tool](../system/programs/clash/service/clash-verge-stage.py), [GUI launcher](../system/programs/clash/gui/clash-verge-gui.py), [GUI defaults](../system/programs/clash/gui/clash-verge-defaults.sh) | Authorized snapshots, privilege drop, GUI singleton handling and HTTPS delay-test default. Upstream GUI binary reused |
+| Clash Verge package/launch | [clash-verge.nix](../system/programs/clash/clash-verge.nix), [core launcher](../system/programs/clash/service/clash-verge-core-launcher.sh), [stage tool](../system/programs/clash/service/clash-verge-stage.py), [GUI launcher](../system/programs/clash/gui/clash-verge-gui.py), [GUI defaults](../system/programs/clash/gui/clash-verge-defaults.sh), [GUI patch](../system/programs/clash/gui/patch_clash_gui.py) | Authorized snapshots, privilege drop, GUI singleton handling and HTTPS delay-test default. GUI TUN ownership and terminal reload refusal |
 | dnsmasq | [default.nix](../system/config/network/network.nix), inline `src/forward.c` replacement | Return terminal strict-order UDP SERVFAIL/REFUSED, including DNSSEC EDE |
 | Firefox package | [firefox.nix](../home/programs/firefox/firefox.nix), [guard.py](../home/programs/firefox/guard.py), [sandbox.py](../home/programs/firefox/sandbox.py), [scope.c](../home/programs/firefox/scope.c) | Immutable policy/AutoConfig/fonts, preflight, outer namespaces, filtered bus, portal identity and Landlock/seccomp. No Gecko source patch |
 | Unbound / Chrony / networking | [default.nix](../system/config/network/network.nix), [time.nix](../system/config/network/time.nix), [network modules](../system/config/network) | Declarative policy and repository-owned coordinators. No local Unbound/Chrony source patch |
@@ -120,8 +120,9 @@ The actual service must use `my.proxy.gostPackage`, not an unpatched package fro
 
 ## Clash Verge helper and launchers
 
-The GUI `.unwrapped` derivation is intentionally reused and asserted equal to upstream.
-Changes are applied to the separately built Rust helper, installed wrapper paths and runtime scripts.
+The GUI `.unwrapped` derivation carries the managed TUN and configuration-activation patch.
+Keep its inherited Nixpkgs patches, frontend type check and Rust build.
+The separate Rust helper, installed wrapper paths and runtime scripts retain their own integration.
 Check Nixpkgs's helper derivation and inherited patches too: replacing `postPatch` or copying the wrong helper would discard integration behavior.
 
 The helper patch covers `src/core/manager.rs`, `server.rs`, `logger.rs` and `reconcile.rs`.
@@ -137,12 +138,15 @@ The managed IPC handler has a 20-second budget.
 Cancellation and readiness timeout stop the newly spawned process group, including validators, to prevent a late configuration commit.
 Preserve this relationship when changing helper or IPC dependencies.
 
-The prebuilt GUI retains its upstream IPC client and short request timeout.
+The GUI retains its upstream IPC client and short request timeout.
 The helper serializes starts and reuses completed results for identical requests for 30 seconds.
 The retry signature includes the fixed GUI file's identity and change timestamps.
 A success also requires the same running PID and reachable fixed socket.
-Changed input, explicit authorization or a stopped core requires a new launch.
-This avoids repeated core restarts during GUI transport retries without rebuilding the GUI.
+Compatibility imports launch again when input changes. Explicit authorization or a stopped core also requires a new launch.
+Controlled-source starts additionally preserve a running core across changed GUI display copies.
+Root source activation explicitly stops the core before starting its replacement.
+The stop IPC joins the watchdog and persists stopped desired-state, while the helper listener stays available.
+A configuration refusal must not trigger a helper restart.
 
 Keep [runtime.nix](../system/programs/clash/service/runtime.nix), [identity.nix](../system/programs/clash/service/identity.nix), the launcher and stage tool consistent.
 The top runtime directory's group must match systemd's runtime ownership to avoid recursive reownership on restart.
@@ -161,7 +165,9 @@ Keep candidate, source revision, settled baseline and root policy bindings intac
 Eligible node changes create a root-private five-minute `approval.json`, which the normal approval reader checks again during import.
 The record also binds audit and validator policies, and automatic approval never includes structural or unresolved findings.
 
-Startup restores an accepted source under the current managed policy and leaves an update request pending until B is verified. Static checks repeat on restore, and live health still gates B.
+Startup restores an accepted source under the current managed policy and leaves an update request pending until verified B has remained healthy for 90 seconds.
+Bind this stability interval to the boot, snapshot and policy, and reset it outside healthy B.
+The stable blocklist path must still resolve to build-validated immutable content. Static checks repeat on restore, and live health still gates B.
 Only explicit `on` and automatic attempts deferred during C create `source-refresh-pending`. The service consumes it before fetching, and explicit `off` clears it.
 The shared proxy-intent guard must not enqueue updates. These rules prevent activation from causing a fetch/restart loop.
 Automatic attempts in C defer rather than using retries or weakening the application guard.
@@ -170,7 +176,7 @@ Keep that path and refresh prechecks consistent.
 Periodic downloads release the source publication lock during network waits, then recheck registration and selection under the lock before publishing.
 Preserve that recheck so foreground startup stays available without allowing revoked input to be published.
 
-Within the current boot, health-failure pins survive explicit on/off requests for their remaining TTL. Repeated fresh full failures can roll back after the configured grace, while successful acceptance keeps the full 60-second window.
+Within the current boot, health-failure pins survive explicit on/off requests for their remaining TTL. Startup imports keep the full 60-second window. Later imports with repeated fresh full failures can roll back after the configured grace. Successful acceptance always keeps the full window.
 
 Existing exact `approval.json` records retain their binding checks.
 Source comparison has no approval or activation action.
@@ -189,7 +195,9 @@ Nixpkgs currently exposes the underlying core as `.verge-mihomo-wrapped`.
 The package replaces public `verge-mihomo` with the authorized launcher.
 Inspect wrapper layout on GUI/package updates.
 GUI process identity must remain compatible with `clash-on/off`, and obsolete same-user singletons must not retain an old package's core path.
-HTTPS delay defaults are set through writable preferences, without recompiling the GUI application.
+HTTPS delay defaults are set through writable preferences.
+The GUI patch keeps the declared TUN value during initialization, helper outages and exit, makes its switch and tray entry read-only, and prevents reload failures from triggering a core restart.
+Check frontend, backend preference writes and exit cleanup together when updating the GUI.
 
 ## DNS and browser integration
 

@@ -287,10 +287,21 @@ def main() -> int:
     text = replace_once(text,
         'pub async fn start_core(&self, config: ClashConfig) -> Result<()> {',
         '''pub async fn start_core(&self, mut config: ClashConfig) -> Result<()> {
+        #[cfg(unix)]
+        validate_core_path(&config.core_config.core_path)?;
         if std::env::var_os("LF_CLASH_CORE_PATH").is_some() {
             config.core_config.core_ipc_path = "/run/clash-verge-rev/core/mihomo.sock".into();
         }
         let signature = managed_start_signature(&config);
+        if std::env::var("LF_CLASH_CONTROLLED_SOURCE").as_deref() == Ok("1")
+            && !std::path::Path::new("/run/proxy-mode/authorize-window").exists()
+            && self.running_pid.load(Ordering::Relaxed) != 0 {
+            #[cfg(unix)]
+            if matches!(tokio::time::timeout(Duration::from_millis(50),
+                tokio::net::UnixStream::connect("/run/clash-verge-rev/core/mihomo.sock")).await, Ok(Ok(_))) {
+                return Ok(());
+            }
+        }
         let memo = self.managed_start_memo.lock().await.clone();
         if !std::path::Path::new("/run/proxy-mode/authorize-window").exists() {
             if let Some(memo) = memo.filter(|memo| signature.as_ref() == Some(&memo.signature)

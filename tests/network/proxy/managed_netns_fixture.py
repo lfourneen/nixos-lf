@@ -164,6 +164,7 @@ def recover():
     blocked.touch()
     try:
         run('systemctl', 'start', 'clash-source-refresh.service')
+        wait(lambda: json.loads((state / 'profile-refresh.json').read_text()).get('result') == 'fallback', 150)
         wait(ready, 90)
         rejection = json.loads((state / 'profile-refresh.json').read_text())
         assert rejection['result'] == 'fallback' and rejection['audit']['deny']['node_identity'] == 1
@@ -176,6 +177,14 @@ def recover():
         assert stream.sock is held_socket
         stream.close()
         print('Rejected source kept the same core, B generation, authority and established TLS stream')
+        gui_config = GUI / 'clash-verge.yaml'
+        gui_config.write_bytes(gui_config.read_bytes() + b'\n# GUI display copy update\n')
+        stage.service_request(stage_settings, 'POST', '/clash/start', dict(
+            core_config=dict(core_path=SETTINGS['launcher'], config_dir=str(GUI),
+                config_path=str(gui_config), core_ipc_path='/run/clash-verge-rev/core/mihomo.sock'),
+            log_config=dict(directory='/var/lib/clash-verge-service/logs',
+                max_log_size=10485760, max_log_files=8)))
+        assert stage.service_request(stage_settings, 'GET', '/status')['core_pid'] == before_pid
         run('proxy-control', 'off')
         wait(lambda: state_is('direct'))
         assert not (state / 'authorized-config').exists()
@@ -194,9 +203,22 @@ def recover():
              '@127.0.0.1', '-p', '1054', 'source.fixture.example', 'A').stdout, 60)
         unavailable = Path('/run/managed-source-unavailable')
         unavailable.touch()
+        blocklist = Path('/etc/netsec/dns-blocklist.txt')
+        new_link = blocklist.with_name('dns-blocklist.next')
+        new_link.symlink_to(Path('/etc/netsec-rotated-blocklist.txt').resolve())
+        new_link.replace(blocklist)
         run('proxy-control', 'on')
         wait(ready, 30)
-        wait(lambda: json.loads((state / 'source-fetch.json').read_text()).get('result') == 'failed', 15)
+        assert not run('dig', '+short', '+time=1', '+tries=1', '@127.0.0.1', '-p',
+                       '1053', 'rotated-block.fixture.example', 'A').stdout.strip()
+        stable_pid = run('systemctl', 'show', '-p', 'MainPID', '--value', 'clash-verge.service').stdout.strip()
+        core_pid = stage.service_request(stage_settings, 'GET', '/status')['core_pid']
+        time.sleep(5)
+        assert json.loads((state / 'source-fetch.json').read_text())['result'] == 'deferred'
+        assert stage.service_request(stage_settings, 'GET', '/status')['core_pid'] == core_pid
+        assert run('systemctl', 'show', '-p', 'MainPID', '--value', 'clash-verge.service').stdout.strip() == stable_pid
+        assert json.loads((state / 'profile-refresh.json').read_text())['result'] == 'restored'
+        wait(lambda: json.loads((state / 'source-fetch.json').read_text()).get('result') == 'failed', 130)
         restored = json.loads((state / 'profile-refresh.json').read_text())
         assert restored['result'] == 'restored' and restored['digest'] == baseline, restored
         assert not (state / 'profile-refresh-verifying.json').exists()
@@ -223,6 +245,8 @@ def recover():
         assert not (source / 'review.json').exists(), 'read-only comparison wrote a review'
         assert (state / 'authorized-config').read_text().strip() == baseline
         blocked.unlink()
+        rotation_helper = run('systemctl', 'show', '-p', 'MainPID', '--value', 'clash-verge.service').stdout
+        rotation_core = stage.service_request(stage_settings, 'GET', '/status')['core_pid']
         run('systemctl', 'start', 'clash-source-refresh.service')
         wait(ready, 90)
         wait(accepted_and_healthy, 90)
@@ -232,11 +256,20 @@ def recover():
         assert imported['last_auto_approval']['categories'] == {'node_identity': 1}
         assert imported['last_auto_approval']['nodes'] == 1
         assert (state / 'authorized-config').read_text().strip() != baseline
+        assert run('systemctl', 'show', '-p', 'MainPID', '--value', 'clash-verge.service').stdout == rotation_helper
+        assert stage.service_request(stage_settings, 'GET', '/status')['core_pid'] != rotation_core
         assert not (source / 'approval.json').exists() and not (source / 'review.json').exists()
         status = run('setpriv', '--reuid=1000', '--clear-groups', 'proxy-status', '--plain').stdout
         assert 'Last auto approval:' in status and 'node_identity=1' in status
         browser_request()
         print('Root refresh auto-imported node rotation through normal audit and health gates; read-only diff retained authority')
+        run('systemctl', 'stop', 'clash-verge.service')
+        wait(lambda: state_is('blocked'), 45)
+        browser_request(False)
+        run('systemctl', 'start', 'clash-verge.service')
+        wait(ready, 90)
+        browser_request()
+        print('Stopping the helper retained C protection and restarting it recovered the accepted source')
     except Exception:
         # This VM contains synthetic source data only.
         for name in ('profile-refresh.json', 'source-validator.log'):
@@ -357,7 +390,7 @@ def switch():
     run('clash-source', 'gui-select')
     assert Path('/var/lib/clash-source/selected').resolve().name == 'two'
     run('systemctl', 'start', 'clash-source-refresh.service')
-    wait(lambda: json.loads(Path('/run/clash-verge-rev/effective/source-manifest.json').read_text())['source_id'] == 'two')
+    wait(lambda: json.loads(Path('/run/clash-verge-rev/effective/source-manifest.json').read_text())['source_id'] == 'two', 180)
     wait(ready, 90)
     browser_request()
     assert Path('/var/lib/clash-source/selected').resolve().name == 'two'

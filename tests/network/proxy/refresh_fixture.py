@@ -155,6 +155,7 @@ def auto():
         rejected = digest()
         assert rejected != settled
         bad_pid = request('GET', '/status')[1]['data']['core_pid']
+        helper_pid = subprocess.check_output(['systemctl', 'show', '-p', 'MainPID', '--value', 'clash-verge.service'])
         desired = list(Path('/var/lib/clash-verge-service').rglob('desired-state.json'))
         assert len(desired) == 1
         if failure == 'missing':
@@ -164,10 +165,14 @@ def auto():
             value['last_clash_config']['core_config']['core_path'] = '/nix/store/nonexistent-old-package/bin/verge-mihomo'
             desired[0].write_text(json.dumps(value))
         wait(lambda: record().get('result') == 'rolled_back' and digest() == settled)
+        rollback_elapsed = time.time() - transaction['at']
+        assert 20 <= rollback_elapsed < 80, rollback_elapsed
         wait(ready, timeout=20)
         elapsed = time.time() - transaction['at']
-        assert 20 <= elapsed < 60, elapsed
+        assert elapsed - rollback_elapsed < 21, elapsed
         assert request('GET', '/status')[1]['data']['core_pid'] != bad_pid
+        assert subprocess.check_output(['systemctl', 'show', '-p', 'MainPID', '--value', 'clash-verge.service']) == helper_pid
+        assert json.loads(desired[0].read_text())['core_should_be_running'] is True
         assert not (STATE / 'profile-refresh-restart.json').exists()
         assert record('profile-refresh-pin.json')['digest'] == rejected
         restart_gui()

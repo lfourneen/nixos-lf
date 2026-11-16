@@ -30,7 +30,7 @@ Rust helper 在 `postPatch` 追加修改，保留继承的 Nixpkgs 处理。
 | Vendored sing-tun | [patch_sing_tun.py](../../system/programs/clash/mihomo/patches/patch_sing_tun.py) | TUN-bound OUTPUT TCP DNAT 与访客 TPROXY socket 保留 |
 | Vendored Gost HTTP | [patch_gost.py](../../system/programs/gost/patches/patch_gost.py)、[gost_http.go](../../system/programs/gost/src/gost_http.go) | 兼容裸数字 IPv6 CONNECT，保留 Go HTTP 解析 |
 | Clash Verge helper | [patch_clash_service.py](../../system/programs/clash/service/patch_clash_service.py) | 固定 root 执行、日志及 socket/启动文件操作 |
-| Clash Verge 打包/启动 | [clash-verge.nix](../../system/programs/clash/clash-verge.nix)、[核心启动器](../../system/programs/clash/service/clash-verge-core-launcher.sh)、[stage 工具](../../system/programs/clash/service/clash-verge-stage.py)、[GUI 启动器](../../system/programs/clash/gui/clash-verge-gui.py)、[GUI defaults](../../system/programs/clash/gui/clash-verge-defaults.sh) | 授权快照、降权、singleton 处理、HTTPS 延迟默认。复用原 GUI 二进制 |
+| Clash Verge 打包/启动 | [clash-verge.nix](../../system/programs/clash/clash-verge.nix)、[核心启动器](../../system/programs/clash/service/clash-verge-core-launcher.sh)、[stage 工具](../../system/programs/clash/service/clash-verge-stage.py)、[GUI 启动器](../../system/programs/clash/gui/clash-verge-gui.py)、[GUI defaults](../../system/programs/clash/gui/clash-verge-defaults.sh)、[GUI patch](../../system/programs/clash/gui/patch_clash_gui.py) | 授权快照、降权、singleton 处理、HTTPS 延迟默认。GUI TUN 所有权与重载拒绝后终止操作 |
 | dnsmasq | [default.nix](../../system/config/network/network.nix) 内联替换 `src/forward.c` | 返回 strict-order 终端 UDP SERVFAIL/REFUSED，保留 DNSSEC EDE |
 | Firefox 包 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[guard.py](../../home/programs/firefox/guard.py)、[sandbox.py](../../home/programs/firefox/sandbox.py)、[scope.c](../../home/programs/firefox/scope.c) | 不可变 policy/AutoConfig/字体、预检、外层命名空间、过滤总线、门户身份及 Landlock/seccomp。无 Gecko 源码 patch |
 | Unbound / Chrony / 网络 | [default.nix](../../system/config/network/network.nix)、[time.nix](../../system/config/network/time.nix)、[网络模块](../../system/config/network) | 声明策略和仓库自有协调器。没有本地 Unbound/Chrony 源码补丁 |
@@ -112,8 +112,8 @@ parser 修正不能替代生命周期保护。
 
 ## Clash Verge helper 与启动器
 
-GUI `.unwrapped` 有意复用上游并断言相等。
-自定义位于独立 Rust helper、安装的 wrapper 和运行脚本。
+GUI `.unwrapped` 应用受管 TUN 和配置激活补丁，保留继承的 Nixpkgs 补丁、前端类型检查及 Rust 构建。
+独立 Rust helper、安装的 wrapper 和运行脚本各自保持集成。
 检查 Nixpkgs helper derivation 和继承补丁。
 覆盖 `postPatch` 或复制错 helper 会丢失集成行为。
 
@@ -128,11 +128,15 @@ Helper patch 涉及 `src/core/manager.rs`、`server.rs`、`logger.rs`、`reconci
 取消或就绪超时会结束本次启动的进程组，包括校验进程，避免超时后继续提交配置。
 修改 helper 或 IPC 依赖时须保留这一关系。
 
-预构建 GUI 保留上游 IPC 客户端及较短的请求超时。
+GUI 保留上游 IPC 客户端及较短的请求超时。
 Helper 串行处理启动，对相同请求复用最近 30 秒内完成的结果。
 重试签名包含固定 GUI 文件的身份与变化时间。
 复用成功还要求原 PID 仍在运行且固定 socket 可连接。
-输入变化、显式授权或核心已停止时须重新启动，使 GUI 的传输重试不会反复重启核心，也无需重新构建 GUI。
+兼容导入在输入变化时重新启动，显式授权或核心已停止时也须重新启动。
+GUI 的传输重试不会反复重启核心。
+受控来源还会在 GUI 展示副本变化时保留运行中的核心，root 来源激活先显式停止核心，再启动替代实例。
+Stop IPC 等待 watchdog 退出并持久化停止意图，helper 监听保持可用。
+配置拒绝不能触发 helper 重启。
 
 [runtime.nix](../../system/programs/clash/service/runtime.nix)、[identity.nix](../../system/programs/clash/service/identity.nix)、launcher 和 stage 工具须同步。
 
@@ -151,7 +155,9 @@ Helper 串行处理启动，对相同请求复用最近 30 秒内完成的结果
 符合策略的节点变化生成 root 私有、有效期五分钟的 `approval.json`，实际导入仍由原有批准读取器校验。
 记录还绑定审计和验证器策略，结构类别及未确定结果不能参与自动批准。
 
-启动时恢复符合当前受管策略的已接受来源，更新请求保持待处理，直到 B 通过验证。恢复仍重复静态检查，进入 B 仍要求实际健康证明。
+启动时恢复符合当前受管策略的已接受来源，更新请求保持待处理，直到经验证的 B 持续健康 90 秒。
+稳定期绑定本次启动、快照和策略，离开健康 B 后重置。
+稳定的黑名单路径仍须指向构建时校验的不可变内容。恢复仍重复静态检查，进入 B 仍要求实际健康证明。
 仅显式 `on` 与 C 中延期的自动任务创建 `source-refresh-pending`。服务在下载前消费请求，显式 `off` 时清除。
 内部代理意图保护动作不排队更新。这些规则防止激活触发下载与重启循环。
 自动任务在 C 中延期，不消耗下载重试，也不放宽应用防护。
@@ -160,7 +166,7 @@ Helper 串行处理启动，对相同请求复用最近 30 秒内完成的结果
 定时下载在网络等待期间释放来源发布锁，重新加锁后核对登记和所选来源，再发布候选。
 须保留这项复核，使前台能够启动，同时阻止已撤销输入被发布。
 
-本次启动内，显式 on/off 操作保留健康失败 pin 的剩余 TTL。连续的新鲜完整失败证明可在配置的宽限期后触发回滚，成功接受仍保留完整的 60 秒观察期。
+本次启动内，显式 on/off 操作保留健康失败 pin 的剩余 TTL。启动导入保留完整的 60 秒窗口，后续导入的连续新鲜完整失败证明可在配置的宽限期后触发回滚。成功接受始终保留完整观察期。
 
 已有精确 `approval.json` 记录仍按原有绑定要求校验。
 来源比较不提供批准或激活动作。
@@ -179,7 +185,9 @@ worker 保持非特权身份，输出固定 JSON schema 和原因词表。
 
 当前 Nixpkgs 以 `.verge-mihomo-wrapped` 暴露底层核心，包将公开 `verge-mihomo` 替换为授权启动器。
 GUI/打包更新需检查 wrapper 布局、`clash-on/off` 使用的 GUI 进程身份和旧同用户 singleton 清理，防止保留旧包路径。
-HTTPS delay 默认通过可写偏好设置，不重新编译 GUI。
+HTTPS delay 默认通过可写偏好设置。
+GUI 补丁在初始化、helper 故障和退出期间保持声明的 TUN 值，将开关及托盘入口设为只读，并阻止重载失败触发核心重启。
+升级 GUI 时须一起核对前端、后端偏好写入和退出清理。
 
 ## DNS 与浏览器集成
 

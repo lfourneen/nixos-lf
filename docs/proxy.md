@@ -72,7 +72,8 @@ Without a compatible fallback, C remains in effect.
 `clash-off` revokes runtime authority while preserving the source's accepted baseline.
 With automatic refresh, the next `clash-on` prefers that baseline under the current managed policy and records `restored`.
 It repeats parser, content-audit and digest checks, and fresh live health still gates B.
-The startup update request stays pending during C. After the coordinator verifies B, the background service consumes the request and starts fetching.
+The shared blocklist has a stable policy path, so a validated blocklist update does not invalidate the accepted subscription baseline.
+The startup update request stays pending during C. After verified B remains healthy for 90 seconds under the same boot, snapshot and policy, the background service consumes the request and starts fetching.
 The request is coalesced so an update restarting the core does not cause repeated downloads.
 A periodic attempt during C defers without reporting a download failure.
 Neither waiting nor downloading blocks foreground core startup or requires waiting for the boot timer.
@@ -150,6 +151,10 @@ Systemd places the helper and core in `lf-clash-core` before execution.
 The core cannot administer host interfaces, routes or firewall tables.
 Host setup and policy changes belong to fixed root services.
 Desktop programs sharing the GUI UID can use its permitted GUI/controller operations.
+The GUI displays the declared TUN setting as read-only, preserves it across helper outages and does not write a TUN-disable setting on exit.
+Closing the GUI still stops the core, leaving C while proxy intent remains active.
+A refused configuration reload ends that GUI operation without restarting the core.
+With controlled sources, repeated GUI starts leave a running core in place; source activation belongs to the root controller.
 
 An explicitly enabled IPv4 guest TPROXY inlet binds `0.0.0.0:7896`.
 The ordinary mixed/DNS/controller endpoints remain local under `allow-lan=false`.
@@ -201,9 +206,11 @@ A validated candidate enters `verifying`.
 `profile-refresh-verify.timer` checks every ten seconds and requires at least 60 seconds of observation before accepting a fresh health result for that candidate digest.
 Success records `accepted` and establishes the settled baseline.
 Consecutive imports during observation retain that baseline.
-Failure restores it and its authority, restarts the helper and records `rolled_back`.
+Failure restores it and its authority, replaces the core through helper IPC and records `rolled_back`.
+The helper listener remains available during replacement. Only an unavailable helper transport triggers a unit restart.
 
-With a settled fallback, at least two consecutive fresh full-health failures for the same candidate and policy allow rollback after `my.proxy.profileRefreshFailureGraceSeconds`.
+Startup imports retain the full 60-second observation window without early rollback.
+For subsequent imports with a settled fallback, at least two consecutive fresh full-health failures for the same candidate and policy allow rollback after `my.proxy.profileRefreshFailureGraceSeconds`.
 This option defaults to 20 seconds and accepts 20–60 seconds; rollback occurs on the next verifier run.
 Missing or stale failure proofs retain the 60-second window, and successful acceptance always requires that full window.
 If no settled baseline exists, the failure is recorded as `refused` and the health gate continues protecting the host.

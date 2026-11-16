@@ -134,5 +134,6 @@ in
       # The helper may only exec this launcher, never a stale package path.
       LF_CLASH_CORE_PATH = "${config.programs.clash-verge.package}/bin/verge-mihomo";
       LF_CLASH_GUI_CONFIG = "${config.users.users.${desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml";
+      LF_CLASH_CONTROLLED_SOURCE = if config.my.proxy.controlledSources then "1" else "0";
     };
 }

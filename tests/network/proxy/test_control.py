@@ -394,6 +394,29 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual((self.record()['result'], self.record()['reason']), ('rolled_back', 'obs'))
         self.assertTrue(self.record('profile-refresh-pin.json')['health'])
 
+    def test_startup_import_keeps_full_window_despite_repeated_cold_health_failures(self):
+        self.auto_baseline()
+        self.config.write_text(self.config.read_text() + '# startup candidate\n')
+        window = self.state / 'authorize-window'
+        window.touch()
+        stamp = time.time() - 1
+        os.utime(window, (stamp, stamp))
+        self.restart()
+        path = self.state / 'profile-refresh-verifying.json'
+        pending = self.record(path.name)
+        self.assertTrue(pending['startup'])
+        pending['monotonic_seconds'] -= 25
+        path.write_text(json.dumps(pending))
+        (self.state / 'state.json').write_text(json.dumps(dict(mode='blocked', reason='obs', policy_version=7)))
+        (self.state / 'health.json').write_text(json.dumps(dict(ok=False, reason='obs', at=time.time(),
+            boot_id=pending['boot_id'], digest=pending['digest'], policy_version=7, failure_streak=4,
+            scope={'requests': ['mixed-tcp', 'fake-ip-tcp']})))
+        self.settings['require_tun'] = True
+        stage.verify_refresh(self.settings, restart=lambda: self.fail('cold startup rolled back early'))
+        self.assertEqual(self.record()['result'], 'verifying')
+        self.settle(ok=True)
+        self.assertEqual(self.record()['result'], 'accepted')
+
     def test_consecutive_refreshes_during_probation_keep_last_settled_snapshot(self):
         old = self.auto_baseline()
         for suffix in ('first', 'second'):

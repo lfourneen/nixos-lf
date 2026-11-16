@@ -82,6 +82,19 @@ let
     '';
   });
 
+  managedGui = pkgs.unstable.clash-verge-rev.unwrapped.overrideAttrs (old: {
+    postPatch = (old.postPatch or "") + ''
+      ${pkgs.python3}/bin/python3 ${./gui/patch_clash_gui.py} . ${lib.boolToString config.my.proxy.tunMode}
+    '';
+  });
+
+  testPolicy = policy: policy // {
+    lf-private-targets = policy.lf-private-targets // {
+      blocked-domains-file = if config.my.proxy.dnsBlocklistFile == null then ""
+        else toString config.my.proxy.dnsBlocklistFile;
+    };
+  };
+
   # HTTP-only policy used by the core checks.
   httpOnlyConfig = config // {
     my = config.my // {
@@ -111,8 +124,8 @@ let
     doCheck = true;
     checkPhase = ''
       runHook preCheck
-      export LF_MANAGED_TEST_POLICY=${pkgs.writeText "mihomo-managed-test-policy.json" (builtins.toJSON config.my.proxy.managedProfile)}
-      export LF_MANAGED_TEST_HTTP_POLICY=${pkgs.writeText "mihomo-managed-test-http-policy.json" (builtins.toJSON httpOnlyPolicy)}
+      export LF_MANAGED_TEST_POLICY=${pkgs.writeText "mihomo-managed-test-policy.json" (builtins.toJSON (testPolicy config.my.proxy.managedProfile))}
+      export LF_MANAGED_TEST_HTTP_POLICY=${pkgs.writeText "mihomo-managed-test-http-policy.json" (builtins.toJSON (testPolicy httpOnlyPolicy))}
       export LF_MANAGED_TEST_LEGACY_PROFILE=${../../../tests/network/proxy/legacy-managed-profile.json}
       go test -mod=vendor ./config ./hub/route -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/inbound ./transport/socks5 -count=1
@@ -144,6 +157,7 @@ in
     package = (pkgs.unstable.clash-verge-rev.override {
       mihomo = managedCore;
     }).overrideAttrs (old: {
+      installPhase = builtins.replaceStrings [ (toString old.passthru.unwrapped) ] [ (toString managedGui) ] old.installPhase;
       nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.makeWrapper ];
       postFixup = (old.postFixup or "") + ''
         # Replace the helper copied by the GUI package with the locally pinned
@@ -167,6 +181,7 @@ in
       passthru = (old.passthru or { }) // {
         inherit managedCore guiDefaultsCheck stageSettings;
         managedService = patchedService;
+        unwrapped = managedGui;
       };
     });
 
@@ -174,9 +189,4 @@ in
     group = "clash-verge-control";
   };
 
-  assertions = [{
-    assertion = toString config.programs.clash-verge.package.unwrapped
-      == toString pkgs.unstable.clash-verge-rev.unwrapped;
-    message = "The GUI delay default must reuse the unmodified Clash Verge application.";
-  }];
 }

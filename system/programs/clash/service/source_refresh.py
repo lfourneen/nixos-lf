@@ -30,13 +30,27 @@ def automatic_download_ready(settings, stage):
         intent = (state / 'intent').read_text().strip()
     except FileNotFoundError:
         intent = 'auto'
-    allowed = (mode == 'direct' and intent != 'proxy' or mode == 'proxy' and intent == 'proxy')
+    allowed = mode == 'direct' and intent != 'proxy'
+    stable_path = state / 'source-refresh-stable.json'
+    if mode == 'proxy' and intent == 'proxy':
+        digest = healthy_runtime(settings, stage)
+        now = time.clock_gettime(time.CLOCK_BOOTTIME)
+        policy = stage.read_record(state / 'state.json').get('policy_version')
+        binding = dict(boot_id=stage.boot_id(state), digest=digest, policy_version=policy)
+        stable = stage.read_record(stable_path)
+        if digest and all(stable.get(key) == value for key, value in binding.items()):
+            allowed = 90 <= now - stable.get('since', now)
+        elif digest:
+            stage.atomic_record(stable_path, dict(binding, since=now), mode=0o600)
+        else:
+            stable_path.unlink(missing_ok=True)
+    else:
+        stable_path.unlink(missing_ok=True)
     pending = state / 'source-refresh-pending'
     if allowed:
         pending.unlink(missing_ok=True)
         return True
-    # The coordinator retries this request after a verified transition to B.
-    # Keep it pending during C instead of spending the network retry budget.
+    # Keep startup online before a background update can interrupt it.
     stage.atomic_text(pending, '1\n')
     stage.atomic_record(state / 'source-fetch.json', dict(at=time.time(),
         boot_id=stage.boot_id(state), result='deferred', reason='network protection active'))
@@ -170,18 +184,6 @@ def restart_source(settings, stage, validate=None, activate=None):
             subprocess.run([settings['systemctl'], 'start', settings['guard_service']],
                            check=True, timeout=25)
             stage.restart_core(settings)
-    # An explicit start is bringing its accepted baseline online. Let it
-    # establish live health before a background fetch can replace it. No
-    # operator/authority lock is held during this bounded grace period.
-    startup_deadline = time.monotonic() + 20
-    while time.monotonic() < startup_deadline:
-        restored = stage.read_record(state / 'profile-refresh.json')
-        if (restored.get('result') != 'restored' or
-                not 0 <= time.time() - restored.get('at', 0) < 20 or
-                (state / 'intent').read_text().strip() != 'proxy' or
-                healthy_runtime(settings, stage) is not None):
-            break
-        time.sleep(.25)
     with (state / 'operator.lock').open('a') as operator:
         fcntl.flock(operator, fcntl.LOCK_EX)
         # A competing network fetch must not hold up clash-off behind this lock.

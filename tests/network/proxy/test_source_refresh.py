@@ -40,11 +40,28 @@ class SourceRefreshTests(unittest.TestCase):
         record = json.loads((self.state / 'source-fetch.json').read_text())
         self.assertEqual((record['result'], record['reason']), ('deferred', 'network protection active'))
         self.assertEqual(record['boot_id'], self.boot)
-        (self.state / 'state.json').write_text('{"mode":"proxy"}')
+        (self.state / 'state.json').write_text(json.dumps(dict(mode='proxy', policy_version=1,
+            monotonic_seconds=time.clock_gettime(time.CLOCK_BOOTTIME))))
+        self.assertFalse(refresh.automatic_download_ready(self.settings, stage))
+        stable_path = self.state / 'source-refresh-stable.json'
+        stable = json.loads(stable_path.read_text())
+        stable['since'] -= 91
+        stable_path.write_text(json.dumps(stable))
         self.assertTrue(refresh.automatic_download_ready(self.settings, stage))
         self.assertFalse(pending.exists(), 'activation must not enqueue another download on its own B transition')
         self.assertTrue(refresh.automatic_download_ready(self.settings, stage))
         self.assertFalse(pending.exists())
+
+    def test_startup_download_stability_is_bound_to_health_boot_policy_and_snapshot(self):
+        self.assertFalse(refresh.automatic_download_ready(self.settings, stage))
+        stable_path = self.state / 'source-refresh-stable.json'
+        original = json.loads(stable_path.read_text())
+        for changed in (dict(boot_id='old'), dict(policy_version=0), dict(digest='f' * 64)):
+            stable_path.write_text(json.dumps(dict(original, since=original['since'] - 100, **changed)))
+            self.assertFalse(refresh.automatic_download_ready(self.settings, stage))
+        (self.state / 'state.json').write_text('{"mode":"blocked"}')
+        self.assertFalse(refresh.automatic_download_ready(self.settings, stage))
+        self.assertFalse(stable_path.exists())
 
     def test_automatic_download_requires_a_mode_matching_operator_intent(self):
         for mode, intent, expected in (('direct', 'direct', True), ('direct', 'auto', True),
@@ -171,6 +188,45 @@ class SourceRefreshTests(unittest.TestCase):
             worker.join(timeout=2)
             self.assertFalse(worker.is_alive())
             self.assertTrue(server.seen_magic)
+
+    def test_core_restart_uses_stop_then_start_without_restarting_helper(self):
+        calls = []
+        pid = 1234
+        def ipc(_settings, method, endpoint, payload=None, **_kwargs):
+            nonlocal pid
+            calls.append((method, endpoint))
+            if method == 'DELETE':
+                pid = None
+            elif method == 'POST':
+                self.assertEqual(payload['core_config']['core_path'], '/fixed/launcher')
+                pid = 5678
+            return dict(core_pid=pid)
+        settings = dict(self.settings, gui_data='/fixed/gui')
+        with patch.object(stage, 'service_request', side_effect=ipc), \
+                patch.object(stage.subprocess, 'run') as systemctl, \
+                patch.object(Path, 'read_text', return_value='5678'), \
+                patch.object(stage.socket, 'socket'):
+            stage.restart_core(settings)
+        self.assertEqual(calls, [('GET', '/status'), ('DELETE', '/clash/stop'),
+            ('GET', '/status'), ('POST', '/clash/start'), ('GET', '/status')])
+        systemctl.assert_not_called()
+
+    def test_helper_rejection_does_not_trigger_a_unit_restart(self):
+        with patch.object(stage, 'service_request', side_effect=ValueError('refused')), \
+                patch.object(stage.subprocess, 'run') as systemctl:
+            with self.assertRaises(ValueError):
+                stage.restart_core(self.settings)
+        systemctl.assert_not_called()
+
+    def test_missing_helper_transport_recovers_unit_then_starts_fixed_core(self):
+        responses = [ConnectionRefusedError(), dict(core_pid=None), {}, dict(core_pid=5678)]
+        with patch.object(stage, 'service_request', side_effect=responses), \
+                patch.object(stage.subprocess, 'run') as systemctl, \
+                patch.object(Path, 'read_text', return_value='5678'), \
+                patch.object(stage.socket, 'socket'):
+            stage.restart_core(dict(self.settings, gui_data='/fixed/gui'), restart=False)
+        systemctl.assert_called_once_with(['/fixed/systemctl', 'restart', 'clash-verge.service'],
+            check=True, timeout=30)
 
     def test_invalid_parser_timeout_and_unknown_audit_keep_healthy_core(self):
         for error, reason in ((stage.RefreshError('configuration invalid'), 'configuration invalid'),
@@ -308,6 +364,24 @@ class SourceRefreshTests(unittest.TestCase):
         selected, path = stage.startup_input(self.settings)
         self.assertNotIn('_accepted_startup', selected)
         self.assertEqual(Path(path).parent, self.candidate)
+
+    def test_accepted_policy_allows_only_the_validated_blocklist_location_change(self):
+        previous = '/nix/store/' + 'a' * 32 + '-dns-blocklist.txt'
+        policy = {'lf-private-targets': {'blocked-domains-file': previous, 'proxy-only': True}}
+        encode = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        manifest = dict(policy=hashlib.sha256(encode(policy)).hexdigest())
+        policy['lf-private-targets']['blocked-domains-file'] = '/etc/netsec/dns-blocklist.txt'
+        self.policy.write_bytes(encode(policy))
+        settings = dict(self.settings, yq='/fixed/yq')
+        with patch.object(stage.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0,
+                json.dumps(previous), '')):
+            self.assertTrue(stage.accepted_policy(settings, self.baseline, manifest))
+            policy['lf-private-targets']['proxy-only'] = False
+            self.policy.write_bytes(encode(policy))
+            self.assertFalse(stage.accepted_policy(settings, self.baseline, manifest))
+        with patch.object(stage.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0,
+                json.dumps('/tmp/untrusted-list'), '')):
+            self.assertFalse(stage.accepted_policy(settings, self.baseline, manifest))
 
     def test_health_rejection_pin_survives_an_explicit_restart_and_cannot_be_auto_approved(self):
         self.enable_automatic()

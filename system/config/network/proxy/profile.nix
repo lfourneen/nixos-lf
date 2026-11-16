@@ -142,7 +142,7 @@ in
         subscription-trust = p.subscriptionTrust;
         insecure-proxy-exceptions = p.insecureProxyExceptions;
         allow-dynamic-remote-grants = p.allowDynamicRemoteGrants;
-        blocked-domains-file = if p.dnsBlocklistFile == null then "" else toString p.dnsBlocklistFile;
+        blocked-domains-file = if p.dnsBlocklistFile == null then "" else "/etc/netsec/dns-blocklist.txt";
         blocked-domains = map lib.toLower p.blockedDomains;
         blocked-domain-exceptions = map lib.toLower p.blockedDomainExceptions;
         prefixes = privateAddresses.ipv4 ++ privateAddresses.ipv6;

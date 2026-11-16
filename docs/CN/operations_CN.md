@@ -117,9 +117,10 @@ GUI 选择与实际来源不同时，检查 `journalctl -u clash-source-select -
 A 中选择或获取不会请求 B，需要显式运行 `clash-on`。
 
 `clash-source refresh` 只准备候选。
-system service 在代理意图有效时先检查候选，再决定是否重启受管 helper/核心。
+system service 在代理意图有效时先检查候选，再决定是否替换受管核心。
 显式运行 `clash-on` 时，有已接受快照便先用它启动，并记录一次待处理的更新请求。
-B 通过健康与执行策略检查后，协调器启动这项后台请求。
+B 通过健康与执行策略检查，并在同一次启动、快照和策略下持续健康 90 秒后，协调器启动这项后台请求。
+离开健康 B 后重新计时。
 自动任务在 C 中触发时记录 `deferred`，保留请求等待 B，不尝试下载。
 这不会放宽 C，也不给下载账号增加公网外联豁免。
 root timer 在开机约两分钟后启动，此后每 30 分钟执行，不依赖 GUI。
@@ -131,7 +132,7 @@ GUI 的 `update_interval` 只影响展示副本：启动时将已存在且短于
 当前快照仍获授权且完整，并通过新鲜的完整健康检查、就绪检查及所需 B 租约检查时，
 被拒或未变化的候选保留正在运行的核心和已有连接。
 当前授权失效或健康检查失败时，仍进入 C 恢复。
-实际切换先进入 C，再重启 helper/核心，重新执行导入检查，通过代理健康检查后才返回 B。
+实际切换先进入 C，再通过 helper IPC 替换核心，重新执行导入检查，通过代理健康检查后才返回 B。
 
 worker 失败区分 `fetch`、`parse`、`render`、`pin-addresses`。
 `proxy-status` 的 `Subscription download` 另显示固定的 DNS、TLS、连接或 HTTP 失败分类，以及可用的 HTTP 状态码。
@@ -278,6 +279,7 @@ Tailscale 打标失败时，B 仍会阻断未打标的 root UDP。
 | `/run/proxy-mode/profile-refresh-verifying.json` | root 私有待验证事务及上一快照路径 |
 | `/run/proxy-mode/profile-refresh-settled.json`、`profile-refresh-commit.json`、`profile-refresh-restart.json` | root 私有 settled 授权、提交中断恢复和待完成内核恢复 |
 | `/run/proxy-mode/effective-config.json`、`boot-id` | 绑定共享 boot identity 的 effective YAML 摘要。`effective-config-sha256` 是兼容镜像 |
+| `/run/proxy-mode/health-observations.json` | 本次启动最近 20 次完整探测结果，包含脱敏阶段、分层耗时和快照摘要 |
 | `/run/proxy-mode/health-failure.json` | 最近失败探针的固定原因、可用的脱敏 `failure_stage`、分层耗时、boot identity 与快照摘要，恢复后仍保留 |
 
 消费者读取原子 JSON，独立 `status`、`reason`、`version`、`result`、`verified-version` 是兼容镜像。
@@ -364,7 +366,7 @@ policy 记录包含所观测模式、转换原因和代次。
 最近更新失败与订阅年龄分别显示，原有接受时间予以保留。
 受控来源以 root 记录为依据，GUI 更新时间不代表 root 更新成功。
 `fallback` 表示候选被拒绝，旧授权快照保留。
-`rolled_back` 表示已恢复快照授权并请求 helper 重启。
+`rolled_back` 表示已恢复快照授权并请求替换核心。
 核心是否恢复须查看网络就绪字段。
 摘要不同只表示内容不同，不能据此判断哪个文件更新。
 

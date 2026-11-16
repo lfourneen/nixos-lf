@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ config, lib, pkgs, ... }:
 
 # Validate the shared suffix-blocking snapshot and emit dnsmasq/core inputs.
 # The manifest binds source counts and compressed/decompressed digests.
@@ -272,6 +272,9 @@ let
 in
 {
   config.my.proxy.dnsBlocklistFile = names;
+  config.environment.etc."netsec/dns-blocklist.txt" = lib.mkIf (config.my.proxy.dnsBlocklistFile != null) {
+    source = config.my.proxy.dnsBlocklistFile;
+  };
 
   # conf-dir is read as configuration, so the generated file is just a batch of
   # address= directives, the same form the hand-written list uses.

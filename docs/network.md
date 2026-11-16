@@ -119,6 +119,7 @@ It is an error status, not another protected mode.
 Applications using the shared readiness check refuse it.
 
 The core's service cgroup, namespace-specific passive TCP/UDP listener identities, managed controller values, private TUN and host veth routes and actual unmarked IPv6 selection for root and the desktop UID feed the health decision.
+With TUN enabled, the application DNS check runs first and reuses its fake-IP within the same probe.
 HTTP probes must complete through the currently selected proxy leaf with matching source-port logs.
 Another real HTTP request to a fake-IP proves the transparent TCP path.
 The default shared deadline is 12 seconds.

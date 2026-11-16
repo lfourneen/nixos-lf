@@ -225,12 +225,14 @@
       "entrypoints": [
         "helper src/core/manager.rs, server.rs, logger.rs and reconcile.rs",
         "Nixpkgs GUI/helper packaging and inherited patches",
+        "GUI use-system-state.ts, proxy-control-switches.tsx, tray, config initialization, feat/config.rs, feat/window.rs and core/manager/config.rs",
         "Installed GUI/public core wrapper, stage snapshot and service runtime"
       ],
       "invariants": [
         "Root spawn uses only the root-owned packaged launcher; caller log/socket/PID paths never drive privileged file/process operations.",
         "Snapshot authorization covers YAML/assets, is single-use/boot-scoped and survives ordinary helper restart with correct permissions.",
-        "GUI binary remains upstream; actual core runs as the fixed UID with only NET_ADMIN and NET_RAW.",
+        "GUI keeps the declared TUN value, never disables it after an IPC outage or on exit, and treats reload refusal as terminal. The core retains its fixed UID and NET_ADMIN/NET_RAW capabilities.",
+        "Snapshot policy identity uses a stable validated blocklist path. Startup imports keep the full observation window; background downloads wait for stable verified B. Core replacement uses stop/start IPC and preserves the helper listener.",
         "Read-only preflight precedes proxy intent changes. Fast checks reuse full snapshot hashes only while protected identity and ctime metadata match, with periodic full verification.",
         "The helper/core run in the fixed core network namespace; host validators use a separate UID, the desktop forwarder stays on the host and no host INET/netlink FD reaches the core."
       ]

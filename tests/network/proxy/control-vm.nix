@@ -151,6 +151,12 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-control.py".source = ./control_fixture.py;
     environment.etc."netsec-core-network.py".source = ./core_network_fixture.py;
     environment.etc."netsec-managed.py" = lib.mkIf managedSources { source = ./managed_netns_fixture.py; };
+    environment.etc."netsec-rotated-blocklist.txt" = lib.mkIf managedSources {
+      source = pkgs.runCommand "rotated-dns-blocklist.txt" {} ''
+        cat ${config.my.proxy.dnsBlocklistFile} > "$out"
+        echo 'rotated-block.fixture.example' >> "$out"
+      '';
+    };
 
     environment.etc."netsec-managed.json" = lib.mkIf managedSources {
       text = builtins.toJSON { tls = sourceTls; stage = ../../../system/programs/clash/service/clash-verge-stage.py;
@@ -464,11 +470,11 @@ pkgs.testers.runNixOSTest {
         wait_proxy()
     with subtest("registered source, actual strict inlet and kernel C revocation share the production namespace"):
         try:
-            print(machine.succeed("python3 -u /etc/netsec-managed.py recover", timeout=180))
+            print(machine.succeed("python3 -u /etc/netsec-managed.py recover", timeout=420))
             wait_proxy()
             print(machine.succeed("python3 -u /etc/netsec-managed.py strict", timeout=120))
             wait_proxy()
-            print(machine.succeed("python3 -u /etc/netsec-managed.py switch", timeout=120))
+            print(machine.succeed("python3 -u /etc/netsec-managed.py switch", timeout=240))
             wait_proxy()
         except Exception:
             print(machine.execute("journalctl -u clash-strict -u clash-source-select --no-pager -n 45"))

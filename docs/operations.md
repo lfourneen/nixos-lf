@@ -124,9 +124,10 @@ In A, selection and fetching do not request B.
 Use `clash-on` deliberately.
 
 `clash-source refresh` only prepares a candidate.
-The system service checks it before deciding whether to restart the managed helper/core while proxy intent is active.
+The system service checks it before deciding whether to replace the managed core while proxy intent is active.
 An explicit `clash-on` uses the accepted snapshot when available and records one pending update request.
-The coordinator starts that background request after B passes its health and enforcement checks.
+The coordinator starts that background request after B passes its health and enforcement checks and remains healthy for 90 seconds under the same boot, snapshot and policy.
+A transition out of healthy B restarts this wait.
 Automatic jobs triggered during C record `deferred`, preserve the request for B and make no download attempt.
 This does not relax C or give the download account a public-egress exception.
 Its root timer starts about two minutes after boot and then runs every 30 minutes, independently of the GUI.
@@ -138,7 +139,7 @@ The GUI's `update_interval` controls only its display copy: startup raises exist
 If the current snapshot remains authorized and intact, with fresh full health, readiness and any required B lease,
 a rejected or unchanged candidate leaves the running core and existing connections in place.
 Invalid current authority or failed health follows C recovery instead.
-Activation enters C before restarting the helper/core, repeats import checks and requires proxy health before B returns.
+Activation enters C before replacing the core through helper IPC, repeats import checks and requires proxy health before B returns.
 
 Worker failures identify `fetch`, `parse`, `render` or `pin-addresses`.
 `Subscription download` in `proxy-status` adds a fixed DNS, TLS, connection or HTTP failure category and an HTTP status when available.
@@ -293,6 +294,7 @@ Dedicated guest accounts retain their separate boundary.
 | `/run/proxy-mode/profile-refresh-verifying.json` | Root-only pending transaction with the previous snapshot path |
 | `/run/proxy-mode/profile-refresh-settled.json`, `profile-refresh-commit.json`, `profile-refresh-restart.json` | Root-only settled authority, interrupted commit recovery and pending core recovery |
 | `/run/proxy-mode/effective-config.json`, `boot-id` | Normalized effective YAML digest bound to the shared boot identity. `effective-config-sha256` is a compatibility mirror |
+| `/run/proxy-mode/health-observations.json` | Last 20 full probe outcomes in this boot, with sanitized stages, layer timings and snapshot digests |
 | `/run/proxy-mode/health-failure.json` | Last failed probe with fixed reason, optional sanitized `failure_stage`, layer timings, boot identity and snapshot digest. Preserved after recovery |
 
 Atomic JSON is the consumer interface.
@@ -385,7 +387,7 @@ Controlled sources treat the GUI copy as display-only. Compatibility imports sho
 A failed latest update is shown separately from subscription age, preserving the previous acceptance time.
 Controlled sources use root records for these decisions; GUI update timestamps do not report root success.
 `fallback` means the candidate was rejected and the prior authorized snapshot was retained.
-`rolled_back` means snapshot authority was restored and a helper restart was requested.
+`rolled_back` means snapshot authority was restored and a core replacement was requested.
 Check the network readiness fields to confirm that the core recovered.
 A digest difference describes different content.
 It does not establish which file is newer.

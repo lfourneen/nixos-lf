@@ -116,6 +116,7 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 使用共用就绪检查的应用会拒绝该状态。
 
 健康判断检查核心 cgroup、所属命名空间内的 TCP/UDP 监听身份、受管 API、私有 TUN 与宿主 veth 路由，以及 root/桌面 UID 未打标 IPv6 的实际选路。
+启用 TUN 时先检查应用 DNS，并在同一轮探测中复用得到的 fake-IP。
 HTTP 探针须经当前选中代理叶子完成，且日志匹配源端口。
 另向 fake-IP 发真实 HTTP 请求证明透明 TCP 路径。
 默认共享截止为 12 秒。

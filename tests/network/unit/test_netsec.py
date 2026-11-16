@@ -282,10 +282,25 @@ class HealthTests(unittest.TestCase):
                 self.assertEqual(record['failure_stage'], expected)
                 self.assertNotIn('private', before.decode())
                 with patch.object(health.sys, 'argv', ['health', str(settings)]), \
-                        patch.object(health.signal, 'signal'), patch.object(health.Probe, 'run', return_value='fixture'), \
+                        patch.object(health.signal, 'signal'), patch.object(health.os, 'geteuid', return_value=0), \
+                        patch.object(health.Probe, 'run', return_value='fixture'), \
                         contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(health.main(), 0)
                 self.assertEqual(path.read_bytes(), before)
+            observations = json.loads((root / 'health-observations.json').read_text())
+            self.assertEqual(len(observations), 8)
+            self.assertEqual([item['ok'] for item in observations], [False, True] * 4)
+            self.assertNotIn('private', json.dumps(observations))
+            with patch.object(health.sys, 'argv', ['health', str(settings)]), \
+                    patch.object(health.signal, 'signal'), patch.object(health.os, 'geteuid', return_value=0), \
+                    patch.object(health.Probe, 'run', return_value='fixture'), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                for _ in range(20):
+                    health.main()
+                self.assertEqual(len(json.loads((root / 'health-observations.json').read_text())), 20)
+                (root / 'boot-id').write_text('another-boot')
+                health.main()
+            self.assertEqual(len(json.loads((root / 'health-observations.json').read_text())), 1)
 
     def test_health_json_never_claims_udp_data_plane_proof(self):
         with tempfile.TemporaryDirectory() as temporary:
