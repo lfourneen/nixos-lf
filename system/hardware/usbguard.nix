@@ -56,6 +56,7 @@
       allow id 5986:118a
       allow id 0489:e0cd
       allow id 048d:c102
+      allow id 258a:0199
     '';
   };
 
