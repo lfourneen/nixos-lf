@@ -1,0 +1,776 @@
+{
+  "schema": 1,
+  "network_sources": "system/config/network/maintenance/sources.json",
+  "items": [
+    {
+      "id": "flake-nixpkgs",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "NixOS/nixpkgs stable branch (nixos-26.05)",
+      "update_mode": "nix flake update nixpkgs, review the lock diff and package recipe changes, then rebuild",
+      "current": {
+        "summary": "root flake input nixpkgs; checker compares its locked revision with flake.lock"
+      },
+      "signature": "GitHub revision and NAR hash in flake.lock; packages from cache.nixos.org use signed narinfo",
+      "fallback": "restore the previous flake.lock and switch to the recorded generation",
+      "max_patch_delay_days": 14,
+      "review_command": "nix flake update nixpkgs && git diff -- flake.lock",
+      "pins": [],
+      "flake": {
+        "input": "nixpkgs",
+        "rev": "f1e5c356f35d07e7b71a6b5e6c9338e0b029e0c0"
+      }
+    },
+    {
+      "id": "flake-nixpkgs-unstable",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "NixOS/nixpkgs unstable branch",
+      "update_mode": "nix flake update nixpkgs-unstable, review the lock diff and package recipe changes, then rebuild",
+      "current": {
+        "summary": "root flake input nixpkgs-unstable; checker compares its locked revision with flake.lock"
+      },
+      "signature": "GitHub revision and NAR hash in flake.lock; packages use the configured substituters and keys",
+      "fallback": "restore the previous flake.lock and switch to the recorded generation",
+      "max_patch_delay_days": 14,
+      "review_command": "nix flake update nixpkgs-unstable && git diff -- flake.lock",
+      "pins": [],
+      "flake": {
+        "input": "nixpkgs-unstable",
+        "rev": "d5cc6833999746cffdfe0598f7bc801a57b887a9"
+      }
+    },
+    {
+      "id": "flake-home-manager",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "nix-community/home-manager release branch",
+      "update_mode": "nix flake update home-manager with the matching nixpkgs branch, review activation changes",
+      "current": {
+        "summary": "root flake input home-manager; checker compares its locked revision with flake.lock"
+      },
+      "signature": "GitHub revision and NAR hash in flake.lock",
+      "fallback": "restore the previous flake.lock and switch to the recorded generation",
+      "max_patch_delay_days": 14,
+      "review_command": "nix flake update home-manager && git diff -- flake.lock",
+      "pins": [],
+      "flake": {
+        "input": "home-manager",
+        "rev": "6eb2d33d1d0c95a37ef6443c88e6c1686012ee8b"
+      }
+    },
+    {
+      "id": "flake-llm-agents",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "numtide/llm-agents.nix DSH packages",
+      "update_mode": "nix flake update llm-agents, rebuild dsh and dsh-tui together, and keep the TUI host peer range satisfied",
+      "current": {
+        "summary": "root flake input llm-agents; checker compares its locked revision with flake.lock"
+      },
+      "signature": "GitHub revision and NAR hash in flake.lock; the dsh-tui build also checks the host peer range",
+      "fallback": "restore the previous flake.lock and switch to the recorded generation",
+      "max_patch_delay_days": 14,
+      "review_command": "nix flake update llm-agents && git diff -- flake.lock",
+      "pins": [],
+      "flake": {
+        "input": "llm-agents",
+        "rev": "aeb1afe1529c5dc7dcdc54d644a8aed212d99dd0"
+      }
+    },
+    {
+      "id": "flake-noctalia",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "noctalia-dev/noctalia shell",
+      "update_mode": "nix flake update noctalia, review shell and plugin API changes, then rebuild",
+      "current": {
+        "summary": "root flake input noctalia; checker compares its locked revision with flake.lock"
+      },
+      "signature": "GitHub revision and NAR hash in flake.lock; the package is fetched from noctalia.cachix.org",
+      "fallback": "restore the previous flake.lock and switch to the recorded generation",
+      "max_patch_delay_days": 14,
+      "review_command": "nix flake update noctalia && git diff -- flake.lock",
+      "pins": [],
+      "flake": {
+        "input": "noctalia",
+        "rev": "6bcea5968d17b7750e27f19f1827dce1a31bbc98"
+      }
+    },
+    {
+      "id": "flake-nix-flatpak",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "gmodena/nix-flatpak module",
+      "update_mode": "nix flake update nix-flatpak, review remote and update semantics before rebuilding",
+      "current": {
+        "summary": "root flake input nix-flatpak; checker compares its locked revision with flake.lock"
+      },
+      "signature": "GitHub revision and NAR hash in flake.lock",
+      "fallback": "restore the previous flake.lock and switch to the recorded generation",
+      "max_patch_delay_days": 14,
+      "review_command": "nix flake update nix-flatpak && git diff -- flake.lock",
+      "pins": [],
+      "flake": {
+        "input": "nix-flatpak",
+        "rev": "02656785ab214fa1c9655f1beaaf0269eeeec2ca"
+      }
+    },
+    {
+      "id": "flake-disko",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "nix-community/disko module",
+      "update_mode": "nix flake update disko, review partition and mount behavior before rebuilding",
+      "current": {
+        "summary": "root flake input disko; checker compares its locked revision with flake.lock"
+      },
+      "signature": "GitHub revision and NAR hash in flake.lock",
+      "fallback": "restore the previous flake.lock and switch to the recorded generation",
+      "max_patch_delay_days": 30,
+      "review_command": "nix flake update disko && git diff -- flake.lock",
+      "pins": [],
+      "flake": {
+        "input": "disko",
+        "rev": "1dd30c29c88d99ce295f15e27f93c49bc5fbae07"
+      }
+    },
+    {
+      "id": "flake-impermanence",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "nix-community/impermanence module",
+      "update_mode": "nix flake update impermanence, review persistence behavior before rebuilding",
+      "current": {
+        "summary": "root flake input impermanence; checker compares its locked revision with flake.lock"
+      },
+      "signature": "GitHub revision and NAR hash in flake.lock",
+      "fallback": "restore the previous flake.lock and switch to the recorded generation",
+      "max_patch_delay_days": 30,
+      "review_command": "nix flake update impermanence && git diff -- flake.lock",
+      "pins": [],
+      "flake": {
+        "input": "impermanence",
+        "rev": "fa627f4c8b8e92f58f58a73d99ee4e1304e64eb2"
+      }
+    },
+    {
+      "id": "flake-hermes-agent",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "NousResearch/hermes-agent module",
+      "update_mode": "nix flake update hermes-agent, review service activation and state paths before rebuilding",
+      "current": {
+        "summary": "root flake input hermes-agent; checker compares its locked revision with flake.lock"
+      },
+      "signature": "GitHub revision and NAR hash in flake.lock",
+      "fallback": "restore the previous flake.lock and switch to the recorded generation",
+      "max_patch_delay_days": 14,
+      "review_command": "nix flake update hermes-agent && git diff -- flake.lock",
+      "pins": [],
+      "flake": {
+        "input": "hermes-agent",
+        "rev": "3b421578588243f920886e6fe79a6faa87ea026e"
+      }
+    },
+    {
+      "id": "flake-sops-nix",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "Mic92/sops-nix module",
+      "update_mode": "nix flake update sops-nix, review secret activation before rebuilding",
+      "current": {
+        "summary": "root flake input sops-nix; checker compares its locked revision with flake.lock"
+      },
+      "signature": "GitHub revision and NAR hash in flake.lock",
+      "fallback": "restore the previous flake.lock and switch to the recorded generation",
+      "max_patch_delay_days": 30,
+      "review_command": "nix flake update sops-nix && git diff -- flake.lock",
+      "pins": [],
+      "flake": {
+        "input": "sops-nix",
+        "rev": "11e5885d241743ff0193465d533b20e754bc3ce0"
+      }
+    },
+    {
+      "id": "flake-mcp-nixos",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "utensils/mcp-nixos package",
+      "update_mode": "nix flake update mcp-nixos, review the package and tool surface before rebuilding",
+      "current": {
+        "summary": "root flake input mcp-nixos; checker compares its locked revision with flake.lock"
+      },
+      "signature": "GitHub revision and NAR hash in flake.lock",
+      "fallback": "restore the previous flake.lock and switch to the recorded generation",
+      "max_patch_delay_days": 30,
+      "review_command": "nix flake update mcp-nixos && git diff -- flake.lock",
+      "pins": [],
+      "flake": {
+        "input": "mcp-nixos",
+        "rev": "a0fb7ab7701d8aff179199536b7c2574ef05507a"
+      }
+    },
+    {
+      "id": "firefox-ublock-origin",
+      "owner": "lfour",
+      "kind": "extension-auto-update",
+      "upstream": "Mozilla Addons (AMO) uBlock Origin",
+      "update_mode": "Firefox Enterprise policy installs the AMO latest.xpi for uBlock0@raymondhill.net; Firefox updates it from AMO",
+      "current": {
+        "summary": "force_installed from https://addons.mozilla.org/firefox/downloads/latest/${encId id}/latest.xpi; no fixed version"
+      },
+      "signature": "AMO-signed XPI verified by Firefox; extension permissions can change between signed releases without a repository diff",
+      "fallback": "disable or remove the extension in policy, then rebuild; a profile backup preserves the previous XPI",
+      "max_patch_delay_days": 7,
+      "review_command": "grep -n -A8 'extensionSettings' home/programs/firefox/firefox.nix; review about:addons permissions",
+      "pins": [
+        {
+          "file": "home/programs/firefox/firefox.nix",
+          "pattern": "\"uBlock0@raymondhill.net\" = \"force_installed\";\n"
+        },
+        {
+          "file": "home/programs/firefox/firefox.nix",
+          "pattern": "install_url = \"https://addons.mozilla.org/firefox/downloads/latest/${encId id}/latest.xpi\";\n"
+        }
+      ]
+    },
+    {
+      "id": "firefox-kiss-translator",
+      "owner": "lfour",
+      "kind": "extension-auto-update",
+      "upstream": "Mozilla Addons (AMO) KISS Translator",
+      "update_mode": "Firefox Enterprise policy installs the AMO latest.xpi for the KISS Translator id; Firefox updates it from AMO",
+      "current": {
+        "summary": "normal_installed from AMO latest.xpi; only KISS Translator and uBlock Origin are declared"
+      },
+      "signature": "AMO-signed XPI verified by Firefox; extension permissions can change between signed releases without a repository diff",
+      "fallback": "disable or remove the extension in policy, then rebuild; a profile backup preserves the previous XPI",
+      "max_patch_delay_days": 7,
+      "review_command": "grep -n -A8 'extensionSettings' home/programs/firefox/firefox.nix; review about:addons permissions",
+      "pins": [
+        {
+          "file": "home/programs/firefox/firefox.nix",
+          "pattern": "\"{fb25c100-22ce-4d5a-be7e-75f3d6f0fc13}\" = \"normal_installed\";"
+        }
+      ]
+    },
+    {
+      "id": "flatpak-apps",
+      "owner": "lfour",
+      "kind": "flatpak-runtime",
+      "upstream": "Flathub applications and their resolved runtimes",
+      "update_mode": "services.flatpak.update.auto runs daily; app and runtime refs follow the Flathub stable channels",
+      "current": {
+        "summary": "18 Flathub app ids in system/programs/flatpak/default.nix; resolved runtime commits are not pinned locally"
+      },
+      "signature": "Flathub GPG-signed OSTree commits; remote verification stays enabled, and mirror transport does not replace it",
+      "fallback": "reinstall the previous flatpak commit for one app or switch to the previous NixOS generation; the app id list is repository-owned",
+      "max_patch_delay_days": 7,
+      "review_command": "flatpak remotes --show-details; flatpak info --show-permissions <app-id>; flatpak remote-info --show-commit flathub <app-id>",
+      "pins": [
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"com.baidu.NetDisk\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"com.dingtalk.DingTalk\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"com.discordapp.Discord\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"com.qq.QQ\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"im.riot.Riot\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"com.tencent.WeChat\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"com.tencent.wemeet\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"org.telegram.desktop\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"cn.lceda.LCEDAPro\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"com.st.STM32CubeMX\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"com.vysp3r.ProtonPlus\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"moe.kopuz.kopuz\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"net.lutris.Lutris\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"org.prismlauncher.PrismLauncher\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"com.spotify.Client\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"cn.wps.wps_365\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"com.github.tchx84.Flatseal\"\n"
+        },
+        {
+          "file": "system/programs/flatpak/default.nix",
+          "pattern": "\"org.octave.Octave\"\n"
+        }
+      ]
+    },
+    {
+      "id": "flathub-mirror",
+      "owner": "lfour",
+      "kind": "flatpak-runtime",
+      "upstream": "Flathub repository through the USTC mirror",
+      "update_mode": "flatpak-mirror.service adds flathub, points its URL at the USTC mirror at boot, and leaves daily updates enabled",
+      "current": {
+        "summary": "flathub remote is rewritten to https://mirrors.ustc.edu.cn/flathub after the official remote file is fetched"
+      },
+      "signature": "Mirror changes transport only; OSTree commits remain verified against the Flathub remote keys",
+      "fallback": "point the flathub remote back at https://dl.flathub.org/repo/ and rerun the service; no Nix generation change is needed",
+      "max_patch_delay_days": 7,
+      "review_command": "flatpak remotes --show-details; curl -fsS --max-time 10 https://mirrors.ustc.edu.cn/flathub/config",
+      "pins": [
+        {
+          "file": "system/programs/flatpak/mirror.nix",
+          "pattern": "flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
+        },
+        {
+          "file": "system/programs/flatpak/mirror.nix",
+          "pattern": "flatpak remote-modify flathub --url=https://mirrors.ustc.edu.cn/flathub"
+        }
+      ]
+    },
+    {
+      "id": "rootless-docker-mirrors",
+      "owner": "lfour",
+      "kind": "docker-registry",
+      "upstream": "Docker Hub through two public registry mirrors",
+      "update_mode": "rootless dockerd reads daemon.settings.registry-mirrors at start; workload images are pulled by tag unless the caller supplies a digest",
+      "current": {
+        "summary": "two registry mirrors in system/programs/virtualisation/default.nix; the repository does not pin workload image digests"
+      },
+      "signature": "No daemon content-signature check; mirrors are pull-through caches, so critical workloads need image digests and publisher signatures",
+      "fallback": "remove the mirror entries, restart the rootless daemon, and pull through gost; redeploy a known digest",
+      "max_patch_delay_days": 7,
+      "review_command": "grep -n -A4 registry-mirrors system/programs/virtualisation/default.nix; docker info --format \"{{json .RegistryConfig.Mirrors}}\"",
+      "pins": [
+        {
+          "file": "system/programs/virtualisation/default.nix",
+          "pattern": "\"https://docker.m.daocloud.io\"\n"
+        },
+        {
+          "file": "system/programs/virtualisation/default.nix",
+          "pattern": "\"https://hub-mirror.c.163.com\"\n"
+        }
+      ]
+    },
+    {
+      "id": "dsh-desktop-appimage",
+      "owner": "lfour",
+      "kind": "appimage-pin",
+      "upstream": "anywhere-labs/dsh-desktop GitHub release v2.0.22-next x86_64 AppImage",
+      "update_mode": "bump version and hash in overlays/dsh-desktop-appimage.nix, review the repack anchors, then rebuild",
+      "current": {
+        "version": "2.0.22",
+        "summary": "Electron AppImage repacked with build checks for sharp WASM and landlock-run"
+      },
+      "signature": "SHA-256 pinned in Nix; the upstream release has no publisher signature checked by this repository",
+      "fallback": "restore the previous version and hash in the overlay and switch to the recorded generation",
+      "max_patch_delay_days": 30,
+      "review_command": "nixos-rebuild build --flake .#lfour; verify the sharp WASM and landlock-run checks",
+      "pins": [
+        {
+          "file": "overlays/dsh-desktop-appimage.nix",
+          "pattern": "version = \"2.0.22\";\n"
+        },
+        {
+          "file": "overlays/dsh-desktop-appimage.nix",
+          "pattern": "url = \"https://github.com/anywhere-labs/dsh-desktop/releases/download/v${version}-next/DSH-NEXT-${version}-next-x86_64.AppImage\";\n"
+        },
+        {
+          "file": "overlays/dsh-desktop-appimage.nix",
+          "pattern": "hash = \"sha256-U04xJC0pWnHPkqgAHrXH536cc2EmU1+pMCbtI7NzZGc=\";\n"
+        }
+      ]
+    },
+    {
+      "id": "dsh-tui-release",
+      "owner": "lfour",
+      "kind": "appimage-pin",
+      "upstream": "ccch1mneyyy/dsh-TUI GitHub release v0.20.1 standalone Linux runtime",
+      "update_mode": "bump version and per-platform hashes in overlays/dsh-tui/dsh-tui.nix, then rebuild against the locked DSH host",
+      "current": {
+        "version": "0.20.1",
+        "summary": "standalone JavaScript runtime; /update and updateTui are disabled, and the host peer range is checked at build"
+      },
+      "signature": "Per-platform SHA-256 pinned in Nix; the upstream release has no publisher signature checked by this repository",
+      "fallback": "restore the previous version and hashes in the overlay and switch to the recorded generation",
+      "max_patch_delay_days": 30,
+      "review_command": "nixos-rebuild build --flake .#lfour; verify the host peer-range and Cordis identity checks",
+      "pins": [
+        {
+          "file": "overlays/dsh-tui/dsh-tui.nix",
+          "pattern": "version = \"0.20.1\";\n"
+        },
+        {
+          "file": "overlays/dsh-tui/dsh-tui.nix",
+          "pattern": "hash = \"sha256-uVQMEL618ZQXfQ5G/zoz9j9909K+dOv7WA8qujZTIoM=\";\n"
+        },
+        {
+          "file": "overlays/dsh-tui/dsh-tui.nix",
+          "pattern": "hash = \"sha256-h4WW1oHm/+gnNWqCXGeBDCv1S5RuZsGdRd2sm3toh7o=\";\n"
+        }
+      ]
+    },
+    {
+      "id": "dsh-desktop-plugins",
+      "owner": "lfour",
+      "kind": "plugin",
+      "upstream": "DSH desktop plugins recorded in ~/.dsh/profiles/desktop/package.json",
+      "update_mode": "plugin manager or dshmarket inside the desktop profile; plugin installation and update stay outside Nix",
+      "current": {
+        "summary": "27 plugin specs in ~/.dsh/profiles/desktop/package.json, including npm ranges, GitHub refs and one local link; runtime manifest is not Nix-managed"
+      },
+      "signature": "npm registry integrity and DSH plugin review; this repository does not pin or sign the runtime profile manifest",
+      "fallback": "restore package.json and pnpm-lock from the profile backup and reinstall; the NixOS generation is unaffected",
+      "max_patch_delay_days": 14,
+      "review_command": "jq -S '.dependencies' ~/.dsh/profiles/desktop/package.json",
+      "pins": []
+    },
+    {
+      "id": "dsh-web-plugins",
+      "owner": "lfour",
+      "kind": "plugin",
+      "upstream": "DSH web plugins recorded in ~/.dsh/profiles/web/package.json",
+      "update_mode": "plugin manager inside the web profile; plugin installation and update stay outside Nix",
+      "current": {
+        "summary": "17 plugin specs in ~/.dsh/profiles/web/package.json, mostly semver ranges; runtime manifest is not Nix-managed"
+      },
+      "signature": "npm registry integrity and DSH plugin review; this repository does not pin or sign the runtime profile manifest",
+      "fallback": "restore package.json and pnpm-lock from the profile backup and reinstall; the NixOS generation is unaffected",
+      "max_patch_delay_days": 14,
+      "review_command": "jq -S '.dependencies' ~/.dsh/profiles/web/package.json",
+      "pins": []
+    },
+    {
+      "id": "noctalia-plugins",
+      "owner": "lfour",
+      "kind": "plugin",
+      "upstream": "Noctalia shell plugins from the official, community and lfourneen git sources",
+      "update_mode": "the Noctalia shell installs and updates enabled plugins from git sources at runtime; source heads are not locked",
+      "current": {
+        "summary": "6 enabled plugins from 3 git sources; plugin commits are not pinned, while the Noctalia package itself follows the noctalia flake input"
+      },
+      "signature": "Git refs only; plugin code runs as the desktop user inside Noctalia, and this repository does not verify plugin commits",
+      "fallback": "remove or disable the plugin in home/config/niri/noctalia.nix and rebuild the home configuration; the runtime plugin cache can be removed separately",
+      "max_patch_delay_days": 14,
+      "review_command": "sed -n '/plugins = {/,/};/p' home/config/niri/noctalia.nix; review enabled plugin permissions in Noctalia",
+      "pins": [
+        {
+          "file": "home/config/niri/noctalia.nix",
+          "pattern": "\"noctalia/notes\"\n"
+        },
+        {
+          "file": "home/config/niri/noctalia.nix",
+          "pattern": "\"8bury/mini-docker\"\n"
+        },
+        {
+          "file": "home/config/niri/noctalia.nix",
+          "pattern": "\"nightwatch75/todo\"\n"
+        },
+        {
+          "file": "home/config/niri/noctalia.nix",
+          "pattern": "\"lfourneen/waywallen-bridge\"\n"
+        },
+        {
+          "file": "home/config/niri/noctalia.nix",
+          "pattern": "\"tmelik/system-monitor\"\n"
+        },
+        {
+          "file": "home/config/niri/noctalia.nix",
+          "pattern": "\"lfourneen/netcenter\"\n"
+        },
+        {
+          "file": "home/config/niri/noctalia.nix",
+          "pattern": "location = \"https://github.com/noctalia-dev/official-plugins\";\n"
+        },
+        {
+          "file": "home/config/niri/noctalia.nix",
+          "pattern": "location = \"https://github.com/noctalia-dev/community-plugins\";\n"
+        },
+        {
+          "file": "home/config/niri/noctalia.nix",
+          "pattern": "location = \"https://github.com/lfourneen/noctalia-plugins\";\n"
+        }
+      ]
+    },
+    {
+      "id": "nix-substituters-keys",
+      "owner": "lfour",
+      "kind": "cache-key",
+      "upstream": "cache.nixos.org, USTC Nix channels mirror, cache.nixos-cuda.org, cache.numtide.com and noctalia.cachix.org",
+      "update_mode": "manual edit in system/config/network/network.nix; verify each extra substituter and signer, then rebuild",
+      "current": {
+        "summary": "5 substituters including the USTC mirror; 3 additional trusted public keys besides the NixOS cache key"
+      },
+      "signature": "Ed25519 narinfo signatures verified by Nix; a trusted public key authorizes every path that cache signs, not a package subset",
+      "fallback": "remove the substituter and matching key, rebuild, and reuse the previous generation or local store contents",
+      "max_patch_delay_days": 30,
+      "review_command": "nix show-config | grep -E '^(substituters|trusted-public-keys)'",
+      "pins": [
+        {
+          "file": "system/config/network/network.nix",
+          "pattern": "\"https://mirrors.ustc.edu.cn/nix-channels/store\"\n"
+        },
+        {
+          "file": "system/config/network/network.nix",
+          "pattern": "\"https://cache.nixos.org\"\n"
+        },
+        {
+          "file": "system/config/network/network.nix",
+          "pattern": "\"https://cache.nixos-cuda.org\"\n"
+        },
+        {
+          "file": "system/config/network/network.nix",
+          "pattern": "\"https://cache.numtide.com\"\n"
+        },
+        {
+          "file": "system/config/network/network.nix",
+          "pattern": "\"https://noctalia.cachix.org\"\n"
+        },
+        {
+          "file": "system/config/network/network.nix",
+          "pattern": "\"cache.nixos-cuda.org:74DUi4Ye579gUqzH4ziL9IyiJBlDpMRn9MBN8oNan9M=\"\n"
+        },
+        {
+          "file": "system/config/network/network.nix",
+          "pattern": "\"niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=\"\n"
+        },
+        {
+          "file": "system/config/network/network.nix",
+          "pattern": "\"noctalia.cachix.org-1:pCOR47nnMEo5thcxNDtzWpOxNFQsBRglJzxWPp3dkU4=\"\n"
+        }
+      ]
+    },
+    {
+      "id": "network-mihomo",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "Mihomo (Clash Meta) core and managed profile parser",
+      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+      "current": {
+        "summary": "Proxy core, parser, controller, DNS and routing paths; versions, source hashes and dependency fingerprints stay in sources.json"
+      },
+      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+      "max_patch_delay_days": 7,
+      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
+      "pins": [],
+      "network_ref": "mihomo"
+    },
+    {
+      "id": "network-sing-tun",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "Mihomo vendored sing-tun redirect implementation",
+      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+      "current": {
+        "summary": "Vendored dependency inside the Mihomo source tree; versions, source hashes and dependency fingerprints stay in sources.json"
+      },
+      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+      "max_patch_delay_days": 7,
+      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
+      "pins": [],
+      "network_ref": "sing-tun"
+    },
+    {
+      "id": "network-socks",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "Mihomo SOCKS inbound and transport code",
+      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+      "current": {
+        "summary": "Vendored Mihomo transport path; versions, source hashes and dependency fingerprints stay in sources.json"
+      },
+      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+      "max_patch_delay_days": 7,
+      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
+      "pins": [],
+      "network_ref": "socks"
+    },
+    {
+      "id": "network-gost",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "Gost relay and vendored HTTP handler",
+      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+      "current": {
+        "summary": "Relay binary and vendored go-gost/x handler; versions, source hashes and dependency fingerprints stay in sources.json"
+      },
+      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+      "max_patch_delay_days": 14,
+      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
+      "pins": [],
+      "network_ref": "gost"
+    },
+    {
+      "id": "network-clash",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "Clash Verge GUI, helper and packaged core wrapper",
+      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+      "current": {
+        "summary": "GUI, Rust helper and packaging integration; versions, source hashes and dependency fingerprints stay in sources.json"
+      },
+      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+      "max_patch_delay_days": 14,
+      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
+      "pins": [],
+      "network_ref": "clash"
+    },
+    {
+      "id": "network-dns",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "dnsmasq, Unbound and Chrony network services",
+      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+      "current": {
+        "summary": "DNS forwarding, validation, NTS and time services; versions, source hashes and dependency fingerprints stay in sources.json"
+      },
+      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+      "max_patch_delay_days": 7,
+      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
+      "pins": [],
+      "network_ref": "dns"
+    },
+    {
+      "id": "network-firefox",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "Firefox package plus bubblewrap, xdg-dbus-proxy and seccomp",
+      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+      "current": {
+        "summary": "Browser policy, sandbox and ECH integration; versions, source hashes and dependency fingerprints stay in sources.json"
+      },
+      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+      "max_patch_delay_days": 7,
+      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
+      "pins": [],
+      "network_ref": "firefox"
+    },
+    {
+      "id": "network-tailscale",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "Tailscale CLI and transport package",
+      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+      "current": {
+        "summary": "Socket marks, STUN and tailnet transport; versions, source hashes and dependency fingerprints stay in sources.json"
+      },
+      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+      "max_patch_delay_days": 14,
+      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
+      "pins": [],
+      "network_ref": "tailscale"
+    },
+    {
+      "id": "network-firewall",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "nftables, NetworkManager and systemd firewall integration",
+      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+      "current": {
+        "summary": "Firewall rule generation and lifecycle ownership; versions, source hashes and dependency fingerprints stay in sources.json"
+      },
+      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+      "max_patch_delay_days": 7,
+      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
+      "pins": [],
+      "network_ref": "firewall"
+    },
+    {
+      "id": "network-link-identity",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "NetworkManager, systemd and dhcpcd link identity",
+      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+      "current": {
+        "summary": "Stable identity, DHCP and IPv6 address behavior; versions, source hashes and dependency fingerprints stay in sources.json"
+      },
+      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+      "max_patch_delay_days": 14,
+      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
+      "pins": [],
+      "network_ref": "link-identity"
+    },
+    {
+      "id": "network-controlled-source",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "Mihomo and helper source-controlled configuration",
+      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+      "current": {
+        "summary": "Registered source, parser, audit and snapshot path; versions, source hashes and dependency fingerprints stay in sources.json"
+      },
+      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+      "max_patch_delay_days": 7,
+      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
+      "pins": [],
+      "network_ref": "controlled-source"
+    },
+    {
+      "id": "network-browser-isolation",
+      "owner": "lfour",
+      "kind": "nix-flake-pin",
+      "upstream": "Firefox, bubblewrap, systemd, Mihomo, xdg-dbus-proxy and seccomp",
+      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+      "current": {
+        "summary": "Strict browser namespace and proxy boundary; versions, source hashes and dependency fingerprints stay in sources.json"
+      },
+      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+      "max_patch_delay_days": 7,
+      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
+      "pins": [],
+      "network_ref": "browser-isolation"
+    }
+  ],
+  "lock_graph_sha256": "b094b75453acfaa0109ceca418991ff421981b63ef3f2d37185b41dd27b49663"
+}

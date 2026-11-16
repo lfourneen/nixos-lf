@@ -11,7 +11,7 @@
     ./disko.nix
     ./driver-opt.nix
     ./partition.nix
-    ./usbguard.nix
+    ./usbguard/usbguard.nix
     ./nvidia.nix
     ./nvidia/nvidia-powerd.nix
   ];

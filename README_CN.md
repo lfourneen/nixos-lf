@@ -34,6 +34,7 @@
 
 - **硬件与远程访问。**
   按作者的机器配置 AMD/NVIDIA 显卡、音频、蓝牙、USBGuard，以及经 Tailscale 使用的 Sunshine 串流。
+  首次启用及设备授权见 [USBGuard 使用说明](scripts/README_CN.md#usbguard-策略)。
 
 各功能的模块入口见[源码目录](docs/CN/layout_CN.md)。
 网络设计和日常命令见[网络文档](docs/CN/README_CN.md)。
@@ -111,18 +112,23 @@ Hermes 配置和技能位于 [system/programs/hermes/](system/programs/hermes)�
 Nushell 中可直接运行 `hermes`，其它 shell 使用 `sudo -u hermes -i hermes`。
 容器入口与数据管理见 [Hermes 容器](docs/CN/operations_CN.md#hermes-容器)。
 
-密钥由 sops-nix 管理，Age 私钥默认位于 `~/.config/sops/age/keys.txt`。
-首次用于自己的系统时，恢复已有私钥或生成新私钥，并调整 [.sops.yaml](.sops.yaml) 的接收者。
-私钥不要提交到 Git。
+密钥由 sops-nix 管理。系统服务默认使用 `/persist/secrets/age/system.key` 处的 root 专属 Age 身份解密，因此首次重建前需要按说明放好密钥。
+接管现有 `age.txt` 或 `keys.txt`、从零生成身份、把 recipient 写入 `.sops.yaml`，以及重新加密已有文件的步骤见 [脚本说明](scripts/README_CN.md#system-age-keypy)。
+私钥不要提交到 Git，并做好离线备份。
+要回退到 `~/.config/sops/age/keys.txt`，设置 `my.secrets.systemAgeKey.enable = false`。
 
-直接编辑加密文件：
+以 root 编辑系统秘密时，显式指定系统身份：
 
 ```sh
-sops edit system/secrets/secrets.yaml  # API 和消息服务凭据
-sops edit system/secrets/soul.yaml     # Hermes 人格设置
-sops edit system/secrets/proxy.yaml    # 代理来源清单
+sudo SOPS_AGE_KEY_FILE=/persist/secrets/age/system.key \
+  sops edit system/secrets/secrets.yaml  # API 和消息服务凭据
+sudo SOPS_AGE_KEY_FILE=/persist/secrets/age/system.key \
+  sops edit system/secrets/soul.yaml     # Hermes 人格设置
+sudo SOPS_AGE_KEY_FILE=/persist/secrets/age/system.key \
+  sops edit system/secrets/proxy.yaml    # 代理来源清单
 ```
 
+以 root 保存会改变文件属主，提交前用 `sudo chown "$USER": ...` 恢复。
 保存时 sops 会重新加密文件，重建系统后应用修改。
 密钥名称及服务属主见 [sops.nix](system/programs/sops.nix)。
 

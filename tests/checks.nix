@@ -2,6 +2,18 @@
 
 let
       pkgs = nixpkgs.legacyPackages.${system};
+
+      # One source tree for tests that resolve paths relative to their own
+      # location. Secrets and the blocklist snapshot are already build inputs
+      # of the flake.
+      repoSource = pkgs.lib.fileset.toSource {
+        root = ../.;
+        fileset = pkgs.lib.fileset.unions [
+          ../flake.nix ../flake.lock ../.sops.yaml
+          ../home ../maintenance ../local-data ../overlays ../scripts ../system ../tests
+        ];
+      };
+
       compatibilityBrowser = (self.nixosConfigurations.lfour.extendModules {
         modules = [ ({ lib, ... }: { my.proxy.strictBrowser = lib.mkForce false; }) ];
       }).config.home-manager.users.lfour.programs.firefox.finalPackage;
@@ -111,6 +123,7 @@ let
       '';
 
       proxy-rules = self.nixosConfigurations.lfour.config.my.proxy.expectedRules;
+      network-policy-config = import ./network/policy-config.nix { inherit self pkgs; };
       network-identity-config = import ./network/identity/identity-config.nix {
         inherit pkgs identityConfig;
         config = self.nixosConfigurations.lfour.config;
@@ -425,6 +438,103 @@ let
                 assert listener['cgroup'] == '/system.slice/clash-verge.service', listener
                 assert listener['namespace'] is True, listener
         PY
+        touch "$out"
+      '';
+
+      security-policy-config = let
+        c = self.nixosConfigurations.lfour.config;
+        ports = c.my.machine.ports;
+        activation = c.system.activationScripts."hermes-agent-setup".text;
+      in
+      assert c.services.usbguard.presentDevicePolicy == "apply-policy";
+      assert c.services.usbguard.IPCAllowedUsers == [ "root" ];
+      assert c.services.usbguard.IPCAllowedGroups == [ "usbguard-admin" ];
+      assert builtins.hasAttr "usbguard-admin" c.users.groups;
+      assert builtins.hasAttr "adbusers" c.users.groups;
+      assert !(builtins.elem "input" c.users.users.lfour.extraGroups);
+      assert !(builtins.elem "tty" c.users.users.lfour.extraGroups);
+      assert c.systemd.coredump.settings.Coredump.Storage == "none";
+      assert c.systemd.coredump.settings.Coredump.ProcessSizeMax == "0";
+      assert !(builtins.hasAttr "coredump-clean" c.systemd.services);
+      assert c.virtualisation.libvirtd.qemu.runAsRoot == false;
+      assert c.virtualisation.containerd.enable == true;
+      assert c.systemd.services.hermes-agent.serviceConfig.Slice == "hermes.slice";
+      assert c.systemd.services.hermes-backend.serviceConfig.Slice == "hermes.slice";
+      assert c.systemd.services.hermes-containers.serviceConfig.Slice == "hermes.slice";
+      assert c.systemd.slices.hermes.sliceConfig.SocketBindDeny
+        == c.systemd.slices.user.sliceConfig.SocketBindDeny;
+      assert c.my.secrets.systemAgeKey.enable == true;
+      assert c.sops.age.keyFile == "/persist/secrets/age/system.key";
+      assert builtins.hasAttr "system-secrets-key" c.system.activationScripts;
+      assert builtins.elem (toString ports.coreDnsTransport)
+        c.systemd.slices.hermes.sliceConfig.SocketBindDeny;
+      assert builtins.elem (toString ports.coreDnsBootstrapTransport)
+        c.systemd.slices.hermes.sliceConfig.SocketBindDeny;
+      assert pkgs.lib.hasInfix "hermes-state.py" activation;
+      assert pkgs.lib.hasInfix "--managed-file" activation;
+      assert pkgs.lib.hasInfix "skills/agently-mail/SKILL.md" activation;
+      assert !pkgs.lib.hasInfix "find /var/lib/hermes/home" activation;
+      assert pkgs.lib.hasInfix "/home/config/agent-skills/" (builtins.readFile ../scripts/push-to-dir.sh);
+      assert builtins.pathExists ../local-data/dns-blocklist.manifest.json;
+      pkgs.runCommand "security-policy-config" { } ''
+        touch "$out"
+      '';
+
+      deployment-tests = pkgs.runCommand "deployment-tests" {
+        nativeBuildInputs = with pkgs; [
+          python3 bash rsync coreutils findutils util-linux git
+        ];
+      } ''
+        export PYTHONDONTWRITEBYTECODE=1 DEPLOY_SKIP_EVAL=1
+        python3 ${repoSource}/tests/deployment/test_deployment.py ${repoSource}/scripts/push-to-dir.sh
+        python3 ${repoSource}/tests/deployment/test_deployment_safety.py ${repoSource}/scripts/push-to-dir.sh
+        python3 ${repoSource}/tests/deployment/test_sync_to_git.py ${repoSource}/scripts/sync-to-git.sh
+        python3 ${repoSource}/tests/deployment/test_verify_network.py ${repoSource}/scripts/verify-network.py
+        touch "$out"
+      '';
+
+      maintenance-ledger = pkgs.runCommand "maintenance-ledger" {
+        nativeBuildInputs = [ pkgs.python3 ];
+      } ''
+        export PYTHONDONTWRITEBYTECODE=1
+        python3 ${repoSource}/scripts/check-maintenance.py --json
+        touch "$out"
+      '';
+
+      blocklist-tests = pkgs.runCommand "blocklist-tests" {
+        nativeBuildInputs = [ pkgs.python3 pkgs.xz ];
+      } ''
+        export PYTHONDONTWRITEBYTECODE=1
+        python3 ${repoSource}/tests/network/maintenance/test_blocklist.py
+        touch "$out"
+      '';
+
+      device-policy = pkgs.runCommand "device-policy" {
+        nativeBuildInputs = [ pkgs.python3 ];
+      } ''
+        python3 ${repoSource}/tests/system/test_device_policy.py
+        python3 ${repoSource}/tests/system/test_usbguard_policy.py
+        touch "$out"
+      '';
+
+      hermes-activation-vm = import ./system/hermes-activation-vm.nix { inherit self; };
+
+      security-behavior-vm = import ./system/security-behavior-vm.nix {
+        inherit pkgs;
+        ports = self.nixosConfigurations.lfour.config.my.machine.ports;
+      };
+
+      libvirt-qemu-migration = pkgs.runCommand "libvirt-qemu-migration" {
+        nativeBuildInputs = [ pkgs.python3 pkgs.bash pkgs.coreutils pkgs.util-linux pkgs.glibc.getent ];
+      } ''
+        python3 ${repoSource}/tests/system/test_libvirt_migration.py
+        touch "$out"
+      '';
+
+      system-age-key = pkgs.runCommand "system-age-key" {
+        nativeBuildInputs = [ pkgs.python3 pkgs.age ];
+      } ''
+        python3 ${repoSource}/tests/system/test_system_age_key.py
         touch "$out"
       '';
 

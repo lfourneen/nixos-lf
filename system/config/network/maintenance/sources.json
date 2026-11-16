@@ -249,7 +249,9 @@
         "proxy-egress-control-vm",
         "proxy-network-vm",
         "proxy-validation-tools",
-        "proxy-assurance-vm"
+        "proxy-assurance-vm",
+        "blocklist-tests",
+        "maintenance-ledger"
       ],
       "entrypoints": [
         "dnsmasq src/forward.c: strict-order terminal retry and sent-to index",
@@ -331,7 +333,12 @@
         "proxy-hermes-containers-vm",
         "proxy-core-netns-vm",
         "proxy-managed-netns-vm",
-        "proxy-assurance-vm"
+        "proxy-assurance-vm",
+        "deployment-tests",
+        "security-policy-config",
+        "network-policy-config",
+        "hermes-activation-vm",
+        "security-behavior-vm"
       ],
       "entrypoints": [
         "nft transaction parsing, socket/conntrack expressions and JSON output",

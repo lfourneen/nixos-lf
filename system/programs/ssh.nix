@@ -44,7 +44,7 @@
       PermitEmptyPasswords = false;
 
       PermitRootLogin = "no";
-      AllowUsers = [ "lfour" ];
+      AllowUsers = [ config.my.machine.desktopUser ];
       AuthorizedKeysFile = ".ssh/authorized_keys ${config.sops.secrets."ssh_authorized_keys".path}";
 
       X11Forwarding = false;

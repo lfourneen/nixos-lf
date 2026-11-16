@@ -31,6 +31,8 @@
       "/var/lib/NetworkManager"
       { directory = "/var/lib/netsec-dns-profiles"; mode = "0700"; }
       { directory = "/var/lib/network-identity"; mode = "0700"; }
+      # Deployment backups and the recovery log must survive a reboot.
+      { directory = "/var/lib/nixos-lf-deploy"; mode = "0700"; }
       "/var/lib/nixos"
       "/var/lib/power-profiles-daemon"
       "/var/lib/systemd/backlight"

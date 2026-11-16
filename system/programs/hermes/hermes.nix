@@ -1,7 +1,7 @@
 { config, lib, pkgs, inputs, ... }:
 
 let
-  userName = "lfour";
+  userName = config.my.machine.desktopUser;
   userPreferredLang = "Chinese";
   userRole = "Advanced NixOS User";
 
@@ -53,12 +53,13 @@ let
     else
       lib.toInt (builtins.head m);
 
-  # gost's HTTP listener, shared with the nftables redirect; machine.nix owns the
-  # port. The NO_PROXY ranges are the ones the firewall already treats as local.
-  gostHttp = "http://127.0.0.1:${toString config.my.machine.ports.gostHttp}";
-  noProxy = "127.0.0.1,localhost,::1,"
-    + lib.concatStringsSep "," config.my.machine.privateV4
-    + ",192.168.1.1,*.local";
+  proxy = import ../../config/network/proxy/env.nix { inherit lib; };
+  gostHttp = proxy.gostHttp config.my.machine.ports.gostHttp;
+  gostHttpSlash = proxy.gostHttpSlash config.my.machine.ports.gostHttp;
+  noProxy = proxy.noProxy {
+    privateV4 = config.my.machine.privateV4;
+    extra = [ "192.168.1.1" "*.local" ];
+  };
 
   # Proxy env for MCP servers that reach the network. Hermes only passes the
   # env keys listed per-server (plus safe defaults) to the MCP subprocess, so
@@ -80,18 +81,99 @@ let
   agently-cli = pkgs.callPackage ./agently-cli.nix { };
   agently-check = agently-cli.passthru.check;
 
+  cfg = config.services.hermes-agent;
+
+  # Shared state rendering runs without root privileges.
+  common = import "${inputs.hermes-agent.outPath}/nix/moduleCommon.nix" { inherit lib; };
+
+  stateDir = cfg.stateDir;
+  hermesHome = "${stateDir}/.hermes";
+
+  # Root-owned state check and layout creation. It only touches fixed entries
+  # through directory descriptors with O_NOFOLLOW.
+  stateGuard = "${pkgs.python3}/bin/python3 ${./hermes-state.py}";
+  managedStateFiles = builtins.attrNames cfg.hermesHomeFiles ++ [ "skills/sandbox/SKILL.md" ];
+  managedFileArgs = lib.concatMapStrings (name: " --managed-file ${lib.escapeShellArg name}") managedStateFiles;
+
+  # The files that upstream writes into HERMES_HOME. It runs as the hermes
+  # user, so it cannot chown and cannot modify the state root itself.
+  hermesStateScript = pkgs.writeShellScript "hermes-state-files" ''
+    set -eu
+    export PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.findutils ]}:$PATH
+    ${common.mkStateScript {
+      inherit pkgs cfg;
+      hermesHome = hermesHome;
+      workingDirectory = cfg.workingDirectory;
+      owner = null;
+      modes = {
+        config = "0660";
+        env = "0600";
+        managed = "0644";
+        auth = "0600";
+        document = "0640";
+      };
+      stateDirs = [ ];
+    }}
+  '';
+
+  # Writable state for the service. The state root, the backup directory and
+  # the version marker stay read-only, so the service cannot rename or replace
+  # the entries that activation verifies.
+  writablePaths = [
+    "${stateDir}/.hermes"
+    "${stateDir}/home"
+    "${stateDir}/workspace"
+    "${stateDir}/.config"
+    "${stateDir}/.local"
+    "${stateDir}/.cache"
+    "${stateDir}/.playwright-profiles"
+    "/nix/var/nix/profiles/per-user/hermes"
+  ];
+
 in
 {
+  assertions = [
+    {
+      assertion = !cfg.container.enable;
+      message = "system/programs/hermes/hermes.nix replaces the hermes-agent activation script and supports native mode only. Review this module before enabling services.hermes-agent.container.enable.";
+    }
+    {
+      assertion = cfg.container.hostUsers == [ ];
+      message = "system/programs/hermes/hermes.nix does not create the container host-user symlink bridge. Review this module before setting services.hermes-agent.container.hostUsers.";
+    }
+    {
+      assertion = cfg.documents == { };
+      message = "system/programs/hermes/hermes.nix does not install documents as root. Review this module before setting services.hermes-agent.documents.";
+    }
+    {
+      assertion = cfg.authFile == null;
+      message = "system/programs/hermes/hermes.nix does not install authFile as root. Review this module before setting services.hermes-agent.authFile.";
+    }
+    {
+      assertion = cfg.extraPlugins == [ ];
+      message = "system/programs/hermes/hermes.nix does not link extraPlugins as root. Review this module before setting services.hermes-agent.extraPlugins.";
+    }
+  ];
+
   imports = [
-    # systemd-tmpfiles keeps the first rule for a path and ignores later
-    # duplicates, so a normal entry below loses to the upstream module's 2770
-    # HERMES_HOME rule. mkBefore makes this the winning (first) rule: no group
-    # write, because gateway discovery refuses a control directory that another
-    # member of the hermes group could replace the socket in (lfour is in that
-    # group). Group read/traverse stays.
+    # Fixed non-recursive modes take precedence over the upstream defaults.
     {
       systemd.tmpfiles.rules = lib.mkBefore [
-        "d /var/lib/hermes/.hermes 0750 hermes hermes - -"
+        "d ${stateDir} 0750 root hermes - -"
+        "d ${stateDir}/.hermes 0700 hermes hermes - -"
+        "d ${stateDir}/home 0700 hermes hermes - -"
+        "d ${stateDir}/workspace 2770 hermes hermes - -"
+        "d ${stateDir}/.config 0700 hermes hermes - -"
+        "d ${stateDir}/.local 0700 hermes hermes - -"
+        "d ${stateDir}/.cache 0700 hermes hermes - -"
+        "d ${stateDir}/.playwright-profiles 0700 hermes hermes - -"
+        "d ${hermesHome}/cron 0700 hermes hermes - -"
+        "d ${hermesHome}/sessions 0700 hermes hermes - -"
+        "d ${hermesHome}/logs 0700 hermes hermes - -"
+        "d ${hermesHome}/memories 0700 hermes hermes - -"
+        "d ${hermesHome}/plugins 0700 hermes hermes - -"
+        "d ${hermesHome}/skills 0700 hermes hermes - -"
+        "d /nix/var/nix/profiles/per-user/hermes 0755 hermes hermes - -"
       ];
     }
   ];
@@ -110,7 +192,7 @@ in
 
     environmentFiles = [ config.sops.templates."hermes.env".path ];
 
-    workingDirectory = "/var/lib/hermes/workspace";
+    workingDirectory = "${stateDir}/workspace";
 
     backend = {
       mode = "dashboard";
@@ -140,7 +222,7 @@ in
 
       terminal = {
         backend = "local";
-        cwd = "/var/lib/hermes";
+        cwd = "${stateDir}/workspace";
         timeout = 180;
       };
 
@@ -186,7 +268,7 @@ in
 
         filesystem = {
           command = "${pkgs.mcp-server-filesystem}/bin/mcp-server-filesystem";
-          args = [ "/var/lib/hermes/workspace" "/var/lib/hermes/home" "/tmp" ];
+          args = [ "${stateDir}/workspace" "${stateDir}/home" "/tmp" ];
         };
 
         nixos = {
@@ -229,13 +311,13 @@ in
           command = "${lib.getExe pkgs.mcp-server-memory}";
           args = [ ];
           env = {
-            MEMORY_FILE_PATH = "/var/lib/hermes/.hermes/memory.json";
+            MEMORY_FILE_PATH = "${hermesHome}/memory.json";
           };
         };
 
         # git = {
         #   command = "${lib.getExe pkgs.mcp-server-git}";
-        #   args = [ "--repository" "/var/lib/hermes/workspace" ];
+        #   args = [ "--repository" "${stateDir}/workspace" ];
         # };
 
         # Web search, no API key. open-websearch intentionally ignores the
@@ -276,13 +358,13 @@ in
             "${gostHttp}"
           ];
           env = {
-            PWMCP_PROFILES_DIR_FOR_TEST = "/var/lib/hermes/.playwright-profiles";
+            PWMCP_PROFILES_DIR_FOR_TEST = "${stateDir}/.playwright-profiles";
           };
         };
       };
 
       security = {
-        allowed_users = [ "lfour" ];
+        allowed_users = [ config.my.machine.desktopUser ];
 
         # Fail closed: a broken/timed-out scanner blocks instead of allowing.
         tirith_fail_open = false;
@@ -300,7 +382,7 @@ in
       toolsets = [ "all" ];
 
       plugins.hermes-memory-store = {
-        db_path = "/var/lib/hermes/.hermes/memory_store.db";
+        db_path = "${hermesHome}/memory_store.db";
         auto_extract = true;
         default_trust = 0.5;
         min_trust_threshold = 0.3;
@@ -421,43 +503,39 @@ in
     ];
   };
 
+  users.users.hermes.createHome = lib.mkForce false;
+
   environment.systemPackages = [
     agently-cli
     agently-check
   ];
 
-  systemd.tmpfiles.rules = [
-    "d /var/lib/hermes 0770 hermes hermes - -"
-    "d /var/lib/hermes/.local 0770 hermes hermes - -"
-    "d /nix/var/nix/profiles/per-user/hermes 0755 hermes hermes - -"
-    "d /var/lib/hermes/.playwright-profiles 0770 hermes hermes - -"
-    "Z /var/lib/hermes/home 0770 hermes hermes - -"
-    "Z /var/lib/hermes/workspace 0770 hermes hermes - -"
-    "f+ /var/lib/hermes/.gitconfig 0640 hermes hermes - [user]\\n\\tname = Hermes Agent\\n\\temail = hermes@local.domain\\n"
-  ];
-
-  # Upstream forces home to 0750 and its activation script runs after tmpfiles,
-  # so re-enable group rw afterwards. HERMES_HOME is different: upstream makes
-  # it 2770, but gateway discovery rejects a group-writable control directory
-  # when the group has other members (lfour is in "hermes"), because they could
-  # swap gateway.sock. Keep group read/traverse, drop group write, after the
-  # upstream script has run.
-  system.activationScripts.hermes-home-group-rw =
-    lib.stringAfter [ "hermes-agent-setup" ] ''
-      chmod 2770 /var/lib/hermes/home
-      chmod 0750 /var/lib/hermes/.hermes
-      find /var/lib/hermes/home \( -type f -o -type d \) -exec chmod g+rwX {} + 2>/dev/null || true
-    '';
+  # Activation validates fixed state paths before rendering as the service user.
+  system.activationScripts."hermes-agent-setup" = lib.mkForce (
+    lib.stringAfter
+      ([ "users" ] ++ lib.optional (config.system.activationScripts ? setupSecrets) "setupSecrets")
+      ''
+        (
+          set -eu
+          ${stateGuard} --root ${stateDir} --user ${cfg.user} --group ${cfg.group}${managedFileArgs}
+          ${lib.getExe' pkgs.util-linux "setpriv"} \
+            --reuid=${cfg.user} --regid=${cfg.group} --init-groups \
+            ${hermesStateScript}
+        )
+      ''
+  );
 
   # Seed memories/USER.md only if missing; Hermes owns it after.
   systemd.services.hermes-user-profile-seed = {
     description = "Seed Hermes memories/USER.md if missing";
     wantedBy = [ "multi-user.target" ];
     before = [ "hermes-agent.service" ];
-    unitConfig.ConditionPathExists = "!/var/lib/hermes/.hermes/memories/USER.md";
+    unitConfig.ConditionPathExists = "!${hermesHome}/memories/USER.md";
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${pkgs.coreutils}/bin/install -D -o hermes -g hermes -m 0640 ${userMdFile} /var/lib/hermes/.hermes/memories/USER.md";
+      User = "hermes";
+      Group = "hermes";
+      ExecStart = "${pkgs.coreutils}/bin/install -D -m 0640 ${userMdFile} ${hermesHome}/memories/USER.md";
     };
   };
 
@@ -487,20 +565,21 @@ in
     # Route the agent's model/API calls through gost-relay so it keeps working
     # under `proxyKillSwitch` (which blocks non-root direct egress).
     environment = {
-      HTTP_PROXY = "${gostHttp}/";
-      HTTPS_PROXY = "${gostHttp}/";
+      HTTP_PROXY = gostHttpSlash;
+      HTTPS_PROXY = gostHttpSlash;
 
       # Lowercase twins: python-requests/httpx and some Go/Rust tooling read
       # only these. ALL_PROXY is deliberately absent - clients that treat it as
       # a SOCKS URL break on an http:// value. NO_PROXY matches the host list.
-      http_proxy = "${gostHttp}/";
-      https_proxy = "${gostHttp}/";
+      http_proxy = gostHttpSlash;
+      https_proxy = gostHttpSlash;
       NO_PROXY = noProxy;
     };
 
     serviceConfig = {
       User = "hermes";
       Group = "hermes";
+      Slice = "hermes.slice";
       EnvironmentFile = config.sops.templates."hermes.env".path;
       ProtectSystem = "strict";
       ProtectHome = lib.mkForce true;
@@ -511,10 +590,7 @@ in
       ProtectKernelLogs = true;
       ProtectClock = true;
       SupplementaryGroups = [ "users" ];
-      ReadWritePaths = [
-        "/var/lib/hermes"
-        "/nix/var/nix/profiles/per-user/hermes"
-      ];
+      ReadWritePaths = lib.mkForce writablePaths;
       ReadOnlyPaths = [
         "/nix/store"
         "-/etc/nix"
@@ -529,7 +605,9 @@ in
   };
 
   systemd.services.hermes-backend.serviceConfig = {
+    Slice = "hermes.slice";
     ProtectHome = lib.mkForce true;
+    ReadWritePaths = lib.mkForce writablePaths;
     RestrictAddressFamilies = [
       "AF_INET"
       "AF_INET6"

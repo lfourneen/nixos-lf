@@ -2,6 +2,15 @@
 local-data/*
 !local-data/README.md
 !local-data/dns-blocklist.txt.xz
+!local-data/dns-blocklist.*.json
+
+# Age identities (system and desktop) must never enter Git
+*.key
+keys.txt
+*.agekey
+
+# Recipient-backup files written by scripts/system-age-key.py
+.sops.yaml.bak-*
 
 # Local working files and reports
 audit/

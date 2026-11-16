@@ -1,27 +1,12 @@
-{ pkgs, ... }:
+{ ... }:
 
 {
-  # coredump: 16G cap, oldest purged on overflow; weekly 7-day purge
+  # No dumped memory is stored. The journal still records the crash event;
+  # existing dump files are only removed by an explicit operator action.
   systemd.coredump.settings.Coredump = {
-    MaxUse = "16G";
-    MaxAge = "7d";
+    Storage = "none";
+    ProcessSizeMax = "0";
   };
-
-  systemd.services.coredump-clean = {
-    description = "Delete coredumps older than 7 days";
-    serviceConfig = {
-      Type = "oneshot";
-      ExecStart = "${pkgs.findutils}/bin/find /var/lib/systemd/coredump -type f -mtime +7 -delete";
-    };
-  };
-
-  systemd.timers.coredump-clean = {
-    description = "Weekly coredump cleanup";
-    timerConfig = {
-      OnCalendar = "weekly";
-      Persistent = true;
-    };
-    wantedBy = [ "timers.target" ];
-  };
+  systemd.settings.Manager.DefaultLimitCORE = "0";
+  systemd.user.extraConfig = "DefaultLimitCORE=0";
 }
-

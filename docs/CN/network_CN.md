@@ -46,8 +46,8 @@ Gost 在 B 中把两种入口转给 `127.0.0.1:7897`，A 中直通，C 或未知
 核心应答必须经过受管 veth，并匹配已跟踪的入口连接。
 就绪检查使用监听地址、UID、cgroup 和网络命名空间。
 
-端口保留依赖 systemd 的 cgroup `bind4`/`bind6` hook 及内核 cgroup-BPF 支持，作用范围是 `user.slice` 中的进程。
-不可信系统服务需要在所属 slice 配置同等限制。
+端口保留依赖 systemd 的 cgroup `bind4`/`bind6` hook 及内核 cgroup-BPF 支持。
+桌面进程继承 `user.slice`，Hermes 使用 `hermes.slice`。其它声明了非 root 身份的 system service 必须配置受保护的 slice，或显式审核其基础设施监听。
 Root 和受管服务身份属于信任边界。
 应答 UID 检查确认响应 socket 的身份，绑定限制阻止数据交给未授权的 UDP 监听者。
 
@@ -153,7 +153,8 @@ C 原有的恢复与链路维护例外继续可用。
 
 ## 防火墙生命周期
 
-[default.nix](../../system/config/network/network.nix) 定义静态策略及 B/C 片段。
+[network.nix](../../system/config/network/network.nix) 集成静态策略。
+[mode-fragments.nix](../../system/config/network/firewall/mode-fragments.nix) 生成 B/C 片段。
 [coordinator.nix](../../system/config/network/proxy/coordinator.nix) 在共享锁下以一次 `nft -f` 事务安装静态规则和安全模式，只替换本仓库拥有的宿主表及其中的 `lf_core_*` 链。
 
 Mihomo 管理私有命名空间内的自有表，固定 setup 另安装私有 `lf_core_inlets` 和 `lf_core_local_udp` 表，启用本地 DNSSEC 时还安装 `lf_core_dns`。

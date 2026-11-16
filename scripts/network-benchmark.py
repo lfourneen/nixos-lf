@@ -21,7 +21,9 @@ from urllib.parse import urlsplit
 def distribution(values):
     ordered = sorted(values)
     return {'samples': len(values), 'p50_ms': round(statistics.median(values) * 1000, 3),
-            'p95_ms': round(ordered[math.ceil(len(ordered) * .95) - 1] * 1000, 3)}
+            'p95_ms': round(ordered[math.ceil(len(ordered) * .95) - 1] * 1000, 3),
+            'max_ms': round(max(values) * 1000, 3),
+            'stdev_ms': round(statistics.pstdev(values) * 1000, 3)}
 
 
 def serve(address, port):
@@ -110,9 +112,27 @@ def main():
     run.add_argument('--samples', type=int, choices=range(5, 101), default=20)
     snapshot = commands.add_parser('snapshot')
     snapshot.add_argument('--tool', required=True)
+    blocklist = commands.add_parser('blocklist')
+    blocklist.add_argument('--data', type=Path, default=Path('local-data/dns-blocklist.txt.xz'))
     args = parser.parse_args()
     if args.command == 'serve':
         return serve(args.bind, args.port)
+    if args.command == 'blocklist':
+        import hashlib
+        import lzma
+        payload = args.data.read_bytes()
+        timings = []
+        count = 0
+        for _ in range(5):
+            started = time.monotonic()
+            names = lzma.decompress(payload).decode('ascii').splitlines()
+            count = len(set(names))
+            timings.append(time.monotonic() - started)
+        print(json.dumps({'schema': 1, 'workload': 'decompress-and-python-domain-set',
+                          'input_sha256': hashlib.sha256(payload).hexdigest(),
+                          'domains': count, 'timings': distribution(timings),
+                          'max_rss_kib': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss}, indent=2))
+        return
     if args.command == 'snapshot':
         spec = importlib.util.spec_from_file_location('snapshot', args.tool)
         tool = importlib.util.module_from_spec(spec)
@@ -128,14 +148,19 @@ def main():
             digest_file = root / 'config-digest'
             for path in (authority, digest_file):
                 path.write_text(digest)
+            tool.write_private(root / 'boot-id', b'00000000-0000-4000-8000-000000000001\n', os.getegid())
             measured = {}
             for fast in (False, True):
                 start, cpu = time.monotonic(), time.process_time()
+                timings = []
                 for _ in range(20):
+                    started = time.monotonic()
                     tool.verify(data, digest_file, authority, fast=fast)
+                    timings.append(time.monotonic() - started)
                 measured['fast' if fast else 'full'] = {
                     'seconds': time.monotonic() - start, 'cpu_seconds': time.process_time() - cpu,
-                    'iterations': 20, 'synthetic_asset_bytes': 32 * 1024 * 1024}
+                    'iterations': 20, 'synthetic_asset_bytes': 32 * 1024 * 1024,
+                    'timings': distribution(timings)}
             print(json.dumps(measured, indent=2))
         return
     print(json.dumps(measure(args.url, args.proxy, args.samples), indent=2))

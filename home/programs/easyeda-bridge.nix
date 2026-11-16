@@ -1,11 +1,14 @@
-{ pkgs, ... }:
+{ pkgs, lib, osConfig, ... }:
 
 # EasyEDA API Gateway Bridge Server (127.0.0.1:49620-49629). Run as an
 # always-on service so the extension finds it regardless of OpenCode's start
 # order; bridge-server.mjs is a singleton the MCP later adopts.
 let
-  skillDir = "/home/lfour/.config/opencode/skill/easyeda-api";
+  proxy = import ../../system/config/network/proxy/env.nix { inherit lib; };
+  home = osConfig.users.users.${osConfig.my.machine.desktopUser}.home;
+  skillDir = "${home}/.config/opencode/skill/easyeda-api";
   bridgeServer = "${skillDir}/scripts/bridge-server.mjs";
+  loopbackNoProxy = proxy.join proxy.loopback;
 
 in
 {
@@ -26,8 +29,8 @@ in
       
       # The bridge is loopback-only; keep it off the transparent proxy.
       Environment = [
-        "NO_PROXY=127.0.0.1,localhost,::1"
-        "no_proxy=127.0.0.1,localhost,::1"
+        "NO_PROXY=${loopbackNoProxy}"
+        "no_proxy=${loopbackNoProxy}"
       ];
     };
     Install.WantedBy = [ "default.target" ];

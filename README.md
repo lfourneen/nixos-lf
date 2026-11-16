@@ -36,6 +36,7 @@ It uses NixOS 26.05 with selected packages from Unstable, and exposes the system
 
 - **Hardware and remote access.**
   AMD/NVIDIA graphics, audio, Bluetooth, USBGuard and Sunshine over Tailscale are configured for the author's machine.
+  The [USBGuard guide](scripts/README.md#usbguard-policy) covers first-time setup and device authorization.
 
 The [source layout](docs/layout.md) identifies the modules behind these features.
 The [network guides](docs/README.md) explain the network policy and daily commands.
@@ -113,19 +114,23 @@ Hermes configuration and skills live in [system/programs/hermes/](system/program
 Open the CLI with `hermes` in Nushell, or run `sudo -u hermes -i hermes` from another shell.
 Its container endpoint and data handling are described in [Hermes containers](docs/operations.md#hermes-containers).
 
-Secrets use sops-nix with an Age key at `~/.config/sops/age/keys.txt`.
-For your own installation, restore your key or create one and update the recipients in [.sops.yaml](.sops.yaml).
-Keep the private key outside Git.
+Secrets use sops-nix. System services decrypt with the root-only Age identity at `/persist/secrets/age/system.key` by default, so put the key in place before the first rebuild.
+The [scripts guide](scripts/README.md#system-age-keypy) covers adopting an existing `age.txt` or `keys.txt`, generating a new identity, writing its recipient to `.sops.yaml`, and re-encrypting existing files.
+Keep the private key outside Git and back it up offline.
+Set `my.secrets.systemAgeKey.enable = false` to fall back to `~/.config/sops/age/keys.txt`.
 
-Edit the encrypted files directly:
+Edit system secrets as root, with the system identity selected explicitly:
 
 ```sh
-sops edit system/secrets/secrets.yaml  # API and messaging credentials
-sops edit system/secrets/soul.yaml     # Hermes persona
-sops edit system/secrets/proxy.yaml    # Proxy source catalog
+sudo SOPS_AGE_KEY_FILE=/persist/secrets/age/system.key \
+  sops edit system/secrets/secrets.yaml  # API and messaging credentials
+sudo SOPS_AGE_KEY_FILE=/persist/secrets/age/system.key \
+  sops edit system/secrets/soul.yaml     # Hermes persona
+sudo SOPS_AGE_KEY_FILE=/persist/secrets/age/system.key \
+  sops edit system/secrets/proxy.yaml    # Proxy source catalog
 ```
 
-Saving re-encrypts the file.
+Saving as root changes the file owner; restore it with `sudo chown "$USER": ...` before committing.
 Rebuild to apply the changes.
 Secret names and service ownership are declared in [sops.nix](system/programs/sops.nix).
 

@@ -1,8 +1,8 @@
-{ osConfig, pkgs, ... }:
+{ osConfig, lib, pkgs, ... }:
 
 let
-  # gost's listeners; machine.nix owns the ports.
-  gostHttp = toString osConfig.my.machine.ports.gostHttp;
+  proxy = import ../../system/config/network/proxy/env.nix { inherit lib; };
+  gostHttp = proxy.gostHttp osConfig.my.machine.ports.gostHttp;
   gostRedirect = toString osConfig.my.machine.ports.gostRedirect;
 
 in
@@ -193,8 +193,8 @@ in
 
     # Set proxy to the system-wide gost-relay port
     def --env proxy-on [] {
-      $env.http_proxy = "http://127.0.0.1:${gostHttp}"
-      $env.https_proxy = "http://127.0.0.1:${gostHttp}"
+      $env.http_proxy = "${gostHttp}"
+      $env.https_proxy = "${gostHttp}"
     }
 
     # Clear the proxy environment variables

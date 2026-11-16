@@ -2,7 +2,6 @@
 
 let
   cfg = config.my.homeGuard;
-  homeDir = "/home/${cfg.user}";
 
   # chattr/lsattr live in e2fsprogs. Both are plain ioctls (FS_IOC_SETFLAGS),
   # not a daemon, so there is nothing to keep running.
@@ -105,7 +104,7 @@ in
 
     home = lib.mkOption {
       type = lib.types.str;
-      default = homeDir;
+      default = "/home/${cfg.user}";
       description = "Home directory the default path list is built from.";
     };
 
@@ -117,17 +116,17 @@ in
         # new files there, so `sudo home-guard unlock` before saving something.
         # Deliberately absent: ~/Pictures (niri writes screenshots there),
         # ~/Desktop, ~/Downloads, ~/Projects (high churn, agent workspace).
-        #"${homeDir}/Documents"
-        #"${homeDir}/Videos"
-        #"${homeDir}/Music"
+        #"${cfg.home}/Documents"
+        #"${cfg.home}/Videos"
+        #"${cfg.home}/Music"
 
         # Credentials. Lock the files rather than ~/.ssh itself: ssh rewrites
         # known_hosts with temp-file + rename, which a locked directory would
         # block, while a locked key file can still be read by ssh.
-        "${homeDir}/.ssh/id_*"
-        "${homeDir}/.ssh/config"
-        "${homeDir}/.ssh/authorized_keys"
-        "${homeDir}/.config/sops/age/keys.txt"
+        "${cfg.home}/.ssh/id_*"
+        "${cfg.home}/.ssh/config"
+        "${cfg.home}/.ssh/authorized_keys"
+        "${cfg.home}/.config/sops/age/keys.txt"
       ];
       description = ''
         Paths to keep immutable. Shell globs are expanded when the helper runs.

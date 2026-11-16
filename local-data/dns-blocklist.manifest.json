@@ -1,0 +1,107 @@
+{
+  "schema": "lf-dns-blocklist-manifest/1",
+  "generated_at": "2026-11-16",
+  "generator": "scripts/refresh-dns-blocklist.py",
+  "limits": {
+    "max_domain_bytes": 253,
+    "max_decompressed_bytes": 67108864,
+    "xz_memory_limit_bytes": 134217728
+  },
+  "provenance": {
+    "mode": "network",
+    "raw_source_evidence": true
+  },
+  "sources": [
+    {
+      "name": "stevenblack",
+      "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+      "final_url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+      "format": "hosts",
+      "bytes": 2328985,
+      "sha256": "a596c1301ff515f441fb862227ad7eacdb9ded28536905297b03925b45c74f7d",
+      "count": 76104,
+      "content_type": "text/plain; charset=utf-8",
+      "origin": "network",
+      "invalid_lines": 7,
+      "top_level_candidates": 0,
+      "review": null
+    },
+    {
+      "name": "peterlowe",
+      "url": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext",
+      "final_url": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext",
+      "format": "hosts",
+      "bytes": 95344,
+      "sha256": "ff0031f3c8d35e80b4f60f2a791529267e159d6f975fb9fb7ac6ff63989dbfd3",
+      "count": 3564,
+      "content_type": "text/plain;charset=UTF-8",
+      "origin": "network",
+      "invalid_lines": 0,
+      "top_level_candidates": 0,
+      "review": null
+    },
+    {
+      "name": "adaway",
+      "url": "https://adaway.org/hosts.txt",
+      "final_url": "https://adaway.org/hosts.txt",
+      "format": "hosts",
+      "bytes": 243454,
+      "sha256": "8c925c37a5eaa5e1c582c76e12301797861addee5ad0fa0e6e46c9dd0136fe55",
+      "count": 6540,
+      "content_type": "text/plain; charset=utf-8",
+      "origin": "network",
+      "invalid_lines": 0,
+      "top_level_candidates": 0,
+      "review": null
+    },
+    {
+      "name": "oisd_big",
+      "url": "https://big.oisd.nl/dnsmasq",
+      "final_url": "https://big.oisd.nl/dnsmasq",
+      "format": "dnsmasq",
+      "bytes": 6532544,
+      "sha256": "b5051e7c4f40c7f843d0f38fe5e6905974898a9486f0ecd47873a4c5119346ec",
+      "count": 228765,
+      "content_type": "text/plain",
+      "origin": "network",
+      "invalid_lines": 0,
+      "top_level_candidates": 0,
+      "review": null
+    },
+    {
+      "name": "1hosts_lite",
+      "url": "https://raw.githubusercontent.com/badmojr/1Hosts/master/Lite/hosts.txt",
+      "final_url": "https://raw.githubusercontent.com/badmojr/1Hosts/master/Lite/hosts.txt",
+      "format": "hosts",
+      "bytes": 6557314,
+      "sha256": "e4c334bf3a551ff955538d37c5a0e7087499c5098cafcab4cc72efd23f771a32",
+      "count": 202953,
+      "content_type": "text/plain; charset=utf-8",
+      "origin": "network",
+      "invalid_lines": 8,
+      "top_level_candidates": 0,
+      "review": null
+    },
+    {
+      "name": "notracking",
+      "url": "https://raw.githubusercontent.com/notracking/hosts-blocklists/master/hostnames.txt",
+      "final_url": "https://raw.githubusercontent.com/notracking/hosts-blocklists/master/hostnames.txt",
+      "format": "hosts",
+      "bytes": 17939200,
+      "sha256": "cf9934ba93da15308a3bd709ff9ccb1ae0f0cd701bc3ba5178568b54bb752d73",
+      "count": 250170,
+      "content_type": "text/plain; charset=utf-8",
+      "origin": "network",
+      "invalid_lines": 0,
+      "top_level_candidates": 0,
+      "review": null
+    }
+  ],
+  "merged": {
+    "count": 673861,
+    "sha256": "f3724af0a1c9374fa9f63366acf710d4b71f3d1e4186ed82e08b6251a4bb37f1",
+    "uncompressed_bytes": 16915808,
+    "compressed_sha256": "45d34ee8e032c06ece9ef0d4f349577ef4bddcd6ff3fb10819b63586c7d71309",
+    "compressed_bytes": 3945592
+  }
+}

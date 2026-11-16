@@ -19,26 +19,18 @@
       XIM="fcitx";
       XMODIFIERS = "@im=fcitx";
       GLFW_IM_MODULE = "fcitx";   # For games/tools using GLFW
-      SDL_IM_MODULE = "fcitx";    # For SDL apps (games)
-
-      # REA (MCP) native analysis engine: Ghidra is located via an env var,
-      # not PATH.
-      GHIDRA_INSTALL_DIR = "${pkgs.unstable.ghidra}/lib/ghidra";
+      SDL_IM_MODULE = "fcitx";    # For SDL apps
     };
 
     variables = {
       EDITOR = "nvim";
-
-      # sops CLI age identity: /etc/environment is not $HOME-expanded, so use an
-      # absolute path. Works even in root shells (sops set under /etc/nixos).
-      SOPS_AGE_KEY_FILE = "${config.users.users.lfour.home}/.config/sops/age/keys.txt";
     };
 
     extraOutputsToInstall = [ "dev" ];
   };
 
   systemd.tmpfiles.rules = [
-    "L+ /run/docker.sock - - - - /run/user/1000/docker.sock"
+    "L+ /run/docker.sock - - - - /run/user/${toString config.users.users.${config.my.machine.desktopUser}.uid}/docker.sock"
   ];
 }
 

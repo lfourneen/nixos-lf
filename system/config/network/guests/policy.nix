@@ -198,7 +198,8 @@ in
     inherit unsafe4 unsafe6;
 
     reservedPorts = [ 53 m.ports.mihomoMixed m.ports.mihomoDns m.ports.dnsmasq m.ports.unbound
-      m.ports.socketGuestDns m.ports.mihomoTproxy m.ports.gostHttp m.ports.gostRedirect ];
+      m.ports.socketGuestDns m.ports.coreDnsTransport m.ports.coreDnsBootstrapTransport
+      m.ports.mihomoTproxy m.ports.gostHttp m.ports.gostRedirect ];
   };
 
   nft = rules + ''

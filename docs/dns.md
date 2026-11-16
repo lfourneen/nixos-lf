@@ -279,7 +279,8 @@ A listed proxy-endpoint name can also lose DNS resolution.
 Declare a narrow `blockedDomainExceptions` entry when that endpoint is intentionally trusted.
 
 Refresh upstream data with [refresh-dns-blocklist.py](../scripts/refresh-dns-blocklist.py).
-`--check` reports drift without writing.
+`--check` verifies the committed snapshot, manifest and header without writing; add `--fetch` to compare the upstream sources.
+A mismatch fails the configuration build instead of producing a partial filter.
 Rebuild and restart the resolver/core generation to apply new data, and restart clients that retain DNS or connections.
 Existing connections are not retroactively inspected.
 Upstream sources and snapshot metadata are recorded in the module header and [local-data guide](../local-data/README.md).

@@ -48,8 +48,8 @@ Core replies must arrive through the owned veth and tracked inlet connection.
 Readiness checks use the listener address, UID, cgroup and network namespace.
 
 Port reservation uses systemd's cgroup `bind4`/`bind6` hooks and requires kernel cgroup-BPF support.
-Its scope is processes in `user.slice`.
-Untrusted system services need equivalent restrictions in their own slices.
+Desktop processes inherit `user.slice`; Hermes uses `hermes.slice`.
+Other declared non-root system services require a protected slice or an explicit infrastructure review.
 Root and managed service identities are trusted.
 Reply-UID checks authenticate the responding socket, while bind restrictions prevent delivery to an unauthorized UDP listener.
 See [systemd's bind policy](https://www.freedesktop.org/software/systemd/man/260/systemd.resource-control.html#SocketBindAllow=bind-rule).
@@ -158,7 +158,8 @@ Selecting `null` in a rebuilt generation explicitly removes this kernel expiry g
 
 ## Firewall lifecycle
 
-[default.nix](../system/config/network/network.nix) defines the static policy and the B/C fragments.
+[network.nix](../system/config/network/network.nix) integrates the static policy.
+[mode-fragments.nix](../system/config/network/firewall/mode-fragments.nix) generates the B/C fragments.
 [coordinator.nix](../system/config/network/proxy/coordinator.nix) installs the static rules plus a safety fragment in one scoped `nft -f` transaction under a shared lock.
 Only repository-owned host tables are replaced, including their `lf_core_*` chains.
 Mihomo owns its private namespace table.

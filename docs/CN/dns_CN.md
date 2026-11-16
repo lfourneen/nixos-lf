@@ -263,7 +263,8 @@ C 同时切断这些账户已跟踪的回包及公网出站。
 命中名单的代理端点名同样返回阻断答案。
 确认有意信任该端点时，用窄范围 `blockedDomainExceptions` 声明例外。
 
-用 [refresh-dns-blocklist.py](../../scripts/refresh-dns-blocklist.py) 刷新，`--check` 仅报告漂移。
+用 [refresh-dns-blocklist.py](../../scripts/refresh-dns-blocklist.py) 刷新；`--check` 校验已提交的快照、manifest 和头部而不写入，加 `--fetch` 再与上游来源比较。
+校验不一致会让配置构建失败，而不是生成不完整的过滤名单。
 重新构建并重启解析器/核心 generation 后生效，保留 DNS 或连接缓存的客户端也需重启。
 既有连接不会被追溯检查。
 来源和快照信息见模块头及 [local-data 手册](../../local-data/README.md)。

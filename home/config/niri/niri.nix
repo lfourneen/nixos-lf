@@ -1,8 +1,8 @@
 { pkgs, lib, osConfig, ... }:
 
 let
-  # gost's HTTP listener; machine.nix owns the port.
-  gostHttp = toString osConfig.my.machine.ports.gostHttp;
+  proxy = import ../../../system/config/network/proxy/env.nix { inherit lib; };
+  gostHttp = proxy.gostHttp osConfig.my.machine.ports.gostHttp;
 
   # Define the Niri config as raw KDL text
   niriConfigContent = ''
@@ -37,9 +37,9 @@ let
       // hardcode ":0" here: it would override niri's value and break X apps.
 
       // Proxy
-      http_proxy "http://127.0.0.1:${gostHttp}"
-      https_proxy "http://127.0.0.1:${gostHttp}"
-      all_proxy "http://127.0.0.1:${gostHttp}"
+      http_proxy "${gostHttp}"
+      https_proxy "${gostHttp}"
+      all_proxy "${gostHttp}"
     }
 
     input {

@@ -1,18 +1,23 @@
-{ ... }:
+{ osConfig, ... }:
+
+let
+  user = osConfig.my.machine.desktopUser;
+  account = osConfig.users.users.${user};
+in
 
 {
   # Let Home-Manager install and manage itself.
   programs.home-manager = {
     enable = true;
   };
-  
+
   # Users settings
   home = {
-    username = "lfour";
-    homeDirectory = "/home/lfour";
+    username = user;
+    homeDirectory = account.home;
 
-    sessionPath = [ 
-      "$HOME/.local/bin" 
+    sessionPath = [
+      "$HOME/.local/bin"
     ];
   };
 
@@ -22,7 +27,7 @@
     ELECTRON_OZONE_PLATFORM_HINT = "wayland";
     GDK_BACKEND = "wayland";
     _JAVA_AWT_WM_NONREPARENTING = "1";
-    DOCKER_HOST = "unix:///run/user/1000/docker.sock";
+    DOCKER_HOST = "unix:///run/user/${toString account.uid}/docker.sock";
   };
 
   # Font

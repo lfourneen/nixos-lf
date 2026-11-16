@@ -1,5 +1,11 @@
 { lib, config, ... }:
 
+let
+  proxy = import ../network/proxy/env.nix { inherit lib; };
+  ports = config.my.machine.ports;
+  privateV4 = config.my.machine.privateV4;
+
+in
 {
   systemd.services.nix-daemon = {
     description = "Nix Daemon (downloads via gost-relay proxy)";
@@ -7,10 +13,9 @@
     wants = [ "gost-relay.service" ];
     after = [ "gost-relay.service" ];
     environment = {
-      HTTP_PROXY = "http://127.0.0.1:${toString config.my.machine.ports.gostHttp}/";
-      HTTPS_PROXY = "http://127.0.0.1:${toString config.my.machine.ports.gostHttp}/";
-      NO_PROXY = "127.0.0.1,localhost,::1,${lib.concatStringsSep "," config.my.machine.privateV4}";
+      HTTP_PROXY = proxy.gostHttpSlash ports.gostHttp;
+      HTTPS_PROXY = proxy.gostHttpSlash ports.gostHttp;
+      NO_PROXY = proxy.noProxy { inherit privateV4; };
     };
   };
 }
-

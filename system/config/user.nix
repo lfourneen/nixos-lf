@@ -4,7 +4,12 @@
   # Define user account.
   users = {
     mutableUsers = false;
-    groups.plugdev = {};
+
+    groups = {
+      adbusers = { };
+      plugdev = { };
+      "usbguard-admin" = { };
+    };
 
     users = {
       root = {
@@ -19,21 +24,16 @@
         description = "LFour";
         shell = pkgs.unstable.nushell;
 
-        extraGroups = [ 
-          "networkmanager" 
-          "wheel" 
-          "dialout" 
-          "input" 
-          "tty" 
-          "i2c" 
-          "libvirtd" 
-          "video" 
-          "audio" 
-          "adbusers" 
-          "plugdev" 
-          "resolvconf" 
-          "hermes" 
-          "wireshark" 
+        extraGroups = [
+          "networkmanager"
+          "wheel"
+          "dialout"
+          "i2c"
+          "libvirtd"
+          "adbusers"
+          "plugdev"
+          "hermes"
+          "wireshark"
         ];
       };
 
@@ -46,4 +46,3 @@
     };
   };
 }
-

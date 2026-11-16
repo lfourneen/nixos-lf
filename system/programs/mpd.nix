@@ -4,12 +4,12 @@
   # Music Player Daemon
   services.mpd = {
     enable = true;
-    user = "lfour";
+    user = config.my.machine.desktopUser;
     startWhenNeeded = true;
     openFirewall = false;
 
     settings = {
-      music_directory = "${config.users.users.lfour.home}/Music";
+      music_directory = "${config.users.users.${config.my.machine.desktopUser}.home}/Music";
       bind_to_address = "127.0.0.1";
 
       audio_output = [

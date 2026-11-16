@@ -1,12 +1,12 @@
 { config, lib, pkgs, ... }:
 
 let
-  # gost's HTTP listener; machine.nix owns the port. NO_PROXY uses the ranges the
-  # firewall already treats as local.
-  gostHttp = "http://127.0.0.1:${toString config.my.machine.ports.gostHttp}";
-  noProxy = "localhost,127.0.0.1,::1,"
-    + lib.concatStringsSep "," config.my.machine.privateV4
-    + ",192.168.1.1,*.local";
+  proxy = import ../../config/network/proxy/env.nix { inherit lib; };
+  gostHttp = proxy.gostHttp config.my.machine.ports.gostHttp;
+  noProxy = proxy.noProxy {
+    privateV4 = config.my.machine.privateV4;
+    extra = [ "192.168.1.1" "*.local" ];
+  };
 
 in
 {

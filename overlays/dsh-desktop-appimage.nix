@@ -140,130 +140,334 @@ let
     terminal = false;
   };
 
-  # The upstream AppRun probes user namespaces (unshare -Ur) and only then
-  # drops the Chromium sandbox; the launcher replicates that because it calls
-  # the binary directly (bypassing AppRun). Flags live here (not in Exec) so a
-  # bare `dsh-desktop` invocation gets Wayland/IME handling too.
-  #
-  # The final exec is additionally wrapped in a Landlock ruleset: the whole
-  # filesystem is read+execute only, and writes are allowed solely under the
-  # paths in `writePaths`. Landlock needs no privileges, is inherited across
-  # fork/exec, has no kernel interface to widen or drop it, and survives sudo
-  # (which changes uid but not the ruleset attached to the process). So an
-  # agent running as the file owner still cannot `rm -rf ~/Documents`.
-  # Processes started outside this launcher are not covered; that gap is what
-  # home-guard.nix (immutable bits, root-owned) closes.
-  #
-  # /proc is writable on purpose: Chromium's own namespace sandbox writes
-  # /proc/self/{uid_map,setgroups,gid_map} while creating the renderer's user
-  # namespace. Landlock covers procfs like any other filesystem, so without this
-  # rule those writes fail, Chromium falls back to the SUID helper (not setuid
-  # in the Nix store) and aborts with "The SUID sandbox helper binary was found,
-  # but is not configured correctly" - a SIGTRAP before the first window.
-  # /proc holds no persistent data, so allowing writes there does not widen what
-  # this sandbox protects; home/ and the rest of the filesystem stay read-only.
-  #
-  # Escape hatches, for when the allowlist is too tight while debugging:
-  #   DSH_NO_LANDLOCK=1 dsh-desktop                  # no ruleset at all
-  #   DSH_EXTRA_RW="$HOME/.aws:$HOME/tmp" dsh-desktop  # widen, one run only
-  launcher = pkgs.writeShellScript "dsh-desktop-launch" ''
-    sandboxArgs=()
-    if ! ${pkgs.util-linux}/bin/unshare -Ur true 2>/dev/null; then
-      sandboxArgs=(--no-sandbox)
-    fi
+  desktopItemStrict = pkgs.makeDesktopItem {
+    name = "${pname}-strict";
+    desktopName = "DSH Desktop (strict sandbox)";
+    comment = "DSH Desktop with a synthetic home, a workspace-only write set and an environment allowlist";
+    exec = "${pname}-strict %U";
+    icon = pname;
+    startupWMClass = "${pname}-strict";
+    categories = [ "Development" ];
+    terminal = false;
+  };
 
-    appArgs=(
-      "''${sandboxArgs[@]}"
-      --class=${pname}
-      --ozone-platform-hint=auto
-      --enable-wayland-ime=true
-      "$@"
-    )
+  # Compat exposes host files and environment. Strict uses a private home and
+  # a workspace allowlist, and requires Chromium namespaces plus Landlock.
+  # Both profiles retain IP networking; strict omits the session bus.
+  launcherText = ''
+    set -u
 
-    if [ "''${DSH_NO_LANDLOCK:-0}" = 1 ]; then
-      echo "dsh-desktop: DSH_NO_LANDLOCK=1, running without the Landlock boundary" >&2
-      exec ${appDir}/dsh-desktop-next "''${appArgs[@]}"
-    fi
+    pname=${pname}
+    appBin=${appDir}/dsh-desktop-next
+    landrun=${pkgs.landrun}/bin/landrun
+    unshare=${pkgs.util-linux}/bin/unshare
+    coreutils=${pkgs.coreutils}
 
-    # Electron needs its profile dirs, the Wayland/PipeWire/dbus endpoints in
-    # the runtime dir, the device nodes under /dev, and /dev/shm. The agent
-    # needs a workspace and a place to land downloads.
-    writePaths=(
-      /tmp
-      /dev
-      "/run/user/$(id -u)"
-      "$HOME/.cache"
-      "$HOME/.config"
-      "$HOME/.local"
-      "$HOME/.dsh"
-      "$HOME/Projects"
-      "$HOME/Downloads"
-    )
+    profile=compat
+    printCommand=0
+    forwardArgs=()
 
-    # Language toolchains
-    toolchainPaths=(
-      "$HOME/.npm"
-      "$HOME/.bun"
-      "$HOME/.yarn"
-      "$HOME/go"
-      "$HOME/.cargo"
-      "$HOME/.rustup"
-      "$HOME/.gradle"
-      "$HOME/.m2"
-      "$HOME/.nuget"
-      "$HOME/.dotnet"
-      "$HOME/.cabal"
-      "$HOME/.stack"
-      "$HOME/.ghcup"
-      "$HOME/.opam"
-      "$HOME/.mix"
-      "$HOME/.hex"
-      "$HOME/.gem"
-      "$HOME/.bundle"
-      "$HOME/.composer"
-      "$HOME/.conda"
-      "$HOME/.kube"
-      "$HOME/.docker"
-      "$HOME/.terraform.d"
-      "$HOME/Android"
-      "$HOME/.android"
-    )
-    for path in "''${toolchainPaths[@]}"; do
-      [ -d "$path" ] || ${pkgs.coreutils}/bin/mkdir -p "$path"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --profile)
+          if [ "$#" -lt 2 ]; then
+            echo "dsh-desktop: --profile needs a value" >&2
+            exit 2
+          fi
+          profile=$2
+          shift 2
+          ;;
+        --profile=*)
+          profile=''${1#*=}
+          shift
+          ;;
+        --print-command)
+          printCommand=1
+          shift
+          ;;
+        --)
+          shift
+          forwardArgs+=("$@")
+          break
+          ;;
+        *)
+          forwardArgs+=("$1")
+          shift
+          ;;
+      esac
     done
 
-    rwArgs=()
-    for path in "''${writePaths[@]}" "''${toolchainPaths[@]}"; do
-      # landrun fails the entire ruleset on one missing path, so probe first.
-      [ -e "$path" ] && rwArgs+=(--rw "$path")
-    done
+    if [ "''${DSH_DRY_RUN:-0}" = 1 ]; then
+      printCommand=1
+    fi
 
-    # Extra writable paths for anything not listed above, colon-separated.
-    # Read from the environment that starts the app, so it stays an operator
-    # decision instead of something a sandboxed process grants itself:
-    #   DSH_EXTRA_RW="$HOME/.aws:$HOME/tmp" dsh-desktop
-    if [ -n "''${DSH_EXTRA_RW:-}" ]; then
-      IFS=':' read -r -a extraWritePaths <<< "''${DSH_EXTRA_RW}"
-      for path in "''${extraWritePaths[@]}"; do
+    case "$profile" in
+      compat|strict) ;;
+      *)
+        echo "dsh-desktop: unknown profile: $profile" >&2
+        exit 2
+        ;;
+    esac
+
+    finish() {
+      if [ "$printCommand" = 1 ]; then
+        printf '%q ' "$@"
+        printf '\n'
+        exit 0
+      fi
+      exec "$@"
+    }
+
+    compat() {
+      sandboxArgs=()
+      if ! "$unshare" -Ur true 2>/dev/null; then
+        sandboxArgs=(--no-sandbox)
+      fi
+
+      appArgs=(
+        "''${sandboxArgs[@]}"
+        --class=$pname
+        --ozone-platform-hint=auto
+        --enable-wayland-ime=true
+        "''${forwardArgs[@]}"
+      )
+
+      if [ "''${DSH_NO_LANDLOCK:-0}" = 1 ]; then
+        echo "dsh-desktop: DSH_NO_LANDLOCK=1, running without the Landlock boundary" >&2
+        finish "$appBin" "''${appArgs[@]}"
+      fi
+
+      # Electron needs its profile dirs, the Wayland/PipeWire/dbus endpoints in
+      # the runtime dir, the device nodes under /dev, and /dev/shm. The agent
+      # needs a workspace and a place to land downloads.
+      writePaths=(
+        /tmp
+        /dev
+        "/run/user/$("$coreutils/bin/id" -u)"
+        "$HOME/.cache"
+        "$HOME/.config"
+        "$HOME/.local"
+        "$HOME/.dsh"
+        "$HOME/Projects"
+        "$HOME/Downloads"
+      )
+
+      toolchainPaths=(
+        "$HOME/.npm"
+        "$HOME/.bun"
+        "$HOME/.yarn"
+        "$HOME/go"
+        "$HOME/.cargo"
+        "$HOME/.rustup"
+        "$HOME/.gradle"
+        "$HOME/.m2"
+        "$HOME/.nuget"
+        "$HOME/.dotnet"
+        "$HOME/.cabal"
+        "$HOME/.stack"
+        "$HOME/.ghcup"
+        "$HOME/.opam"
+        "$HOME/.mix"
+        "$HOME/.hex"
+        "$HOME/.gem"
+        "$HOME/.bundle"
+        "$HOME/.composer"
+        "$HOME/.conda"
+        "$HOME/.kube"
+        "$HOME/.docker"
+        "$HOME/.terraform.d"
+        "$HOME/Android"
+        "$HOME/.android"
+      )
+
+      if [ "$printCommand" = 0 ]; then
+        for path in "''${toolchainPaths[@]}"; do
+          [ -d "$path" ] || "$coreutils/bin/mkdir" -p "$path"
+        done
+      fi
+
+      rwArgs=()
+      for path in "''${writePaths[@]}" "''${toolchainPaths[@]}"; do
+        if [ -e "$path" ] || [ "$printCommand" = 1 ]; then
+          rwArgs+=(--rw "$path")
+        fi
+      done
+
+      if [ -n "''${DSH_EXTRA_RW:-}" ]; then
+        IFS=':' read -r -a extraWritePaths <<< "''${DSH_EXTRA_RW}"
+        for path in "''${extraWritePaths[@]}"; do
+          [ -e "$path" ] && rwArgs+=(--rw "$path")
+        done
+      fi
+
+      # landrun drops the environment unless each variable is passed explicitly.
+      envArgs=()
+      while IFS='=' read -r -d "" name _; do
+        [ -n "$name" ] && envArgs+=(--env "$name")
+      done < <("$coreutils/bin/env" -0)
+
+      finish "$landrun" \
+        --rox / \
+        --rw /proc \
+        "''${rwArgs[@]}" \
+        "''${envArgs[@]}" \
+        --unrestricted-network \
+        -- "$appBin" "''${appArgs[@]}"
+    }
+
+    failStrict() {
+      echo "dsh-desktop strict: $*" >&2
+      exit 1
+    }
+
+    strict() {
+      if [ "''${DSH_NO_LANDLOCK:-0}" = 1 ]; then
+        failStrict "DSH_NO_LANDLOCK is not available in the strict profile"
+      fi
+      if [ -n "''${DSH_EXTRA_RW:-}" ]; then
+        failStrict "DSH_EXTRA_RW is not available in the strict profile"
+      fi
+      for arg in "''${forwardArgs[@]}"; do
+        case "$arg" in
+          --no-sandbox|--no-sandbox=*)
+            failStrict "--no-sandbox is not available in the strict profile"
+            ;;
+        esac
+      done
+
+      realHome=''${HOME:?HOME is unset}
+      stateBase=''${XDG_STATE_HOME:-$realHome/.local/state}
+      stateDir=''${DSH_STRICT_STATE_DIR:-$stateBase/dsh-desktop/strict}
+      case "$stateDir" in
+        /) failStrict "the state directory cannot be the filesystem root" ;;
+        /*) ;;
+        *) failStrict "the state directory must be an absolute path" ;;
+      esac
+
+      synthHome=$stateDir/home
+      runtimeDir=$stateDir/run
+      privateTmp=$stateDir/tmp
+
+      workspace=$(pwd -P)
+      if [ "$workspace" = / ] || [ "$workspace" = "$realHome" ] || [[ "$realHome" == "$workspace"/* ]]; then
+        failStrict "refusing to run from $workspace; start in a project directory"
+      fi
+      stateResolved=$("$coreutils/bin/realpath" -m -- "$stateDir")
+      if [ "$stateResolved" = / ] || [ "$stateResolved" = "$realHome" ] || [[ "$realHome" == "$stateResolved"/* ]]; then
+        failStrict "the state directory would expose the host home"
+      fi
+
+      if [ "$printCommand" = 0 ]; then
+        "$unshare" -Ur true 2>/dev/null \
+          || failStrict "user namespaces are unavailable; refusing to drop the Chromium sandbox"
+        "$landrun" --rox /nix/store --rox /run/current-system -- "$coreutils/bin/true" >/dev/null 2>&1 \
+          || failStrict "Landlock is unavailable; refusing to start without the filesystem ruleset"
+        "$coreutils/bin/mkdir" -p \
+          "$synthHome/.config" \
+          "$synthHome/.cache" \
+          "$synthHome/.local/bin" \
+          "$synthHome/.local/share" \
+          "$synthHome/.local/state" \
+          "$runtimeDir" \
+          "$privateTmp"
+        "$coreutils/bin/chmod" 700 "$stateDir" "$runtimeDir" "$privateTmp"
+      fi
+
+      hostRuntime=''${XDG_RUNTIME_DIR:-}
+      waylandDisplay=''${WAYLAND_DISPLAY:-}
+      if [ -n "$waylandDisplay" ] && [ -n "$hostRuntime" ]; then
+        case "$waylandDisplay" in
+          /*) ;;
+          *) waylandDisplay=$hostRuntime/$waylandDisplay ;;
+        esac
+      fi
+
+      envArgs=(
+        --env "HOME=$synthHome"
+        --env "XDG_CONFIG_HOME=$synthHome/.config"
+        --env "XDG_CACHE_HOME=$synthHome/.cache"
+        --env "XDG_DATA_HOME=$synthHome/.local/share"
+        --env "XDG_STATE_HOME=$synthHome/.local/state"
+        --env "XDG_RUNTIME_DIR=$runtimeDir"
+        --env "TMPDIR=$privateTmp"
+        --env "PATH=$synthHome/.local/bin:/run/current-system/sw/bin"
+      )
+      if [ -n "$hostRuntime" ]; then
+        envArgs+=(--env "PIPEWIRE_REMOTE=$hostRuntime/pipewire-0"
+                  --env "PULSE_SERVER=unix:$hostRuntime/pulse/native")
+      fi
+
+      shellPath=''${SHELL:-/bin/bash}
+      case "$shellPath" in
+        "$realHome"/*) shellPath=/bin/bash ;;
+      esac
+      envArgs+=(--env "SHELL=$shellPath")
+
+      # The host session bus could launch processes outside this ruleset.
+      envNames=(
+        USER LOGNAME TERM TZ LANG
+        DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP
+        http_proxy https_proxy ftp_proxy all_proxy no_proxy
+        HTTP_PROXY HTTPS_PROXY FTP_PROXY ALL_PROXY NO_PROXY
+        GTK_IM_MODULE QT_IM_MODULE XMODIFIERS SDL_IM_MODULE GLFW_IM_MODULE
+        INPUT_METHOD IBUS_ADDRESS
+      )
+      for name in "''${envNames[@]}"; do
+        if [ "$name" = WAYLAND_DISPLAY ]; then
+          [ -n "$waylandDisplay" ] && envArgs+=(--env "WAYLAND_DISPLAY=$waylandDisplay")
+          continue
+        fi
+        if declare -p "$name" >/dev/null 2>&1; then
+          envArgs+=(--env "$name=''${!name}")
+        fi
+      done
+
+      while IFS='=' read -r name value; do
+        case "$name" in
+          LC_*) envArgs+=(--env "$name=$value") ;;
+        esac
+      done < <("$coreutils/bin/env")
+
+      # /.host-etc is the FHS wrapper's read-only copy of the host /etc; its
+      # /etc entries are symlinks into it, so both paths need read access.
+      roArgs=(--ro /etc --ro /sys --ro /dev)
+      for path in /.host-etc /run/opengl-driver /usr/share; do
+        [ -e "$path" ] && roArgs+=(--ro "$path")
+      done
+
+      rwArgs=(--rw "$workspace" --rw "$stateDir" --rw /proc)
+      for path in \
+        /dev/null /dev/zero /dev/full /dev/random /dev/urandom /dev/tty \
+        /dev/ptmx /dev/pts /dev/shm /dev/dri /dev/snd; do
         [ -e "$path" ] && rwArgs+=(--rw "$path")
       done
-    fi
+      if [ -n "$hostRuntime" ]; then
+        for path in "$hostRuntime"/wayland-* "$hostRuntime/pipewire-0" "$hostRuntime/pulse/native"; do
+          [ -e "$path" ] && rwArgs+=(--rw "$path")
+        done
+      fi
 
-    # landrun drops the environment unless each variable is passed explicitly;
-    # forward whatever the session carries so proxy/display/locale survive.
-    envArgs=()
-    while IFS='=' read -r -d "" name _; do
-      [ -n "$name" ] && envArgs+=(--env "$name")
-    done < <(${pkgs.coreutils}/bin/env -0)
+      finish "$landrun" \
+        "''${roArgs[@]}" \
+        --rox /nix/store \
+        --rox /run/current-system \
+        "''${rwArgs[@]}" \
+        "''${envArgs[@]}" \
+        --unrestricted-network \
+        -- "$appBin" \
+          --class=$pname-strict \
+          --ozone-platform-hint=auto \
+          --enable-wayland-ime=true \
+          "''${forwardArgs[@]}"
+    }
 
-    exec ${pkgs.landrun}/bin/landrun \
-      --rox / \
-      --rw /proc \
-      "''${rwArgs[@]}" \
-      "''${envArgs[@]}" \
-      --unrestricted-network \
-      -- ${appDir}/dsh-desktop-next "''${appArgs[@]}"
+    case "$profile" in
+      compat) compat ;;
+      strict) strict ;;
+    esac
   '';
+
+  launcher = pkgs.writeShellScript "dsh-desktop-launch" launcherText;
 
 in
 # Prebuilt Electron trees are hostile to autoPatchelf: the runtime ships its own
@@ -341,7 +545,11 @@ pkgs.buildFHSEnv {
     bashInteractive
   ];
 
-  runScript = launcher;
+  runScript = "${launcher}";
+
+  passthru = {
+    inherit launcher launcherText;
+  };
 
   extraInstallCommands = ''
     install -d $out/share/icons
@@ -349,6 +557,15 @@ pkgs.buildFHSEnv {
 
     install -m 444 -D ${desktopItem}/share/applications/${pname}.desktop \
       $out/share/applications/${pname}.desktop
+
+    install -m 444 -D ${desktopItemStrict}/share/applications/${pname}-strict.desktop \
+      $out/share/applications/${pname}-strict.desktop
+
+    cat > $out/bin/${pname}-strict <<EOF
+    #!${pkgs.runtimeShell}
+    exec "$out/bin/${pname}" --profile strict "\$@"
+    EOF
+    chmod 755 $out/bin/${pname}-strict
   '';
 
   meta = {

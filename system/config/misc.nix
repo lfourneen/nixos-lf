@@ -3,8 +3,12 @@
 {
   # Nix settings 
   nix.settings = {
+    # Deduplicate store links as paths are added.
     auto-optimise-store = true;
-    max-jobs = 16;
+
+    # Four jobs with four cores
+    max-jobs = 4;
+    cores = 4;
 
     experimental-features = [ 
       "nix-command" 
@@ -65,12 +69,6 @@
     automatic = true;
     dates = "weekly";
     options = "--delete-older-than 7d";
-  };
-
-  # Optimise
-  nix.optimise = {
-    automatic = true;
-    dates = ["daily"];
   };
 
   time = {

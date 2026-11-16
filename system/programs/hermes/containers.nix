@@ -7,7 +7,8 @@ let
   endpoint = "/run/hermes-containers/docker.sock";
   backend = "/run/user/${uid}/hermes-docker.sock";
   docker = config.virtualisation.docker.rootless.package;
-  unsetProxy = [ "HTTP_PROXY" "HTTPS_PROXY" "ALL_PROXY" "FTP_PROXY" "NO_PROXY" "http_proxy" "https_proxy" "all_proxy" "ftp_proxy" "no_proxy" ];
+  proxy = import ../../config/network/proxy/env.nix { inherit lib; };
+  unsetProxy = proxy.unsetNames;
   prerequisites = [ "hermes-container-retire.service" "nftables.service" "socket-guest-dns.service" ];
 
   stopLegacy = pkgs.writeShellScript "stop-hermes-user-docker" ''
@@ -116,6 +117,7 @@ in
     serviceConfig = {
       User = account;
       Group = account;
+      Slice = "hermes.slice";
       ExecStartPre = pkgs.writeShellScript "wait-hermes-container-socket" ''
         for attempt in $(${pkgs.coreutils}/bin/seq 1 300); do
           [ -S ${backend} ] && exit 0
