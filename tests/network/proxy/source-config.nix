@@ -48,7 +48,7 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   assert isolated['ephemeral'] is isolated['portalOnly']
   assert isolated['profile'] != browser['profile']
   '') entries}
-  policy = json.loads(Path(stage['managed_policy']).read_text())
+  policy = json.loads(Path('${if c.my.proxy.runtimeRouting then c.my.proxy.routingPolicies.rules else c.my.proxy.activeManagedPolicy}').read_text())
   assert policy['lf-private-targets']['subscription-trust'] == 'fixed'
   assert policy['lf-private-targets']['strict-inlets'] == ['lf-strict']
   assert policy['listeners'][0]['port'] == ${toString c.my.machine.ports.mihomoStrict}

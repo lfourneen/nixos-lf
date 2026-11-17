@@ -24,6 +24,7 @@ Applications -> systemd-resolved -> dnsmasq 127.0.0.1:1054
 [upstream.nix](../system/config/network/dns/upstream.nix) reconciles dnsmasq's `/run/dns-upstream/servers.conf` and applies changes by SIGHUP.
 Failed applies stay pending.
 Only root diagnostics and the dnsmasq UID may query internal ports 1053/1055. 1054 is client-facing.
+In runtime proxy-only, the outer boundary blocks host DoT and split/MagicDNS paths, including while C is active; the real-address gateway below retains the core validator path.
 TCP/UDP listener address, UID and cgroup are checked by the shared [listeners.py](../system/config/network/proxy/listeners.py).
 
 Plain DNS on uplinks, including hardcoded private/portal resolvers, is redirected into dnsmasq for both IP families.
@@ -39,7 +40,7 @@ DoH shares HTTPS port 443 and is not distinguished by this rule.
 | System queries, including Gost's A passthrough | dnsmasq suffix rules before the selected upstream | A uses Unbound DoT and local DNSSEC validation. Default recovery can use leased plaintext. B uses the core |
 | Core DNS listener and TUN DNS hijack | Shared suffix rules before hosts, cache and fake-IP allocation | With `localDnssec`, local validation precedes address synthesis. Otherwise, managed DoH/DoT |
 | HTTP/SOCKS proxy target in B | Shared suffix rules before application TCP/UDP dial, including private-domain exceptions | Real-IP checks and pinning for public and approved internal names. `localDnssec` also validates public answers locally. The actual leaf must authorize private targets |
-| Node / encrypted-resolver bootstrap | Core resolver queries use the shared filter before cache/upstream access | An independent local validator with `localDnssec`, otherwise literal-address encrypted bootstrap resolvers. Neither depends on an already connected proxy. Internal infrastructure is exempt from application target/IP and `proxyOnly` checks |
+| Node / encrypted-resolver bootstrap | Core resolver queries use the shared filter before cache/upstream access | An independent validator with `localDnssec`, otherwise literal-address encrypted bootstrap resolvers. Rules retains its independent bootstrap transport. Runtime proxy-only starts from accepted pinned nodes and sends both validator roles through the remote group. Internal infrastructure is exempt from application target/IP checks |
 | Approved split DNS / native MagicDNS | Split forwarding follows dnsmasq's domain precedence. Resolved's native MagicDNS route bypasses dnsmasq | Explicit private resolver / Tailscale overlay exception. No local public DNSSEC guarantee |
 
 The suffix filter returns local NXDOMAIN for blocked domains.
@@ -165,7 +166,7 @@ They maintain separate persistent RFC 5011 anchors seeded from locked `dns-root-
 Each validator forwards over TCP loopback to a private Mihomo transport listener: application queries use port 1057 and bootstrap queries use 1058.
 These listeners carry raw DNSSEC material without hosts substitution, fake-IP synthesis or reuse of ordinary resolver cache entries.
 
-Application transport keeps a domestic split: `geosite:cn` uses 360 DoH over a direct connection, and other names use Cloudflare/Google DoH.
+In `rules`, application transport keeps a domestic split: `geosite:cn` uses 360 DoH over a direct connection, and other names use Cloudflare/Google DoH.
 With controlled sources, the foreign queries bind to the `lf-remote` group and travel through a remote proxy.
 Configurations without controlled sources retain `respect-rules` selection.
 Node bootstrap retains its independent encrypted proxy-server and literal-address bootstrap resolvers.
@@ -174,6 +175,19 @@ The domestic DoH endpoints come from `my.machine.mihomoDomesticValidatingDnsUpst
 Cold foreign lookups can require several remote exchanges for validation, while domestic lookups stay on a domestic round trip.
 Mode A's `my.machine.dotEndpoints` list is independent of both B roles.
 TLS certificate checks remain enabled in Mihomo, and upstream failure grants no plaintext fallback.
+
+Runtime `proxy-only` keeps both local validators and their independent budgets, but sends both roles through authenticated literal-address DoH endpoints bound to the same pruned remote catch-all as application traffic.
+It removes domestic resolver-policy maps, direct bootstrap and MagicDNS transport.
+The core starts from accepted, pinned node addresses, preserving TLS server names; switching does not require a network fetch or direct name lookup.
+An unavailable node or validator keeps C active.
+
+Host-side source downloads and restricted socket backends still need real addresses.
+With runtime routing, their port 1056 dnsmasq forwards to a fixed loopback gateway on 1059.
+For proxy-only intent, the gateway crosses a root-owned Unix socket to the application validator in the core namespace; it never falls back to host DoT.
+Rules and A use host Unbound 1055.
+Only root and dnsmasq may query 1059; the Unix bridge has no arbitrary destination option.
+Host DoT, split DNS and native MagicDNS cannot cross the proxy-only outer firewall.
+Switching flushes host resolver caches and recreates the core validators; managed fake-IP mappings persist so addresses cached by applications retain their domain identity.
 
 With `localDnssec=false`, public name servers use Cloudflare/Google DoH, and domestic names and proxy-endpoint bootstrap use the configured domestic resolvers.
 That compatibility path does not locally validate B's DNSSEC answers.
@@ -238,7 +252,8 @@ Returning to the compatibility path requires explicitly selecting `localDnssec=f
 ## Restricted socket guest DNS
 
 When `my.hardening.socketGuestUsers` is nonempty or controlled sources are enabled, [socket-guest.nix](../system/config/network/dns/socket-guest.nix) starts an additional loopback dnsmasq on port 1056 as UID 985.
-It shares the immutable suffix filter, additions and exceptions, but always forwards to Unbound 1055 and returns real addresses.
+It shares the immutable suffix filter, additions and exceptions and returns real addresses.
+With runtime routing it uses the selected gateway path described above; otherwise it forwards to host Unbound 1055.
 It has no plaintext lease, split-DNS or native MagicDNS path.
 Unavailable DoT, including `unboundDotInProxy=false` in B, makes fresh public names fail.
 Eligible cached/local answers remain available.

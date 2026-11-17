@@ -35,6 +35,7 @@ def failure_stage(detail):
         ('controller reply unavailable', 'controller'),
         ('managed DNS did not return', 'fake-ip-dns'),
         ('TUN DNS self-test', 'tun-dns'),
+        ('real-address DNS self-test', 'real-address-dns'),
         ('total probe deadline', 'deadline'),
         ('configuration changed', 'configuration'),
         ('managed TCP/UDP listener', 'listener'),
@@ -202,6 +203,10 @@ class Probe:
         self.diagnostics = dict.fromkeys(('data_plane_ok', 'dns_ok', 'tun_ok', 'route_ok',
                                          'config_ok', 'listener_ok'))
         self.route_sources = {}
+        self.exit_identities = {}
+        self.routing = {}
+        self.core_mode = 'unknown'
+        self.tun_name = None
 
     def remaining(self, maximum):
         remaining = min(maximum, self.deadline - self.clock())
@@ -319,7 +324,8 @@ class Probe:
                     if text is None:
                         continue
                     try:
-                        effective_policy(text, proxies, route_class)
+                        _, leaf = effective_policy(text, proxies, route_class)
+                        self.exit_identities[stage] = hashlib.sha256(leaf.encode()).hexdigest()
                         proven.append(source)
                     except ProbeFailure as error:
                         if error.layer == 'route':
@@ -353,6 +359,7 @@ class Probe:
             try:
                 self.tun_target(name, log_path)
                 self.diagnostics['tun_ok'] = True
+                self.tun_name = name
                 return
             except ProbeFailure as error:
                 if error.layer in {'config', 'route', 'interrupted'}:
@@ -468,7 +475,48 @@ class Probe:
                          destination_port=parsed.port or (443 if parsed.scheme == 'https' else 80)))
         self.diagnostics['route_ok'] = True
 
+    def routing_binding(self):
+        if not self.settings.get('routing_state'):
+            return {}
+        value = json.loads(Path(self.settings['routing_state']).read_text())
+        if value.get('routing_requested') != self.settings['routing_mode'] \
+                or value.get('routing_phase') not in ('verifying', 'ready') \
+                or value.get('routing_policy_digest') != self.settings['expected']['managed-policy'] \
+                or type(value.get('routing_epoch')) is not int or value['routing_epoch'] < 1 \
+                or value.get('boot_id') != (Path(self.settings['runtime']) / 'boot-id').read_text().strip():
+            raise ProbeFailure('config', 'routing policy or transaction differs')
+        return {key: value[key] for key in ('routing_requested', 'routing_epoch', 'routing_policy_digest')}
+
+    def real_dns(self):
+        port = self.settings.get('real_dns_port')
+        if not port:
+            return
+        self.diagnostics['real_dns_ok'] = False
+        fake = ipaddress.ip_network(self.settings['fake_ip_net'])
+        for name in ([self.tun_name] if self.tun_name else list(self.fake_ips)):
+            timeout = self.settings.get('dns_timeout_seconds', 3)
+            for _ in range(2):
+                try:
+                    output = self.command([self.settings['dig'], f'+time={timeout}', '+tries=1', '+short',
+                                           '@127.0.0.1', '-p', str(port), name, 'A'], timeout)
+                except ProbeFailure as error:
+                    if error.layer == 'interrupted':
+                        raise
+                    break
+                addresses = []
+                for line in output.splitlines():
+                    try:
+                        addresses.append(ipaddress.ip_address(line.strip()))
+                    except ValueError:
+                        pass
+                if addresses and all(address not in fake and not (address.is_loopback or address.is_link_local
+                        or address.is_multicast or address.is_unspecified) for address in addresses):
+                    self.diagnostics['real_dns_ok'] = True
+                    return
+        raise ProbeFailure('dns', 'real-address DNS self-test did not answer')
+
     def run(self, fast=False):
+        self.routing = self.routing_binding()
         def listeners():
             try:
                 subprocess.run([self.settings['listener_check'], 'core', 'dns'],
@@ -479,7 +527,9 @@ class Probe:
         self.timed('listeners', listeners)
         self.diagnostics['listener_ok'] = True
         self.diagnostics['config_ok'] = False
-        fingerprint = self.timed("config", lambda: check_config(self.api("/configs"), self.settings))
+        initial = self.api('/configs')
+        self.core_mode = initial.get('mode', 'unknown')
+        fingerprint = self.timed("config", lambda: check_config(initial, self.settings))
         self.diagnostics['config_ok'] = True
         if fast:
             return fingerprint
@@ -506,10 +556,13 @@ class Probe:
                     raise failures[-1]
                 self.timed('application_dns', self.application_dns)
                 self.timed("tun", lambda: self.tun_test(log_path))
+                self.timed('real_dns', self.real_dns)
                 self.diagnostics['config_ok'] = False
                 final = check_config(self.api("/configs"), self.settings)
                 if final != fingerprint:
                     raise ProbeFailure("obs", "configuration changed during the probe")
+                if self.routing_binding() != self.routing:
+                    raise ProbeFailure('config', 'routing changed during the probe')
                 self.diagnostics['config_ok'] = True
                 return final
             finally:
@@ -531,7 +584,8 @@ def main():
     fast = "--fast" in sys.argv[2:]
     result = {"ok": False, "reason": "obs", "scope": {
         "listener_transports": ["tcp", "udp"],
-        "requests": [] if fast else ["mixed-tcp"] + (["fake-ip-tcp"] if settings.get("require_tun") else []),
+        "requests": [] if fast else ["mixed-tcp"] + (["fake-ip-tcp"] if settings.get("require_tun") else [])
+            + (['real-address-dns'] if settings.get('real_dns_port') else []),
         "udp_data_plane": "not-probed",
     }}
     try:
@@ -540,7 +594,8 @@ def main():
         result.update(reason=error.layer, detail=error.detail, failure_stage=failure_stage(error.detail))
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         result.update(detail=f"probe error: {type(error).__name__}")
-    result.update(probe.diagnostics, route_sources=probe.route_sources,
+    result.update(probe.diagnostics | probe.routing, core_mode=probe.core_mode,
+                  exit_identities=probe.exit_identities, route_sources=probe.route_sources,
                   duration_ms=round((time.monotonic() - probe.start) * 1000), layers=probe.timings)
     if os.geteuid() == 0 and not fast and result.get('reason') != 'interrupted':
         classification = result.get('reason')
@@ -550,6 +605,7 @@ def main():
             print('proxy health warning: ' + classification, file=sys.stderr)
         record = {key: result[key] for key in ('ok', 'reason', 'duration_ms', 'layers')}
         record.update(probe.diagnostics, route_sources=probe.route_sources)
+        record.update(probe.routing, core_mode=probe.core_mode)
         record['failure_stage'] = result.get('failure_stage', 'unknown')
         record['at'] = time.time()
         path = None

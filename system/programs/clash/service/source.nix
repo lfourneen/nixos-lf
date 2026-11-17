@@ -7,7 +7,8 @@ let
   settings = pkgs.writeText "clash-source-settings.json" (builtins.toJSON {
     root = "/var/lib/clash-source";
     inherit (config.programs.clash-verge.package) stageSettings;
-    policy = pkgs.writeText "clash-source-policy.json" (builtins.toJSON p.managedProfile);
+    policy = p.activeManagedPolicy;
+    routing_state = if p.runtimeRouting then "/run/proxy-mode/routing.json" else null;
     forced_domains = p.tunProbeNames ++ map (url:
       builtins.head (builtins.match "https?://([^/:]+).*" url)) (p.nodeProbeUrls ++ [ p.delayTestUrl ]);
     probe_domains = p.probeDomains;
@@ -34,7 +35,7 @@ let
 
 in
 {
-  config = lib.mkIf p.controlledSources {
+  config = lib.mkMerge [ { my.proxy.sourceSettings = settings; } (lib.mkIf p.controlledSources {
     users.groups.clash-fetch = {};
     users.users.clash-fetch = {
       isSystemUser = true;
@@ -161,5 +162,5 @@ in
       wantedBy = [ "timers.target" ];
       timerConfig = { OnBootSec = "2min"; OnUnitActiveSec = "30min"; RandomizedDelaySec = "30s"; };
     };
-  };
+  }) ];
 }

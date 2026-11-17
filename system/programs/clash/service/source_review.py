@@ -60,13 +60,14 @@ def compare(settings, source, private):
     if stage.source_directory(stage_settings) != source:
         raise ReviewError('Source changed. Run clash-diff again.')
     try:
-        settled = json.loads(private(source / 'approved/settled.json'))
+        approved = stage.approved_root(stage_settings, source)
+        settled = json.loads(private(approved / 'settled.json'))
     except FileNotFoundError:
         raise ReviewError('This source has no accepted baseline to compare yet.') from None
     baseline_id = settled['digest']
     if not isinstance(baseline_id, str) or not re.fullmatch('[0-9a-f]{64}', baseline_id):
         raise ReviewError('The accepted baseline has an invalid identity.')
-    baseline = source / 'approved' / baseline_id
+    baseline = approved / baseline_id
     stage.snapshot_metadata(baseline)
     if baseline.is_symlink() or stage.snapshot_digest(baseline) != baseline_id:
         raise ReviewError('The accepted baseline has changed.')

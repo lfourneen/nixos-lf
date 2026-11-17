@@ -72,8 +72,9 @@ def shell_function(name, controlled_sources=False):
     if not match:
         raise AssertionError(f"missing shell function {name}")
     body = match.group(0).replace("''${", "${")
-    return re.sub(r"\$\{lib\.optionalString config\.my\.proxy\.controlledSources ''\n(.*?)^\s*''\}",
-                  lambda value: value.group(1) if controlled_sources else '', body, flags=re.M | re.S)
+    return re.sub(r"\$\{lib\.optionalString config\.my\.proxy\.(controlledSources|runtimeRouting) ''\n(.*?)^\s*''\}",
+                  lambda value: value.group(2) if controlled_sources and value.group(1) == 'controlledSources' else '',
+                  body, flags=re.M | re.S)
 
 
 class ClientDNSProbeTests(unittest.TestCase):
@@ -261,6 +262,42 @@ class GuestPolicyTests(unittest.TestCase):
 class HealthTests(unittest.TestCase):
     graph = {'Group': {'type': 'Selector', 'now': 'Good'}, 'Good': {'type': 'Shadowsocks'},
              'DIRECT': {'type': 'Direct'}}
+
+    def test_routing_health_cannot_reuse_a_different_policy_or_epoch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'boot-id').write_text('fixture-boot')
+            record = dict(boot_id='fixture-boot', routing_requested='proxy-only', routing_phase='verifying',
+                          routing_epoch=2, routing_policy_digest='a' * 64)
+            path = root / 'routing.json'
+            probe = health.Probe(dict(budget_seconds=20, runtime=temporary, routing_state=str(path),
+                                      routing_mode='proxy-only', expected={'managed-policy': 'a' * 64}))
+            path.write_text(json.dumps(record))
+            original = probe.routing_binding()
+            for changed in (dict(routing_requested='rules'), dict(routing_policy_digest='b' * 64),
+                            dict(boot_id='old'), dict(routing_phase='preparing'), dict(routing_epoch=0)):
+                path.write_text(json.dumps(record | changed))
+                with self.subTest(changed=changed), self.assertRaises(health.ProbeFailure):
+                    probe.routing_binding()
+            path.write_text(json.dumps(record | dict(routing_epoch=3)))
+            self.assertNotEqual(probe.routing_binding(), original)
+
+    def test_real_dns_proves_the_successful_tun_target_without_accepting_fake_answers(self):
+        probe = health.Probe(dict(budget_seconds=20, real_dns_port=1056, dig='dig', fake_ip_net='198.18.0.0/16'))
+        probe.fake_ips = {'failed.example': '198.18.0.2', 'good.example': '198.18.0.3'}
+        probe.tun_name = 'good.example'
+        calls = []
+        def command(args, _timeout):
+            calls.append(args[-2])
+            return '198.18.0.2' if len(calls) == 1 else '203.0.113.42'
+        probe.command = command
+        probe.real_dns()
+        self.assertTrue(probe.diagnostics['real_dns_ok'])
+        self.assertEqual(calls, ['good.example', 'good.example'])
+        probe.command = lambda *_args: '198.18.0.2'
+        with self.assertRaises(health.ProbeFailure):
+            probe.real_dns()
+        self.assertFalse(probe.diagnostics['real_dns_ok'])
 
     def connection(self, **metadata):
         return dict(metadata=dict({'network': 'tcp', 'sourceIP': '127.0.0.1', 'sourcePort': '15010',
@@ -2102,7 +2139,8 @@ class RecoveryAndDiagnosticsTests(unittest.TestCase):
             self.assertTrue(result['available'])
             self.assertEqual(result['state_consistent'], expected)
             self.assertEqual(result['policy'], after and {key: after.get(key) for key in
-                             ('mode', 'reason', 'policy_version', 'revision', 'boot_id')})
+                             ('mode', 'reason', 'policy_version', 'revision', 'boot_id',
+                              'routing_epoch', 'routing_policy_digest', 'routing_phase')})
 
 
 
@@ -2172,6 +2210,21 @@ class SubscriptionAndStatusTests(unittest.TestCase):
                 self.assertNotIn('\x1b',rendered)
                 self.assertIn('Network status',rendered)
             self.assertNotIn('╭',status.render(value,plain=True))
+
+    def test_routing_overview_is_shown_only_in_mode_b(self):
+        status = module('status')
+        value = dict(routing_schema=1, routing_requested='proxy-only', routing_applied='rules',
+                     routing_phase='verifying', routing_epoch=3, core_mode='rule',
+                     sampled_egress_identity='a' * 12,
+                     capabilities=dict(dns='pending', udp='not-probed', icmp='blocked'))
+        for mode in ('direct', 'blocked', 'unknown', 'proxy'):
+            rows = dict(status.rows(value | dict(mode=mode)))
+            self.assertEqual('Routing requested' in rows, mode == 'proxy')
+            self.assertEqual('Routing applied' in rows, mode == 'proxy')
+            if mode == 'proxy':
+                self.assertEqual(rows['Routing requested'], 'proxy-only')
+                self.assertEqual(rows['Routing applied'], 'rules')
+                self.assertIn('UDP: not-probed', rows['Protocol coverage'])
 
     def test_probe_layers_explain_partial_failure_without_claiming_readiness(self):
         status = module('status')

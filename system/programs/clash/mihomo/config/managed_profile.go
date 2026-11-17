@@ -198,6 +198,9 @@ func lfManagedProfileDefaults(raw *RawConfig) error {
 	}
 	// This transport is wholly root-owned, including across cached profiles.
 	raw.LFDNSTransport, _ = policy["lf-dns-transport"].(map[string]any)
+	if value, ok := policy["profile.store-fake-ip"].(bool); ok {
+		raw.Profile.StoreFakeIP = value
+	}
 	if value, ok := policy["geodata-mode"].(bool); ok {
 		raw.GeodataMode = value
 	}

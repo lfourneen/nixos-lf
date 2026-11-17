@@ -191,8 +191,19 @@ def rows(state):
         age_days = subscription.get('age_days')
         yield 'Subscription health', ('stale · last successful activity ' + str(age_days) + 'd ago'
                                       if age_days is not None else 'stale · no accepted update observed')
+    if mode == 'proxy' and state.get('routing_schema'):
+        yield 'Routing requested', state.get('routing_requested', 'unknown')
+        yield 'Routing applied', state.get('routing_applied') or 'Pending'
+        yield 'Routing transaction', str(state.get('routing_phase', 'unknown')) + ' · epoch ' + str(state.get('routing_epoch', '?'))
+        yield 'Core mode', state.get('core_mode', 'unknown')
+        yield 'Sampled TCP leaf', state.get('sampled_egress_identity') or 'Not proven'
+        capabilities = state.get('capabilities', {})
+        yield 'Protocol coverage', 'DNS: ' + capabilities.get('dns', 'unknown') + ' · UDP: ' + capabilities.get('udp', 'not-probed') + ' · ICMP: ' + capabilities.get('icmp', 'not-probed')
     if mode == 'proxy':
-        yield 'Application egress', 'Uniform proxy routing' if state.get('proxy_only') else 'Rule routing · DIRECT or proxy'
+        yield 'Application egress', ('Uniform proxy routing' if state.get('routing_applied') == 'proxy-only'
+            else 'Rule routing · DIRECT or proxy' if state.get('routing_applied') == 'rules'
+            else 'Routing pending' if state.get('routing_schema')
+            else 'Uniform proxy routing' if state.get('proxy_only') else 'Rule routing · DIRECT or proxy')
     elif mode == 'direct':
         yield 'Application egress', 'Direct · local Gost provides passthrough'
     elif mode == 'blocked':
@@ -308,7 +319,7 @@ def main():
     spec = importlib.util.spec_from_file_location('network_state', args.state_tool)
     source = importlib.util.module_from_spec(spec); spec.loader.exec_module(source)
     state = source.readiness(target='auto', maximum=args.max_age, verification_maximum=args.verification_max_age)
-    state['proxy_only'] = args.proxy_only
+    state['proxy_only'] = state.get('routing_applied') == 'proxy-only' if state.get('routing_schema') else args.proxy_only
     state['subscription_health'] = source.subscription_health(
         '/nonexistent/controlled-source-profiles' if args.controlled_source else args.profiles, state.get('profile_refresh'),
         fetch=state.get('source_fetch'))

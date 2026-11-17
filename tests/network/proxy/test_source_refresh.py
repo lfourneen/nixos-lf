@@ -219,14 +219,32 @@ class SourceRefreshTests(unittest.TestCase):
         systemctl.assert_not_called()
 
     def test_missing_helper_transport_recovers_unit_then_starts_fixed_core(self):
-        responses = [ConnectionRefusedError(), dict(core_pid=None), {}, dict(core_pid=5678)]
+        responses = [ConnectionRefusedError(), dict(core_pid=None), {}, dict(core_pid=None), {}, dict(core_pid=5678)]
         with patch.object(stage, 'service_request', side_effect=responses), \
                 patch.object(stage.subprocess, 'run') as systemctl, \
                 patch.object(Path, 'read_text', return_value='5678'), \
                 patch.object(stage.socket, 'socket'):
-            stage.restart_core(dict(self.settings, gui_data='/fixed/gui'), restart=False)
+            stage.restart_core(dict(self.settings, gui_data='/fixed/gui'))
         systemctl.assert_called_once_with(['/fixed/systemctl', 'restart', 'clash-verge.service'],
             check=True, timeout=30)
+
+    def test_start_source_waits_for_initial_helper_ipc_without_restarting_it(self):
+        responses = [ConnectionRefusedError(), dict(core_pid=None), {}, dict(core_pid=5678)]
+        with patch.object(stage, 'service_request', side_effect=responses), \
+                patch.object(stage.subprocess, 'run') as systemctl, \
+                patch.object(stage.time, 'sleep'), \
+                patch.object(Path, 'read_text', return_value='5678'), \
+                patch.object(stage.socket, 'socket'):
+            stage.restart_core(dict(self.settings, gui_data='/fixed/gui'), restart=False)
+        systemctl.assert_not_called()
+
+    def test_start_source_ipc_timeout_fails_without_a_second_unit_start(self):
+        with patch.object(stage, 'service_request', side_effect=ConnectionRefusedError()), \
+                patch.object(stage.time, 'monotonic', side_effect=[0, 19]), \
+                patch.object(stage.subprocess, 'run') as systemctl:
+            with self.assertRaisesRegex(ValueError, 'timed out'):
+                stage.restart_core(self.settings, restart=False)
+        systemctl.assert_not_called()
 
     def test_invalid_parser_timeout_and_unknown_audit_keep_healthy_core(self):
         for error, reason in ((stage.RefreshError('configuration invalid'), 'configuration invalid'),

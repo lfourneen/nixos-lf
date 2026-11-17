@@ -44,7 +44,8 @@ let
     verification_max_age = config.my.proxy.verificationMaxAgeSeconds;
     require_tun = config.my.proxy.tunMode;
 
-    audit_settings = pkgs.writeText "subscription-audit-settings.json" (builtins.toJSON {
+    routing_state = if config.my.proxy.runtimeRouting then "/run/proxy-mode/routing.json" else null;
+    audit_settings = if config.my.proxy.runtimeRouting then "/run/proxy-mode/routing-active/audit.json" else pkgs.writeText "subscription-audit-settings.json" (builtins.toJSON {
       strict_semantics = config.my.proxy.controlledSources;
       insecure_exceptions = config.my.proxy.insecureProxyExceptions;
       subscription_trust = config.my.proxy.subscriptionTrust;
@@ -59,7 +60,7 @@ let
     yq = "${pkgs.yq-go}/bin/yq";
     snapshot_tool = "${./service/clash-verge-stage.py}";
     managed_core = "${managedCore}/bin/mihomo";
-    managed_policy = pkgs.writeText "mihomo-preflight-policy.json" (builtins.toJSON config.my.proxy.managedProfile);
+    managed_policy = config.my.proxy.activeManagedPolicy;
   });
 
   # Root launcher behind bin/verge-mihomo. It enforces the clash-on intent,

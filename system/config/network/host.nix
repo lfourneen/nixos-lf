@@ -3,6 +3,7 @@
   # VM fixtures retain the strict option default.
   my.proxy.profileRefreshPolicy = "auto";
   my.proxy.controlledSources = true;
+  my.proxy.runtimeRouting = true;
   my.proxy.strictBrowser = true;
   my.proxy.subscriptionTrust = "fixed";
   my.proxy.dnsEncryption = "strict";

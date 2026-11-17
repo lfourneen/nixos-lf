@@ -61,6 +61,22 @@ func TestLFManagedStrictSniffer(t *testing.T) {
 	}
 }
 
+func TestLFManagedFakeIPPersistenceSurvivesRoutingRestarts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(path, []byte(`{"profile.store-fake-ip":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	raw := DefaultRawConfig()
+	raw.Profile.StoreFakeIP = false
+	if _, err := lfValidateRaw(raw); err != nil {
+		t.Fatal(err)
+	}
+	if !raw.Profile.StoreFakeIP {
+		t.Fatal("routing restart could lose live application fake-IP mappings")
+	}
+}
+
 func TestLFManagedPolicy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "policy.json")
 	if err := os.WriteFile(path, []byte(`{"listeners":[],"tunnels":[],"dns.listen":"127.0.0.1:1053","tun.include-uid":[],"tun.stack":"mixed","tun.dns-mode":"hijack"}`), 0600); err != nil {

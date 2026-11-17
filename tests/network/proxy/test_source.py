@@ -34,6 +34,32 @@ class Response:
 
 
 class SourceTests(unittest.TestCase):
+    def test_proxy_only_rewrites_direct_and_reject_without_destroying_rule_data(self):
+        original = json.loads(json.dumps(DOC))
+        original['rules'] = ['DOMAIN,domestic.example,DIRECT', 'DOMAIN,denied.example,REJECT', 'MATCH,P']
+        original['proxy-groups'][0]['proxies'] = ['DIRECT', 'n']
+        saved = {}
+        strict = w.load(w.render(original, {}, {'lf-private-targets': {'proxy-only': True}}, source=saved))
+        self.assertEqual(strict['rules'], ['IN-NAME,lf-strict,lf-remote', 'MATCH,P'])
+        self.assertEqual(strict['proxy-groups'][0]['proxies'], ['n'])
+        self.assertEqual(saved['rules'], original['rules'])
+        self.assertEqual(saved['proxy-groups'][0]['proxies'], ['DIRECT', 'n'])
+        restored = w.load(w.render(saved, {}, {'lf-private-targets': {'proxy-only': False}}))
+        self.assertEqual(restored['rules'][1:], original['rules'])
+        self.assertEqual(original['proxy-groups'][0]['proxies'], ['DIRECT', 'n'])
+
+    def test_pinned_canonical_source_retains_original_rules_for_offline_switches(self):
+        original = json.loads(json.dumps(DOC))
+        original['rules'].insert(0, 'DOMAIN,domestic.example,DIRECT')
+        request = {'registry': {'subscription': {'url': 'https://source.example/sub'}},
+                   'policy': {'lf-private-targets': {'proxy-only': True}}}
+        result = w.prepare(request, download=lambda *_: json.dumps(original).encode(), resolver=public)
+        saved = json.loads(result['source_data'])
+        self.assertEqual(saved['rules'], original['rules'])
+        self.assertEqual(saved['proxies'][0]['server'], '1.1.1.1')
+        self.assertEqual(saved['proxies'][0]['lf-source-server'], 'proxy.example')
+        self.assertNotIn('lf-remote', [group['name'] for group in saved['proxy-groups']])
+
     def test_a_validated_family_survives_an_unavailable_other_family(self):
         import dns.resolver
         class Backend:

@@ -325,23 +325,42 @@ HTTP provider 优先读取缓存，缓存被拒绝后尝试远端。
 
 ## 路由策略
 
-```nix
-my.proxy.proxyOnly = false; # 默认保留订阅 Rule 分流。
-# my.proxy.proxyOnly = true; # 使用订阅最终代理 MATCH。
+本机启用 `my.proxy.runtimeRouting=true`，不重新构建即可选择两种 B 路由子模式：
+
+```sh
+clash-rules
+clash-proxy-only
 ```
 
-默认保留国内 DIRECT，并为配置的探针/下载域以及登记的 IP 探测/分流检测域名（`my.proxy.probeDomains`）前置代理规则，避免检测站看到直连地址。
-其它目标按订阅规则选路。
-健康探测使用配置的样本目标。
+两条命令都请求代理访问，在 A 或 C 中也可使用。终端仅返回成功及目标模式，或失败及原因。
+它们不打开 GUI、不发送桌面通知，也不自动显示网络概览。
+概览使用 `proxy-status`；B 中显示请求/生效路由、事务 epoch、核心实际 Rule/Global 模式和协议覆盖范围。
+底层入口为 `sudo proxy-control routing rules` 和 `sudo proxy-control routing proxy-only`。
 
-`true` 将进入核心的应用流量统一交给订阅最终代理 MATCH，要求存在可用代理兜底，覆盖地理/进程分流及 profile REJECT。
-核心同时拒绝应用 DIRECT/COMPATIBLE TCP/UDP，包括组内 direct 叶子和改名适配器。
-按规则路由的 DNS 也受约束。
-显式引导/端点解析和 `#DIRECT` MagicDNS 仍豁免。
+`rules` 保留订阅条件，包括国内 DIRECT、profile REJECT 和受管探针规则。
+`proxy-only` 将应用条件统一交给经过验证的远程兜底，并保留严格浏览器入口的远程约束。
+其 DNS 组引用同一兜底。最终适配器检查仍拒绝 DIRECT/COMPATIBLE，覆盖嵌套组和改名叶子。
+原始规则和已固定节点独立保存，返回 rules 时从已接受的本地数据重建。
+这统一选择策略，不证明不同协议或地址族具有同一个远端 NAT 地址。
 
-部署 Nix generation 并导入/重启受管核心后生效，会增加包括国内流量在内的订阅消耗。
-`bootMode`、A 的门户访问、root UDP、组播及核心外宿主私网路径独立控制。
-路由策略的升级检查见[维护手册](maintenance_CN.md#源码兼容性检查)。
+切换先安装 C 并撤销 B 授权，停止旧核心和 relay 流，安装选定的不可变策略，再重建核心命名空间。
+Parser、内容审计、监听身份、路由、DNS/TUN 和完整健康检查通过后才能返回 B。
+命令等待共用就绪与验证条件。失败保留所请求的子模式和 C，不自动选择 A 或 rules。
+重复选择已经就绪的模式不会重启核心。
+
+`clash-off` 选择 A 并保留本次启动的路由选择，`clash-on` 复用该选择。
+重启后选择恢复 rules，开机请求 A 还是代理访问仍由独立的 `bootMode` 控制。
+
+Proxy-only 要求已有节点地址固定为字面 IP 的本地已接受来源。
+每个来源首次导入须先在 rules 完成正常健康接受，之后才能离线启动严格模式。
+节点 TLS 身份继续校验，切换及严格启动不需要直连 DNS 或订阅下载。
+应用和来源 worker 的 DNS 都通过远程加密传输获得本地验证结果，见 [DNS](dns_CN.md#b受管-mihomo-dns)。
+Proxy-only 禁用 LAN、组播、时间同步、Tailscale 和入站服务回复，仅保留限定的 DHCP、NDP 和必要传输错误。
+见[严格出口](egress_CN.md#proxy-only-出口)。
+
+可复用模块的 `runtimeRouting` 默认为 false，启用时要求受控来源、隔离 TUN、本地 DNSSEC、严格加密 DNS 和内核授权租约。
+原构建期 `proxyOnly` 选项保留给不使用运行时切换的配置，只控制核心路由与 DIRECT 拒绝，宿主例外仍独立。
+使用运行时切换时保持它为 false。当前支持固定端点节点的 TCP/UDP，不提供端口跳跃或真实 ICMP 隧道。
 
 ## 域名目标
 

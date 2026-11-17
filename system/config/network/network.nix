@@ -792,6 +792,10 @@ in
         }
         chain lf_local_dns_guard {
           type filter hook output priority -198; policy accept;
+          ${lib.optionalString config.my.proxy.runtimeRouting ''
+          oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.coreRealDns} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.coreRealDns} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
+          ''}
           ${lib.optionalString (guestPolicy.socketUids != [ ] || config.my.proxy.controlledSources) ''
           oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.socketGuestDns} meta skuid != { 0${lib.optionalString config.my.proxy.controlledSources ", ${toString m.uids.clashFetch}"} } counter drop
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.socketGuestDns} meta skuid != { 0, ${toString dnsmasqUid} } counter drop

@@ -40,6 +40,8 @@ def source():
                         'port': 18080, 'udp': True}],
             'proxy-groups': [{'name': 'Choice', 'type': 'select', 'proxies': ['Fixture']}],
             'rules': ['MATCH,Choice']}
+    if SETTINGS.get('routing'):
+        data['rules'] = ['DOMAIN,domestic.fixture.example,DIRECT', 'DOMAIN,denied.fixture.example,REJECT', 'MATCH,Choice']
     class Handler(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
         def do_GET(self):
@@ -70,7 +72,7 @@ def source():
             pass
     # Bootstrap resolves to 1.1.1.1 while B's application resolver uses
     # 203.0.113.10. Both addresses belong to this isolated fixture namespace.
-    server = ThreadingHTTPServer(('0.0.0.0', 443), Handler)
+    server = ThreadingHTTPServer(('1.1.1.1' if SETTINGS.get('routing') else '0.0.0.0', 443), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(Path(SETTINGS['tls'])/'trusted.pem', Path(SETTINGS['tls'])/'trusted.key')
     server.socket = context.wrap_socket(server.socket, server_side=True)
@@ -80,7 +82,10 @@ def source():
 
 def setup():
     node = Path('/run/netsec-node.json')
-    node.write_text(json.dumps(dict(json.loads(node.read_text()), **{'bind-address': '0.0.0.0'})))
+    # A wildcard UDP listener chooses the peer link's primary source address
+    # for replies, which is outside the strict mode's declared node tuple.
+    node.write_text(json.dumps(dict(json.loads(node.read_text()),
+        **{'bind-address': '1.1.1.1' if SETTINGS.get('routing') else '0.0.0.0'})))
     registry = Path('/run/managed-source-definition.json')
     for identity in ('one', 'two'):
         registry.write_text(json.dumps({'id': identity, 'gui-profile': 'uid-' + identity,

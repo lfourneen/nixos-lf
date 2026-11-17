@@ -137,7 +137,8 @@ in
         previous-dns = lib.optionalAttrs p.localDnssec (encryptedDns // { use-system-hosts = true; });
         local-dnssec = if p.localDnssec then "127.0.0.1:${toString m.ports.unbound}" else "";
         validator-ports = lib.optionals p.localDnssec [ m.ports.unbound m.ports.socketGuestDns
-          m.ports.coreDnsTransport m.ports.coreDnsBootstrapTransport ];
+          m.ports.coreDnsTransport m.ports.coreDnsBootstrapTransport ]
+          ++ lib.optional p.runtimeRouting m.ports.coreRealDns;
         proxy-only = p.proxyOnly;
         reject-plaintext-credentials = p.controlledSources;
         strict-inlets = lib.optional p.strictBrowser "lf-strict";
@@ -198,6 +199,7 @@ in
       # Fake-IP mappings and explicit proxy targets already supply the domain.
       "sniffer.enable" = false;
     } // lib.optionalAttrs p.controlledSources { "geodata-mode" = true; }
+      // lib.optionalAttrs p.runtimeRouting { "profile.store-fake-ip" = true; }
       // lib.mapAttrs' (key: value: lib.nameValuePair "dns.${key}" value) p.managedDns
       // lib.genAttrs (map (key: "tun.${key}") emptyTunFields) (_: [ ])
       // lib.optionalAttrs p.tunMode (lib.mapAttrs' (key: value:

@@ -23,6 +23,7 @@ DoT 故障时保留缓存/本地回答。
 [default.nix](../../system/config/network/network.nix) 配置解析服务，[upstream.nix](../../system/config/network/dns/upstream.nix) 协调 dnsmasq 的 `/run/dns-upstream/servers.conf`，以 SIGHUP 热更新，失败会保留待应用状态并重试。
 
 内部 1053/1055 仅允许 root 诊断及 dnsmasq UID 查询，1054 面向客户端。
+运行时 proxy-only 的外层边界同时阻断宿主 DoT、split/MagicDNS 路径，C 中也不例外；下述真实地址网关保留核心验证器路径。
 [listeners.py](../../system/config/network/proxy/listeners.py) 共用检查 TCP/UDP 监听地址、UID 和 cgroup。
 
 上行口的明文 DNS 对两种 IP 家族均重定向到 dnsmasq，包括硬编码的私网/门户解析器。
@@ -37,7 +38,7 @@ DoH 与 HTTPS 共用 443，不能据此区分。
 | 系统查询，含 Gost 在 A 的直连代解析 | dnsmasq 在选定上游前执行后缀规则 | A 使用 Unbound DoT 和本地 DNSSEC。默认恢复可使用有租约的明文。B 转交核心 |
 | 核心 DNS 监听与 TUN DNS hijack | 在 hosts、缓存和 fake-IP 分配前执行共享后缀规则 | 启用 `localDnssec` 时先本地验证再合成地址，否则使用受管 DoH/DoT |
 | B 中 HTTP/SOCKS 代理目标 | 应用 TCP/UDP 拨号前执行共享规则，私网域名豁免也要先过过滤 | 公网及已批准内部域名均检查并固定真实 IP。`localDnssec` 还在本地验证公网答案。私网目标需实际叶节点的出口授权 |
-| 节点与加密解析器引导 | 核心解析器在缓存/上游访问前执行共享过滤 | 启用 `localDnssec` 时使用独立本地验证器，否则使用字面地址加密引导解析器，两者均不依赖已连通代理。内部基础设施不受应用目标 IP 和 `proxyOnly` 检查约束 |
+| 节点与加密解析器引导 | 核心解析器在缓存/上游访问前执行共享过滤 | 启用 `localDnssec` 时使用独立验证器，否则使用字面地址加密引导解析器。Rules 保留独立引导传输；运行时 proxy-only 从已接受的固定节点启动，两个验证器角色均经远程组传输。内部基础设施不受应用目标 IP 检查约束 |
 | 已批准 split DNS / 原生 MagicDNS | split 转发遵守 dnsmasq 域名优先级。resolved 的原生 MagicDNS 条件路由绕过 dnsmasq | 明确的私网解析器 / Tailscale 隧道例外，不提供本地公网 DNSSEC 保证 |
 
 后缀过滤器为阻断域返回本地 NXDOMAIN。
@@ -157,7 +158,7 @@ HTTP-only（`tunMode=false`）采用 redir-host。
 每个验证器通过 TCP loopback 转交私有 Mihomo 传输监听：应用查询使用 1057，引导查询使用 1058。
 这些监听传递完整 DNSSEC 材料，不使用 hosts 替换、fake-IP 合成或普通解析器缓存。
 
-应用传输保留国内分流：`geosite:cn` 经 360 DoH 直连解析，其余使用 Cloudflare/Google DoH。
+`rules` 中应用传输保留国内分流：`geosite:cn` 经 360 DoH 直连解析，其余使用 Cloudflare/Google DoH。
 启用受控来源时，这些海外查询绑定到 `lf-remote` 组，经远程代理传输。
 未启用受控来源的配置保留 `respect-rules` 选路。
 节点引导保留独立的加密 proxy-server 解析器和字面地址引导解析器。
@@ -166,6 +167,19 @@ HTTP-only（`tunMode=false`）采用 redir-host。
 海外冷查询可能需要多次远程交换以完成验证，国内查询则保持国内往返。
 A 的 `my.machine.dotEndpoints` 列表与 B 的两类角色相互独立。
 Mihomo 保持 TLS 证书校验，上游故障不授予明文回退。
+
+运行时 `proxy-only` 保留两个本地验证器及独立预算，但两类查询均通过认证的字面地址 DoH 端点，绑定到与应用相同的已剪枝远程兜底组。
+该模式移除国内解析策略、直连引导及 MagicDNS 传输。
+核心使用已接受并固定的节点地址启动，保留 TLS 服务名；切换无需联网获取来源或直连解析节点。
+节点或验证器不可用时保持 C。
+
+宿主的来源下载与受限 socket 后端仍需要真实地址。
+启用运行时切换时，其 1056 dnsmasq 转交固定的 loopback 网关 1059。
+代理意图为 proxy-only 时，网关经 root 所有的 Unix socket 进入核心命名空间的应用验证器，不回退宿主 DoT。
+Rules 和 A 使用宿主 Unbound 1055。
+1059 仅允许 root 与 dnsmasq 查询，Unix 桥接不提供任意目标参数。
+宿主 DoT、split DNS 和原生 MagicDNS 无法穿过 proxy-only 的外层防火墙。
+切换时清空宿主解析缓存并重建核心验证器；受管 fake-IP 映射持久保存，使应用缓存的地址继续对应原域名。
 
 `localDnssec=false` 时，公共解析使用 Cloudflare/Google DoH，国内域与代理端点引导使用配置的国内解析器。
 该兼容路径不在本地验证 B 的 DNSSEC 答案。
@@ -227,7 +241,8 @@ A 的宿主验证器和受限 socket 访客 DNS 仍相互独立。
 ## 受限 socket 访客 DNS
 
 `my.hardening.socketGuestUsers` 非空或启用受控来源时，[socket-guest.nix](../../system/config/network/dns/socket-guest.nix) 以 UID 985 在 loopback 1056 启动额外 dnsmasq。
-它复用不可变后缀过滤、增补及例外，但始终转交 Unbound 1055 并返回真实地址，不使用明文租约、split DNS 或原生 MagicDNS。
+它复用不可变后缀过滤、增补及例外并返回真实地址，不使用明文租约、split DNS 或原生 MagicDNS。
+启用运行时切换时使用上述选定网关路径，否则转交宿主 Unbound 1055。
 
 DoT 不可用（包括 B 中 `unboundDotInProxy=false`）时，新鲜公网名称失败。
 符合条件的缓存和本地数据继续返回。

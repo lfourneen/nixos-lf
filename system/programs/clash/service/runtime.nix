@@ -129,8 +129,7 @@ in
   systemd.services.clash-verge.environment = lib.optionalAttrs
     (config.networking.enableIPv6 && config.my.proxy.tunMode) { SKIP_SYSTEM_IPV6_CHECK = "1"; }
     // {
-      LF_MANAGED_PROXY_POLICY = pkgs.writeText "mihomo-managed-policy.json"
-        (builtins.toJSON config.my.proxy.managedProfile);
+      LF_MANAGED_PROXY_POLICY = config.my.proxy.activeManagedPolicy;
       # The helper may only exec this launcher, never a stale package path.
       LF_CLASH_CORE_PATH = "${config.programs.clash-verge.package}/bin/verge-mihomo";
       LF_CLASH_GUI_CONFIG = "${config.users.users.${desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml";

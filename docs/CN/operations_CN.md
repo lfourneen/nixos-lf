@@ -183,6 +183,15 @@ clash-diff
 关闭 GUI 不会清除代理意图。
 核心停止后因此进入 C。
 
+本机使用 `clash-rules`、`clash-proxy-only` 一键选择路由子模式并请求 B。
+命令在终端返回包含模式的成功结果，或以非零状态返回失败阶段及可用原因。
+它们不启动 GUI、不发送桌面通知，也不自动运行 `proxy-status`。
+需要整体预览时单独运行已有 `proxy-status`；其人类可读输出仅在 B 显示请求/实际路由、事务 epoch、核心实际模式、采样 TCP 叶节点身份及 DNS/UDP/ICMP 覆盖。
+底层命令为 `sudo proxy-control routing rules`、`sudo proxy-control routing proxy-only`。
+`clash-off` 保留本次启动的选择，`clash-on` 复用它，重启恢复 rules。
+Proxy-only 需要已接受的固定节点来源；准备或完整健康检查失败时保持 C 及请求的选择。
+策略边界见[路由策略](proxy_CN.md#路由策略)。
+
 底层系统命令为 `sudo proxy-control on`、`sudo proxy-control off`。
 `on` 打开一次性配置导入窗口并启动 helper，受控来源本机由登记候选启动核心，兼容模式仍由 GUI 提供配置并启动核心。
 `off` 清除授权并停止 helper。
@@ -264,6 +273,8 @@ Tailscale 打标失败时，B 仍会阻断未打标的 root UDP。
 | 文件 | 含义 |
 |---|---|
 | `/run/proxy-mode/state.json` | 原子模式、原因、策略代次、revision 和更新时间 |
+| `/run/proxy-mode/routing.json`、`routing-active` | 绑定本次启动的请求/实际子模式、epoch、不可变策略摘要及阶段；选定的策略/健康/审计文件 |
+| `/run/proxy-mode/routing-firewall.json` | 仅 root 可读的外层防火墙预期模型及选定传输脚本摘要 |
 | `/run/proxy-mode/health.json` | 探针覆盖范围、完整结论、HTTP/路由/DNS/TUN 独立诊断、证明来源与分层耗时 |
 | `/run/proxy-mode/heartbeat.json` | 最近成功监督轮次 |
 | `/run/netsec/state.json` | 验证结论、所验证代次与新鲜度 |
@@ -480,6 +491,7 @@ sudo systemctl start nftables-verify.service
 | [machine.nix](../../system/config/machine.nix) | 用户、接口及匹配键、UID、端口、mark、网段和上游 |
 | [options.nix](../../system/config/network/proxy/options.nix) | TUN、表 2022、fake-IP、探针、开机意图、proxyOnly、dnsEncryption、共享域名过滤、访客、split DNS 和新鲜度 |
 | [profile.nix](../../system/config/network/proxy/profile.nix) | root 受管 DNS/TUN/profile 约定 |
+| [routing.nix](../../system/config/network/proxy/routing.nix) | `runtimeRouting`、不可变 rules/proxy-only 策略及 `proxyOnlyDnsUpstreams` |
 | [options.nix](../../system/config/network/options.nix) | 宿主/访客私网、逐接口访客信任/源地址、独立 socket 访客账户、宿主端口、热点、tailnet 和 Wi-Fi MAC |
 | [cvr-merge.nix](../../home/config/clash/cvr-merge.nix) | 匹配的 GUI Merge 及路由增强 |
 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[options.nix](../../home/programs/firefox/options.nix) | 原生浏览器、networkPath、nvidiaAcceleration、隐私、策略、字体和外层沙箱 |
@@ -487,6 +499,12 @@ sudo systemctl start nftables-verify.service
 TUN 默认 `Mihomo`，表 2022、规则优先级 9000、内部 mark 8227/8228、fallback priority 32768、file descriptor 0，由 parser、模板和健康检查共用。
 `tunMode=false` 选择 HTTP-only/redir-host，不再要求 TUN。
 Fake-IP 网络由 `fakeIpRange` 推导，避免单独修改消费者。
+
+`runtimeRouting` 在模块中默认为 false，本机配置已启用。
+它要求受控来源、本地 DNSSEC、严格加密 DNS、隔离 TUN、内核授权租约，以及作为 rules 开机默认的 `proxyOnly=false`。
+旧 `proxyOnly` 仍用于不启用运行时切换的构建期策略。
+`proxyOnlyDnsUpstreams` 接受认证的字面地址 HTTPS 解析器，始终绑定远程组。
+已接受快照分别保存在 `approved/rules`、`approved/proxy-only`，包含本地重渲染所需的原始 Rule 数据和固定节点。
 
 需要不同访客信任级别时，应显式选择开发网桥，并只为其它访客授权必要的私网服务。
 宿主 socket 后端另需独立固定账户。

@@ -118,7 +118,9 @@
         "browser-ech-uniform-vm",
         "proxy-validation-tools",
         "proxy-managed-netns-vm",
-        "proxy-assurance-vm"
+        "proxy-assurance-vm",
+        "proxy-routing",
+        "proxy-routing-vm"
       ],
       "entrypoints": [
         "config/config.go: ParseRawConfig, RawConfig/RawTun schema and controller General",
@@ -127,7 +129,9 @@
         "adapter/adapter.go: actual selected TCP/UDP leaf; adapter/outbound/direct.go",
         "tunnel/tunnel.go and tunnel/connection.go: target pinning and reused UDP provenance",
         "listener/tproxy: IPv4 inlet ownership and socket family",
-        "component/geodata: parser-time download paths and Global route logs"
+        "component/geodata: parser-time download paths and Global route logs",
+        "system/config/network/proxy/routing.nix",
+        "system/config/network/proxy/routing.py"
       ],
       "invariants": [
         "Root profile, Merge template and live controller/health invariants agree; duplicate/noncanonical PATCH and unlisted writes fail closed.",
@@ -220,13 +224,17 @@
         "proxy-refresh-vm",
         "proxy-validation-tools",
         "proxy-regressions",
-        "proxy-managed-netns-vm"
+        "proxy-managed-netns-vm",
+        "proxy-routing",
+        "proxy-routing-vm"
       ],
       "entrypoints": [
         "helper src/core/manager.rs, server.rs, logger.rs and reconcile.rs",
         "Nixpkgs GUI/helper packaging and inherited patches",
         "GUI use-system-state.ts, proxy-control-switches.tsx, tray, config initialization, feat/config.rs, feat/window.rs and core/manager/config.rs",
-        "Installed GUI/public core wrapper, stage snapshot and service runtime"
+        "Installed GUI/public core wrapper, stage snapshot and service runtime",
+        "system/config/network/proxy/routing.nix",
+        "system/config/network/proxy/routing.py"
       ],
       "invariants": [
         "Root spawn uses only the root-owned packaged launcher; caller log/socket/PID paths never drive privileged file/process operations.",
@@ -253,20 +261,26 @@
         "proxy-validation-tools",
         "proxy-assurance-vm",
         "blocklist-tests",
-        "maintenance-ledger"
+        "maintenance-ledger",
+        "proxy-routing",
+        "proxy-routing-vm"
       ],
       "entrypoints": [
         "dnsmasq src/forward.c: strict-order terminal retry and sent-to index",
         "Unbound systemd notify packaging, anchor/validation/TLS settings",
         "Chrony NTS-KE and negotiated NTP endpoints; DNS broker leases",
-        "netsec/dns_budget.py and dnssec_probe.py: boot-scoped accounting and independent TLS/DNS health"
+        "netsec/dns_budget.py and dnssec_probe.py: boot-scoped accounting and independent TLS/DNS health",
+        "system/config/network/proxy/routing.nix",
+        "system/config/network/proxy/routing.py",
+        "system/config/network/dns/real_proxy.py"
       ],
       "invariants": [
         "Terminal UDP SERVFAIL/REFUSED and DNSSEC EDE reach clients even for duplicate upstream addresses.",
         "DNSSEC, filtering and encryption remain separate; strict public DNS cannot use an override, forged lease or leftover set.",
         "Unbound notify support and persistent trust anchors remain; NTS keeps authentication/certificate time checks and no plaintext fallback.",
         "Expired or ambiguous leases remain charged across coordinator restart; only adjacent validated/live rounds replenish. Cached NSEC never substitutes for a fresh TLS exchange.",
-        "DNS profile edits preserve only whitelisted DNS fields in a private persistent backup; restoration refuses manual conflicts. Dual-stack DoT endpoints bind addresses and certificate names consistently."
+        "DNS profile edits preserve only whitelisted DNS fields in a private persistent backup; restoration refuses manual conflicts. Dual-stack DoT endpoints bind addresses and certificate names consistently.",
+        "Proxy-only carries both DNSSEC validator roles and real-address source/backend DNS through the remote group without direct bootstrap or host DoT fallback."
       ]
     },
     "firefox": {
@@ -340,18 +354,23 @@
         "security-policy-config",
         "network-policy-config",
         "hermes-activation-vm",
-        "security-behavior-vm"
+        "security-behavior-vm",
+        "proxy-routing",
+        "proxy-routing-vm"
       ],
       "entrypoints": [
         "nft transaction parsing, socket/conntrack expressions and JSON output",
-        "systemd start/reload/stop and NetworkManager dispatcher/resolver coordination"
+        "systemd start/reload/stop and NetworkManager dispatcher/resolver coordination",
+        "system/config/network/proxy/routing.nix",
+        "system/config/network/proxy/routing.py"
       ],
       "invariants": [
         "Owned static/safety policy commits once under the shared lock; foreign tables survive and rejected transactions retain the previous policy.",
         "Bootstrap protects first-load failures; proxy intent passes through C before health permits B.",
         "Ordered expressions, canonical JSON and expiring DNS leases remain verifiable; stopping owners leaves protection installed.",
         "Desktop cgroup bind restrictions, automatic-port reservations and proxy reply UIDs protect managed listeners. Tracked ordinary application replies stop in C while root/core recovery and guest ownership marks survive.",
-        "Host setup owns only the declared veth, namespace and route priorities; core marks are scrubbed, forwarded transport is independently constrained and internal address overlap refuses readiness."
+        "Host setup owns only the declared veth, namespace and route priorities; core marks are scrubbed, forwarded transport is independently constrained and internal address overlap refuses readiness.",
+        "Proxy-only permits outer traffic only to the selected pinned node transport tuples; root services, LAN exceptions and established direct replies cannot bypass it."
       ]
     },
     "link-identity": {
@@ -394,21 +413,26 @@
         "proxy-refresh-vm",
         "proxy-core",
         "proxy-source-config",
-        "proxy-managed-netns-vm"
+        "proxy-managed-netns-vm",
+        "proxy-routing",
+        "proxy-routing-vm"
       ],
       "entrypoints": [
         "system/programs/clash/service/source_worker.py",
         "system/programs/clash/service/source_broker.py",
         "system/programs/clash/service/clash-verge-stage.py",
         "system/programs/clash/service/source_refresh.py",
-        "system/programs/clash/service/subscription_audit.py"
+        "system/programs/clash/service/subscription_audit.py",
+        "system/config/network/proxy/routing.nix",
+        "system/config/network/proxy/routing.py"
       ],
       "invariants": [
         "Only a root-registered source and deterministic conversion can publish controlled candidates; GUI files cannot authorize provenance.",
         "Provider contents and responses belong to immutable snapshots; settled authority persists across boots.",
         "Each registered source retains its own baseline and approvals; desktop selection accepts only root-approved GUI UID mappings.",
         "Cross-origin credentials, private/translated targets, unsupported providers and structural audit findings fail closed.",
-        "Configured node identity/authentication/transport changes use short-lived approvals bound to candidate, settled baseline, source revision and policies; startup and refresh retain the same parser, audit and health gates."
+        "Configured node identity/authentication/transport changes use short-lived approvals bound to candidate, settled baseline, source revision and policies; startup and refresh retain the same parser, audit and health gates.",
+        "Routing changes render accepted pinned source data under immutable policies and bind acceptance to the current routing epoch."
       ]
     },
     "browser-isolation": {

@@ -351,25 +351,41 @@ Snapshot files and the verification record are writable only by trusted root.
 
 ## Routing policy
 
-```nix
-my.proxy.proxyOnly = false; # Default: subscription Rule routing.
-# my.proxy.proxyOnly = true; # Use the subscription's final proxy catch-all.
+This host enables `my.proxy.runtimeRouting=true`. Select either B routing mode without rebuilding:
+
+```sh
+clash-rules
+clash-proxy-only
 ```
 
-The default preserves domestic DIRECT and prepends proxy rules for the configured probe/download domains and the registered IP-echo/split-routing domains (`my.proxy.probeDomains`), so a routing check does not see a direct connection.
-Other destinations follow the subscription rules.
-Health probes use the configured sample targets.
+Both commands request proxy access, including from A or C. The terminal reports success with the selected mode, or failure with its cause.
+They do not open the GUI, send desktop notifications or print the network overview.
+Use `proxy-status` for the overview; B includes the requested/applied routing mode, transaction epoch, actual core Rule/Global mode and protocol coverage.
+The root interfaces are `sudo proxy-control routing rules` and `sudo proxy-control routing proxy-only`.
 
-With `true`, the generated profile routes application destinations reaching the core through the subscription's final proxy MATCH policy.
-It requires a usable proxy catch-all and overrides geographic/process splitting and profile REJECT rules.
-It also refuses application DIRECT/COMPATIBLE TCP/UDP dials inside the core, including direct leaves behind groups and renamed adapters.
-Rule-routed DNS is covered.
-Explicit bootstrap/endpoint-resolution infrastructure and `#DIRECT` MagicDNS remain exempt.
+`rules` preserves subscription conditions, including domestic DIRECT and profile REJECT, plus managed probe overrides.
+`proxy-only` replaces application conditions with the verified remote catch-all and keeps the strict browser inlet remote-only.
+Its DNS group references that same catch-all. Final adapter checks still reject DIRECT/COMPATIBLE, including nested and renamed leaves.
+The original rules and pinned nodes are retained independently, so switching back reconstructs rules from local accepted data.
+This shares a selection policy; it does not establish a single remote NAT address across protocols or address families.
 
-Deploy the generation and import/restart the managed core for this policy to take effect.
-It increases subscription traffic, including domestic traffic.
-`bootMode`, A's portal access, root UDP, multicast and private host paths outside the core are independent choices.
-For routing-policy upgrade checks, see [maintenance](maintenance.md#source-compatibility-checks).
+A switch first installs C and revokes B authorization, stops the old core and relay flows, installs the selected immutable policy, and recreates the core namespace.
+Parser, content audit, listener, routing, DNS/TUN and full health checks must pass before B can return.
+The command waits for shared readiness and verification. A failed switch retains its requested mode and C; it never chooses A or rules automatically.
+Repeating an already ready selection preserves the core.
+
+`clash-off` selects A and keeps the current routing selection. `clash-on` reuses that selection.
+A reboot resets the selection to rules; `bootMode` independently controls whether the boot requests A or proxy access.
+
+Proxy-only requires an accepted local source with pinned literal node addresses. A source's first import must complete its ordinary health acceptance in rules before offline strict startup is available.
+Node TLS identities remain intact. Neither switching nor strict startup needs a direct DNS lookup or a subscription download.
+Application and source-worker DNS use locally validated answers over remote encrypted transports; see [DNS](dns.md#mode-b-managed-mihomo-dns).
+LAN, multicast, time synchronization, Tailscale and inbound service replies are disabled in proxy-only. DHCP, NDP and necessary transport errors remain scoped exceptions.
+See [strict egress](egress.md#proxy-only-egress).
+
+The reusable module defaults `runtimeRouting=false`. Enabling it requires controlled sources, isolated TUN, local DNSSEC, strict encrypted DNS and a kernel authorization lease.
+The older build-time `proxyOnly` option remains available for configurations without runtime routing; it controls core routing and DIRECT refusal, independently of host exceptions.
+Keep it false when runtime routing is enabled. Fixed-port supported node protocols carry TCP/UDP; port hopping and real ICMP tunnelling are outside this mode.
 
 ## Domain targets
 

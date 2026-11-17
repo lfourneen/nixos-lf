@@ -320,7 +320,9 @@ def download_window(settings):
 def refresh_generation(settings, root):
     raw = read_private(root / 'registry.json')
     registry = json.loads(raw)
-    request = json.dumps(dict(registry=registry, policy=json.loads(Path(settings['policy']).read_text()),
+    policy_bytes = Path(settings['policy']).read_bytes()
+    routing = Path(settings['routing_state']).read_bytes() if settings.get('routing_state') else None
+    request = json.dumps(dict(registry=registry, policy=json.loads(policy_bytes),
                               resolver=settings.get('resolver'),
                               forced_domains=settings['forced_domains'],
                               probe_domains=settings.get('probe_domains', []),
@@ -342,6 +344,9 @@ def refresh_generation(settings, root):
     if read_private(root / 'registry.json') != raw or (settings.get('_fetch_lock') is not None
             and selected(Path(settings['root'])) != root):
         raise ValueError('source registration or selection changed during download')
+    if Path(settings['policy']).read_bytes() != policy_bytes or (routing is not None
+            and Path(settings['routing_state']).read_bytes() != routing):
+        raise ValueError('routing changed during download')
     if len(data) > 48 * 1024 * 1024:
         raise ValueError('source worker refused')
     result = json.loads(data)
@@ -359,7 +364,7 @@ def refresh_generation(settings, root):
         raise ValueError('renderer metadata')
     manifest = dict(schema=1, source_id=registry['id'], revision=digest(raw),
                     responses=result['responses'], worker=digest(Path(settings['worker']).read_bytes()),
-                    policy=digest(Path(settings['policy']).read_bytes()),
+                    policy=digest(policy_bytes),
                     renderer_settings=digest(json.dumps({'forced_domains': settings['forced_domains'],
                         'probe_domains': settings.get('probe_domains', []),
                         'remote_only_catchall': settings.get('remote_only_catchall', False)}, sort_keys=True).encode()),
@@ -370,6 +375,12 @@ def refresh_generation(settings, root):
     candidate = Path(tempfile.mkdtemp(prefix='.pending-', dir=generations))
     try:
         atomic(candidate / 'clash-verge.yaml', config)
+        if 'source_data' in result:
+            source_data = result['source_data'].encode()
+            if len(source_data) > 32 * 1024 * 1024:
+                raise ValueError('source data size')
+            atomic(candidate / 'source-data.json', source_data)
+            manifest['source_data'] = digest(source_data)
         for name, path in settings['assets'].items():
             content = Path(path).read_bytes()
             if len(content) > 256 * 1024 * 1024:
@@ -394,6 +405,94 @@ def refresh_generation(settings, root):
             shutil.rmtree(path)
         atomic(root / 'status.json', json.dumps(dict(source_id=registry['id'], revision=digest(raw),
                generation=identity, at=time.time(), state='fetched')).encode(), 0o644)
+    finally:
+        if candidate.exists():
+            shutil.rmtree(candidate)
+
+
+def render_local(settings, root, target, previous):
+    """Render a fixed policy from accepted local nodes without network access."""
+    stage_settings = json.loads(Path(settings['stageSettings']).read_text())
+    spec = importlib.util.spec_from_file_location('source_stage', stage_settings['snapshot_tool'])
+    stage = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stage)
+    worker_spec = importlib.util.spec_from_file_location('local_source_worker', settings['worker'])
+    worker = importlib.util.module_from_spec(worker_spec)
+    worker_spec.loader.exec_module(worker)
+    registry = read_private(root / 'registry.json')
+    candidates = []
+    for folder in (root / 'approved', root / 'approved/rules', root / 'approved/proxy-only'):
+        try:
+            record = json.loads(read_private(folder / 'settled.json'))
+        except FileNotFoundError:
+            continue
+        identity = record.get('digest')
+        if not isinstance(identity, str) or not re.fullmatch('[a-f0-9]{64}', identity):
+            raise ValueError('invalid accepted source identity')
+        source = folder / identity
+        if source.is_symlink() or stage.snapshot_digest(source) != identity:
+            raise ValueError('accepted source was modified')
+        manifest = json.loads(read_private(source / 'source-manifest.json'))
+        if manifest.get('source_id') != json.loads(registry)['id']:
+            raise ValueError('accepted source identity differs')
+        candidates.append((record['snapshot_at'], source, manifest))
+    if candidates:
+        _, source, old_manifest = max(candidates, key=lambda value: value[0])
+    elif target == 'rules':
+        source = (root / 'current').resolve(strict=True)
+        if source.parent != root / 'generations':
+            raise ValueError('invalid source generation')
+        old_manifest = json.loads(read_private(source / 'source-manifest.json'))
+        if old_manifest.get('revision') != digest(registry):
+            raise ValueError('source revision revoked')
+    else:
+        raise ValueError('proxy-only requires an accepted pinned local source')
+    if (source / 'source-data.json').exists():
+        source_data = read_private(source / 'source-data.json', 32 * 1024 * 1024)
+        if old_manifest.get('source_data') != digest(source_data):
+            raise ValueError('source content baseline differs')
+        base = json.loads(source_data)
+    else:
+        # Older accepted snapshots retain their Rule list and already pinned nodes.
+        document = worker.load(read_private(source / 'clash-verge.yaml', 32 * 1024 * 1024))
+        if document.get('lf-private-targets', {}).get('proxy-only'):
+            raise ValueError('original Rule data is unavailable')
+        base = {key: document[key] for key in ('proxies', 'proxy-groups', 'rules', 'hosts') if key in document}
+        base['proxy-groups'] = [group for group in base['proxy-groups'] if group.get('name') != 'lf-remote']
+        prefix = ['IN-NAME,lf-strict,lf-remote'] + ['DOMAIN,' + name + ',lf-remote' for name in settings['forced_domains']]
+        if base['rules'][:len(prefix)] == prefix:
+            base['rules'] = base['rules'][len(prefix):]
+        source_data = json.dumps(base, sort_keys=True, ensure_ascii=False).encode()
+    if not base.get('proxies') or any(not worker.public_address(node.get('server', '')) for node in base['proxies']):
+        raise ValueError('source requires pinned public endpoints')
+    policy = Path(settings['policy']).read_bytes()
+    config = worker.render(base, {}, json.loads(policy), settings['forced_domains'],
+                           settings.get('probe_domains', []), settings.get('remote_only_catchall', False))
+    manifest = dict(old_manifest, schema=2, revision=digest(registry), policy=digest(policy),
+                    yaml=digest(config), source_data=digest(source_data), worker=digest(Path(settings['worker']).read_bytes()),
+                    renderer_settings=digest(json.dumps({'forced_domains': settings['forced_domains'],
+                        'probe_domains': settings.get('probe_domains', []),
+                        'remote_only_catchall': settings.get('remote_only_catchall', False)}, sort_keys=True).encode()),
+                    routing=target, local_routing=True, assets={})
+    generations = root / 'generations'
+    generations.mkdir(mode=0o700, exist_ok=True)
+    candidate = Path(tempfile.mkdtemp(prefix='.routing-', dir=generations))
+    try:
+        atomic(candidate / 'clash-verge.yaml', config)
+        atomic(candidate / 'source-data.json', source_data)
+        for name in settings['assets']:
+            data = read_private(source / name, 256 * 1024 * 1024)
+            atomic(candidate / name, data)
+            manifest['assets'][name] = digest(data)
+        atomic(candidate / 'source-manifest.json', json.dumps(manifest, sort_keys=True).encode())
+        identity = digest(json.dumps(manifest, sort_keys=True).encode())
+        destination = generations / identity
+        if not destination.exists():
+            candidate.rename(destination)
+        temporary = root / '.current'
+        temporary.unlink(missing_ok=True)
+        temporary.symlink_to(Path('generations') / identity)
+        temporary.replace(root / 'current')
     finally:
         if candidate.exists():
             shutil.rmtree(candidate)
@@ -477,10 +576,18 @@ def main():
         migrate(root)
         if args.action == 'list':
             active = selected(root).name if (root / 'selected').is_symlink() else None
+            stage_settings = json.loads(Path(settings['stageSettings']).read_text())
+            mode = None
+            if stage_settings.get('routing_state'):
+                mode = json.loads(Path(stage_settings['routing_state']).read_text()).get('routing_requested')
+                if mode not in ('rules', 'proxy-only'):
+                    raise ValueError('unknown routing selection')
+            def settled(path):
+                folder = path / 'approved' / mode if mode else path / 'approved'
+                return json.loads(read_private(folder / 'settled.json'))['digest'] if (folder / 'settled.json').exists() else None
             print(json.dumps({'selected': active, 'sources': [
                 {'id': path.name, 'revision': digest(read_private(path / 'registry.json')),
-                 'settled_digest': json.loads(read_private(path / 'approved/settled.json'))['digest']
-                    if (path / 'approved/settled.json').exists() else None}
+                 'settled_digest': settled(path)}
                 for path in sorted((root / 'sources').iterdir()) if re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', path.name) and not path.is_symlink()]}))
             return
         if args.action in ('use', 'gui-select'):

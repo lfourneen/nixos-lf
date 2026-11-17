@@ -90,6 +90,9 @@ in
       chmod 600 "$snapshot"
       "$RULE_CHECK" compare "$EXPECTED/$mode.json" "$snapshot" \
         || fail "ordered rules/hook/policy differ from this generation ($mode)"
+      ${lib.optionalString config.my.proxy.runtimeRouting ''
+      ${config.my.proxy.routingCommand} check "$mode" || fail 'routing outer-transport boundary differs'
+      ''}
       flock -u 9
 
       # Ignore a liveness result collected across a newer commit; the mode-change
@@ -111,7 +114,7 @@ in
       case "$mode" in
         proxy)
           $IS_CLASH_ON || live_fail 'proxy mode without a core in the service cgroup'
-          ${pkgs.python3}/bin/python3 ${../proxy/health.py} ${config.my.proxy.healthSettings} --fast >/dev/null \
+          ${pkgs.python3}/bin/python3 ${../proxy/health.py} ${config.my.proxy.activeHealthSettings} --fast >/dev/null \
             || live_fail 'core configuration differs from managed proxy invariants'
           ${pkgs.python3}/bin/python3 ${../dns/resolved_policy.py} ${config.my.proxy.resolvedPolicySettings} --check \
             || warn 'TUN resolver routing has not converged to the managed gateway'

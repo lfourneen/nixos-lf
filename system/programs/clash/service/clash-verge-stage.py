@@ -30,7 +30,7 @@ ASSETS = {
     'ASN.mmdb': ('asn.mmdb',),
     'BundleMRS.7z': ('bundlemrs.7z',),
 }
-FILES = ('clash-verge.yaml', 'source-manifest.json', *ASSETS)
+FILES = ('clash-verge.yaml', 'source-manifest.json', 'source-data.json', *ASSETS)
 MAX_BYTES = 256 * 1024 * 1024
 
 
@@ -101,6 +101,8 @@ def snapshot_digest(directory):
         except FileNotFoundError:
             if name == 'clash-verge.yaml':
                 raise ValueError('snapshot configuration is missing')
+            if name == 'source-data.json':
+                continue
             document[name] = None
             continue
         with os.fdopen(fd, 'rb') as stream:
@@ -388,6 +390,27 @@ def source_directory(settings, identity=None):
     return target
 
 
+def routing_binding(settings):
+    path = settings.get('routing_state')
+    if not path:
+        return {}
+    record = read_record(path)
+    if record.get('routing_requested') not in ('rules', 'proxy-only') \
+            or type(record.get('routing_epoch')) is not int \
+            or record.get('boot_id') != boot_id(Path(settings['state'])) \
+            or record.get('routing_policy_digest') != validator_policy_digest(settings):
+        raise RefreshError('snapshot mismatch')
+    return {key: record[key] for key in ('routing_requested', 'routing_epoch', 'routing_policy_digest')}
+
+
+def approved_root(settings, source=None):
+    root = (source or source_directory(settings)) / 'approved'
+    binding = routing_binding(settings)
+    if binding:
+        return root / binding['routing_requested']
+    return root
+
+
 def apply_semantic_approval(settings, findings, candidate, baseline):
     if not settings.get('source_root') or not findings:
         return findings, False
@@ -579,8 +602,8 @@ def remember_settled(runtime, state, value, snapshot_at, settings=None):
             base = source_directory(settings, manifest.get('source_id'))
         if manifest.get('revision') != hashlib.sha256(read_input(base, 'registry.json', 0)).hexdigest():
             return  # Registration revoked this candidate while it was observed.
-        root = base / 'approved'
-        root.mkdir(mode=0o700, exist_ok=True)
+        root = approved_root(settings, base)
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
         destination = root / value
         if not destination.exists():
             pending = Path(tempfile.mkdtemp(prefix='.pending-', dir=root))
@@ -601,7 +624,7 @@ def remember_settled(runtime, state, value, snapshot_at, settings=None):
 
 
 def source_baseline(settings, runtime, gid):
-    root = source_directory(settings) / 'approved'
+    root = approved_root(settings)
     record = read_record(root / 'settled.json')
     value = record.get('digest')
     if value is None:
@@ -612,7 +635,7 @@ def source_baseline(settings, runtime, gid):
     if source.is_symlink() or snapshot_digest(source) != value:
         raise ValueError('persistent snapshot mismatch')
     manifest = read_record(source / 'source-manifest.json')
-    registry = json.loads(read_input(root.parent, 'registry.json', 0))
+    registry = json.loads(read_input(source_directory(settings), 'registry.json', 0))
     if manifest.get('source_id') != registry['id']:
         raise ValueError('persistent source identity')
     destination = runtime / 'snapshots' / value
@@ -688,6 +711,11 @@ def complete_commit(runtime, state):
         raise ValueError('proxy intent was revoked during commit')
     directory = checked_snapshot(runtime, commit.get('target'))
     record = commit['record']
+    if record.get('routing_epoch') is not None:
+        selected = read_record(state / 'routing.json')
+        if any(record.get(key) != selected.get(key) for key in
+               ('routing_requested', 'routing_epoch', 'routing_policy_digest')):
+            raise ValueError('snapshot transaction belongs to another routing epoch')
     switch_snapshot(runtime, state, directory, commit['target'])
     pending = state / 'profile-refresh-verifying.json'
     if commit['kind'] == 'import':
@@ -771,13 +799,14 @@ def startup_input(settings):
     """Prefer an intact accepted source under the current managed policy."""
     source = source_directory(settings)
     try:
-        record = json.loads(read_input(source / 'approved', 'settled.json', 0))
+        approved = approved_root(settings, source)
+        record = json.loads(read_input(approved, 'settled.json', 0))
     except FileNotFoundError:
         return source_input(settings)
     value = record.get('digest') if isinstance(record, dict) else None
     if not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value):
         raise RefreshError('snapshot mismatch')
-    directory = source / 'approved' / value
+    directory = approved / value
     snapshot_metadata(directory)
     if directory.is_symlink() or snapshot_digest(directory) != value:
         raise RefreshError('snapshot mismatch')
@@ -787,6 +816,10 @@ def startup_input(settings):
         raise RefreshError('snapshot mismatch')
     if not accepted_policy(settings, directory, manifest):
         return source_input(settings)  # A root policy change still needs a current import.
+    if settings.get('routing_state'):
+        current = read_record((source / 'current').resolve() / 'source-manifest.json')
+        if current.get('local_routing') and current.get('source_data') != manifest.get('source_data'):
+            return source_input(settings)
     return dict(settings, gui_data=str(directory), desktop_uid=0, _accepted_startup=True), str(directory / 'clash-verge.yaml')
 
 
@@ -796,6 +829,12 @@ def copy_candidate_inputs(settings, candidate_config, candidate, gid):
     if settings.get('source_root'):
         write_private(candidate / 'source-manifest.json',
                       read_input(settings['gui_data'], 'source-manifest.json', settings['desktop_uid']), gid)
+        if (Path(settings['gui_data']) / 'source-data.json').exists():
+            data = read_input(settings['gui_data'], 'source-data.json', settings['desktop_uid'])
+            manifest = read_record(Path(settings['gui_data']) / 'source-manifest.json')
+            if manifest.get('source_data') != hashlib.sha256(data).hexdigest():
+                raise ValueError('source content baseline mismatch')
+            write_private(candidate / 'source-data.json', data, gid)
     names = os.listdir(settings['gui_data'])
     for target, aliases in ASSETS.items():
         matches = [name for name in names if name.lower() in aliases]
@@ -956,7 +995,7 @@ def stage_locked(settings, config, validate):
                 # B, but an already accepted snapshot needs no new probation.
                 switch_snapshot(runtime, state, baseline, baseline_digest)
                 audit(state, 'restored', policy, baseline_digest, baseline_digest,
-                      snapshot_at=read_record(source_directory(settings) / 'approved/settled.json')['snapshot_at'],
+                      snapshot_at=read_record(approved_root(settings) / 'settled.json')['snapshot_at'],
                       findings=findings)
                 return
             validated = True
@@ -1002,6 +1041,7 @@ def stage_locked(settings, config, validate):
                                previous_digest=settled_digest, snapshot_at=stamp, audit=findings,
                                previous=str(settled) if settled else None,
                                previous_snapshot_at=settled_at, monotonic_seconds=time.monotonic())
+            transaction.update(routing_binding(settings))
             commit_snapshot(runtime, state, candidate_digest, transaction)
             if used_approval:
                 (source_directory(settings) / 'approval.json').unlink(missing_ok=True)
@@ -1084,6 +1124,10 @@ def verify_pending_refresh(settings, record):
                and health.get('boot_id') == boot_id(state) and health.get('digest') == current
                and record['at'] <= health.get('at', 0) <= time.time()
                and time.time() - health['at'] <= 60)
+    binding = routing_binding(settings)
+    if any(record.get(key) != value for key, value in binding.items()):
+        raise ValueError('pending routing transaction differs')
+    healthy = healthy and all(health.get(key) == value for key, value in binding.items())
     previous = Path(record['previous']) if record.get('previous') else None
     if healthy:
         remember_settled(runtime, state, current, record['snapshot_at'], settings)
@@ -1135,13 +1179,17 @@ def service_request(settings, method, endpoint, payload=None, timeout=15):
 
 
 def restart_core(settings, restart=True):
-    try:
-        status = service_request(settings, 'GET', '/status', timeout=1)
-    except (OSError, http.client.HTTPException):
-        # Recover the unit only when its IPC transport is unavailable.
-        subprocess.run([settings['systemctl'], 'restart', 'clash-verge.service'], check=True, timeout=30)
-        status = None
+    status = None
+    if restart:
+        try:
+            status = service_request(settings, 'GET', '/status', timeout=1)
+        except (OSError, http.client.HTTPException):
+            # Recover an existing helper only when its IPC transport failed.
+            subprocess.run([settings['systemctl'], 'restart', 'clash-verge.service'], check=True, timeout=30)
     deadline = time.monotonic() + 18
+    # start-source follows systemctl start. Type=simple becomes active before
+    # desired-state restoration exposes IPC; wait for it without killing the
+    # healthy helper and the core it may already be starting.
     # A missing or stale desired-state must not leave only the helper running.
     # The IPC request uses fixed root-supplied paths, never a GUI-supplied core.
     while status is None:

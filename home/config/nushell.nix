@@ -277,6 +277,30 @@ in
       }
     }
 
+    def clash-routing [mode: string] {
+      let result = (^sudo proxy-control routing $mode | complete)
+      let message = if ($result.stdout | str trim | is-not-empty) {
+        $result.stdout | lines | last
+      } else if ($result.stderr | str trim | is-not-empty) {
+        $result.stderr | lines | last
+      } else {
+        $"Routing switch failed: ($mode)"
+      }
+      if $result.exit_code == 0 {
+        print $"(ansi green_bold)($message)(ansi reset)"
+      } else {
+        error make -u {msg: $message}
+      }
+    }
+
+    def clash-rules [] {
+      clash-routing rules
+    }
+
+    def clash-proxy-only [] {
+      clash-routing proxy-only
+    }
+
     # Live outbound TCP audit (needs root). connect(2) is pre-NAT, so
     # redirected flows show their real public IP, not :${gostRedirect}.
     # bpftrace (BTF) works on new kernels where bcc's headers fail.

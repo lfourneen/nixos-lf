@@ -13,6 +13,7 @@ let
     systemctl = "${pkgs.systemd}/bin/systemctl";
 
     policy = {
+      runtimeRouting = config.my.proxy.runtimeRouting;
       native = {
         mode = config.my.hardening.directEgress.mode;
         inherit (config.my.hardening) allowPrivateEgress;

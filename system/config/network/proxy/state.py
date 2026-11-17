@@ -317,8 +317,39 @@ def subscription_health(profiles, refresh=None, now=None, fetch=None):
                 age_days=int((now - reference) // 86400) if reference is not None else None)
 
 
+def routing_view(root=Path('/run'), policy=None, boot_id=None):
+    root = Path(root)
+    policy = read(root / 'proxy-mode/state.json') if policy is None else policy
+    path = root / 'proxy-mode/routing.json'
+    required = 'routing_schema' in policy or path.exists()
+    if not required:
+        return {}
+    result = dict(routing_schema=1, routing_requested='unknown', routing_applied='unknown',
+                  routing_epoch=None, routing_policy_digest=None, routing_phase='unknown', routing_consistent=False)
+    try:
+        info = path.lstat()
+        value = read(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 \
+                or value.get('schema') != 1 or value.get('boot_id') != (boot_id or boot_identity(root)) \
+                or value.get('routing_requested') not in ('rules', 'proxy-only') \
+                or value.get('routing_applied') not in ('rules', 'proxy-only', None) \
+                or value.get('routing_phase') not in ('preparing', 'verifying', 'ready', 'failed') \
+                or type(value.get('routing_epoch')) is not int or value['routing_epoch'] < 1 \
+                or not isinstance(value.get('routing_policy_digest'), str) \
+                or not re.fullmatch('[a-f0-9]{64}', value['routing_policy_digest']):
+            return result
+        if hashlib.sha256((root / 'proxy-mode/routing-active/policy.json').read_bytes()).hexdigest() != value['routing_policy_digest']:
+            return result
+    except OSError:
+        return result
+    keys = ('routing_requested', 'routing_applied', 'routing_epoch', 'routing_policy_digest', 'routing_phase')
+    result.update({key: value[key] for key in keys})
+    result['routing_consistent'] = all(policy.get(key) == value[key] for key in keys)
+    return result
+
+
 def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
-              verification_maximum=420, boot_id=None):
+              verification_maximum=420, boot_id=None, routing_target=None, routing_epoch=None):
     root = Path(root)
     now = time.clock_gettime(time.CLOCK_BOOTTIME) if now is None else now
     if boot_id is None:
@@ -338,6 +369,16 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
             target = "proxy"
     version = policy.get("policy_version", policy.get("version", -1))
     reasons = []
+    routing = routing_view(root, policy, boot_id)
+    if routing and target == 'proxy':
+        if not routing['routing_consistent']:
+            reasons.append('routing authority differs from applied policy')
+        if routing['routing_phase'] != 'ready' or routing['routing_applied'] != routing['routing_requested']:
+            reasons.append('routing transaction pending or failed')
+        if routing_target is not None and routing['routing_applied'] != routing_target:
+            reasons.append('another routing target is active')
+        if routing_epoch is not None and routing['routing_epoch'] != routing_epoch:
+            reasons.append('another routing epoch is active')
     for name, value in [("heartbeat", heartbeat), ("DNS", dns), ("relay", relay),
                         ("DNS leases", permissions)]:
         stamp = value.get("monotonic_seconds", -1)
@@ -353,6 +394,9 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     lease_active = (type(until) in (int, float) and math.isfinite(until) and until > now
                     and authorization.get('boot_id') == boot_id
                     and authorization.get('policy_version') == version)
+    if routing and target == 'proxy':
+        lease_active = lease_active and all(authorization.get(key) == routing[key]
+            for key in ('routing_epoch', 'routing_policy_digest'))
     if lease_required and not lease_active:
         reasons.append('B kernel authorization expired or pending')
     if heartbeat.get("mode") != target:
@@ -394,7 +438,20 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     preflight = read(root / 'proxy-mode/preflight.json')
     if preflight.get('boot_id') != boot_id or not fresh(preflight.get('monotonic_seconds'), now, 86400):
         preflight = {}
-    return {"ready": not reasons, "target": target, "policy_version": version,
+    health = read(root / 'proxy-mode/health.json')
+    health_current = health.get('boot_id') == boot_id and fresh(health.get('monotonic_seconds'), now, maximum)
+    if routing:
+        health_current = health_current and all(health.get(key) == routing[key]
+            for key in ('routing_epoch', 'routing_policy_digest'))
+    core_mode = health.get('core_mode') if health_current and health.get('core_mode') in ('rule', 'global', 'direct') else 'unknown'
+    identity = (health.get('exit_identities') or {}).get('mixed') if health_current else None
+    identity = identity[:12] if isinstance(identity, str) and re.fullmatch('[a-f0-9]{64}', identity) else None
+    return {**routing, "ready": not reasons, "target": target, "policy_version": version,
+            'core_mode': core_mode, 'sampled_egress_identity': identity,
+            'capabilities': {'dns': ('validated-via-proxy' if routing.get('routing_applied') == 'proxy-only'
+                and health_current and health.get('real_dns_ok') is True else 'pending' if routing.get('routing_requested') == 'proxy-only'
+                else 'policy-selected'), 'udp': 'not-probed',
+                'icmp': 'blocked' if routing.get('routing_requested') == 'proxy-only' else 'not-probed'},
             "mode": policy.get("mode", "unknown"), "reasons": reasons,
             # A failed verdict is reported, not treated as an outage: Mode A keeps
             # a bounded plaintext window while the encrypted path is retried.
@@ -419,7 +476,7 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
             "plaintext_override": dns.get('plaintext_override', False),
             "window_remaining": max(0, round(dns.get('window_until', 0) - now)),
             "last_preflight": preflight,
-            "last_proxy_health": read(root / 'proxy-mode/health.json'),
+            "last_proxy_health": health,
             "profile_refresh": profile_refresh(root, boot=boot_id),
             "source_fetch": source_fetch(root, boot=boot_id),
             "source_trust": source_trust(root, boot_id),
@@ -435,8 +492,11 @@ if __name__ == "__main__":
     parser.add_argument("target", choices=["proxy", "direct", "auto"])
     parser.add_argument("--max-age", type=int, default=120)
     parser.add_argument("--verification-max-age", type=int, default=420)
+    parser.add_argument('--routing', choices=['rules', 'proxy-only'])
+    parser.add_argument('--routing-epoch', type=int)
     args = parser.parse_args()
     result = readiness(target=args.target, maximum=args.max_age,
-                       verification_maximum=args.verification_max_age)
+                       verification_maximum=args.verification_max_age,
+                       routing_target=args.routing, routing_epoch=args.routing_epoch)
     print(json.dumps(result, separators=(",", ":")))
     raise SystemExit(0 if result["ready"] else 1)

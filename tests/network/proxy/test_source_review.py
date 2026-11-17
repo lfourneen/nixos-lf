@@ -50,6 +50,7 @@ class ComparisonTests(unittest.TestCase):
         self.stage = SimpleNamespace(
             source_input=lambda _: ({}, self.candidate / 'clash-verge.yaml'),
             source_directory=lambda _: self.source,
+            approved_root=lambda _, source: source / 'approved',
             snapshot_metadata=lambda _: None,
             snapshot_digest=lambda directory: hashlib.sha256((directory / 'clash-verge.yaml').read_bytes()).hexdigest(),
             read_record=lambda path: json.loads(path.read_text()))

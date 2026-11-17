@@ -18,6 +18,13 @@ let
       local-data: "node.fixture.example. 60 IN A 203.0.113.10"
       local-zone: "tun.fixture.example." static
       local-data: "tun.fixture.example. 60 IN A 203.0.113.10"
+      ${lib.optionalString config.my.proxy.runtimeRouting ''
+      domain-insecure: source.fixture.example.
+      domain-insecure: source-node.fixture.example.
+      domain-insecure: source-node-updated.fixture.example.
+      domain-insecure: domestic.fixture.example.
+      domain-insecure: denied.fixture.example.
+      ''}
     EOF
   '';
 

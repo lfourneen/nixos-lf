@@ -258,7 +258,7 @@ def fetch(spec, deadline, budget, resolver=socket.getaddrinfo, connection=Connec
     raise Refused('redirect count')
 
 
-def render(document, payloads, policy, forced_domains=(), probe_domains=(), remote_only_catchall=False):
+def render(document, payloads, policy, forced_domains=(), probe_domains=(), remote_only_catchall=False, source=None):
     document = json.loads(json.dumps(document, allow_nan=False))
     # Only subscription routing data survives. Managed listeners/DNS/TUN come
     # exclusively from the immutable Nix policy, never from GUI merge scripts.
@@ -328,7 +328,12 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
     catchall = rules[-1].split(',')
     if len(catchall) != 2 or catchall[0].upper() not in ('MATCH', 'FINAL'):
         raise Refused('catchall')
-    if remote_only_catchall:
+    if source is not None:
+        source.update(json.loads(json.dumps(result)))
+    proxy_only = policy.get('lf-private-targets', {}).get('proxy-only') is True
+    if proxy_only and any(node.get('ports') or node.get('hop-interval') for node in nodes):
+        raise Refused('proxy-only requires fixed node ports')
+    if remote_only_catchall or proxy_only:
         by_name = {group['name']: group for group in groups}
         cache = {}
         def prune(name, seen):
@@ -353,7 +358,7 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
     remote = [n['name'] for n in nodes if n.get('type') not in ('direct', 'compatible', 'reject', 'dns')]
     if not remote:
         raise Refused('empty nodes')
-    groups.append({'name': 'lf-remote', 'type': 'select', 'proxies': remote})
+    groups.append({'name': 'lf-remote', 'type': 'select', 'proxies': [catchall[1]] if proxy_only else remote})
     # Split-routing and IP-quality checks must not see a direct connection when
     # the subscription sends GEOIP,CN traffic DIRECT. Prepend the registered
     # probe suffixes with the same group the subscription's catch-all selects;
@@ -364,6 +369,8 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
         if 'DOMAIN-SUFFIX,' + domain + ',' + target not in rules]
     result['rules'] = ['IN-NAME,lf-strict,lf-remote'] + [
         'DOMAIN,' + domain + ',lf-remote' for domain in forced_domains] + injected + rules
+    if proxy_only:
+        result['rules'] = ['IN-NAME,lf-strict,lf-remote', 'MATCH,' + catchall[1]]
     for key, value in policy.items():
         target = result
         parts = key.split('.')
@@ -454,11 +461,18 @@ def prepare(request, download=None, resolver=socket.getaddrinfo):
             raise Refused('render')
         payloads[name] = step('fetch', download, registered[name], deadline, budget)
         hashes['provider:' + name] = hashlib.sha256(payloads[name]).hexdigest()
+    source = {}
     rendered = step('render', render, document, payloads, policy,
                     request.get('forced_domains', []), request.get('probe_domains', []),
-                    request.get('remote_only_catchall', False))
+                    request.get('remote_only_catchall', False), source)
     config, dropped = step('pin-addresses', pin_servers, rendered, resolver)
-    return {'yaml': config.decode(), 'responses': hashes, 'dropped': dropped}
+    pinned = load(config)['proxies']
+    retained = {node['name'] for node in pinned}
+    removed = {node['name'] for node in source['proxies']} - retained
+    source['proxies'] = pinned
+    prune_groups(source, removed)
+    return {'yaml': config.decode(), 'responses': hashes, 'dropped': dropped,
+            'source_data': json.dumps(source, sort_keys=True, ensure_ascii=False)}
 
 
 def main():

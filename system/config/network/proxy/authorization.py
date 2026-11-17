@@ -15,6 +15,16 @@ def read(path):
     return json.loads(path.read_text())
 
 
+def full_routing_proof(proof, target):
+    scope = proof.get('scope')
+    requests = scope.get('requests') if isinstance(scope, dict) else None
+    required = {'mixed-tcp', 'fake-ip-tcp'} | ({'real-address-dns'} if target == 'proxy-only' else set())
+    return (proof.get('ok') is True and isinstance(requests, list)
+        and all(isinstance(value, str) for value in requests) and required <= set(requests)
+        and all(proof.get(key) is True for key in ('data_plane_ok', 'route_ok', 'dns_ok', 'tun_ok', 'config_ok', 'listener_ok'))
+        and (target != 'proxy-only' or proof.get('real_dns_ok') is True))
+
+
 def grant(settings, version, root=Path('/run'), now=None, run=subprocess.run):
     root = Path(root)
     state = root / 'proxy-mode'
@@ -31,6 +41,16 @@ def grant(settings, version, root=Path('/run'), now=None, run=subprocess.run):
     observed = proof.get('monotonic_seconds')
     previous = read(state / 'authorization.json') if (state / 'authorization.json').exists() else {}
     epoch = (state / 'authorization-epoch').read_text().strip() if (state / 'authorization-epoch').exists() else '0'
+    routing = {}
+    if 'routing_epoch' in policy:
+        selected = read(state / 'routing.json')
+        routing = {key: policy.get(key) for key in ('routing_epoch', 'routing_policy_digest')}
+        if (not full_routing_proof(proof, policy.get('routing_requested'))
+                or policy.get('routing_applied') != policy.get('routing_requested')
+                or policy.get('routing_phase') != 'ready'
+                or selected.get('boot_id') != boot
+                or any(selected.get(key) != value or proof.get(key) != value for key, value in routing.items())):
+            raise ValueError('routing proof belongs to another transaction')
     if (policy.get('mode') != 'proxy' or policy.get('policy_version') not in (version, version + 1)
             or (state / 'intent').read_text().strip() != 'proxy'
             or (root / 'dns-policy/sleeping').exists()
@@ -50,7 +70,7 @@ def grant(settings, version, root=Path('/run'), now=None, run=subprocess.run):
     # the same proof. Only a new complete health round can retry authorization.
     temporary = state / 'authorization.json.tmp'
     temporary.write_text(json.dumps(dict(boot_id=boot, proof_id=proof['proof_id'],
-        policy_version=policy['policy_version'], until=0)) + '\n')
+        policy_version=policy['policy_version'], until=0, **routing)) + '\n')
     temporary.replace(state / 'authorization.json')
     transaction = ('flush set inet lf_filter b_authorization\n'
         'add element inet lf_filter b_authorization { '
@@ -58,7 +78,7 @@ def grant(settings, version, root=Path('/run'), now=None, run=subprocess.run):
     run([settings['nft'], '-f', '-'], input=transaction, text=True,
         capture_output=True, timeout=5, check=True)
     temporary.write_text(json.dumps(dict(boot_id=boot, proof_id=proof['proof_id'],
-        policy_version=policy['policy_version'], until=observed + seconds)) + '\n')
+        policy_version=policy['policy_version'], until=observed + seconds, **routing)) + '\n')
     temporary.replace(state / 'authorization.json')
 
 

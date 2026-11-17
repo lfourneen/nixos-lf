@@ -191,6 +191,16 @@ GUI 补丁在初始化、helper 故障和退出期间保持声明的 TUN 值，�
 
 ## DNS 与浏览器集成
 
+运行时路由使用两组不可变策略/健康/审计文件，由 root 选择一个符号链接。
+保留 operator → source → authorization → policy 的锁顺序；探针在 policy 锁外运行，提交前重新检查路由 epoch 与策略摘要。
+应用子模式及续签内核租约均要求 mixed TCP、fake-IP TCP、DNS、监听与配置的完整证明，proxy-only 另需经核心验证器的真实地址 DNS 证明。
+来源下载在释放 source 锁等待网络后，重新检查选择、登记、策略与 epoch。
+原始 Rule 数据及固定节点保存在参与摘要的 `source-data.json`，每个来源和子模式分别保存已接受快照。
+策略切换关闭旧核心/relay 流、清空解析缓存，并保留跨重启的 fake-IP 域名映射。
+来源启动会等待刚启动的 helper 暴露 IPC，不能仅因启动延迟重启该 helper；既有核心的恢复仍保留 IPC 传输故障时的单元重启。
+独立的 `lf_routing` 表在基础防火墙重载后仍须执行并核对声明的节点传输元组，已有直连回复不构成例外。
+修改这些路径时运行 `proxy-routing`、`proxy-routing-vm`。
+
 Dnsmasq patch 是 `network.nix` 的内联 `--replace-fail`。
 Strict-order 重试中，最后服务器的 UDP SERVFAIL/REFUSED 应返回客户端并保留 EDE。
 使用 sent-to 数组索引，支持重复端点。
@@ -203,10 +213,10 @@ Chrony 仍须强制 NTS 和证书时间校验。
 
 启用 `localDnssec` 时，[core-validator.nix](../../system/config/network/dns/core-validator.nix) 在核心命名空间中分别运行应用与基础设施验证器。
 保留独立查询/资源预算、持久信任锚，以及对客户端 CD 绕过的拒绝。
-本地验证与上游选择分别配置：B 应用 DNS 保留国内分流，`geosite:cn` 直连使用国内验证用 DoH 端点，其余使用经 `lf-remote` 传输的 Cloudflare/Google DoH，节点引导保留独立加密解析器。
+本地验证与上游选择分别配置：rules 应用 DNS 保留国内分流，`geosite:cn` 直连使用国内验证用 DoH 端点，其余使用经 `lf-remote` 传输的 Cloudflare/Google DoH，节点引导保留独立加密解析器。
 Root 管理的 `lf-dns-transport` 使用独立上游列表（`mihomoDomesticValidatingDnsUpstreams`），不得继承 A 的 DoT 列表。
 保留 `patch_mihomo.py` 中的配置解析及 executor 传输接入点、完整 DNSSEC 材料、TLS 校验，以及不复用普通缓存的原始转发。
-公网应用查询保留国内分流：`geosite:cn` 经国内验证用 DoH 端点直连解析，其余使用经远程代理的 Cloudflare/Google DoH。国内端点必须回传完整 DNSSEC 材料，变更须同时保留分流与该要求。
+Rules 应用查询保留此分流与完整 DNSSEC 材料。Proxy-only 将两个验证器的传输绑定到经剪枝远程兜底组的认证字面地址 DoH，禁用直连引导。来源/后端的真实地址 DNS 保留固定 Unix 桥接及独立请求预算，不回退宿主解析器。
 私有 TUN 的 UID 排除必须与验证器仅向 loopback 查询的防火墙、应用访问全部验证器/传输端口的拒绝配套保留。
 Mihomo 必须在公网 fake-IP 合成和公网拨号地址固定之前验证，清除合成地址的 AD，并保留 HTTPS/SVCB 参数。
 已知 profile 迁移与外来值、controller 弱化写入的拒绝须保持独立。
@@ -363,6 +373,8 @@ VM 检查运行在隔离的虚拟机中，硬件加速需要 KVM 权限。
 | `network-identity-vm` | 真实有线/Wi-Fi DHCPv6 共存、新双栈身份报文、UUID/epoch/随机轮换、稳定/固定/硬件行为、profile 优先级、恢复及宿主密钥保留 |
 | `proxy-regressions` | 健康、状态、规则、DNS 租约、有界客户端 DNS 重试、预算及监督器 |
 | `proxy-profile`、`proxy-gui` | 生成配置变体、策略/模板一致、GUI 默认与进程 wrapper |
+| `proxy-routing` | 本次启动的不可变选择、完整证明与 epoch 绑定、准备失败、清理后的状态及真实 DNS 截止/回退拒绝 |
+| `proxy-routing-vm` | 登记来源与生产命名空间：双向子模式切换、原始规则恢复、物理对端仅节点外发、真实 DNS/来源刷新、旧回复、访客拒绝、幂等、并发选择、off/on、重启及内核到期撤权 |
 | `proxy-rules`、`proxy-egress-rules` | 构建期 LKL nft 解析完整兼容/受限模式规则 |
 | `proxy-firewall-vm` | A/C 表归属、外部表保留、加载被拒绝时的回滚、迁移锁、幂等及迁移目标名称复用 |
 | `proxy-dns-strict-rules` | LKL 解析完整严格 DNS 防火墙规则 |

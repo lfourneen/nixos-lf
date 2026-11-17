@@ -37,6 +37,7 @@ def automatic_download_ready(settings, stage):
         now = time.clock_gettime(time.CLOCK_BOOTTIME)
         policy = stage.read_record(state / 'state.json').get('policy_version')
         binding = dict(boot_id=stage.boot_id(state), digest=digest, policy_version=policy)
+        binding.update(stage.routing_binding(settings))
         stable = stage.read_record(stable_path)
         if digest and all(stable.get(key) == value for key, value in binding.items()):
             allowed = 90 <= now - stable.get('since', now)
@@ -72,8 +73,12 @@ def healthy_runtime(settings, stage):
                               state / 'authorized-config', fast=True)
         health = stage.read_record(state / 'health.json')
         paths = {'mixed-tcp'} | ({'fake-ip-tcp'} if settings.get('require_tun') else set())
+        routing = stage.routing_binding(settings)
+        if routing.get('routing_requested') == 'proxy-only':
+            paths.add('real-address-dns')
         if (health.get('ok') is not True or health.get('boot_id') != boot
                 or health.get('digest') != digest or health.get('policy_version') != ready['policy_version']
+                or any(health.get(key) != value for key, value in routing.items())
                 or not paths <= set(health.get('scope', {}).get('requests', []))
                 or not readiness.fresh(health.get('monotonic_seconds'),
                     time.clock_gettime(time.CLOCK_BOOTTIME), settings.get('state_max_age', 120))):
@@ -92,7 +97,8 @@ def source_binding(settings, stage):
     inputs, config = stage.source_input(settings)
     source = stage.source_directory(settings)
     try:
-        record = json.loads(stage.read_input(source / 'approved', 'settled.json', os.geteuid()))
+        approved = stage.approved_root(settings, source)
+        record = json.loads(stage.read_input(approved, 'settled.json', os.geteuid()))
         if not isinstance(record, dict) or not isinstance(record.get('digest'), str):
             raise stage.RefreshError('snapshot mismatch')
         baseline_id = record['digest']
@@ -102,7 +108,7 @@ def source_binding(settings, stage):
     if baseline_id is not None:
         if not isinstance(baseline_id, str) or not re.fullmatch('[0-9a-f]{64}', baseline_id):
             raise stage.RefreshError('snapshot mismatch')
-        baseline = source / 'approved' / baseline_id
+        baseline = approved / baseline_id
         stage.snapshot_metadata(baseline)
         if baseline.is_symlink() or stage.snapshot_digest(baseline) != baseline_id:
             raise stage.RefreshError('snapshot mismatch')
@@ -115,6 +121,7 @@ def source_binding(settings, stage):
         policy=hashlib.sha256(Path(settings['managed_policy']).read_bytes()).hexdigest(),
         validator_policy=hashlib.sha256(Path(os.environ.get(
             'LF_MANAGED_PROXY_POLICY', settings['managed_policy'])).read_bytes()).hexdigest())
+    identity.update(stage.routing_binding(settings))
     return inputs, config, baseline, identity
 
 

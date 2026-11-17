@@ -29,6 +29,8 @@ REQUIRED = {
     'firewall': {'proxy-rules', 'proxy-egress-rules', 'proxy-firewall-vm', 'proxy-network-vm', 'proxy-assurance-vm'},
     'link-identity': {'network-identity-config', 'network-identity-vm', 'proxy-control-vm', 'proxy-network-vm'},
 }
+for component in ('controlled-source', 'mihomo', 'clash', 'dns', 'firewall'):
+    REQUIRED[component] |= {'proxy-routing', 'proxy-routing-vm'}
 SOURCE_GROUPS = {
     'controlled-source': {'mihomo', 'helper'},
     'browser-isolation': {'firefox', 'bubblewrap', 'systemd', 'mihomo', 'dbusProxy', 'seccomp'},

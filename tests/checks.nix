@@ -21,6 +21,7 @@ let
         modules = [ ({ lib, ... }: {
           my.proxy.subscriptionTrust = lib.mkForce "source";
           my.proxy.controlledSources = lib.mkForce false;
+          my.proxy.runtimeRouting = lib.mkForce false;
           my.proxy.strictBrowser = lib.mkForce false;
           my.proxy.profileRefreshPolicy = lib.mkForce "strict";
           my.proxy.subscriptionAudit = lib.mkForce "warn";
@@ -32,6 +33,7 @@ let
       refreshClashPackage = (self.nixosConfigurations.lfour.extendModules {
         modules = [ ({ lib, ... }: {
           my.proxy.controlledSources = lib.mkForce false;
+          my.proxy.runtimeRouting = lib.mkForce false;
           my.proxy.strictBrowser = lib.mkForce false;
           my.proxy.subscriptionTrust = lib.mkForce "source";
           my.proxy.profileRefreshPolicy = lib.mkForce "auto";
@@ -50,12 +52,16 @@ let
         }) ];
       }).config.programs.clash-verge.package;
 
+      managedClashPackage = (self.nixosConfigurations.lfour.extendModules {
+        modules = [ ({ lib, ... }: { my.proxy.runtimeRouting = lib.mkForce false; }) ];
+      }).config.programs.clash-verge.package;
+
       strictDnsConfig = (self.nixosConfigurations.lfour.extendModules {
         modules = [ { my.proxy.dnsEncryption = "strict"; } ];
       }).config;
 
       uniformProxyConfig = (self.nixosConfigurations.lfour.extendModules {
-        modules = [ { my.proxy.proxyOnly = true; } ];
+        modules = [ ({ lib, ... }: { my.proxy.proxyOnly = true; my.proxy.runtimeRouting = lib.mkForce false; }) ];
       }).config;
 
       identityConfig = (self.nixosConfigurations.lfour.extendModules {
@@ -156,6 +162,7 @@ let
         }) ]; }).config;
 
         httpOnly = (self.nixosConfigurations.lfour.extendModules { modules = [ ({ lib, ... }: {
+          my.proxy.runtimeRouting = lib.mkForce false;
           my.proxy.localDnssec = lib.mkForce false;
           my.proxy.tunMode = lib.mkForce false;
           home-manager.users.lfour.my.firefox.networkPath = lib.mkForce "http-proxy";
@@ -348,8 +355,24 @@ let
 
       proxy-managed-netns-vm = import ./network/proxy/control-vm.nix {
         inherit pkgs;
+        clashPackage = managedClashPackage;
+        managedSources = true;
+      };
+
+      proxy-routing = pkgs.runCommand "proxy-routing-transactions" {
+        nativeBuildInputs = [ (pkgs.python3.withPackages (p: [ p.pyyaml ])) ];
+      } ''
+        export PYTHONDONTWRITEBYTECODE=1
+        python3 ${./network/proxy/test_routing.py} ${repoSource}
+        touch "$out"
+      '';
+
+      proxy-routing-vm = import ./network/proxy/control-vm.nix {
+        inherit pkgs;
         clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
         managedSources = true;
+        assurance = true;
+        routing = true;
       };
 
       proxy-dns-strict-vm = import ./network/proxy/control-vm.nix {

@@ -75,6 +75,9 @@ def drop_groups(settings):
             ('from', 'guest-source-policy'), ('from', 'guest-target-policy'),
             ('host', 'guest-host-service-policy'), ('return', 'guest-reply-target-policy'),
             ('to', 'guest-reply-identity'), ('host_reply', 'guest-host-reply-policy')))
+    if settings['policy'].get('runtimeRouting'):
+        groups.extend([('lf_routing_input', 'routing-input-policy', 'strict-host-replies'),
+                       ('lf_routing_output', 'routing-output-policy', 'strict-host-and-forwarded-egress')])
     return groups
 
 
@@ -96,7 +99,8 @@ def summarize_drops(document, settings):
         rule = entry.get('rule', {})
         record = chain or rule
         name = record.get('name') if chain else record.get('chain')
-        if record.get('family') != 'inet' or record.get('table') != 'lf_filter' or name not in by_chain:
+        table = 'lf_routing' if name in ('lf_routing_input', 'lf_routing_output') else 'lf_filter'
+        if record.get('family') != 'inet' or record.get('table') != table or name not in by_chain:
             continue
         for reason in by_chain[name]:
             groups[name, reason]['installed'] = True
@@ -134,8 +138,11 @@ def collect_drops(settings):
     path = '/run/proxy-mode/state.json'
     before = read_json(path)
     snapshot = command([settings['nft'], '-j', 'list', 'table', 'inet', 'lf_filter'])
+    routing_snapshot = command([settings['nft'], '-j', 'list', 'table', 'inet', 'lf_routing']) \
+        if settings['policy'].get('runtimeRouting') else None
     after = read_json(path)
-    fields = ('mode', 'reason', 'policy_version', 'revision', 'boot_id')
+    fields = ('mode', 'reason', 'policy_version', 'revision', 'boot_id',
+              'routing_epoch', 'routing_policy_digest', 'routing_phase')
     policy = {key: after.get(key) for key in fields} if isinstance(after, dict) else None
     result = dict(available=False, error=snapshot['error'], policy=policy,
                   state_consistent=isinstance(before, dict) and isinstance(after, dict)
@@ -146,7 +153,12 @@ def collect_drops(settings):
         try:
             if len(snapshot['output']) > 2 * 1024 * 1024:
                 raise ValueError('oversized nft snapshot')
-            result['groups'] = summarize_drops(json.loads(snapshot['output']), settings)
+            document = json.loads(snapshot['output'])
+            if routing_snapshot is not None:
+                if not routing_snapshot['available'] or len(routing_snapshot['output']) > 2 * 1024 * 1024:
+                    raise ValueError('routing snapshot unavailable')
+                document['nftables'].extend(json.loads(routing_snapshot['output'])['nftables'])
+            result['groups'] = summarize_drops(document, settings)
             result.update(available=True, error=None)
         except (ValueError, KeyError, TypeError, AttributeError):
             result['error'] = 'invalid-snapshot'
@@ -174,6 +186,13 @@ def main():
     spec.loader.exec_module(state)
     if args.policy_only:
         policy = dict(settings['policy'])
+        policy['routing'] = state.routing_view()
+        current = state.readiness(target='auto')
+        policy['effective'] = dict(routing=current.get('routing_applied', 'unknown'),
+            core_mode=current.get('core_mode', 'unknown'), capabilities=current.get('capabilities', {}),
+            sampled_egress_identity=current.get('sampled_egress_identity'),
+            native_egress='proxy-only-minimal' if current.get('routing_applied') == 'proxy-only'
+                else 'configured-rules' if current.get('routing_applied') == 'rules' else 'unknown')
         policy['profile_refresh'] = state.profile_refresh(history=True)
         print(json.dumps(policy, ensure_ascii=False, indent=2))
         return
@@ -202,6 +221,7 @@ def main():
         time.sleep(max(0, args.sample_seconds - (time.monotonic() - started)))
     result["services"] = command(service_args)
     result["drops"] = collect_drops(settings)
+    result['routing'] = state.routing_view()
     result["profile_refresh"] = state.profile_refresh(history=True)
     if args.deep:
         result['core_recovery'] = {

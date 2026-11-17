@@ -89,8 +89,9 @@ def dns_checks():
     assert result.returncode != 0
     # The local validator must retain the encrypted proxy upstream even when
     # Mode A's authenticated resolver returns a wrong unsigned address.
-    host_answer = query('unsigned.fixture.example', 1055)
-    assert '203.0.113.66' in host_answer.to_text(), host_answer
+    strict = json.loads(Path('/run/proxy-mode/state.json').read_text()).get('routing_applied') == 'proxy-only'
+    host_answer = query('unsigned.fixture.example', 1056 if strict else 1055)
+    assert ('203.0.113.42' if strict else '203.0.113.66') in host_answer.to_text(), host_answer
     run('curl', '--noproxy', '', '--socks5-hostname', '127.0.0.1:7897',
         '-fsS', '--max-time', '5', 'http://unsigned.fixture.example:8080/')
     queries = [json.loads(line) for line in Path('/run/netsec-doh.jsonl').read_text().splitlines()]
@@ -263,6 +264,12 @@ def save(path, value):
     temporary.replace(path)
 
 
+def lease_endpoints():
+    return ((socket.AF_INET, '203.0.113.10', 4), (socket.AF_INET6, '2001:db8:ffff::10', 6)) \
+        if os.environ.get('NETSEC_LEASE_PUBLIC') == '1' else \
+        ((socket.AF_INET, '100.67.0.1', 4), (socket.AF_INET6, 'fd42:96::1', 6))
+
+
 def peer():
     counts = dict(tcp4=0, udp4=0, tcp6=0, udp6=0)
     def connection(stream, label):
@@ -298,7 +305,7 @@ def peer():
                         pass
                     for client in clients:
                         server.sendto(b'reply\n', client)
-    for family, address, version in ((socket.AF_INET, '100.67.0.1', 4), (socket.AF_INET6, 'fd42:96::1', 6)):
+    for family, address, version in lease_endpoints():
         for kind, transport in ((socket.SOCK_STREAM, 'tcp'), (socket.SOCK_DGRAM, 'udp')):
             threading.Thread(target=listener, args=(family, address, kind, transport + str(version)), daemon=True).start()
     while True:
@@ -308,7 +315,7 @@ def peer():
 
 def client():
     streams, counts = [], {}
-    for family, address, version in ((socket.AF_INET, '100.67.0.1', 4), (socket.AF_INET6, 'fd42:96::1', 6)):
+    for family, address, version in lease_endpoints():
         for kind, transport in ((socket.SOCK_STREAM, 'tcp'), (socket.SOCK_DGRAM, 'udp')):
             stream = socket.socket(family, kind)
             stream.settimeout(2)
@@ -329,11 +336,23 @@ def client():
 
 
 def lease():
-    run('systemd-run', '--unit=assurance-peer', 'ip', 'netns', 'exec', 'outside', sys.executable, __file__, 'peer')
+    public = json.loads(Path('/run/proxy-mode/state.json').read_text()).get('routing_applied') == 'proxy-only'
+    environment = ['--setenv=NETSEC_LEASE_PUBLIC=1'] if public else []
+    if public:
+        run('ip', '-n', 'outside', '-6', 'addr', 'replace', '2001:db8:ffff::10/128', 'dev', 'peer0', 'nodad')
+    run('systemd-run', *environment, '--unit=assurance-peer', 'ip', 'netns', 'exec', 'outside', sys.executable, __file__, 'peer')
     time.sleep(1)
-    run('systemd-run', '--unit=assurance-client', 'setpriv', '--reuid=1000', '--clear-groups', sys.executable, __file__, 'client')
-    wait(lambda: Path('/tmp/assurance-client.json').exists() and
-         all(value > 0 for value in json.loads(Path('/tmp/assurance-client.json').read_text()).values()))
+    run('systemd-run', *environment, '--unit=assurance-client', 'setpriv', '--reuid=1000', '--clear-groups', sys.executable, __file__, 'client')
+    try:
+        wait(lambda: Path('/tmp/assurance-client.json').exists() and
+             all(value > 0 for value in json.loads(Path('/tmp/assurance-client.json').read_text()).values()))
+    except AssertionError:
+        for side in ('client', 'peer'):
+            path = Path('/tmp/assurance-' + side + '.json')
+            print(side, path.read_text() if path.exists() else 'missing', flush=True)
+        print(run('journalctl', '-u', 'assurance-client', '-u', 'assurance-peer',
+                  '--no-pager', '-n', '30').stdout, flush=True)
+        raise
     pid = int(run('systemctl', 'show', '-p', 'MainPID', '--value', 'proxy-mode.service').stdout)
     os.kill(pid, signal.SIGSTOP)
     try:

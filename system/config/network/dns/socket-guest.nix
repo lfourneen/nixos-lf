@@ -12,7 +12,7 @@ let
     no-resolv
     no-hosts
     cache-size=1024
-    server=127.0.0.1#${toString m.ports.unbound}
+    server=127.0.0.1#${toString (if p.runtimeRouting then m.ports.coreRealDns else m.ports.unbound)}
     ${lib.concatMapStrings (directory: "conf-dir=${directory}\n") (config.services.dnsmasq.settings.conf-dir or [ ])}
     ${lib.concatMapStrings (d: "address=/${d}/\n") p.blockedDomains}
     ${lib.concatMapStrings (d: "server=/${d}/#\n") p.blockedDomainExceptions}
@@ -27,9 +27,9 @@ in
   systemd.services.socket-guest-dns = lib.mkIf enabled {
     description = "Filtered real-address DNS for restricted backends and source downloads";
     wantedBy = [ "multi-user.target" ];
-    after = [ "nftables.service" "unbound.service" ];
+    after = [ "nftables.service" "unbound.service" ] ++ lib.optional p.runtimeRouting "proxy-real-dns.service";
     requires = [ "nftables.service" ];
-    wants = [ "unbound.service" ];
+    wants = [ "unbound.service" ] ++ lib.optional p.runtimeRouting "proxy-real-dns.service";
     serviceConfig = {
       User = "dnsmasq";
       Group = "dnsmasq";

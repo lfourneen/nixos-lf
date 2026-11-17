@@ -2,7 +2,7 @@
 
 English | [简体中文](CN/egress_CN.md) | [Documentation](README.md)
 
-B enforces a managed path plus the exceptions below.
+B in rules mode enforces a managed path plus the exceptions below.
 Subscription Rule routing may still choose DIRECT.
 A remains deliberate direct access.
 C blocks ordinary application egress and decrypted tailnet input, including remote desktop and established connections, and never inherits B's optional grants.
@@ -14,6 +14,22 @@ The relay checks the established server socket’s core UID before forwarding th
 Actual leaf checks reject DIRECT and private targets.
 This applies to managed browser entries.
 Ordinary desktop and other applications retain the ledger below.
+
+## Proxy-only egress
+
+The ledger below describes rules-mode exceptions. Runtime proxy-only adds a separate host boundary before those exceptions can grant physical egress.
+Only declared, pinned core node addresses and their fixed TCP/UDP ports can carry outer transports.
+Ordinary native applications, root services and restricted socket identities receive no independent public, LAN, multicast, Chrony, Tailscale or inbound-reply permission.
+Existing direct reply flows are cut as well as new requests. Loopback IPC, scoped DHCP/NDP and necessary errors for authorized outer transports remain available.
+
+Configured IPv4 transparent guests may use their declared core inlet. Other routed guest traffic, including public IPv6 and private forwarding, is refused in strict mode.
+This controls traffic routed by the host; same-bridge layer-two traffic remains a separate boundary.
+Restricted backends continue to require real-address DNS and cannot borrow explicit host proxy ports or fake-IP targets.
+Proxy-only does not provide real ICMP echo forwarding. UDP capability remains subject to the selected node and is reported as not continuously probed.
+
+The whole switch passes through C and consumes a fresh, epoch-bound full proof before kernel authorization is renewed.
+Explicit `clash-off` restores A. Returning to rules uses the same controlled transaction.
+`proxy-inspect --drops` includes the strict input and output refusal counters.
 
 ## Exception ledger
 

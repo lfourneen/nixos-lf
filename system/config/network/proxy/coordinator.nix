@@ -126,6 +126,13 @@ let
 
       dns = dnsListeners "dnsmasq" [ 0 config.users.users.dnsmasq.uid ] port.dnsmasq
         ++ dnsListeners "unbound" [ 0 config.users.users.unbound.uid ] port.unbound
+        ++ lib.optionals config.my.proxy.runtimeRouting
+          (dnsListeners "proxy-real-dns" [ config.users.users.dnsmasq.uid ] port.coreRealDns
+            ++ dnsListeners "socket-guest-dns" [ config.users.users.dnsmasq.uid ] port.socketGuestDns
+            ++ lib.optionals config.networking.enableIPv6 (lib.concatMap (protocol: [
+              (listener "proxy-real-dns" [ config.users.users.dnsmasq.uid ] protocol "::1" port.coreRealDns)
+              (listener "socket-guest-dns" [ config.users.users.dnsmasq.uid ] protocol "::1" port.socketGuestDns)
+            ]) [ "tcp" "udp" ]))
         ++ lib.optionals config.networking.enableIPv6
           (map (protocol: listener "dnsmasq" [ 0 config.users.users.dnsmasq.uid ] protocol "::1" port.dnsmasq) [ "tcp" "udp" ]);
 
@@ -215,6 +222,19 @@ let
   };
 
   healthSettings = pkgs.writeText "proxy-health.json" (builtins.toJSON healthConfig);
+  activeHealthSettings = if config.my.proxy.runtimeRouting then "/run/proxy-mode/routing-active/health.json"
+    else toString healthSettings;
+  routingHealthSettings = lib.genAttrs [ "rules" "proxy-only" ] (mode:
+    pkgs.writeText "routing-${mode}-health.json" (builtins.toJSON (healthConfig // {
+      routing_state = "/run/proxy-mode/routing.json";
+      routing_mode = mode;
+      real_dns_port = if mode == "proxy-only" then port.socketGuestDns else null;
+      tun_route_classes = if mode == "proxy-only"
+        then lib.mapAttrs (_: _: "proxy") healthConfig.tun_route_classes else healthConfig.tun_route_classes;
+      expected = healthConfig.expected // {
+        managed-policy = builtins.hashString "sha256" (builtins.toJSON config.my.proxy.routingPolicyValues.${mode});
+      };
+    })));
 
   # Desktop consumers require the root supervisor's fresh readiness verdict,
   # then check live API invariants through their own forwarder. Snapshot files
@@ -288,7 +308,8 @@ let
     ROUTE_TABLE=${toString config.my.proxy.routeTable}
     HEALTH=${pkgs.python3}/bin/python3
     HEALTH_SCRIPT=${./health.py}
-    HEALTH_SETTINGS=${healthSettings}
+    HEALTH_SETTINGS=${activeHealthSettings}
+    ${lib.optionalString config.my.proxy.runtimeRouting ''ROUTING=${config.my.proxy.routingCommand}''}
     SETSID=${pkgs.util-linux}/bin/setsid
 
     umask 022
@@ -313,9 +334,10 @@ let
       atomic_write "$STATUS" "$mode" || return 1
       atomic_write "$REASON" "$reason" || return 1
       $JQ -n --arg mode "$mode" --arg reason "$reason" --argjson version "$version" \
+        --argjson routing "$([ -z "''${ROUTING:-}" ] && echo '{}' || "$ROUTING" view)" \
         --argjson lease "''${LEASE_SECONDS:-null}" \
         --argjson revision "$((revision + 1))" --arg updated "$(${pkgs.coreutils}/bin/date -Iseconds)" \
-        '{mode:$mode,reason:$reason,version:$version,policy_version:$version,revision:$revision,updated_at:$updated,authorization_lease_seconds:$lease}' > /run/proxy-mode/state.json.$$
+        '$routing + {mode:$mode,reason:$reason,version:$version,policy_version:$version,revision:$revision,updated_at:$updated,authorization_lease_seconds:$lease}' > /run/proxy-mode/state.json.$$
       mv -f /run/proxy-mode/state.json.$$ /run/proxy-mode/state.json
       [ "''${1:-policy}" != policy ] || request_verify
     }
@@ -420,7 +442,7 @@ let
       case "$1" in proxy|blocked|direct) ;; *) return 1 ;; esac
       [ "$snapshot_ok" = 1 ] || take_snapshot
       [ "$snapshot_ok" = 1 ] || return 1
-      "$RULE_CHECK" compare "$EXPECTED/$1.json" "$SNAPSHOT"
+      "$RULE_CHECK" compare "$EXPECTED/$1.json" "$SNAPSHOT" ${lib.optionalString config.my.proxy.runtimeRouting ''&& "$ROUTING" check "$1"''}
     }
     static_matches() {
       [ "$snapshot_ok" = 1 ] || take_snapshot
@@ -451,8 +473,8 @@ NFT_OFF
     }
     # The fragments tear down and re-create their own NAT tables, so each is a
     # single atomic transaction.
-    rules_on_proxy() { $NFT -f "$RULES"; }
-    rules_on_blocked() { $NFT -f "$B_RULES"; }
+    rules_on_proxy() { $NFT -f "$RULES" ${lib.optionalString config.my.proxy.runtimeRouting ''&& "$ROUTING" enforce proxy''}; }
+    rules_on_blocked() { $NFT -f "$B_RULES" ${lib.optionalString config.my.proxy.runtimeRouting ''&& "$ROUTING" enforce blocked''}; }
 
     # Caller holds the policy lock: never recursively run --reload here.
     load_complete() {
@@ -478,6 +500,7 @@ NFT_OFF
       fi
       rm -f "$transaction"
       forget_snapshot
+      ${lib.optionalString config.my.proxy.runtimeRouting ''[ "$rc" != 0 ] || "$ROUTING" enforce "$target" || rc=$?''}
       [ "$rc" = 0 ] && matches "$target"
     }
     safety_mode() {
@@ -527,6 +550,9 @@ NFT_OFF
       health_digest=$($CAT /run/proxy-mode/config-digest 2>/dev/null || true)
       health_at=$(${pkgs.coreutils}/bin/date +%s)
       health_gate=obs
+      ${lib.optionalString config.my.proxy.runtimeRouting ''
+      if ! "$ROUTING" probe-ready; then health_gate=config; return 1; fi
+      ''}
       $SETSID "$HEALTH" "$HEALTH_SCRIPT" "$HEALTH_SETTINGS" > "$output" 9>&- &
       health_pid=$!
       while kill -0 "$health_pid" 2>/dev/null; do
@@ -660,6 +686,9 @@ NFT_OFF
         # observation must not reinstall proxy routing after A was committed.
         tun_ok=1
         if [ "$intent" = proxy ] && ! $CORE_ROUTES routes-on; then tun_ok=0; fi
+        ${lib.optionalString config.my.proxy.runtimeRouting ''
+        if [ "$intent" = proxy ] && ! "$ROUTING" enforce blocked; then tun_ok=0; fi
+        ''}
         unlock_state
         if [ "$REQUIRE_TUN" = "1" ] && ! tun_ready; then tun_ok=0; fi
 
@@ -739,6 +768,11 @@ NFT_OFF
       if [ "$want" = proxy ] && [ "$REQUIRE_TUN" = 1 ] && ! tun_ready; then
         want=blocked; want_reason=no-tun
       fi
+      ${lib.optionalString config.my.proxy.runtimeRouting ''
+      if [ "$want" = proxy ] && [ "$proof_renew" = 1 ] && ! "$ROUTING" applied; then
+        want=blocked; want_reason=config; proof_renew=0
+      fi
+      ''}
 
       # Apply the fragment the want requires whenever it differs or its
       # post-condition does not hold (e.g. a manual nft flush emptied it).
@@ -929,8 +963,73 @@ NFT_OFF
     runtimeInputs = [ pkgs.coreutils pkgs.systemd pkgs.jq pkgs.util-linux pkgs.python3 ];
     text = ''
       case "''${1:-}" in
+        ${lib.optionalString config.my.proxy.runtimeRouting ''
+        routing)
+          [ "$EUID" = 0 ] || { echo 'Use sudo proxy-control routing rules|proxy-only' >&2; exit 1; }
+          [ "$#" = 2 ] || { echo 'Routing switch failed: expected rules or proxy-only'; exit 2; }
+          case "$2" in rules|proxy-only) ;; *) echo 'Routing switch failed: invalid target'; exit 2 ;; esac
+          mkdir -p /run/proxy-mode
+          exec 8>/run/proxy-mode/operator.lock
+          flock -x -w 30 8 || { echo 'Routing switch failed: another operation holds the control lock'; exit 1; }
+          transaction_epoch=""
+          transaction_target="$2"
+          transaction_step=initialize
+          transaction_failed() {
+            flock -x -w 30 8 || return 1
+            diagnostic=$(jq -r '.code // empty' /run/proxy-mode/routing-failure.json 2>/dev/null || true)
+            if [ "$transaction_step" = initialize ]; then
+              diagnostic=routing-authority-invalid
+            elif [ "$transaction_step" = health ] && [ -z "$diagnostic" ]; then
+              diagnostic=$(jq -r '(.reason | if . == null or . == "" then "incomplete-health-proof" else . end) + "/" + (.failure_stage // "unknown")' /run/proxy-mode/health.json 2>/dev/null || echo 'health unavailable')
+            fi
+            if [ "$(cat /run/proxy-mode/intent)" = proxy ] \
+              && { [ -z "$transaction_epoch" ] || [ "$transaction_epoch" = "$(${config.my.proxy.routingCommand} view | jq -r .routing_epoch)" ]; }; then
+              ${modeScript} --request-proxy || true
+              ${config.my.proxy.routingCommand} failed || true
+            fi
+            echo "Routing switch failed: $transaction_target ($transaction_step''${diagnostic:+: $diagnostic})"
+          }
+          trap 'transaction_failed; exit 1' ERR INT TERM
+          ${config.my.proxy.routingCommand} initialize
+          if ${config.my.proxy.routingCommand} same-ready "$2"; then
+            trap - ERR INT TERM
+            echo "Routing already active: $2"
+            exit 0
+          fi
+          transaction_step=protection
+          ${modeScript} --request-proxy
+          transaction_step=stop
+          systemctl stop clash-verge.service
+          systemctl restart gost-relay.service
+          transaction_step=prepare
+          ${config.my.proxy.routingCommand} begin "$2"
+          transaction_epoch=$(${config.my.proxy.routingCommand} view | jq -r .routing_epoch)
+          transaction_step=dns
+          systemctl restart dnsmasq.service socket-guest-dns.service
+          ${pkgs.systemd}/bin/resolvectl flush-caches
+          transaction_step=namespace
+          systemctl restart clash-core-network.service
+          transaction_step=helper
+          systemctl start clash-verge.service
+          transaction_step=core
+          ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/clash-verge-stage.py} start-source \
+            ${config.programs.clash-verge.package.stageSettings} ${config.programs.clash-verge.package}/bin/verge-mihomo
+          flock -u 8
+          systemctl start --no-block proxy-net-wake.service
+          transaction_step=health
+          "$0" wait proxy "$2" "$transaction_epoch" >/dev/null 2>&1
+          trap - ERR INT TERM
+          echo "Routing switch succeeded: $2"
+          ;;
+        ''}
         on|off|migrate-firewall)
           if [ "$EUID" != 0 ]; then echo 'Use sudo proxy-control on|off|migrate-firewall' >&2; exit 1; fi
+          ${lib.optionalString config.my.proxy.runtimeRouting ''
+          if [ "$1" = on ]; then
+            ${config.my.proxy.routingCommand} initialize
+            exec "$0" routing "$(${config.my.proxy.routingCommand} requested)"
+          fi
+          ''}
           # Serialize the whole operation, including service start/stop. This is
           # separate from the short policy commit lock used by the loop.
           mkdir -p /run/proxy-mode
@@ -1024,29 +1123,40 @@ NFT_OFF
         wait)
           target="''${2:-proxy}"
           case "$target" in proxy|direct) ;; *) exit 2 ;; esac
-          for ((attempt=0; attempt<90; attempt++)); do
-            if (( attempt % 10 == 0 )); then
-              ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} >&2 || true
+          routing_args=()
+          if [ -n "''${4:-}" ]; then routing_args=(--routing "$3" --routing-epoch "$4"); fi
+          deadline=$((SECONDS + 90))
+          attempt=0
+          while (( SECONDS < deadline )); do
+            ${lib.optionalString config.my.proxy.runtimeRouting ''
+            if [ -n "''${4:-}" ] && [ "$4" != "$(${config.my.proxy.routingCommand} view | jq -r .routing_epoch)" ]; then
+              echo 'Routing request was superseded by another transaction' >&2
+              exit 1
             fi
-            if ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} >/dev/null; then
+            ''}
+            if (( attempt % 10 == 0 )); then
+              ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} "''${routing_args[@]}" >&2 || true
+            fi
+            if ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} "''${routing_args[@]}" >/dev/null; then
               echo "Proxy ready: $target"
               exit 0
             fi
             sleep 1
+            attempt=$((attempt + 1))
           done
           echo "Still waiting for current, verified $target policy and consumers" >&2
           ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} || true
           cat /run/proxy-mode/reason /run/dns-upstream/reason 2>/dev/null || true
           exit 1
           ;;
-        *) echo 'Usage: proxy-control on|off|migrate-firewall|status [proxy|direct]|wait [proxy|direct]' >&2; exit 2 ;;
+        *) echo 'Usage: proxy-control on|off|routing rules|proxy-only|migrate-firewall|status [proxy|direct]|wait [proxy|direct]' >&2; exit 2 ;;
       esac
     '';
   };
 
 in
 {
-  imports = [ ./authorization.nix ];
+  imports = [ ./authorization.nix ./routing.nix ];
 
   options.my.proxy.proxyModeRules = lib.mkOption {
     type = lib.types.str;
@@ -1067,6 +1177,7 @@ in
   options.my.proxy.modeScript = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.requestVerify = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.healthSettings = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.activeHealthSettings = lib.mkOption { type = lib.types.str; internal = true; };
   options.my.proxy.desktopHealthSettings = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.listenerCheck = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.listenerSettings = lib.mkOption { type = lib.types.path; internal = true; };
@@ -1085,6 +1196,8 @@ in
     my.proxy.modeScript = modeScript;
     my.proxy.requestVerify = verifyRequest;
     my.proxy.healthSettings = healthSettings;
+    my.proxy.activeHealthSettings = activeHealthSettings;
+    my.proxy.routingHealthSettings = routingHealthSettings;
     my.proxy.desktopHealthSettings = desktopHealthSettings;
     my.proxy.listenerCheck = listenerCheck;
     my.proxy.listenerSettings = listenerSettings;

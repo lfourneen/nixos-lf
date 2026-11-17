@@ -25,7 +25,8 @@ class ToolsTests(unittest.TestCase):
         benchmark = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(benchmark)
         result = benchmark.distribution([.001, .002, .003, .004, .005])
-        self.assertEqual(result, {'samples':5, 'p50_ms':3, 'p95_ms':5})
+        self.assertEqual(result, {'samples':5, 'p50_ms':3, 'p95_ms':5,
+                                  'max_ms':5, 'stdev_ms':1.414})
 
 
 if __name__ == '__main__':

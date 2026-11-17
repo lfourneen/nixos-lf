@@ -96,6 +96,8 @@ Keep `stateVersion` unchanged unless you have reviewed and migrated the affected
 |---|---|
 | `clash-on` | Request proxy access and start the managed core |
 | `clash-off` | Select direct access |
+| `clash-rules` | Select subscription rules and request healthy B |
+| `clash-proxy-only` | Select strict proxy routing and request healthy B |
 | `proxy-status` | Show mode, DNS and readiness |
 | `clash-diff` | Inspect source changes without changing network mode |
 | `firefox-identity` | Open the separate browser profile through the strict proxy inlet |

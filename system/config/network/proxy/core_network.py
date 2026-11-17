@@ -165,7 +165,8 @@ def render(settings, destination):
     c4, c6, h4, h6 = (s[key] for key in ('core4', 'core6', 'host4', 'host6'))
     reserved = ', '.join(map(str, [53, p['mihomoMixed'], p['mihomoStrict'], p['mihomoDns'],
         p['mihomoTproxy'], p['gostHttp'], p['gostRedirect'], p['dnsmasq'], p['unbound'],
-        p['socketGuestDns'], p['coreDnsTransport'], p['coreDnsBootstrapTransport'], p['coreLoopback']]))
+        p['socketGuestDns'], p['coreDnsTransport'], p['coreDnsBootstrapTransport'], p['coreLoopback'],
+        *([p['coreRealDns']] if 'coreRealDns' in p else [])]))
     inlets = ', '.join(map(str, [p['mihomoMixed'], p['mihomoStrict'], p['mihomoDns']]))
     unsafe4 = ['0.0.0.0/8', '127.0.0.0/8', '169.254.169.254/32', '169.254.170.2/32',
                '100.100.100.200/32', '192.0.0.0/24', '198.18.0.0/15', '224.0.0.0/4', '240.0.0.0/4', s['fake']]

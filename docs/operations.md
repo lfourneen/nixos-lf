@@ -191,6 +191,15 @@ Use the Nushell commands `clash-on` and `clash-off`.
 They record privileged intent, manage the GUI/helper lifecycle and wait for coherent state.
 Closing the GUI alone leaves proxy intent active and therefore enters C when the core stops.
 
+On this host, `clash-rules` and `clash-proxy-only` select a routing submode and request B in one command.
+They return a terminal success message naming the mode, or a nonzero result with the failed stage and available reason.
+They do not launch the GUI, send desktop notifications or run `proxy-status`.
+Use the existing `proxy-status` overview separately: only in B does its human display include requested/applied routing, transaction epoch, actual core mode, sampled TCP leaf identity and DNS/UDP/ICMP coverage.
+The underlying commands are `sudo proxy-control routing rules` and `sudo proxy-control routing proxy-only`.
+`clash-off` retains the choice for this boot; `clash-on` reuses it, and reboot defaults to rules.
+Proxy-only requires an accepted pinned source; failed preparation or full health verification retains C and the requested selection.
+See [routing policy](proxy.md#routing-policy) for the policy boundary.
+
 `sudo proxy-control on` and `sudo proxy-control off` are the underlying system controls.
 `on` opens the single-use configuration-import window and starts the helper.
 The controlled-source host starts the core from its registered candidate.
@@ -279,6 +288,8 @@ Dedicated guest accounts retain their separate boundary.
 | File | Meaning |
 |---|---|
 | `/run/proxy-mode/state.json` | Atomic mode, reason, policy version, revision and update time |
+| `/run/proxy-mode/routing.json`, `routing-active` | Boot-bound requested/applied submode, epoch, immutable policy digest and phase; selected policy/health/audit artifacts |
+| `/run/proxy-mode/routing-firewall.json` | Root-only expected outer firewall model and selected transport script digest |
 | `/run/proxy-mode/health.json` | Probe scope, full verdict, separate HTTP/route/DNS/TUN diagnostics, proof sources and per-layer durations |
 | `/run/proxy-mode/heartbeat.json` | Last successful supervisor round |
 | `/run/netsec/state.json` | Verification verdict, checked generation and freshness |
@@ -515,6 +526,7 @@ To return to a generation that uses a host-owned TUN:
 | [machine.nix](../system/config/machine.nix) | User, interfaces/match keys, UIDs, ports, mark, address ranges and upstream endpoints |
 | [options.nix](../system/config/network/proxy/options.nix) | TUN, route table 2022, fake-IP pool, probe URLs, boot intent, proxyOnly, dnsEncryption, shared domain filtering, localTargetCidrs, remoteTargetGrants, nat64Prefixes, guests, split DNS and freshness |
 | [profile.nix](../system/config/network/proxy/profile.nix) | Root-owned managed DNS/TUN/profile contract |
+| [routing.nix](../system/config/network/proxy/routing.nix) | `runtimeRouting`, immutable rules/proxy-only policies and `proxyOnlyDnsUpstreams` |
 | [options.nix](../system/config/network/options.nix) | Host/guest private access, per-interface guest trust/sources, dedicated socket guest accounts, host-service ports, hotspot, tailnet and Wi-Fi MAC policy |
 | [cvr-merge.nix](../home/config/clash/cvr-merge.nix) | Matching Clash GUI Merge template and routing enhancement |
 | [firefox.nix](../home/programs/firefox/firefox.nix), [options.nix](../home/programs/firefox/options.nix) | Native browser, networkPath, nvidiaAcceleration, privacy, policy, fonts and outer sandbox |
@@ -524,6 +536,12 @@ Parser, template and health share these values.
 `tunMode=false` selects HTTP-only/redir-host operation, dropping the requirement for a TUN.
 Fake-IP network is derived from `fakeIpRange`.
 Avoid independent edits to consumers.
+
+`runtimeRouting` defaults to false in the module and is enabled in this host configuration.
+It requires controlled sources, local DNSSEC, strict encrypted DNS, an isolated TUN, kernel authorization leases and `proxyOnly=false` as the rules boot default.
+The older `proxyOnly` option remains a build-time policy for configurations without runtime switching.
+`proxyOnlyDnsUpstreams` accepts authenticated literal-address HTTPS resolvers and always uses the remote group.
+Accepted source snapshots are kept independently under `approved/rules` and `approved/proxy-only`, including the original Rule data and pinned nodes needed for local re-rendering.
 
 For core access to a local/internal service, [target authorization](proxy.md#domain-targets) separates local DIRECT CIDRs from remote node grants.
 An internal suffix only permits a locally resolved private answer.

@@ -82,6 +82,7 @@
       socketGuestDns = lib.mkOption { type = lib.types.port; default = 1056; };
       coreDnsTransport = lib.mkOption { type = lib.types.port; default = 1057; };
       coreDnsBootstrapTransport = lib.mkOption { type = lib.types.port; default = 1058; };
+      coreRealDns = lib.mkOption { type = lib.types.port; default = 1059; };
       coreLoopback = lib.mkOption { type = lib.types.port; default = 14661; };
       gostHttp = lib.mkOption { type = lib.types.port; default = 33332; };
       gostRedirect = lib.mkOption { type = lib.types.port; default = 33333; };

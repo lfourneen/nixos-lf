@@ -201,6 +201,16 @@ Check frontend, backend preference writes and exit cleanup together when updatin
 
 ## DNS and browser integration
 
+Runtime routing uses two immutable policy/health/audit bundles and one root-selected symlink.
+Keep the operator → source → authorization → policy lock order; probes run without the policy lock and recheck the routing epoch and policy digest before committing.
+Only a complete mixed TCP, fake-IP TCP, DNS, listener and configuration proof may apply a submode or renew its kernel lease; proxy-only additionally requires real-address DNS through the core validator.
+Source downloads recheck selection, registration and policy/epoch after releasing the source lock for network waits.
+Preserve original Rule data and pinned nodes in the digested `source-data.json`, with separate accepted snapshots per source and submode.
+Policy transitions close old core/relay flows, flush resolver caches and retain fake-IP domain mappings across restarts.
+A source start waits for the newly started helper's IPC listener; startup delay alone must not restart that helper. Existing-core recovery retains the unit restart for a failed IPC transport.
+The separate `lf_routing` table must enforce and verify the declared node tuples even after a base firewall reload; established direct replies grant no exception.
+Run `proxy-routing` and `proxy-routing-vm` when changing these paths.
+
 The dnsmasq patch is an inline `--replace-fail` in `network.nix`.
 In strict-order retry handling, the final server's UDP SERVFAIL/REFUSED must reach the client, including its EDE.
 The condition uses the sent-to array index because server endpoints can repeat.
@@ -214,10 +224,10 @@ Chrony changes must preserve NTS requirement and certificate-time checks.
 
 With `localDnssec`, [core-validator.nix](../system/config/network/dns/core-validator.nix) runs separate application and infrastructure validators in the core namespace.
 Preserve their independent query/resource budgets, persistent anchors and refusal of client CD bypasses.
-Validation and upstream selection are separate: B application DNS keeps a domestic split, with `geosite:cn` using the domestic validating DoH endpoints directly and other names using Cloudflare/Google DoH routed through `lf-remote` with controlled sources, while node bootstrap retains its independent encrypted resolver.
+Validation and upstream selection are separate: rules application DNS keeps a domestic split, with `geosite:cn` using the domestic validating DoH endpoints directly and other names using Cloudflare/Google DoH routed through `lf-remote` with controlled sources, while node bootstrap retains its independent encrypted resolver.
 The root-owned `lf-dns-transport` configuration keeps its own upstream list (`mihomoDomesticValidatingDnsUpstreams`) and must not inherit Mode A's DoT list.
 Keep the config-parser and executor transport hooks in `patch_mihomo.py`, complete DNSSEC material, TLS verification and raw forwarding without ordinary cache reuse.
-Public application queries keep a domestic split: `geosite:cn` uses domestic validating DoH over a direct connection, and other names use the remote-proxied Cloudflare/Google DoH. The domestic endpoints must return complete DNSSEC material, and changes must preserve both the split and that requirement.
+Rules application queries retain this split and complete DNSSEC material. Proxy-only instead binds both validator transports to authenticated literal-address DoH through the pruned remote catch-all, without direct bootstrap. Keep real-address source/backend DNS on its fixed Unix bridge and independent request budget, with no host resolver fallback.
 The private TUN UID exclusion must remain paired with the validator's loopback-only query firewall and denial of application access to all validator/transport ports.
 Mihomo must validate before public fake-IP synthesis and before pinning a public dial target, clear AD on synthetic addresses, and retain HTTPS/SVCB parameters.
 Keep known-profile migration separate from rejection of foreign values and controller weakening.
@@ -376,6 +386,8 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 | `network-identity-vm` | Real wired/Wi-Fi DHCPv6 coexistence, fresh dual-stack identities, UUID/epoch/random rotation, stable/fixed/permanent behavior, profile precedence, restore and retained host keys |
 | `proxy-regressions` | Health/state/rules/DNS leases, bounded client DNS retries, budget and supervisor regressions |
 | `proxy-profile`, `proxy-gui` | Generated profile variants, policy/template agreement, GUI defaults and process wrapper |
+| `proxy-routing` | Boot-scoped immutable selection, full proof and epoch binding, failed preparation, sanitized status and real-DNS deadline/fallback refusal |
+| `proxy-routing-vm` | Registered sources and production namespace: bidirectional rules/proxy-only switching, original rules restored, physical-peer node-only evidence, real DNS/source refresh, old replies, guest refusals, idempotence, concurrent selection, off/on, reboot and kernel expiry |
 | `proxy-rules`, `proxy-egress-rules` | Complete compatibility/restricted mode rules parsed by the build-time LKL nft environment |
 | `proxy-firewall-vm` | A/C ownership, external-table preservation, rejected-load rollback, migration locks, idempotence and migration-target name reuse |
 | `proxy-dns-strict-rules` | Complete strict DNS firewall rules parsed in LKL |

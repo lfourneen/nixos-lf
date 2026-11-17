@@ -94,6 +94,8 @@ sudo nixos-rebuild switch --flake .#lfour
 |---|---|
 | `clash-on` | 请求代理并启动受管核心 |
 | `clash-off` | 切换到直连 |
+| `clash-rules` | 选择订阅规则路由并请求健康 B |
+| `clash-proxy-only` | 选择严格代理路由并请求健康 B |
 | `proxy-status` | 查看模式、DNS 和就绪状态 |
 | `clash-diff` | 只读查看来源变化，不改变网络模式 |
 | `firefox-identity` | 通过严格代理入口打开独立身份 profile |

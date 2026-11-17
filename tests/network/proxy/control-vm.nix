@@ -1,4 +1,4 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false, routing ? false }:
 
 let
   dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || managedSources || assurance || ech != null);
@@ -20,7 +20,7 @@ let
 
 in
 pkgs.testers.runNixOSTest {
-  name = if assurance then "proxy-authorization-and-dnssec" else if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if routing then "proxy-runtime-routing" else if assurance then "proxy-authorization-and-dnssec" else if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
@@ -82,9 +82,11 @@ pkgs.testers.runNixOSTest {
     };
 
     my.proxy.profileRefreshPolicy = if refresh || managedSources then "auto" else "strict";
-    my.proxy.authorizationLeaseSeconds = lib.mkIf managedSources 60;
+    my.proxy.authorizationLeaseSeconds = lib.mkIf (managedSources && !assurance) 60;
     my.proxy.subscriptionAudit = if refresh || managedSources then "enforce" else "warn";
     my.proxy.controlledSources = managedSources;
+    my.proxy.runtimeRouting = routing;
+    my.proxy.proxyOnlyDnsUpstreams = lib.mkIf routing [ "https://203.0.113.53/dns-query" ];
     my.proxy.strictBrowser = managedSources;
     my.proxy.subscriptionTrust = lib.mkIf managedSources "fixed";
     my.proxy.remoteOnlyCatchAll = managedSources;
@@ -163,9 +165,19 @@ pkgs.testers.runNixOSTest {
     };
 
     environment.etc."netsec-managed.json" = lib.mkIf managedSources {
-      text = builtins.toJSON { tls = sourceTls; stage = ../../../system/programs/clash/service/clash-verge-stage.py;
+      text = builtins.toJSON { tls = sourceTls; inherit routing; stage = ../../../system/programs/clash/service/clash-verge-stage.py;
         stageSettings = clashPackage.stageSettings; launcher = "${clashPackage}/bin/verge-mihomo"; };
     };
+    environment.etc."netsec-routing.py" = lib.mkIf routing { source = ./routing_fixture.py; };
+    users.users.routing-guest = lib.mkIf routing {
+      isNormalUser = true;
+      uid = 1100;
+      subUidRanges = [{ startUid = 600000; count = 65536; }];
+      subGidRanges = [{ startGid = 600000; count = 65536; }];
+    };
+    my.hardening.guestNetworks.virbr0.sourceCidrs = lib.mkIf routing [ "192.168.122.0/24" "fd42:122::/64" ];
+    my.hardening.socketGuestUsers = lib.mkIf routing [ "routing-guest" ];
+    my.proxy.transparentGuestInterfaces = lib.mkIf routing [ "waydroid0" ];
 
     environment.etc."netsec-refresh.py".source = ./refresh_fixture.py;
     environment.etc."netsec-dataplane.py".source = ./dataplane_fixture.py;
@@ -225,7 +237,7 @@ pkgs.testers.runNixOSTest {
             print(machine.execute("cat /run/proxy-mode/state.json /run/proxy-mode/health.json; journalctl -u clash-verge -u proxy-mode --no-pager -n 40; cat /run/clash-verge-rev/validator.log; find /var/lib/clash-verge-service -name '*.log' -exec tail -n 40 {} +"))
             raise
 
-    start_all()
+    ${if routing then "machine.start(allow_reboot=True)" else "start_all()"}
     machine.wait_for_unit("nftables.service")
     machine.wait_for_unit("proxy-mode.service")
     ${pkgs.lib.optionalString (ech != null) ''
@@ -468,7 +480,7 @@ pkgs.testers.runNixOSTest {
         wait_proxy()
     ''}
     machine.succeed("setpriv --reuid=1000 --clear-groups proxy-status --json | jq -e '(.ready | type) == \"boolean\" and .mode == \"proxy\"'")
-    ${pkgs.lib.optionalString managedSources ''
+    ${pkgs.lib.optionalString (managedSources && !routing) ''
     with subtest("source refresh uses real filtered DNS while B returns fake-IP"):
         print(machine.succeed("python3 -u /etc/netsec-managed.py refresh", timeout=90))
         wait_proxy()
@@ -495,7 +507,7 @@ pkgs.testers.runNixOSTest {
     wait_proxy()
     machine.succeed("python3 /etc/hermes-container.py B", timeout=90)
     ''}
-    ${pkgs.lib.optionalString assurance ''
+    ${pkgs.lib.optionalString (assurance && !routing) ''
     with subtest("local DNSSEC, isolated DNS budgets and expiring kernel authorization"):
         try:
             print(machine.succeed("python3 -u /etc/netsec-assurance.py health", timeout=90))
@@ -509,6 +521,17 @@ pkgs.testers.runNixOSTest {
         wait_proxy()
         machine.succeed("proxy-control off")
         machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
+    ''}
+    ${pkgs.lib.optionalString routing ''
+    with subtest("root routing transactions, exact outer transports and proxied real DNS"):
+        try:
+            print(machine.succeed("python3 -u /etc/netsec-routing.py check", timeout=600))
+        except Exception:
+            print(machine.execute("cat /run/proxy-mode/state.json /run/proxy-mode/routing.json /run/proxy-mode/health.json /run/proxy-mode/routing-firewall.json 2>/dev/null || true; journalctl -u proxy-mode -u clash-verge -u proxy-real-dns -u clash-real-dns --no-pager -n 70; nft -j list table inet lf_routing"))
+            raise
+    machine.reboot()
+    machine.wait_for_unit("proxy-mode.service")
+    machine.succeed("jq -e '.routing_requested == \"rules\" and .mode == \"direct\"' /run/proxy-mode/state.json")
     ''}
     ${pkgs.lib.optionalString (!hermesContainers && !managedSources && !assurance) ''
     machine.succeed("setpriv --reuid=1000 --clear-groups proxy-status --no-color | grep -q 'Network status'")

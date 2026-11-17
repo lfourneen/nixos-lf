@@ -1,0 +1,389 @@
+"""Root-selected immutable routing policies and a verified outer-transport boundary."""
+from contextlib import ExitStack, contextmanager
+import fcntl
+import hashlib
+import importlib.util
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+
+MODES = ('rules', 'proxy-only')
+FIELDS = ('routing_requested', 'routing_applied', 'routing_epoch', 'routing_policy_digest', 'routing_phase')
+
+
+def module(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    result = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(result)
+    return result
+
+
+def read(path):
+    return json.loads(Path(path).read_text())
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def atomic(path, value, mode=0o644):
+    path = Path(path)
+    descriptor, name = tempfile.mkstemp(prefix='.routing-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            os.fchmod(stream.fileno(), mode)
+            json.dump(value, stream, sort_keys=True)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        Path(name).replace(path)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def safe_file(path, private=False):
+    info = Path(path).lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & (0o077 if private else 0o022):
+        raise ValueError('unsafe routing authority')
+    return Path(path)
+
+
+def binding(settings):
+    state = Path(settings['state'])
+    record = read(safe_file(state / 'routing.json'))
+    target = record.get('routing_requested')
+    if (record.get('schema') != 1 or target not in MODES
+            or record.get('routing_applied') not in (*MODES, None)
+            or type(record.get('routing_epoch')) is not int or record['routing_epoch'] < 1
+            or record.get('routing_phase') not in ('preparing', 'verifying', 'ready', 'failed')
+            or record.get('boot_id') != (state / 'boot-id').read_text().strip()
+            or record.get('routing_policy_digest') != sha(Path(settings['policies'][target]).read_bytes())
+            or (state / 'routing-active').resolve(strict=True) != Path(settings['artifacts'][target]).resolve(strict=True)):
+        raise ValueError('routing authority is missing or inconsistent')
+    return record
+
+
+def activate(settings, target):
+    state = Path(settings['state'])
+    temporary = state / '.routing-active'
+    temporary.unlink(missing_ok=True)
+    temporary.symlink_to(settings['artifacts'][target])
+    temporary.replace(state / 'routing-active')
+
+
+def initialize(settings):
+    if not settings.get('enabled'):
+        return
+    state = Path(settings['state'])
+    state.mkdir(mode=0o755, exist_ok=True)
+    if not (state / 'boot-id').exists():
+        (state / 'boot-id').write_text(Path('/proc/sys/kernel/random/boot_id').read_text())
+    if (state / 'routing.json').exists() or (state / 'routing-active').is_symlink():
+        binding(settings)
+        return
+    activate(settings, 'rules')
+    atomic(state / 'routing.json', dict(schema=1, boot_id=(state / 'boot-id').read_text().strip(),
+        routing_requested='rules', routing_applied=None, routing_epoch=1,
+        routing_policy_digest=sha(Path(settings['policies']['rules']).read_bytes()), routing_phase='verifying'))
+
+
+@contextmanager
+def transition_locks(settings):
+    """The operator lock is held by proxy-control; acquire source, auth, policy."""
+    source = read(settings['source_settings'])
+    with ExitStack() as stack:
+        for path in (Path(source['root']) / 'source.lock',
+                     Path(settings['state']) / 'authorization.lock', Path(settings['state']) / 'lock'):
+            stream = stack.enter_context(path.open('a'))
+            fcntl.flock(stream, fcntl.LOCK_EX)
+        yield source
+
+
+def begin(settings, target):
+    if target not in MODES:
+        raise ValueError('invalid routing target')
+    with transition_locks(settings) as source_settings:
+        current = binding(settings)
+        state = Path(settings['state'])
+        (state / 'routing-failure.json').unlink(missing_ok=True)
+        if (state / 'intent').read_text().strip() != 'proxy':
+            raise ValueError('proxy intent required')
+        stage = module(settings['stage_tool'], 'routing_stage')
+        stage.clear_refresh(state, settings['runtime'], keep_health_pin=True)
+        record = dict(current, routing_requested=target, routing_epoch=current['routing_epoch'] + 1,
+            routing_policy_digest=sha(Path(settings['policies'][target]).read_bytes()), routing_phase='preparing')
+        # The core has stopped and C is installed before the immutable policy changes.
+        activate(settings, target)
+        atomic(state / 'routing.json', record)
+        for name in ('authorized-config', 'config-digest', 'effective-config-sha256',
+                     'effective-config.json', 'health.json', 'source-refresh-stable.json', 'profile-refresh-settled.json'):
+            (state / name).unlink(missing_ok=True)
+        enforce(settings, 'blocked')
+        broker = module(settings['source_tool'], 'routing_source')
+        source = broker.selected(Path(source_settings['root']))
+        broker.render_local(source_settings, source, target, current['routing_requested'])
+        (state / 'authorize-window').touch(mode=0o600)
+        (state / 'source-refresh-pending').touch(mode=0o600)
+        atomic(state / 'routing.json', dict(record, routing_phase='verifying'))
+
+
+def phase(settings, value):
+    state = Path(settings['state'])
+    with (state / 'lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        atomic(state / 'routing.json', dict(binding(settings), routing_phase=value))
+
+
+def applied(settings):
+    """Called under the policy lock after a complete, epoch-bound health round."""
+    state = Path(settings['state'])
+    record, proof = binding(settings), read(state / 'health.json')
+    authorization = module(settings['authorization_tool'], 'routing_authorization')
+    if (record['routing_phase'] not in ('verifying', 'ready')
+            or not authorization.full_routing_proof(proof, record['routing_requested'])
+            or proof.get('boot_id') != record['boot_id']
+            or any(proof.get(key) != record[key] for key in ('routing_epoch', 'routing_policy_digest'))
+            or proof.get('digest') != (state / 'config-digest').read_text().strip()):
+        raise ValueError('routing requires a complete current health proof')
+    if record['routing_applied'] == record['routing_requested'] and record['routing_phase'] == 'ready':
+        return
+    atomic(state / 'routing.json', dict(record, routing_applied=record['routing_requested'], routing_phase='ready'))
+
+
+def endpoints(settings, record):
+    """Only the currently authorized, policy-bound snapshot supplies node tuples."""
+    state = Path(settings['state'])
+    if not (state / 'authorized-config').exists():
+        return []
+    stage = module(settings['stage_tool'], 'routing_snapshot')
+    directory = Path(settings['runtime']) / 'effective'
+    stage.verify(directory, state / 'config-digest', state / 'authorized-config', fast=True)
+    manifest = read(directory / 'source-manifest.json')
+    if manifest.get('policy') != record['routing_policy_digest']:
+        return []
+    import yaml
+    document = yaml.safe_load((directory / 'clash-verge.yaml').read_text())
+    result = set()
+    for node in document.get('proxies') or []:
+        address = ipaddress.ip_address(node['server'])
+        port = node['port']
+        if not address.is_global or address.is_multicast or type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError('invalid pinned outer transport')
+        protocols = ('udp',) if node['type'] in ('tuic', 'hysteria2') else ('tcp', 'udp')
+        result.update((address.version, str(address), protocol, port) for protocol in protocols)
+    return sorted(result)
+
+
+def firewall(settings, mode):
+    result = 'destroy table inet lf_routing\ntable inet lf_routing {\n'
+    if mode == 'direct':
+        return result + '}\n'
+    try:
+        record = binding(settings)
+    except (OSError, ValueError, KeyError, TypeError):
+        if mode != 'blocked':
+            raise
+        record = None
+    strict = record is None or record['routing_requested'] == 'proxy-only'
+    if not strict:
+        return result + '}\n'
+    nodes = endpoints(settings, record) if record is not None else []
+    t, dev = settings['topology'], json.dumps(settings['interface'])
+    uplinks = '{ ' + ', '.join(map(json.dumps, settings['uplinks'])) + ' }'
+    guests = '{ ' + ', '.join(map(json.dumps, settings['guest_interfaces'])) + ' }'
+    for family in (4, 6):
+        elements = [f'{address} . {protocol} . {port}' for version, address, protocol, port in nodes if version == family]
+        result += f'set nodes{family} {{ type ipv{family}_addr . inet_proto . inet_service;'
+        if elements:
+            result += ' elements = { ' + ', '.join(elements) + ' };'
+        result += ' }\n'
+    result += f'''chain lf_routing_input {{ type filter hook input priority -4; policy accept;
+ iifname "lo" return
+ iifname {dev} ct direction reply ct state established,related ct mark & 0x80000000 != 0 return
+ iifname {dev} ip6 hoplimit 255 icmpv6 type {{ nd-neighbor-solicit, nd-neighbor-advert }} return
+ iifname {uplinks} udp sport 67 udp dport 68 return
+ iifname {uplinks} udp sport 547 udp dport 546 return
+ iifname {uplinks} ip6 hoplimit 255 icmpv6 type {{ nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert }} return
+'''
+    if settings['guest_interfaces']:
+        result += f' iifname {guests} meta l4proto {{ tcp, udp }} th dport {{ 53, 67 }} return\n'
+    result += ' counter drop\n}\n'
+    result += f'''chain lf_routing_output {{ type filter hook postrouting priority 101; policy accept;
+ oifname "lo" return
+ meta iif 0 oifname {dev} meta l4proto {{ tcp, udp }} return
+'''
+    for guest in settings['guests']:
+        sources = [value for value in guest['sources'] if ':' not in value]
+        if sources:
+            result += (f' iifname {json.dumps(guest["interface"])} oifname {dev} '
+                'ip saddr { ' + ', '.join(sources) + ' } meta mark 0x233 meta l4proto { tcp, udp } return\n')
+            result += (f' iifname {dev} oifname {json.dumps(guest["interface"])} '
+                'ct direction reply ct state established,related ct mark & 0x80000000 != 0 return\n')
+    for family in (4, 6):
+        field = 'ip' if family == 4 else 'ip6'
+        core = t[f'core{family}']
+        result += (f' iifname {dev} ct original {field} saddr {core} ct direction original '
+            f'meta l4proto {{ tcp, udp }} {field} daddr . meta l4proto . th dport @nodes{family} return\n')
+        result += (f' oifname {dev} ct direction reply ct state established,related '
+            f'ct original {field} saddr {core} ct original {field} daddr . ct protocol . ct original proto-dst @nodes{family} return\n')
+    result += f''' oifname {uplinks} meta skuid {{ 0, {settings['dhcp_uid']} }} udp sport 68 udp dport 67 return
+ oifname {uplinks} meta skuid {{ 0, {settings['dhcp_uid']} }} udp sport 546 udp dport 547 return
+ oifname {uplinks} ip6 hoplimit 255 icmpv6 type {{ nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert }} return
+ oifname {dev} ip6 hoplimit 255 icmpv6 type {{ nd-neighbor-solicit, nd-neighbor-advert }} return
+'''
+    if settings['guest_interfaces']:
+        result += f' meta iif 0 oifname {guests} meta l4proto {{ tcp, udp }} th sport {{ 53, 67 }} return\n'
+    return result + ' counter drop\n}\n}\n'
+
+
+def table_view(settings, document):
+    normalizer = module(settings['rules_tool'], 'routing_rules')
+    objects, rules, elements = {}, {}, {}
+    for entry in normalizer.unwrap(document).get('nftables', []):
+        if len(entry) != 1:
+            raise ValueError('invalid routing firewall observation')
+        kind, item = next(iter(entry.items()))
+        if kind not in ('table', 'chain', 'set', 'rule', 'element') or not isinstance(item, dict):
+            continue
+        if item.get('family') != 'inet' or (item.get('table') if kind != 'table' else item.get('name')) != 'lf_routing':
+            continue
+        value = normalizer.normalize(item)
+        if kind == 'rule':
+            rules.setdefault(item['chain'], []).append(value)
+        elif kind == 'element':
+            entries = value['elem']
+            if isinstance(entries, dict) and set(entries) == {'set'}:
+                entries = entries['set']
+            if not isinstance(entries, list):
+                raise ValueError('invalid routing set event')
+            elements.setdefault(item['name'], []).extend(entries)
+        else:
+            objects[kind + ':' + item.get('name', '')] = value
+    # nft echo can publish set elements separately and uses numeric protocols;
+    # a live listing embeds the elements in the set and prints protocol names.
+    for name in ('nodes4', 'nodes6'):
+        value = objects.get('set:' + name)
+        if value is None:
+            if name in elements:
+                raise ValueError('routing elements have no declared set')
+            continue
+        entries = value.get('elem', []) + elements.pop(name, [])
+        for entry in entries:
+            parts = entry.get('concat') if isinstance(entry, dict) else None
+            if not isinstance(parts, list) or len(parts) != 3:
+                raise ValueError('invalid routing node tuple')
+            parts[1] = normalizer.canonical_proto(parts[1])
+        value['elem'] = sorted(entries, key=lambda item: json.dumps(item, sort_keys=True))
+    if elements:
+        raise ValueError('undeclared routing elements')
+    if 'table:lf_routing' not in objects:
+        raise ValueError('routing firewall is absent')
+    return dict(objects=objects, rules=rules)
+
+
+def nft(settings, *args, **kwargs):
+    return subprocess.run([settings['nft'], *args], capture_output=True, text=True,
+                          timeout=5, check=True, **kwargs)
+
+
+def check(settings, mode):
+    expected = read(safe_file(Path(settings['state']) / 'routing-firewall.json', private=True))
+    if expected.get('sha256') != sha(firewall(settings, mode).encode()):
+        raise ValueError('routing firewall belongs to another policy or snapshot')
+    actual = table_view(settings, json.loads(nft(settings, '-j', 'list', 'table', 'inet', 'lf_routing').stdout))
+    if actual != expected['table']:
+        raise ValueError('routing firewall differs from the declared transport boundary')
+
+
+def enforce(settings, mode):
+    try:
+        check(settings, mode)
+        return
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        pass
+    script = firewall(settings, mode)
+    applied_table = nft(settings, '-e', '-j', '-f', '-', input=script)
+    atomic(Path(settings['state']) / 'routing-firewall.json',
+           dict(sha256=sha(script.encode()), table=table_view(settings, json.loads(applied_table.stdout))), 0o600)
+    check(settings, mode)
+
+
+def view(settings):
+    try:
+        record = binding(settings)
+    except (OSError, ValueError, KeyError, TypeError):
+        return dict(routing_schema=1, routing_requested='unknown', routing_applied='unknown',
+                    routing_epoch=None, routing_policy_digest=None, routing_phase='unknown')
+    return {key: record[key] for key in FIELDS} | {'routing_schema': 1}
+
+
+def main():
+    settings = read(sys.argv[1])
+    command = sys.argv[2]
+    if not settings.get('enabled'):
+        raise ValueError('runtime routing is disabled')
+    if command in ('view', 'requested', 'probe-ready'):
+        if command == 'view':
+            print(json.dumps(view(settings)))
+            return
+        record = binding(settings)
+        if command == 'requested':
+            print(record['routing_requested'])
+        elif command == 'probe-ready':
+            if record['routing_phase'] not in ('verifying', 'ready'):
+                raise ValueError('routing transaction is incomplete')
+        return
+    if os.geteuid() != 0:
+        raise ValueError('routing changes require root')
+    if command == 'initialize':
+        initialize(settings)
+    elif command == 'begin' and len(sys.argv) == 4:
+        begin(settings, sys.argv[3])
+    elif command == 'failed':
+        phase(settings, 'failed')
+    elif command == 'applied':
+        applied(settings)
+    elif command in ('enforce', 'check') and len(sys.argv) == 4 and sys.argv[3] in ('direct', 'proxy', 'blocked'):
+        (enforce if command == 'enforce' else check)(settings, sys.argv[3])
+    elif command == 'same-ready' and len(sys.argv) == 4:
+        record = binding(settings)
+        state = module(settings['state_tool'], 'routing_readiness')
+        ready = state.readiness(root=Path(settings['state']).parent, target='proxy')
+        if record['routing_requested'] != sys.argv[3] or ready.get('ready') is not True:
+            raise SystemExit(1)
+        check(settings, 'proxy')
+    else:
+        raise ValueError('invalid fixed routing operation')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        codes = {
+            'proxy-only requires an accepted pinned local source': 'accepted-source-required',
+            'accepted source was modified': 'accepted-source-modified',
+            'source content baseline differs': 'source-content-mismatch',
+            'source requires pinned public endpoints': 'pinned-endpoints-required',
+            'original Rule data is unavailable': 'original-rules-unavailable',
+            'routing authority is missing or inconsistent': 'routing-authority-invalid',
+            'routing firewall differs from the declared transport boundary': 'routing-firewall-drift',
+            'routing requires a complete current health proof': 'complete-health-proof-required',
+        }
+        code = codes.get(str(error), 'transaction-or-enforcement-unavailable')
+        if os.geteuid() == 0 and len(sys.argv) > 2 and sys.argv[2] in ('begin', 'enforce', 'check', 'applied'):
+            try:
+                settings = read(sys.argv[1])
+                record = binding(settings)
+                atomic(Path(settings['state']) / 'routing-failure.json',
+                       {key: record[key] for key in ('boot_id', 'routing_epoch')} | {'code': code})
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        print('proxy routing: ' + code, file=sys.stderr)
+        raise SystemExit(1)

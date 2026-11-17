@@ -364,7 +364,7 @@ in
         const rules = config && config.rules;
         if (Array.isArray(rules) && rules.length) {
           const policy = catchAllPolicy(rules);
-          if (REMOTE_ONLY_CATCH_ALL) {
+          if (REMOTE_ONLY_CATCH_ALL || PROXY_ONLY) {
             if (!policy) throw new Error("Catch-all proxy policy is missing");
             constrainCatchAll(config, policy);
           }

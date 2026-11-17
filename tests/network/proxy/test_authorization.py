@@ -86,5 +86,24 @@ class AuthorizationTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.grant()
         self.assertFalse(self.transactions)
 
+    def test_routing_epoch_and_policy_digest_cannot_reuse_an_old_full_proof(self):
+        binding = dict(routing_requested='proxy-only', routing_applied='proxy-only',
+                       routing_phase='ready', routing_epoch=4, routing_policy_digest='a' * 64)
+        self.write('state.json', dict(mode='proxy', policy_version=8, **binding))
+        self.write('routing.json', dict(boot_id='boot', **binding))
+        proof = dict(self.proof, **binding, scope={'requests': ['mixed-tcp', 'fake-ip-tcp', 'real-address-dns']},
+                     **dict.fromkeys(('data_plane_ok', 'route_ok', 'dns_ok', 'tun_ok', 'config_ok', 'listener_ok', 'real_dns_ok'), True))
+        self.write('health.json', proof)
+        for change in (dict(routing_epoch=3), dict(routing_policy_digest='b' * 64)):
+            self.write('health.json', proof | change)
+            with self.assertRaises(ValueError):
+                self.grant()
+        self.assertFalse(self.transactions)
+        self.write('health.json', proof)
+        self.grant()
+        lease = json.loads((self.state / 'authorization.json').read_text())
+        self.assertEqual(lease['routing_epoch'], 4)
+        self.assertEqual(lease['routing_policy_digest'], 'a' * 64)
+
 
 unittest.main()
