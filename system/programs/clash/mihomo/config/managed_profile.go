@@ -143,6 +143,9 @@ func lfValidateRaw(raw *RawConfig) (string, error) {
 	if err := lfValidateRuleInvariants(raw); err != nil {
 		return "", err
 	}
+	if err := lfValidateSingleEgress(raw); err != nil {
+		return "", err
+	}
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return "", err
@@ -159,6 +162,45 @@ func lfValidateRaw(raw *RawConfig) (string, error) {
 		err = lfguard.Configure(raw.LFPrivateTargets)
 	}
 	return id, err
+}
+
+// A strict snapshot has one immutable remote leaf. Selection changes require
+// a new root transaction, which also closes TCP streams and UDP associations.
+func lfValidateSingleEgress(raw *RawConfig) error {
+	if raw.LFPrivateTargets["single-egress"] != true {
+		return nil
+	}
+	refuse := func() error { return fmt.Errorf("managed single egress requires one fixed remote leaf") }
+	if raw.LFPrivateTargets["proxy-only"] != true || len(raw.Proxy) != 1 || len(raw.ProxyGroup) != 1 || len(raw.ProxyProvider) != 0 {
+		return refuse()
+	}
+	node := raw.Proxy[0]
+	name, _ := node["name"].(string)
+	server, _ := node["server"].(string)
+	ip, err := netip.ParseAddr(server)
+	if err != nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || name == "" {
+		return refuse()
+	}
+	switch node["type"] {
+	case "ss", "vmess", "vless", "trojan", "hysteria2", "tuic", "http", "socks5":
+	default:
+		return refuse()
+	}
+	for _, key := range []string{"dialer-proxy", "ports", "hop-interval", "plugin", "interface-name", "routing-mark"} {
+		if value, exists := node[key]; exists && value != nil && value != "" {
+			return refuse()
+		}
+	}
+	group := raw.ProxyGroup[0]
+	encoded, err := json.Marshal(group["proxies"])
+	want, _ := json.Marshal([]string{name})
+	if err != nil || len(group) != 3 || !bytes.Equal(encoded, want) || group["name"] != "lf-remote" || group["type"] != "select" {
+		return refuse()
+	}
+	if !reflect.DeepEqual(raw.Rule, []string{"IN-NAME,lf-strict,lf-remote", "MATCH,lf-remote"}) {
+		return refuse()
+	}
+	return nil
 }
 
 // lfValidateRuleInvariants rejects only the rule that would bypass the proxy

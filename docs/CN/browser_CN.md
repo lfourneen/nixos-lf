@@ -94,7 +94,8 @@ Wayland、音频、Downloads、profile 和用户选择的文档是明确开放�
 它每 100 ms 读取一次已发布状态，故障发现本身还取决于监督器。
 A/C 同时通过 nftables 阻断该入口。
 
-核心的固定入口 `lf-strict` 使用专用远程节点组，拒绝 DIRECT、COMPATIBLE 和私网目标。
+核心的固定入口 `lf-strict` 使用 `lf-remote`，拒绝 DIRECT、COMPATIBLE 和私网目标。
+Rules 中该组独立选择节点。运行时 proxy-only 将它固定到与普通应用和 DNS 相同的叶子，只有 root 出口事务可以更换。
 GUI 选组和 Global 模式不能放宽这些规则。
 浏览器不能直接访问宿主 TCP、LAN、本机 DNS 或公网。
 已排队或发出的字节无法撤回，同桌面 UID 下的其它未隔离程序仍受信任。

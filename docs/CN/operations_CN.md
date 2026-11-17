@@ -212,6 +212,11 @@ clash-diff
 底层命令为 `sudo proxy-control routing rules`、`sudo proxy-control routing proxy-only`。
 `clash-off` 保留本次启动的选择，`clash-on` 复用它，重启恢复 rules。
 Proxy-only 需要已接受的固定节点来源；准备或完整健康检查失败时保持 C 及请求的选择。
+
+用 `clash-egress` 列出已接受来源的出口 ID，用 `clash-egress APPROVED_NODE_ID` 选择其中一个并请求严格 B。
+将 `APPROVED_NODE_ID` 替换为列表中的完整 ID。底层入口为 `sudo proxy-control egress list` 和 `sudo proxy-control egress APPROVED_NODE_ID`。
+出口变更经 C 关闭旧流和 association。Rules 保留 GUI 选组，严格模式通过此 root 事务更换出口。
+所选出口在本次启动的 off/on 后保留。来源更改该节点后，须先在 rules 接受更新，再选择新 ID。
 策略边界见[路由策略](proxy_CN.md#路由策略)。
 
 底层系统命令为 `sudo proxy-control on`、`sudo proxy-control off`。

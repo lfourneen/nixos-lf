@@ -28,6 +28,26 @@ dns = module('real_dns', 'system/config/network/dns/real_proxy.py')
 
 
 class RoutingTests(unittest.TestCase):
+    def test_unknown_egress_and_cross_egress_proofs_fail_closed(self):
+        with self.assertRaises(ValueError):
+            routing.begin(self.settings, 'proxy-only', '../node')
+        record = routing.binding(self.settings)
+        routing.activate(self.settings, 'proxy-only')
+        record.update(routing_requested='proxy-only', egress_requested='a' * 64, egress_epoch=1,
+            routing_policy_digest=routing.sha(Path(self.settings['policies']['proxy-only']).read_bytes()))
+        routing.atomic(self.state / 'routing.json', record)
+        (self.state / 'config-digest').write_text('snapshot')
+        proof = dict(record, ok=True, digest='snapshot',
+            scope={'requests': ['mixed-tcp', 'fake-ip-tcp', 'real-address-dns']},
+            **dict.fromkeys(('data_plane_ok', 'route_ok', 'dns_ok', 'tun_ok', 'config_ok', 'listener_ok', 'real_dns_ok'), True))
+        for change in (dict(egress_epoch=0), dict(egress_requested='b' * 64)):
+            routing.atomic(self.state / 'health.json', proof | change)
+            with self.assertRaises(ValueError):
+                routing.applied(self.settings)
+        routing.atomic(self.state / 'health.json', proof)
+        routing.applied(self.settings)
+        self.assertEqual(routing.binding(self.settings)['routing_phase'], 'ready')
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

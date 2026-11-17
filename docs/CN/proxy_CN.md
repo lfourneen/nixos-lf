@@ -298,7 +298,7 @@ Rule providers 固定为空，geodata 自动更新关闭，无条件 `MATCH,DIRE
 | 控制操作 | 受管行为 |
 |---|---|
 | GET / HEAD / OPTIONS | 允许，包括 GUI 延迟测试 |
-| PUT / DELETE `/proxies/<name>` | 选择或释放代理选择 |
+| PUT / DELETE `/proxies/<name>` | rules 中选择或释放代理选择。运行时 proxy-only 返回 403，出口由 root 控制 |
 | DELETE `/connections` 或 `/connections/<id>` | 关闭连接 |
 | PATCH `/configs` | 空补丁、`mode` 或 `tun` 返回 204 且不应用；补丁含其它字段时返回 403 |
 | PUT `/configs` | 返回 204 但不应用，GUI 重载路径不能替换系统渲染配置 |
@@ -362,10 +362,25 @@ GUI 的 Rule/Global/Direct 是核心模式请求，不是路由子模式选择�
 这些请求被丢弃，GUI 不能把核心切离 `rule`，也不能选择路由子模式。
 
 `rules` 保留订阅条件，包括国内 DIRECT、profile REJECT 和受管探针规则。
-`proxy-only` 将应用条件统一交给经过验证的远程兜底，并保留严格浏览器入口的远程约束。
-其 DNS 组引用同一兜底。最终适配器检查仍拒绝 DIRECT/COMPATIBLE，覆盖嵌套组和改名叶子。
-原始规则和已固定节点独立保存，返回 rules 时从已接受的本地数据重建。
-这统一选择策略，不证明不同协议或地址族具有同一个远端 NAT 地址。
+运行时 `proxy-only` 将支持的应用流量固定到已接受来源的远程兜底中的一个叶节点。
+有效快照只包含该节点及单成员的 `lf-remote` 选择组。原生 TCP/UDP、显式代理、严格 Firefox 和两个 DNS 验证器的传输均使用该叶子。
+自动测速、fallback 和 GUI 选组不能更换它。最终适配器仍拒绝 DIRECT/COMPATIBLE。
+原始规则、分组和全部已固定来源节点独立保存，返回 rules 时恢复订阅分流。
+
+使用 `clash-egress` 列出候选，再用列表返回的完整 ID 替换 `APPROVED_NODE_ID`，执行 `clash-egress APPROVED_NODE_ID`。
+底层入口为 `sudo proxy-control egress list` 和 `sudo proxy-control egress APPROVED_NODE_ID`。
+本次启动尚未选择出口时，首次进入严格模式使用兜底图中按顺序可达的第一个远程叶子。
+出口变更复用 C 事务，关闭旧 TCP 流和 UDP association，并要求新的完整健康及授权证明。
+重复选择已就绪的相同 ID 保持幂等。节点故障进入 C，不另选节点。
+
+出口 ID 绑定完整的固定节点定义。健康、租约、刷新和回滚除路由 epoch 与快照外，还绑定 `egress_requested` 和 `egress_epoch`。
+Off/on 及返回 rules 保留本次启动的严格出口选择，重启清除它。
+来源更改所选节点的地址、凭据或传输后，旧 ID 不授权替代节点。先在 rules 接受更新后的来源，再选择新 ID。
+
+`proxy-status --json` 为严格选择报告 `capabilities.egress="fixed-leaf"`。
+实际适配器不支持 UDP 时显示 `unsupported`，其余 UDP 的持续探测范围仍为 `not-probed`。IPv6 目标能力取决于节点，不支持的请求不能转到另一叶子或 DIRECT。
+`capabilities.remote_nat="not-measured"` 明确远端边界：同一节点仍可能为 TCP/UDP 或不同目标使用不同 NAT 地址。
+单一 NAT 保证需要独立的目标观测。IPv4 和 IPv6 可以分别声明出口地址。
 
 切换先安装 C 并撤销 B 授权，停止旧核心和 relay 流，安装选定的不可变策略，再重建核心命名空间。
 Parser、内容审计、监听身份、路由、DNS/TUN 和完整健康检查通过后才能返回 B。

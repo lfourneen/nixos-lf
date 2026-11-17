@@ -343,6 +343,11 @@ def routing_view(root=Path('/run'), policy=None, boot_id=None):
     except OSError:
         return result
     keys = ('routing_requested', 'routing_applied', 'routing_epoch', 'routing_policy_digest', 'routing_phase')
+    if 'egress_epoch' in value:
+        if (type(value['egress_epoch']) is not int or value['egress_epoch'] < 0
+                or value.get('egress_requested') is not None and not re.fullmatch('[a-f0-9]{64}', str(value['egress_requested']))):
+            return result
+        keys += ('egress_requested', 'egress_epoch')
     result.update({key: value[key] for key in keys})
     result['routing_consistent'] = all(policy.get(key) == value[key] for key in keys)
     return result
@@ -397,6 +402,9 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     if routing and target == 'proxy':
         lease_active = lease_active and all(authorization.get(key) == routing[key]
             for key in ('routing_epoch', 'routing_policy_digest'))
+        if routing.get('routing_requested') == 'proxy-only' and 'egress_epoch' in routing:
+            lease_active = lease_active and all(authorization.get(key) == routing[key]
+                for key in ('egress_requested', 'egress_epoch'))
     if lease_required and not lease_active:
         reasons.append('B kernel authorization expired or pending')
     if heartbeat.get("mode") != target:
@@ -443,6 +451,9 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     if routing:
         health_current = health_current and all(health.get(key) == routing[key]
             for key in ('routing_epoch', 'routing_policy_digest'))
+        if routing.get('routing_requested') == 'proxy-only' and 'egress_epoch' in routing:
+            health_current = health_current and all(health.get(key) == routing[key]
+                for key in ('egress_requested', 'egress_epoch'))
     core_mode = health.get('core_mode') if health_current and health.get('core_mode') in ('rule', 'global', 'direct') else 'unknown'
     identity = (health.get('exit_identities') or {}).get('mixed') if health_current else None
     identity = identity[:12] if isinstance(identity, str) and re.fullmatch('[a-f0-9]{64}', identity) else None
@@ -450,8 +461,12 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
             'core_mode': core_mode, 'sampled_egress_identity': identity,
             'capabilities': {'dns': ('validated-via-proxy' if routing.get('routing_applied') == 'proxy-only'
                 and health_current and health.get('real_dns_ok') is True else 'pending' if routing.get('routing_requested') == 'proxy-only'
-                else 'policy-selected'), 'udp': 'not-probed',
-                'icmp': 'blocked' if routing.get('routing_requested') == 'proxy-only' else 'not-probed'},
+                else 'policy-selected'), 'udp': 'unsupported' if health_current
+                    and health.get('node_udp_supported') is False else 'not-probed',
+                'icmp': 'blocked' if routing.get('routing_requested') == 'proxy-only' else 'not-probed',
+                'egress': 'fixed-leaf' if routing.get('routing_requested') == 'proxy-only'
+                    and routing.get('egress_requested') else 'policy-selected',
+                'remote_nat': 'not-measured', 'ipv6_target': 'node-dependent'},
             "mode": policy.get("mode", "unknown"), "reasons": reasons,
             # A failed verdict is reported, not treated as an outage: Mode A keeps
             # a bounded plaintext window while the encrypted path is retried.

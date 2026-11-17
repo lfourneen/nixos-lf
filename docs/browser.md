@@ -95,7 +95,8 @@ The host relay accepts traffic only in healthy B, verifies the connected core so
 It polls published state every 100 ms, in addition to the supervisor's detection time.
 A/C also block the inlet through nftables.
 
-The core's fixed `lf-strict` inlet uses a dedicated remote-node group and refuses DIRECT, COMPATIBLE and private targets.
+The core's fixed `lf-strict` inlet uses `lf-remote` and refuses DIRECT, COMPATIBLE and private targets.
+In rules this group has its own node choice. Runtime proxy-only binds it to the same fixed leaf as ordinary applications and DNS; only a root exit transaction can change that leaf.
 GUI selections and Global mode cannot relax those rules.
 The browser cannot open host TCP, LAN, native DNS or direct internet connections.
 Already queued or transmitted bytes cannot be recalled.

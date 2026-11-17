@@ -381,6 +381,7 @@ VM 检查运行在隔离的虚拟机中，硬件加速需要 KVM 权限。
 | `proxy-gui-vm` | WebKit 以改名账户和非默认 home 自动化运行未修改的生产 GUI：mode/TUN/System Proxy/PAC/代理守护静默丢弃、OS 状态与核心 PID 保持、无控制错误提示、GUI 退出及 root 路由事务 |
 | `proxy-routing` | 本次启动的不可变选择、完整证明与 epoch 绑定、准备失败、清理后的状态及真实 DNS 截止/回退拒绝 |
 | `proxy-routing-vm` | 登记来源与生产命名空间：双向子模式切换、原始规则恢复、物理对端仅节点外发、真实 DNS/来源刷新、旧回复、访客拒绝、幂等、并发选择、off/on、重启及内核到期撤权 |
+| `proxy-single-egress-vm` | 两个可控出口：rules 独立选组复现、固定叶子的双栈 TCP/UDP 与 DNS 观测、实际 Firefox 和严格入口、UDP 不支持/故障、旧流、并发刷新、上行/节点故障，以及路由与租约回归 |
 | `proxy-rules`、`proxy-egress-rules` | 构建期 LKL nft 解析完整兼容/受限模式规则 |
 | `proxy-firewall-vm` | A/C 表归属、外部表保留、加载被拒绝时的回滚、迁移锁、幂等及迁移目标名称复用 |
 | `proxy-dns-strict-rules` | LKL 解析完整严格 DNS 防火墙规则 |

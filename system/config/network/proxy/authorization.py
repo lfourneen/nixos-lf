@@ -45,6 +45,8 @@ def grant(settings, version, root=Path('/run'), now=None, run=subprocess.run):
     if 'routing_epoch' in policy:
         selected = read(state / 'routing.json')
         routing = {key: policy.get(key) for key in ('routing_epoch', 'routing_policy_digest')}
+        if policy.get('routing_requested') == 'proxy-only' and 'egress_epoch' in selected:
+            routing.update({key: policy.get(key) for key in ('egress_requested', 'egress_epoch')})
         if (not full_routing_proof(proof, policy.get('routing_requested'))
                 or policy.get('routing_applied') != policy.get('routing_requested')
                 or policy.get('routing_phase') != 'ready'

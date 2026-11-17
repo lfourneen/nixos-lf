@@ -485,7 +485,14 @@ class Probe:
                 or type(value.get('routing_epoch')) is not int or value['routing_epoch'] < 1 \
                 or value.get('boot_id') != (Path(self.settings['runtime']) / 'boot-id').read_text().strip():
             raise ProbeFailure('config', 'routing policy or transaction differs')
-        return {key: value[key] for key in ('routing_requested', 'routing_epoch', 'routing_policy_digest')}
+        keys = ['routing_requested', 'routing_epoch', 'routing_policy_digest']
+        if value['routing_requested'] == 'proxy-only' and 'egress_epoch' in value:
+            manifest = json.loads((Path(self.settings['effective_directory']) / 'source-manifest.json').read_text())
+            if not re.fullmatch('[a-f0-9]{64}', str(value.get('egress_requested'))) \
+                    or manifest.get('egress_id') != value['egress_requested']:
+                raise ProbeFailure('config', 'egress snapshot differs from selected leaf')
+            keys += ['egress_requested', 'egress_epoch']
+        return {key: value[key] for key in keys}
 
     def real_dns(self):
         port = self.settings.get('real_dns_port')
@@ -531,6 +538,10 @@ class Probe:
         self.core_mode = initial.get('mode', 'unknown')
         fingerprint = self.timed("config", lambda: check_config(initial, self.settings))
         self.diagnostics['config_ok'] = True
+        if self.routing.get('egress_requested'):
+            graph = self.api('/proxies')['proxies']
+            selected = graph['lf-remote']['now']
+            self.diagnostics['node_udp_supported'] = graph[selected].get('udp') is True
         if fast:
             return fingerprint
         with tempfile.TemporaryDirectory(prefix="health-", dir=self.settings["runtime"]) as temporary:

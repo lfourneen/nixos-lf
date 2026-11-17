@@ -34,6 +34,41 @@ class Response:
 
 
 class SourceTests(unittest.TestCase):
+    def test_single_egress_flattens_dynamic_groups_and_rejects_lost_identity(self):
+        original = json.loads(json.dumps(DOC))
+        original['proxies'].append(dict(original['proxies'][0], name='other', server='8.8.8.8'))
+        original['proxy-groups'][0].update(type='fallback', proxies=['DIRECT', 'n', 'other'], url='https://example.com/')
+        policy = {'lf-private-targets': {'proxy-only': True, 'single-egress': True}}
+        saved = {}
+        strict = w.load(w.render(original, {}, policy, source=saved))
+        self.assertEqual(strict['rules'], ['IN-NAME,lf-strict,lf-remote', 'MATCH,lf-remote'])
+        self.assertEqual(strict['proxy-groups'], [{'name': 'lf-remote', 'type': 'select', 'proxies': ['n']}])
+        identity = w.node_identity(original['proxies'][1])
+        strict = w.load(w.render(saved, {}, policy, egress_id=identity))
+        self.assertEqual([node['name'] for node in strict['proxies']], ['other'])
+        self.assertEqual(len(saved['proxies']), 2)
+        self.assertEqual(saved['proxy-groups'][0]['type'], 'fallback')
+        with self.assertRaisesRegex(w.Refused, 'selected egress unavailable'):
+            w.render(saved, {}, policy, egress_id='0' * 64)
+        changed = json.loads(json.dumps(saved))
+        changed['proxies'][1]['password'] = 'rotated'
+        with self.assertRaises(w.Refused):
+            w.render(changed, {}, policy, egress_id=identity)
+
+    def test_single_egress_refresh_pins_all_source_nodes_before_selecting(self):
+        document = json.loads(json.dumps(DOC))
+        document['proxies'].append(dict(document['proxies'][0], name='other'))
+        document['proxy-groups'][0]['proxies'].append('other')
+        request = {'registry': {'subscription': {'url': 'https://source.example/sub'}},
+                   'policy': {'lf-private-targets': {'proxy-only': True, 'single-egress': True}}}
+        first = w.prepare(request, lambda *_: json.dumps(document).encode(), public)
+        source = json.loads(first['source_data'])
+        self.assertEqual(len(source['proxies']), 2)
+        requested = w.node_identity(source['proxies'][1])
+        second = w.prepare(dict(request, egress_id=requested), lambda *_: json.dumps(document).encode(), public)
+        self.assertEqual(second['egress_id'], requested)
+        self.assertEqual([node['name'] for node in w.load(second['yaml'].encode())['proxies']], ['other'])
+
     def test_proxy_only_rewrites_direct_and_reject_without_destroying_rule_data(self):
         original = json.loads(json.dumps(DOC))
         original['rules'] = ['DOMAIN,domestic.example,DIRECT', 'DOMAIN,denied.example,REJECT', 'MATCH,P']

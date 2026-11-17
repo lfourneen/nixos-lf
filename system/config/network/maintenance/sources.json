@@ -120,7 +120,8 @@
         "proxy-managed-netns-vm",
         "proxy-assurance-vm",
         "proxy-routing",
-        "proxy-routing-vm"
+        "proxy-routing-vm",
+        "proxy-single-egress-vm"
       ],
       "entrypoints": [
         "config/config.go: ParseRawConfig, RawConfig/RawTun schema and controller General",
@@ -131,7 +132,8 @@
         "listener/tproxy: IPv4 inlet ownership and socket family",
         "component/geodata: parser-time download paths and Global route logs",
         "system/config/network/proxy/routing.nix",
-        "system/config/network/proxy/routing.py"
+        "system/config/network/proxy/routing.py",
+        "listener/sing_tun/prepare.go: strict real and synthetic ICMP echo refusal"
       ],
       "invariants": [
         "Root profile, Merge template and live controller/health invariants agree; duplicate/noncanonical PATCH and unlisted writes fail closed.",
@@ -139,7 +141,8 @@
         "proxyOnly refuses application DIRECT/COMPATIBLE, including renamed/nested leaves and rule-routed DNS; explicit bootstrap remains scoped.",
         "UDP mappings retain the actual leaf and target, and recheck current inlet/port/grants on cached writes.",
         "Rule routing retains authorized domestic DIRECT; uniform routing and both real browser paths retain their distinct behavior.",
-        "TCP retries only fully validated pinned candidates at the actual selected leaf, under one deadline; UDP retains its association target. Mutable node sources and certificate exceptions require explicit policy."
+        "TCP retries only fully validated pinned candidates at the actual selected leaf, under one deadline; UDP retains its association target. Mutable node sources and certificate exceptions require explicit policy.",
+        "Runtime proxy-only retains exactly one approved fixed remote leaf for applications and both DNS roles. Root exit transactions close TCP/UDP flows and bind the selected node and exit epoch; GUI/fallback cannot substitute another leaf, and unsupported UDP/ICMP fails closed."
       ]
     },
     "sing-tun": {
@@ -227,7 +230,8 @@
         "proxy-regressions",
         "proxy-managed-netns-vm",
         "proxy-routing",
-        "proxy-routing-vm"
+        "proxy-routing-vm",
+        "proxy-single-egress-vm"
       ],
       "entrypoints": [
         "helper src/core/manager.rs, server.rs, logger.rs, reconcile.rs and vendored Kode Bridge peer credentials",

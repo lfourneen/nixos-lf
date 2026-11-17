@@ -1,4 +1,4 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false, routing ? false, guiControls ? false, guiPkgs ? pkgs }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false, routing ? false, guiControls ? false, guiPkgs ? pkgs, egressBrowser ? null, evidenceIdentity ? {} }:
 
 let
   desktop = clashPackage.desktopIdentity;
@@ -7,11 +7,13 @@ let
   fixturePython = pkgs.python3.withPackages (p: [ p.pyyaml ] ++ pkgs.lib.optional assurance p.dnspython);
   maskSupervisor = "mkdir -p /run/systemd/system.control; ln -s /dev/null /run/systemd/system.control/proxy-mode.service; systemctl daemon-reload; systemctl stop proxy-mode.service; test $(systemctl show -p LoadState --value proxy-mode.service) = masked";
   unmaskSupervisor = "unlink /run/systemd/system.control/proxy-mode.service; systemctl daemon-reload";
+
   sourceTls = import ../../home/firefox/tls-fixture.nix {
     inherit pkgs;
-    extraDnsNames = [ "source.fixture.example" "dot.fixture.test" ];
+    extraDnsNames = [ "source.fixture.example" "dot.fixture.test" "v4.egress.fixture.example" "v6.egress.fixture.example" ];
     extraIpAddresses = pkgs.lib.optional assurance "203.0.113.53";
   };
+
   echFixture = pkgs.runCommand "ech-origin-fixture" { nativeBuildInputs = [ pkgs.go ]; } ''
     export GOCACHE="$TMPDIR/go-cache"
     export GO111MODULE=off
@@ -69,7 +71,7 @@ pkgs.testers.runNixOSTest {
     ] ++ lib.optional assurance (import ../dns/assurance-config.nix { inherit sourceTls; })
       ++ lib.optional guests ../guests/guest-config.nix
       ++ lib.optional hermesContainers ../guests/hermes-container-config.nix
-      ++ lib.optional (ech != null || guiControls) ../../home/firefox/firefox-desktop.nix;
+      ++ lib.optional (ech != null || guiControls || egressBrowser != null) ../../home/firefox/firefox-desktop.nix;
     my.machine.desktopUser = desktop.name;
     users.users.${desktop.name} = { isNormalUser = true; inherit (desktop) uid home; };
     _module.args.desktopTestUser = desktop.name;
@@ -174,10 +176,20 @@ pkgs.testers.runNixOSTest {
     };
 
     environment.etc."netsec-managed.json" = lib.mkIf managedSources {
-      text = builtins.toJSON { tls = sourceTls; inherit routing; stage = ../../../system/programs/clash/service/clash-verge-stage.py;
+      text = builtins.toJSON { tls = sourceTls; inherit routing; egress = egressBrowser != null; stage = ../../../system/programs/clash/service/clash-verge-stage.py;
         stageSettings = clashPackage.stageSettings; launcher = "${clashPackage}/bin/verge-mihomo"; };
     };
+
     environment.etc."netsec-routing.py" = lib.mkIf routing { source = ./routing_fixture.py; };
+    environment.etc."netsec-egress.py" = lib.mkIf (egressBrowser != null) { source = ./egress_fixture.py; };
+    environment.etc."netsec-egress.json" = lib.mkIf (egressBrowser != null) {
+      text = builtins.toJSON {
+        tls = sourceTls;
+        browser = { package = egressBrowser; settings = egressBrowser.netsec.settings; };
+        identity = evidenceIdentity;
+      };
+    };
+
     environment.etc."netsec-gui-webdriver.py" = lib.mkIf guiControls { source = ./gui_webdriver.py; };
     environment.etc."netsec-gui-webdriver.json" = lib.mkIf guiControls {
       text = builtins.toJSON {
@@ -187,12 +199,14 @@ pkgs.testers.runNixOSTest {
         schemas = "${guiPkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${guiPkgs.gsettings-desktop-schemas.name}/glib-2.0/schemas";
       };
     };
+
     users.users.routing-guest = lib.mkIf routing {
       isNormalUser = true;
       uid = 1100;
       subUidRanges = [{ startUid = 600000; count = 65536; }];
       subGidRanges = [{ startGid = 600000; count = 65536; }];
     };
+
     my.hardening.guestNetworks.virbr0.sourceCidrs = lib.mkIf routing [ "192.168.122.0/24" "fd42:122::/64" ];
     my.hardening.socketGuestUsers = lib.mkIf routing [ "routing-guest" ];
     my.proxy.transparentGuestInterfaces = lib.mkIf routing [ "waydroid0" ];
@@ -214,7 +228,7 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-target.py" = lib.mkIf targetPolicy { source = ./target_fixture.py; };
     environment.etc."netsec-launcher".text = "${clashPackage}/bin/verge-mihomo";
     environment.etc."netsec-core".text = "${clashPackage.managedCore}/bin/mihomo";
-    environment.etc."netsec-firefox-driver.py" = lib.mkIf (ech != null) { source = ../../home/firefox/firefox_driver.py; };
+    environment.etc."netsec-firefox-driver.py" = lib.mkIf (ech != null || egressBrowser != null) { source = ../../home/firefox/firefox_driver.py; };
     environment.etc."netsec-ech.py" = lib.mkIf (ech != null) { source = ../../home/firefox/test_ech.py; };
 
     environment.etc."netsec-ech.json" = lib.mkIf (ech != null) {
@@ -228,9 +242,9 @@ pkgs.testers.runNixOSTest {
     environment.systemPackages = [
       fixturePython
       pkgs.curl pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.nftables pkgs.util-linux
-    ] ++ lib.optionals (ech != null) [ pkgs.nssTools ]
+    ] ++ lib.optionals (ech != null || egressBrowser != null) [ pkgs.nssTools pkgs.tcpdump ]
       ++ lib.optionals dataplane [ pkgs.conntrack-tools ];
-    virtualisation.memorySize = if guiControls then 4096 else if ech != null then 3072 else if managedSources then 2048 else 1024;
+    virtualisation.memorySize = if guiControls || egressBrowser != null then 4096 else if ech != null then 3072 else if managedSources then 2048 else 1024;
   };
 
   testScript = ''
@@ -258,7 +272,7 @@ pkgs.testers.runNixOSTest {
     ${if routing then "machine.start(allow_reboot=True)" else "start_all()"}
     machine.wait_for_unit("nftables.service")
     machine.wait_for_unit("proxy-mode.service")
-    ${pkgs.lib.optionalString (ech != null) ''
+    ${pkgs.lib.optionalString (ech != null || egressBrowser != null) ''
     machine.wait_until_succeeds("test -S ${desktopRuntime}/wayland-0 && test -S ${desktopRuntime}/pulse/native", timeout=40)
     ''}
     machine.succeed("ip netns add outside; ip link add ens1 type veth peer name peer0; ip link set peer0 netns outside")
@@ -541,6 +555,17 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
     ''}
     ${pkgs.lib.optionalString routing ''
+    ${pkgs.lib.optionalString (egressBrowser != null) ''
+    with subtest("fixed leaf, observed dual-stack TCP/UDP exits and revocation"):
+        try:
+            print(machine.succeed("python3 -u /etc/netsec-egress.py check", timeout=900))
+        except Exception:
+            print(machine.execute("cat /run/proxy-mode/state.json /run/proxy-mode/health.json /run/proxy-mode/routing.json; ip -4 rule; ip -4 route show table main; ip -6 route show table main; ip netns exec lf-clash-core ip -4 route show table all; python3 /etc/netsec-core-network.py diagnose"))
+            raise
+        finally:
+            machine.execute("systemctl stop egress-capture-host.service egress-capture-core.service egress-capture-remote.service")
+            machine.copy_from_vm("/tmp/egress-evidence")
+    ''}
     with subtest("${if guiControls then "GUI controls and root routing ownership" else "root routing transactions, exact outer transports and proxied real DNS"}"):
         try:
             print(machine.succeed("python3 -u /etc/netsec-routing.py check", timeout=600))

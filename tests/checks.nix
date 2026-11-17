@@ -390,6 +390,19 @@ let
         routing = true;
       };
 
+      proxy-single-egress-vm = import ./network/proxy/control-vm.nix {
+        inherit pkgs;
+        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        managedSources = true;
+        assurance = true;
+        routing = true;
+        egressBrowser = self.nixosConfigurations.lfour.config.home-manager.users.${desktopUser}.programs.firefox.finalPackage;
+        evidenceIdentity = {
+          source = builtins.hashString "sha256" (toString repoSource);
+          lock = builtins.hashFile "sha256" ../flake.lock;
+        };
+      };
+
       proxy-gui-vm = import ./network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = guiFixtureConfig.programs.clash-verge.package;

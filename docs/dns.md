@@ -176,7 +176,7 @@ Cold foreign lookups can require several remote exchanges for validation, while 
 Mode A's `my.machine.dotEndpoints` list is independent of both B roles.
 TLS certificate checks remain enabled in Mihomo, and upstream failure grants no plaintext fallback.
 
-Runtime `proxy-only` keeps both local validators and their independent budgets, but sends both roles through authenticated literal-address DoH endpoints bound to the same pruned remote catch-all as application traffic.
+Runtime `proxy-only` keeps both local validators and their independent budgets, but sends both roles through authenticated literal-address DoH endpoints bound to the same fixed remote leaf as application traffic.
 It removes domestic resolver-policy maps, direct bootstrap and MagicDNS transport.
 The core starts from accepted, pinned node addresses, preserving TLS server names; switching does not require a network fetch or direct name lookup.
 An unavailable node or validator keeps C active.

@@ -9,6 +9,7 @@ let
   strictPolicy = p.managedProfile // {
     lf-private-targets = p.managedProfile.lf-private-targets // {
       proxy-only = true;
+      single-egress = true;
       local-target-cidrs = [ ];
       allowed-domains = [ ];
       remote-target-grants = [ ];

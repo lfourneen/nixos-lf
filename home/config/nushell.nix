@@ -301,6 +301,10 @@ in
       clash-routing proxy-only
     }
 
+    def clash-egress [id: string = "list"] {
+      ^sudo proxy-control egress $id
+    }
+
     # Live outbound TCP audit (needs root). connect(2) is pre-NAT, so
     # redirected flows show their real public IP, not :${gostRedirect}.
     # bpftrace (BTF) works on new kernels where bcc's headers fail.

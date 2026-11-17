@@ -137,7 +137,7 @@ They cannot authorize B or renew its lease. Only the complete `ok=true` verdict 
 Only `ok=true` confirms successful completion.
 `scope.requests` lists the TCP request paths and is empty for `--fast`.
 `scope.udp_data_plane="not-probed"` makes the UDP boundary explicit: listener identity is checked, while UDP reachability and association return traffic are not continuously proven.
-A UDP-only failure can therefore leave B and its TCP verdict healthy.
+A UDP-only failure can therefore leave B and its TCP verdict healthy. In runtime proxy-only, the selected adapter reports `unsupported` when it lacks UDP; IPv6 target support remains node-dependent.
 
 Mode B has independent `rules` and `proxy-only` routing selections. `clash-rules` and `clash-proxy-only` select a target through C and wait for verified B; `proxy-status` shows the applied routing only in B. Off/on retains the choice within this boot; reboot restores rules. See [routing policy](proxy.md#routing-policy).
 

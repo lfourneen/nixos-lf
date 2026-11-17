@@ -323,6 +323,7 @@ def refresh_generation(settings, root):
     policy_bytes = Path(settings['policy']).read_bytes()
     routing = Path(settings['routing_state']).read_bytes() if settings.get('routing_state') else None
     request = json.dumps(dict(registry=registry, policy=json.loads(policy_bytes),
+                              egress_id=json.loads(routing).get('egress_requested') if routing else None,
                               resolver=settings.get('resolver'),
                               forced_domains=settings['forced_domains'],
                               probe_domains=settings.get('probe_domains', []),
@@ -363,6 +364,7 @@ def refresh_generation(settings, root):
     if type(dropped) is not int or not 0 <= dropped <= 10000:
         raise ValueError('renderer metadata')
     manifest = dict(schema=1, source_id=registry['id'], revision=digest(raw),
+                    egress_id=result.get('egress_id'),
                     responses=result['responses'], worker=digest(Path(settings['worker']).read_bytes()),
                     policy=digest(policy_bytes),
                     renderer_settings=digest(json.dumps({'forced_domains': settings['forced_domains'],
@@ -410,8 +412,8 @@ def refresh_generation(settings, root):
             shutil.rmtree(candidate)
 
 
-def render_local(settings, root, target, previous):
-    """Render a fixed policy from accepted local nodes without network access."""
+def local_source(settings, root, target):
+    """Verify accepted source content before using its nodes or original rules."""
     stage_settings = json.loads(Path(settings['stageSettings']).read_text())
     spec = importlib.util.spec_from_file_location('source_stage', stage_settings['snapshot_tool'])
     stage = importlib.util.module_from_spec(spec)
@@ -465,10 +467,20 @@ def render_local(settings, root, target, previous):
         source_data = json.dumps(base, sort_keys=True, ensure_ascii=False).encode()
     if not base.get('proxies') or any(not worker.public_address(node.get('server', '')) for node in base['proxies']):
         raise ValueError('source requires pinned public endpoints')
+    return worker, base, source_data, source, old_manifest, registry
+
+
+def render_local(settings, root, target, previous):
+    """Render a fixed policy from accepted local nodes without network access."""
+    worker, base, source_data, source, old_manifest, registry = local_source(settings, root, target)
     policy = Path(settings['policy']).read_bytes()
+    routing = json.loads(Path(settings['routing_state']).read_text()) if settings.get('routing_state') else {}
     config = worker.render(base, {}, json.loads(policy), settings['forced_domains'],
-                           settings.get('probe_domains', []), settings.get('remote_only_catchall', False))
+                           settings.get('probe_domains', []), settings.get('remote_only_catchall', False),
+                           egress_id=routing.get('egress_requested'))
+    egress_id = worker.selected_egress(worker.load(config))
     manifest = dict(old_manifest, schema=2, revision=digest(registry), policy=digest(policy),
+                    egress_id=egress_id,
                     yaml=digest(config), source_data=digest(source_data), worker=digest(Path(settings['worker']).read_bytes()),
                     renderer_settings=digest(json.dumps({'forced_domains': settings['forced_domains'],
                         'probe_domains': settings.get('probe_domains', []),
@@ -496,6 +508,7 @@ def render_local(settings, root, target, previous):
     finally:
         if candidate.exists():
             shutil.rmtree(candidate)
+    return egress_id
 
 
 FETCH_REASONS = frozenset(('dns lookup failed', 'certificate rejected', 'tls failed',

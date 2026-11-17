@@ -176,7 +176,9 @@ def gui_controls():
                  if group.get('type') == 'Selector' and group.get('now') in group.get('all', [])]
     assert selectors, 'no managed selector remains available'
     name, group = selectors[0]
-    assert request(sock, 'PUT', '/proxies/' + quote(name, safe=''), {'name': group['now']})[0] == 204
+    routing = Path('/run/proxy-mode/routing.json')
+    fixed = routing.exists() and json.loads(routing.read_text()).get('routing_requested') == 'proxy-only'
+    assert request(sock, 'PUT', '/proxies/' + quote(name, safe=''), {'name': group['now']})[0] == (403 if fixed else 204)
     assert request(sock, 'DELETE', '/connections/lf-nonexistent-test-connection')[0] == 204
     assert request(sock, 'GET', '/connections')[0] == 200
     print('GUI control writes discarded; core/TUN/preferences unchanged; selector and connection APIs available', flush=True)

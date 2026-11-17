@@ -133,7 +133,7 @@ HTTP 路由证明使用核心日志，或请求仍在进行时采集的连接表
 `health.json.scope` 声明本次调用的检查范围，只有 `ok=true` 才证明这些检查完成。
 `scope.requests` 列出 TCP 请求路径，`--fast` 时为空。
 `scope.udp_data_plane="not-probed"` 明确 UDP 边界：核对监听身份，但不持续证明 UDP 可达性和 association 回程。
-单独的 UDP 故障因此可能让 B 与 TCP 健康结果保持正常。
+单独的 UDP 故障因此可能让 B 与 TCP 健康结果保持正常。运行时 proxy-only 在所选适配器不支持 UDP 时报告 `unsupported`，IPv6 目标能力仍取决于节点。
 
 Mode B 另有 `rules` 和 `proxy-only` 路由选择。`clash-rules`、`clash-proxy-only` 经 C 选择目标并等待已验证的 B，`proxy-status` 仅在 B 显示生效路由。Off/on 保留本次启动的选择，重启恢复 rules。见[路由策略](proxy_CN.md#路由策略)。
 

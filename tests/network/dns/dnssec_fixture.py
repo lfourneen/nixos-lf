@@ -28,6 +28,13 @@ def answer(packet, tcp=False, transport='dot'):
     request = dns.message.from_wire(packet)
     response = dns.message.make_response(request)
     response.flags |= dns.flags.AA
+    if request.question and request.question[0].name.to_text().endswith('.egress.fixture.example.'):
+        for question in request.question:
+            if question.rdtype == dns.rdatatype.A and question.name.to_text().startswith('v4.'):
+                response.answer.append(dns.rrset.from_text(question.name, 1, 'IN', 'A', '203.0.113.10'))
+            if question.rdtype == dns.rdatatype.AAAA and question.name.to_text().startswith('v6.'):
+                response.answer.append(dns.rrset.from_text(question.name, 1, 'IN', 'AAAA', '2001:db8:ffff::10'))
+        return response.to_wire()
     if request.question and request.question[0].name.to_text() in (
             'source.fixture.example.', 'source-node.fixture.example.', 'source-node-updated.fixture.example.',
             'domestic.fixture.example.', 'denied.fixture.example.'):

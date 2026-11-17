@@ -964,9 +964,19 @@ NFT_OFF
     text = ''
       case "''${1:-}" in
         ${lib.optionalString config.my.proxy.runtimeRouting ''
+        egress)
+          [ "$EUID" = 0 ] || { echo 'Use sudo proxy-control egress list|ID' >&2; exit 1; }
+          [ "$#" = 2 ] || { echo 'Expected egress list or an approved node ID' >&2; exit 2; }
+          if [ "$2" = list ]; then
+            exec ${config.my.proxy.routingCommand} egresses
+          fi
+          [[ "$2" =~ ^[a-f0-9]{64}$ ]] || { echo 'Invalid egress ID' >&2; exit 2; }
+          exec "$0" routing proxy-only "$2"
+          ;;
         routing)
           [ "$EUID" = 0 ] || { echo 'Use sudo proxy-control routing rules|proxy-only' >&2; exit 1; }
-          [ "$#" = 2 ] || { echo 'Routing switch failed: expected rules or proxy-only'; exit 2; }
+          [ "$#" = 2 ] || { [ "$#" = 3 ] && [ "$2" = proxy-only ] && [[ "$3" =~ ^[a-f0-9]{64}$ ]]; } \
+            || { echo 'Routing switch failed: expected rules or proxy-only'; exit 2; }
           case "$2" in rules|proxy-only) ;; *) echo 'Routing switch failed: invalid target'; exit 2 ;; esac
           mkdir -p /run/proxy-mode
           exec 8>/run/proxy-mode/operator.lock
@@ -974,6 +984,8 @@ NFT_OFF
           transaction_epoch=""
           transaction_target="$2"
           transaction_step=initialize
+          egress_args=()
+          if [ "$#" = 3 ]; then egress_args=("$3"); fi
           transaction_failed() {
             flock -x -w 30 8 || return 1
             diagnostic=$(jq -r '.code // empty' /run/proxy-mode/routing-failure.json 2>/dev/null || true)
@@ -991,7 +1003,7 @@ NFT_OFF
           }
           trap 'transaction_failed; exit 1' ERR INT TERM
           ${config.my.proxy.routingCommand} initialize
-          if ${config.my.proxy.routingCommand} same-ready "$2"; then
+          if ${config.my.proxy.routingCommand} same-ready "$2" "''${egress_args[@]}"; then
             trap - ERR INT TERM
             echo "Routing already active: $2"
             exit 0
@@ -1002,7 +1014,7 @@ NFT_OFF
           systemctl stop clash-verge.service
           systemctl restart gost-relay.service
           transaction_step=prepare
-          ${config.my.proxy.routingCommand} begin "$2"
+          ${config.my.proxy.routingCommand} begin "$2" "''${egress_args[@]}"
           transaction_epoch=$(${config.my.proxy.routingCommand} view | jq -r .routing_epoch)
           transaction_step=dns
           systemctl restart dnsmasq.service socket-guest-dns.service

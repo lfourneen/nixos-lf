@@ -8,11 +8,27 @@ import (
 	"testing"
 
 	"github.com/metacubex/http"
+	"github.com/metacubex/mihomo/component/lfguard"
 )
 
 type lfPolicyRecorder struct {
 	code int
 	body bytes.Buffer
+}
+
+func TestLFManagedSingleEgressKeepsSelectionRootOwned(t *testing.T) {
+	if err := lfguard.Configure(map[string]any{"prefixes": []string{"10.0.0.0/8"}, "proxy-only": true, "single-egress": true}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lfguard.Configure(nil) })
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		if status, called := lfPolicyRun(t, method, "/proxies/lf-remote", `{"name":"other"}`); status != http.StatusForbidden || called {
+			t.Fatalf("selection escaped root control: %d, %v", status, called)
+		}
+	}
+	if status, called := lfPolicyRun(t, http.MethodGet, "/proxies", ""); status != http.StatusOK || !called {
+		t.Fatal("read rejected")
+	}
 }
 
 func (r *lfPolicyRecorder) Header() http.Header         { return http.Header{} }

@@ -24,6 +24,7 @@ let
       domain-insecure: source-node-updated.fixture.example.
       domain-insecure: domestic.fixture.example.
       domain-insecure: denied.fixture.example.
+      domain-insecure: egress.fixture.example.
       ''}
     EOF
   '';

@@ -325,7 +325,7 @@ See [DNS](dns.md) for split DNS, native MagicDNS and literal-IP boundaries.
 | Controller operation | Managed behavior |
 |---|---|
 | GET / HEAD / OPTIONS | Allowed, including GUI delay tests |
-| PUT / DELETE `/proxies/<name>` | Select or release a proxy choice |
+| PUT / DELETE `/proxies/<name>` | Select or release a proxy choice in rules. Runtime proxy-only returns 403; root controls exit changes |
 | DELETE `/connections` or `/connections/<id>` | Close connections |
 | PATCH `/configs` | An empty patch, `mode`, or `tun` is discarded with 204 and never applied. A patch containing any other field returns 403 |
 | PUT `/configs` | Discarded with 204; the GUI's reload path cannot replace the system-rendered profile |
@@ -388,10 +388,25 @@ The GUI's Rule/Global/Direct labels are core-mode requests, not routing submode 
 Those requests are discarded, so the GUI cannot switch the core away from `rule` or select a routing submode.
 
 `rules` preserves subscription conditions, including domestic DIRECT and profile REJECT, plus managed probe overrides.
-`proxy-only` replaces application conditions with the verified remote catch-all and keeps the strict browser inlet remote-only.
-Its DNS group references that same catch-all. Final adapter checks still reject DIRECT/COMPATIBLE, including nested and renamed leaves.
-The original rules and pinned nodes are retained independently, so switching back reconstructs rules from local accepted data.
-This shares a selection policy; it does not establish a single remote NAT address across protocols or address families.
+Runtime `proxy-only` sends all supported application traffic through one fixed leaf from the accepted source's remote catch-all.
+The effective snapshot contains that node and a single-member `lf-remote` selector. Native TCP/UDP, explicit proxies, strict Firefox and both DNS validator transports use this same leaf.
+Automatic testing, fallback and GUI selection cannot replace it. Final adapter checks retain DIRECT/COMPATIBLE refusal.
+The original rules, groups and all pinned source nodes remain separate, so returning to rules restores subscription routing.
+
+Use `clash-egress` to list candidates, then `clash-egress APPROVED_NODE_ID` with a complete ID from that list.
+The root interfaces are `sudo proxy-control egress list` and `sudo proxy-control egress APPROVED_NODE_ID`.
+The first strict selection uses the first reachable remote leaf in the catch-all graph unless an exit was already selected this boot.
+An exit change runs the same C transaction, closes old TCP streams and UDP associations, and requires fresh complete health and authorization.
+A ready selection of the same ID is idempotent. Node failure stays in C without selecting another node.
+
+Exit IDs bind the complete pinned node definition. Health, leases, refreshes and rollback bind `egress_requested` and `egress_epoch` as well as the routing epoch and snapshot.
+Off/on and switching to rules retain the strict exit choice for this boot; reboot clears it.
+If a source changes the chosen node's address, credentials or transport, the old ID cannot authorize its replacement. Accept the updated source in rules before selecting its new ID.
+
+`proxy-status --json` reports `capabilities.egress="fixed-leaf"` for the strict selection.
+UDP is `unsupported` when the actual adapter lacks it; otherwise its continuous scope remains `not-probed`. IPv6 targets remain node-dependent, and unsupported requests cannot use another leaf or DIRECT.
+`capabilities.remote_nat="not-measured"` keeps the remote boundary explicit: one node can still use different NAT addresses for TCP/UDP or destinations.
+A single NAT guarantee requires independent target observations. IPv4 and IPv6 may have separate declared exit addresses.
 
 A switch first installs C and revokes B authorization, stops the old core and relay flows, installs the selected immutable policy, and recreates the core namespace.
 Parser, content audit, listener, routing, DNS/TUN and full health checks must pass before B can return.

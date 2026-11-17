@@ -38,6 +38,7 @@ type policy struct {
 	RejectPlaintextCredentials bool           `json:"reject-plaintext-credentials"`
 	StrictInlets               []string       `json:"strict-inlets"`
 	ProxyOnly                  bool           `json:"proxy-only"`
+	SingleEgress               bool           `json:"single-egress"`
 	Prefixes                   []string       `json:"prefixes"`
 	AllowedDomains             []string       `json:"allowed-domains"`
 	MagicDNSSuffixFile         string         `json:"magic-dns-suffix-file"`
@@ -60,6 +61,8 @@ var current atomic.Pointer[policy]
 
 // The managed DNS service preserves HTTPS/SVCB discovery even with fake-IP.
 func Managed() bool { return current.Load() != nil }
+
+func SingleEgress() bool { p := current.Load(); return p != nil && p.SingleEgress }
 
 // The trusted local validator decides secure, insecure (unsigned), or bogus.
 // AD received from an upstream is never used as a validation decision here.

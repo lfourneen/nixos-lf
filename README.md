@@ -100,6 +100,7 @@ Keep `stateVersion` unchanged unless you have reviewed and migrated the affected
 | `clash-off` | Select direct access |
 | `clash-rules` | Select subscription rules and request healthy B |
 | `clash-proxy-only` | Select strict proxy routing and request healthy B |
+| `clash-egress [ID]` | List accepted exit candidates or select one through a protected switch |
 | `proxy-status` | Show mode, DNS and readiness |
 | `clash-diff` | Inspect source changes without changing network mode |
 | `firefox-identity` | Open the separate browser profile through the strict proxy inlet |

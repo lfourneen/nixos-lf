@@ -14,7 +14,8 @@ import sys
 import tempfile
 
 MODES = ('rules', 'proxy-only')
-FIELDS = ('routing_requested', 'routing_applied', 'routing_epoch', 'routing_policy_digest', 'routing_phase')
+FIELDS = ('routing_requested', 'routing_applied', 'routing_epoch', 'routing_policy_digest', 'routing_phase',
+          'egress_requested', 'egress_epoch')
 
 
 def module(path, name):
@@ -57,10 +58,14 @@ def safe_file(path, private=False):
 def binding(settings):
     state = Path(settings['state'])
     record = read(safe_file(state / 'routing.json'))
+    record.setdefault('egress_requested', None)
+    record.setdefault('egress_epoch', 0)
     target = record.get('routing_requested')
     if (record.get('schema') != 1 or target not in MODES
             or record.get('routing_applied') not in (*MODES, None)
             or type(record.get('routing_epoch')) is not int or record['routing_epoch'] < 1
+            or record.get('egress_requested') is not None and not re.fullmatch('[a-f0-9]{64}', str(record['egress_requested']))
+            or type(record.get('egress_epoch', 0)) is not int or record.get('egress_epoch', 0) < 0
             or record.get('routing_phase') not in ('preparing', 'verifying', 'ready', 'failed')
             or record.get('boot_id') != (state / 'boot-id').read_text().strip()
             or record.get('routing_policy_digest') != sha(Path(settings['policies'][target]).read_bytes())
@@ -90,7 +95,8 @@ def initialize(settings):
     activate(settings, 'rules')
     atomic(state / 'routing.json', dict(schema=1, boot_id=(state / 'boot-id').read_text().strip(),
         routing_requested='rules', routing_applied=None, routing_epoch=1,
-        routing_policy_digest=sha(Path(settings['policies']['rules']).read_bytes()), routing_phase='verifying'))
+        routing_policy_digest=sha(Path(settings['policies']['rules']).read_bytes()), routing_phase='verifying',
+        egress_requested=None, egress_epoch=0))
 
 
 @contextmanager
@@ -105,9 +111,11 @@ def transition_locks(settings):
         yield source
 
 
-def begin(settings, target):
+def begin(settings, target, egress_id=None):
     if target not in MODES:
         raise ValueError('invalid routing target')
+    if egress_id is not None and (target != 'proxy-only' or not re.fullmatch('[a-f0-9]{64}', egress_id)):
+        raise ValueError('invalid egress selection')
     with transition_locks(settings) as source_settings:
         current = binding(settings)
         state = Path(settings['state'])
@@ -117,6 +125,8 @@ def begin(settings, target):
         stage = module(settings['stage_tool'], 'routing_stage')
         stage.clear_refresh(state, settings['runtime'], keep_health_pin=True)
         record = dict(current, routing_requested=target, routing_epoch=current['routing_epoch'] + 1,
+            egress_requested=egress_id or current.get('egress_requested'),
+            egress_epoch=current.get('egress_epoch', 0) + int(target == 'proxy-only'),
             routing_policy_digest=sha(Path(settings['policies'][target]).read_bytes()), routing_phase='preparing')
         # The core has stopped and C is installed before the immutable policy changes.
         activate(settings, target)
@@ -127,7 +137,11 @@ def begin(settings, target):
         enforce(settings, 'blocked')
         broker = module(settings['source_tool'], 'routing_source')
         source = broker.selected(Path(source_settings['root']))
-        broker.render_local(source_settings, source, target, current['routing_requested'])
+        selected = broker.render_local(source_settings, source, target, current['routing_requested'])
+        if target == 'proxy-only':
+            if not isinstance(selected, str) or not re.fullmatch('[a-f0-9]{64}', selected):
+                raise ValueError('selected egress unavailable')
+            record['egress_requested'] = selected
         (state / 'authorize-window').touch(mode=0o600)
         (state / 'source-refresh-pending').touch(mode=0o600)
         atomic(state / 'routing.json', dict(record, routing_phase='verifying'))
@@ -149,6 +163,8 @@ def applied(settings):
             or not authorization.full_routing_proof(proof, record['routing_requested'])
             or proof.get('boot_id') != record['boot_id']
             or any(proof.get(key) != record[key] for key in ('routing_epoch', 'routing_policy_digest'))
+            or record['routing_requested'] == 'proxy-only' and any(proof.get(key) != record.get(key)
+                for key in ('egress_requested', 'egress_epoch'))
             or proof.get('digest') != (state / 'config-digest').read_text().strip()):
         raise ValueError('routing requires a complete current health proof')
     if record['routing_applied'] == record['routing_requested'] and record['routing_phase'] == 'ready':
@@ -343,19 +359,27 @@ def main():
         raise ValueError('routing changes require root')
     if command == 'initialize':
         initialize(settings)
-    elif command == 'begin' and len(sys.argv) == 4:
-        begin(settings, sys.argv[3])
+    elif command == 'begin' and len(sys.argv) in (4, 5):
+        begin(settings, sys.argv[3], sys.argv[4] if len(sys.argv) == 5 else None)
+    elif command == 'egresses' and len(sys.argv) == 3:
+        with transition_locks(settings) as source_settings:
+            broker = module(settings['source_tool'], 'routing_source')
+            worker, base, *_ = broker.local_source(source_settings, broker.selected(Path(source_settings['root'])), 'proxy-only')
+            print(json.dumps([dict(id=worker.node_identity(node), name=node['name'], protocol=node['type'],
+                udp=node.get('udp', node['type'] in ('hysteria2', 'tuic')) is True)
+                for node in worker.egress_nodes(base)], ensure_ascii=True))
     elif command == 'failed':
         phase(settings, 'failed')
     elif command == 'applied':
         applied(settings)
     elif command in ('enforce', 'check') and len(sys.argv) == 4 and sys.argv[3] in ('direct', 'proxy', 'blocked'):
         (enforce if command == 'enforce' else check)(settings, sys.argv[3])
-    elif command == 'same-ready' and len(sys.argv) == 4:
+    elif command == 'same-ready' and len(sys.argv) in (4, 5):
         record = binding(settings)
         state = module(settings['state_tool'], 'routing_readiness')
         ready = state.readiness(root=Path(settings['state']).parent, target='proxy')
-        if record['routing_requested'] != sys.argv[3] or ready.get('ready') is not True:
+        if (record['routing_requested'] != sys.argv[3] or ready.get('ready') is not True
+                or len(sys.argv) == 5 and record.get('egress_requested') != sys.argv[4]):
             raise SystemExit(1)
         check(settings, 'proxy')
     else:

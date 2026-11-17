@@ -44,6 +44,10 @@ def source():
             'rules': ['MATCH,Choice']}
     if SETTINGS.get('routing'):
         data['rules'] = ['DOMAIN,domestic.fixture.example,DIRECT', 'DOMAIN,denied.fixture.example,REJECT', 'MATCH,Choice']
+    if SETTINGS.get('egress'):
+        data['proxies'].append(dict(data['proxies'][0], name='Other', port=18081))
+        data['proxies'].append(dict(data['proxies'][0], name='NoUDP', port=18081, udp=False))
+        data['proxy-groups'][0]['proxies'].extend(['Other', 'NoUDP'])
     class Handler(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
         def do_GET(self):
@@ -60,6 +64,11 @@ def source():
             if Path('/run/managed-source-unavailable').exists():
                 self.send_error(503)
                 return
+            if SETTINGS.get('egress') and Path('/run/managed-source-hold').exists():
+                Path('/run/managed-source-fetching').touch()
+                deadline = time.monotonic() + 30
+                while Path('/run/managed-source-hold').exists() and time.monotonic() < deadline:
+                    time.sleep(.1)
             candidate = json.loads(json.dumps(data))
             if self.path == '/one' and Path('/run/managed-source-change').exists():
                 candidate['proxies'][0]['server'] = 'source-node-updated.fixture.example'

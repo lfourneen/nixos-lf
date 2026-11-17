@@ -16,6 +16,7 @@ import (
 
 	"github.com/metacubex/chi"
 	"github.com/metacubex/http"
+	"github.com/metacubex/mihomo/component/lfguard"
 )
 
 // Managed PATCH fields are local/subsystem preferences, never core state.
@@ -65,6 +66,9 @@ func lfPolicyDisposition(r *http.Request) (int, string, bool) {
 		// request and report success; the root controller owns real reloads.
 		return http.StatusNoContent, "", true
 	case (r.Method == http.MethodPut || r.Method == http.MethodDelete) && strings.HasPrefix(path, "/proxies/"):
+		if lfguard.SingleEgress() {
+			return http.StatusForbidden, "egress is fixed; use sudo proxy-control egress to select a new snapshot", false
+		}
 		return 0, "", false
 	case r.Method == http.MethodDelete && (path == "/connections" || strings.HasPrefix(path, "/connections/")):
 		return 0, "", false

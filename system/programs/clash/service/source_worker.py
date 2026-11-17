@@ -258,7 +258,46 @@ def fetch(spec, deadline, budget, resolver=socket.getaddrinfo, connection=Connec
     raise Refused('redirect count')
 
 
-def render(document, payloads, policy, forced_domains=(), probe_domains=(), remote_only_catchall=False, source=None):
+def node_identity(node):
+    return hashlib.sha256(json.dumps(node, sort_keys=True, ensure_ascii=True,
+                                    separators=(',', ':')).encode()).hexdigest()
+
+
+def egress_nodes(document):
+    """Return ordered, fixed leaves reachable from the subscription catch-all."""
+    nodes = {node['name']: node for node in document['proxies']}
+    groups = {group['name']: group for group in document['proxy-groups']}
+    result, visited = [], set()
+    def visit(name, parents):
+        if name in parents:
+            raise Refused('catchall graph')
+        if name in visited:
+            return
+        visited.add(name)
+        if name in nodes:
+            node = nodes[name]
+            if node.get('type') in ('ss', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'http', 'socks5'):
+                result.append(node)
+        elif name in groups:
+            for child in groups[name]['proxies']:
+                visit(child, parents | {name})
+        elif name not in ('DIRECT', 'COMPATIBLE', 'REJECT', 'REJECT-DROP', 'PASS', 'GLOBAL'):
+            raise Refused('catchall graph')
+    visit(document['rules'][-1].split(',')[1], set())
+    if not result:
+        raise Refused('empty catchall')
+    return result
+
+
+def selected_egress(document):
+    targets = document.get('lf-private-targets', {})
+    if targets.get('single-egress') is not True:
+        return None
+    return node_identity(document['proxies'][0])
+
+
+def render(document, payloads, policy, forced_domains=(), probe_domains=(), remote_only_catchall=False, source=None,
+           egress_id=None):
     document = json.loads(json.dumps(document, allow_nan=False))
     # Only subscription routing data survives. Managed listeners/DNS/TUN come
     # exclusively from the immutable Nix policy, never from GUI merge scripts.
@@ -371,6 +410,16 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
         'DOMAIN,' + domain + ',lf-remote' for domain in forced_domains] + injected + rules
     if proxy_only:
         result['rules'] = ['IN-NAME,lf-strict,lf-remote', 'MATCH,' + catchall[1]]
+    if policy.get('lf-private-targets', {}).get('single-egress') is True:
+        if not proxy_only:
+            raise Refused('single egress requires proxy-only')
+        candidates = egress_nodes(result)
+        selected = next((node for node in candidates if node_identity(node) == egress_id), None) if egress_id else candidates[0]
+        if selected is None:
+            raise Refused('selected egress unavailable')
+        result['proxies'] = [selected]
+        result['proxy-groups'] = [{'name': 'lf-remote', 'type': 'select', 'proxies': [selected['name']]}]
+        result['rules'] = ['IN-NAME,lf-strict,lf-remote', 'MATCH,lf-remote']
     for key, value in policy.items():
         target = result
         parts = key.split('.')
@@ -436,9 +485,9 @@ def pin_servers(config, resolver=socket.getaddrinfo):
     return yaml.safe_dump(document, allow_unicode=True, sort_keys=True).encode(), len(dropped)
 
 
-def step(phase, function, *args):
+def step(phase, function, *args, **kwargs):
     try:
-        return function(*args)
+        return function(*args, **kwargs)
     except Exception as error:
         raise Refused(phase, failure_reason(error, phase), getattr(error, 'http_status', None)) from None
 
@@ -462,17 +511,21 @@ def prepare(request, download=None, resolver=socket.getaddrinfo):
         payloads[name] = step('fetch', download, registered[name], deadline, budget)
         hashes['provider:' + name] = hashlib.sha256(payloads[name]).hexdigest()
     source = {}
-    rendered = step('render', render, document, payloads, policy,
+    step('render', render, document, payloads, policy,
                     request.get('forced_domains', []), request.get('probe_domains', []),
                     request.get('remote_only_catchall', False), source)
-    config, dropped = step('pin-addresses', pin_servers, rendered, resolver)
-    pinned = load(config)['proxies']
+    pinned_config, dropped = step('pin-addresses', pin_servers, yaml.safe_dump(source).encode(), resolver)
+    pinned = load(pinned_config)['proxies']
     retained = {node['name'] for node in pinned}
     removed = {node['name'] for node in source['proxies']} - retained
     source['proxies'] = pinned
     prune_groups(source, removed)
+    config = step('render', render, source, {}, policy, request.get('forced_domains', []),
+                  request.get('probe_domains', []), request.get('remote_only_catchall', False),
+                  egress_id=request.get('egress_id'))
     return {'yaml': config.decode(), 'responses': hashes, 'dropped': dropped,
-            'source_data': json.dumps(source, sort_keys=True, ensure_ascii=False)}
+            'source_data': json.dumps(source, sort_keys=True, ensure_ascii=False),
+            'egress_id': selected_egress(load(config))}
 
 
 def main():

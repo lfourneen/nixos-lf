@@ -11,6 +11,11 @@ def replace(path, old, new):
 
 
 root = Path(sys.argv[1])
+replace(root / "listener/sing_tun/prepare.go", '"context"',
+        '"context"\n\t"fmt"\n\t"github.com/metacubex/mihomo/component/lfguard"')
+replace(root / "listener/sing_tun/prepare.go", 'case N.NetworkICMP: // our fork only send those type to PrepareConnection now',
+        'case N.NetworkICMP: // our fork only send those type to PrepareConnection now\n'
+        '\t\tif lfguard.SingleEgress() { return nil, fmt.Errorf("managed single egress refuses ICMP echo") }')
 # Filter before hosts/fake-IP and before resolver cache/transport selection.
 # The second hook also covers proxy-endpoint/bootstrap resolver queries.
 replace(root / "dns/middleware.go", '\tvar middlewares []middleware',
@@ -241,6 +246,7 @@ source = Path(__file__).parent.parent
 (root / "component/lfguard/guard_test.go").write_text((source / "guard/target_guard_test.go").read_text())
 (root / "adapter/lf_managed_target_test.go").write_text((source / "tests/managed_target_test.go").read_text())
 (root / "adapter/inbound/lf_socks_addr_test.go").write_text((source / "tests/socks_addr_test.go").read_text())
+(root / "listener/sing_tun/lf_icmp_test.go").write_text((source / "tests/icmp_test.go").read_text())
 (root / "adapter/outbound/lf_managed_direct_test.go").write_text((source / "tests/managed_direct_test.go").read_text())
 (root / "tunnel/lf_managed_udp_test.go").write_text((source / "tests/managed_udp_test.go").read_text())
 (root / "tunnel/lf_managed_dns_test.go").write_text((source / "tests/managed_dns_test.go").read_text())

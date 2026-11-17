@@ -450,7 +450,10 @@ def routing_binding(settings):
             or record.get('boot_id') != boot_id(Path(settings['state'])) \
             or record.get('routing_policy_digest') != validator_policy_digest(settings):
         raise RefreshError('snapshot mismatch')
-    return {key: record[key] for key in ('routing_requested', 'routing_epoch', 'routing_policy_digest')}
+    keys = ['routing_requested', 'routing_epoch', 'routing_policy_digest']
+    if record['routing_requested'] == 'proxy-only' and 'egress_epoch' in record:
+        keys += ['egress_requested', 'egress_epoch']
+    return {key: record[key] for key in keys}
 
 
 def approved_root(settings, source=None):
@@ -688,6 +691,9 @@ def source_baseline(settings, runtime, gid):
     registry = json.loads(read_input(source_directory(settings), 'registry.json', 0))
     if manifest.get('source_id') != registry['id']:
         raise ValueError('persistent source identity')
+    routing = routing_binding(settings)
+    if routing.get('egress_requested') and manifest.get('egress_id') != routing['egress_requested']:
+        return None, '', 0
     destination = runtime / 'snapshots' / value
     private_dir(destination, gid)
     for name in FILES:
@@ -763,8 +769,11 @@ def complete_commit(runtime, state):
     record = commit['record']
     if record.get('routing_epoch') is not None:
         selected = read_record(state / 'routing.json')
+        keys = ('routing_requested', 'routing_epoch', 'routing_policy_digest')
+        if 'egress_epoch' in record:
+            keys += ('egress_requested', 'egress_epoch')
         if any(record.get(key) != selected.get(key) for key in
-               ('routing_requested', 'routing_epoch', 'routing_policy_digest')):
+               keys):
             raise ValueError('snapshot transaction belongs to another routing epoch')
     switch_snapshot(runtime, state, directory, commit['target'])
     pending = state / 'profile-refresh-verifying.json'
@@ -821,6 +830,9 @@ def source_input(settings):
     if (manifest.get('revision') != hashlib.sha256(registry).hexdigest() or
             manifest.get('source_id') != json.loads(registry)['id']):
         raise ValueError('source revision revoked')
+    routing = routing_binding(settings)
+    if routing.get('egress_requested') and manifest.get('egress_id') != routing['egress_requested']:
+        raise ValueError('source egress differs from selected leaf')
     return dict(settings, gui_data=str(directory), desktop_uid=0), str(directory / 'clash-verge.yaml')
 
 
@@ -868,6 +880,9 @@ def startup_input(settings):
         return source_input(settings)  # A root policy change still needs a current import.
     if settings.get('routing_state'):
         current = read_record((source / 'current').resolve() / 'source-manifest.json')
+        routing = routing_binding(settings)
+        if routing.get('egress_requested') and manifest.get('egress_id') != routing['egress_requested']:
+            return source_input(settings)
         if current.get('local_routing') and current.get('source_data') != manifest.get('source_data'):
             return source_input(settings)
     return dict(settings, gui_data=str(directory), desktop_uid=0, _accepted_startup=True), str(directory / 'clash-verge.yaml')

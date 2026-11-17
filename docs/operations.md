@@ -220,6 +220,11 @@ Use the existing `proxy-status` overview separately: only in B does its human di
 The underlying commands are `sudo proxy-control routing rules` and `sudo proxy-control routing proxy-only`.
 `clash-off` retains the choice for this boot; `clash-on` reuses it, and reboot defaults to rules.
 Proxy-only requires an accepted pinned source; failed preparation or full health verification retains C and the requested selection.
+
+Use `clash-egress` to list accepted-source exit IDs and `clash-egress APPROVED_NODE_ID` to select one and request strict B.
+Replace `APPROVED_NODE_ID` with a complete listed ID. The root equivalents are `sudo proxy-control egress list` and `sudo proxy-control egress APPROVED_NODE_ID`.
+Exit changes close old streams and associations through C. GUI node selection remains available in rules; strict mode requires this root transaction.
+The selected exit survives off/on for this boot. Source changes to that node require accepting the update in rules and selecting its new ID.
 See [routing policy](proxy.md#routing-policy) for the policy boundary.
 
 `sudo proxy-control on` and `sudo proxy-control off` are the underlying system controls.
