@@ -12,6 +12,58 @@ import (
 	"github.com/metacubex/mihomo/common/yaml"
 )
 
+func TestLFManagedEmptyPolicyFailsClosed(t *testing.T) {
+	for _, policy := range []string{"null", "{}"} {
+		t.Run(policy, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "policy.json")
+			if err := os.WriteFile(path, []byte(policy), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+			raw, err := UnmarshalRawConfig([]byte("mode: global\ntun:\n  enable: true\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = lfValidateRaw(raw); err == nil {
+				t.Fatal("empty managed policy was treated as an unmanaged configuration")
+			}
+		})
+	}
+}
+
+func TestLFManagedSystemControlsShadowGUIConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	policy := `{"tun.enable":false,"tun.stack":"mixed","tun.dns-mode":"hijack"}`
+	if err := os.WriteFile(path, []byte(policy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	raw, err := UnmarshalRawConfig([]byte("mode: global\ntun:\n  enable: true\n  stack: gvisor\n  dns-mode: normal\n  gso: true\n  udp-timeout: 17\n  endpoint-independent-nat: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lfValidateRaw(raw); err != nil {
+		t.Fatalf("GUI preference blocked a managed start: %v", err)
+	}
+	if raw.Mode.String() != "rule" {
+		t.Fatalf("GUI mode changed the core mode: %s", raw.Mode)
+	}
+	if raw.Tun.Enable {
+		t.Fatal("GUI preference enabled the managed TUN")
+	}
+	if raw.Tun.Stack.String() != "Mixed" || raw.Tun.DNSMode != "hijack" {
+		t.Fatalf("GUI preference changed managed TUN settings: %#v", raw.Tun)
+	}
+	defaults, err := UnmarshalRawConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw.Tun.GSO != defaults.Tun.GSO || raw.Tun.UDPTimeout != defaults.Tun.UDPTimeout ||
+		raw.Tun.EndpointIndependentNat != defaults.Tun.EndpointIndependentNat {
+		t.Fatal("unmanaged TUN fields survived GUI shadowing")
+	}
+}
+
 func TestLFManagedDNSTransportCannotAdoptModeAUpstreams(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "policy.json")
 	expected := map[string]any{
@@ -199,8 +251,21 @@ func TestLFManagedTunRouting(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = lfValidateRaw(raw); err == nil {
-				t.Fatalf("accepted tun.%s drift", key)
+			if _, err = lfValidateRaw(raw); err != nil {
+				t.Fatalf("GUI tun.%s preference blocked a managed start: %v", key, err)
+			}
+			applied, err := json.Marshal(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result map[string]any
+			if err = json.Unmarshal(applied, &result); err != nil {
+				t.Fatal(err)
+			}
+			actual, _ := json.Marshal(result["tun"].(map[string]any)[key])
+			expected, _ := json.Marshal(policy["tun."+key])
+			if string(actual) != string(expected) {
+				t.Fatalf("tun.%s preference survived the load: %s, want %s", key, actual, expected)
 			}
 		}
 		document["tun"].(map[string]any)[key] = original
@@ -340,8 +405,11 @@ func testLFManagedNixConfig(t *testing.T, path string) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = lfValidateRaw(candidate); err == nil {
-				t.Fatalf("final RawConfig accepted tun dns-mode drift: %q", mode)
+			if _, err = lfValidateRaw(candidate); err != nil {
+				t.Fatalf("GUI tun dns-mode preference blocked a managed start: %v", err)
+			}
+			if candidate.Tun.DNSMode != policy["tun.dns-mode"].(string) {
+				t.Fatalf("tun dns-mode preference survived: %q", candidate.Tun.DNSMode)
 			}
 		}
 	}

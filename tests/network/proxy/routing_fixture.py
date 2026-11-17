@@ -78,6 +78,20 @@ def old_client():
 
 
 def check():
+    if Path('/etc/netsec-gui-webdriver.json').exists():
+        current = status()
+        assert current['routing_applied'] == 'rules', current
+        for target in ('rules', 'proxy-only'):
+            if target != 'rules':
+                route(target)
+            run(sys.executable, '/etc/netsec-control.py', 'check_gui_controls')
+            print(run(sys.executable, '/etc/netsec-gui-webdriver.py', 'check', timeout=180).stdout,
+                  end='', flush=True)
+        route('rules')
+        run(sys.executable, '/etc/netsec-control.py', 'check_gui_controls')
+        print('GUI controls preserved system ownership in both submodes; root restored rules', flush=True)
+        return
+
     run('systemd-run', '--unit=routing-http', 'ip', 'netns', 'exec', 'outside',
         sys.executable, '-m', 'http.server', '18082', '--bind', '0.0.0.0')
     run('systemd-run', '--unit=routing-old-peer', 'ip', 'netns', 'exec', 'outside', sys.executable, __file__, 'peer')
@@ -85,6 +99,7 @@ def check():
                      '-fsS', 'http://203.0.113.10:18082/', required=False).returncode == 0)
     current = status()
     assert current['routing_applied'] == 'rules', current
+    run(sys.executable, '/etc/netsec-control.py', 'check_gui_controls')
     request('domestic.fixture.example')
     request('denied.fixture.example', False)
     source = Path('/var/lib/clash-source/selected').resolve()
@@ -96,6 +111,7 @@ def check():
     wait(lambda: Path('/tmp/routing-old-replies').exists())
 
     strict = route('proxy-only')
+    run(sys.executable, '/etc/netsec-control.py', 'check_gui_controls')
     assert strict['capabilities']['icmp'] == 'blocked'
     assert strict['capabilities']['udp'] == 'not-probed'
     assert strict['capabilities']['dns'] == 'validated-via-proxy'

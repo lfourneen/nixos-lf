@@ -142,10 +142,27 @@ Helper 在特权边界执行固定路径和文件操作约束。
 Systemd 在执行前将 helper 和核心置于 `lf-clash-core`。
 核心不能管理宿主接口、路由和防火墙表，宿主配置及策略变更由固定 root 服务负责。
 同桌面 UID 程序可以调用允许的 GUI/API。
-GUI 只读显示声明的 TUN 设置，helper 故障和退出均不改写该设置。
-关闭 GUI 仍会停止核心，代理意图保留时进入 C。
-配置重载被拒绝后，该 GUI 操作直接结束，不重启核心。
-启用受控来源时，重复的 GUI 启动请求保留运行中的核心，来源激活由 root 控制器负责。
+GUI 使用未修改的上游打包版本，不修改 Clash Verge GUI 源码；Nix 包复用上游 unwrapped 输出，只替换启动包装、helper 和核心。
+首页、设置页、托盘菜单及其点击动作、控制快捷键仍可操作，并可写入 GUI 本地偏好。
+这些操作在到达操作系统或受管核心前被静默丢弃：
+
+- 启动包装用只丢弃写入的 helper shim 替换 System Proxy、PAC 和代理守护调用。
+  私有挂载命名空间遮蔽 nixpkgs 写入二进制的绝对 gsettings 与 KDE helper 路径；`dconf` 和 KDE 5 helper 由 PATH shim 替换。
+  私有命名空间不可用时，以 GSettings 内存后端和 KDE 5 helper 名称作为后备。
+  因此启动、切换、PAC 和退出清理都返回成功，但不会改变 OS 代理设置。
+  shim 可转发的读取仍使用真实 helper。
+- 控制器对 `mode`、`tun` 的 `PATCH /configs` 返回 204 但不应用；`PUT /configs` 配置重载同样返回 204 但不应用。
+  其它配置字段及其它写操作仍拒绝，因此被丢弃的重载不会触发 GUI 的重启兜底。
+- 受管解析器在最终校验前将生成配置的核心模式固定为 `rule`，并用 root 策略覆盖整个 `tun` 段。
+  GUI 偏好不能改变实际 TUN，也不能让重启因策略校验失败。
+
+GUI 可以保存并显示不同的本地偏好，但它不是权威状态。
+实际状态以控制器、`proxy-status` 或受管核心为准。
+运行策略缺失或损坏不会授予控制写权限。
+状态读取、受管代理组内选节点、关闭连接、延迟测试和日志仍然可用。
+上游“切换模式时关闭连接”偏好仍可在点击模式控件时关闭连接。要保留会话可关闭该偏好，核心模式请求本身仍被丢弃。
+helper 根据内核 Unix peer 身份判断生命周期请求。GUI 的停止请求和对已运行核心的启动请求返回成功但不执行。
+受控来源的核心只能由 root 请求启动。关闭 GUI 保留受管核心运行，退出 B 使用 `clash-off`。
 
 显式启用的 IPv4 访客 TPROXY 入口绑定 `0.0.0.0:7896`。
 普通 mixed/DNS/controller 端点在 `allow-lan=false` 下仍仅本机。
@@ -283,13 +300,16 @@ Rule providers 固定为空，geodata 自动更新关闭，无条件 `MATCH,DIRE
 | GET / HEAD / OPTIONS | 允许，包括 GUI 延迟测试 |
 | PUT / DELETE `/proxies/<name>` | 选择或释放代理选择 |
 | DELETE `/connections` 或 `/connections/<id>` | 关闭连接 |
-| PATCH `/configs` | 仅 `mode=rule`、`mode=global` 或不改变设置 |
+| PATCH `/configs` | 空补丁、`mode` 或 `tun` 返回 204 且不应用；补丁含其它字段时返回 403 |
+| PUT `/configs` | 返回 204 但不应用，GUI 重载路径不能替换系统渲染配置 |
 | 其它写操作 | 默认拒绝 |
 
-配置加载、禁用规则、provider/geodata/storage 更新、重启及升级 API 均拒绝。
-PATCH 在应用前检查规范字段名和重复键，验证与应用使用同一份已解码上游 schema。
+禁用规则、provider/geodata/storage 更新、重启及升级 API 均拒绝。
+核心模式由系统渲染配置固定，受管解析器也会将其固定为 `rule`。
+GUI forwarder 和直接控制器 socket 均经过同一项无条件限制，与策略状态无关。
 升级新增写端点时需明确决定权限。
 
+重启时，若生成配置仅系统拥有的 `mode` 和 `tun` 字段不同，则复用已接受快照；其它变化仍需 `clash-on`。
 Root 策略同时指定共享域名过滤文件、附加名单与例外。
 核心在 hosts/缓存/fake-IP 前检查 DNS，在 TCP/UDP 拨号前检查应用目标，使 HTTP/SOCKS 代解析使用与系统 DNS 相同的名单。
 内部引导解析查询也经过过滤，但其传输与目标验证范围独立。
@@ -334,8 +354,12 @@ clash-proxy-only
 
 两条命令都请求代理访问，在 A 或 C 中也可使用。终端仅返回成功及目标模式，或失败及原因。
 它们不打开 GUI、不发送桌面通知，也不自动显示网络概览。
-概览使用 `proxy-status`；B 中显示请求/生效路由、事务 epoch、核心实际 Rule/Global 模式和协议覆盖范围。
+概览使用 `proxy-status`；B 中显示请求/生效路由、事务 epoch、核心实际模式和协议覆盖范围。
 底层入口为 `sudo proxy-control routing rules` 和 `sudo proxy-control routing proxy-only`。
+两个路由子模式渲染的核心设置均为 `mode: rule`。
+这个核心设置让 Mihomo 解释渲染后的规则列表，并不选择 `rules` 或 `proxy-only`。
+GUI 的 Rule/Global/Direct 是核心模式请求，不是路由子模式选择器。
+这些请求被丢弃，GUI 不能把核心切离 `rule`，也不能选择路由子模式。
 
 `rules` 保留订阅条件，包括国内 DIRECT、profile REJECT 和受管探针规则。
 `proxy-only` 将应用条件统一交给经过验证的远程兜底，并保留严格浏览器入口的远程约束。
@@ -389,7 +413,8 @@ UDP 为关联固定单一目标。
 
 授权在实际选中的叶节点执行，覆盖嵌套、fallback 和负载均衡组。
 远程适配器即使命名为 `DIRECT`，也不会获得直连权限。
-Rule 与 Global 使用相同检查，`proxyOnly` 仍独立拒绝应用 DIRECT。
+受管解析器将核心固定为 `rule`，GUI 不能启用 Global 或 Direct 路由。
+`proxyOnly` 仍独立拒绝应用 DIRECT。
 
 | 到达核心的目标 | 本地 DIRECT | 远程代理 |
 |---|---|---|

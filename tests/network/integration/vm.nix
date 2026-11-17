@@ -781,8 +781,9 @@ pkgs.testers.runNixOSTest {
 
     # Actual launcher/helper credentials are covered by proxy-control-vm;
     # this broad packet suite deliberately retains its injectable root core.
-    # Control-plane policy: reads and proxy selection pass; configuration and
-    # core lifecycle mutations are refused by the core itself, not just the GUI.
+    # Control-plane policy: reads and proxy selection pass; GUI control writes
+    # are discarded by the core itself while configuration replacement and core
+    # lifecycle mutations stay forbidden.
     def api(method, path, body=None):
         cmd = ("curl --noproxy '*' --unix-socket /run/clash-verge-rev/core/mihomo.sock "
                "-s -o /dev/null -w '%{http_code}' -X " + method)
@@ -791,14 +792,15 @@ pkgs.testers.runNixOSTest {
         return machine.succeed(cmd + " http://localhost" + path).strip()
 
     assert api("GET", "/configs") == "200"
-    assert api("PUT", "/configs", '{}') == "403"
+    assert api("PUT", "/configs", '{}') == "204"
     assert api("POST", "/restart") == "403"
     assert api("POST", "/upgrade") == "403"
     assert api("PUT", "/providers/rules/Fixture") == "403"
     assert api("PATCH", "/rules/disable", '{"0":true}') == "403"
-    assert api("PATCH", "/configs", '{"mode":"direct"}') == "403"
-    assert api("PATCH", "/configs", '{"mode":"global"}') == "204"
-    assert api("PATCH", "/configs", '{"mode":"rule"}') == "204"
+    for mode in ("rule", "global", "direct", "none"):
+        assert api("PATCH", "/configs", '{"mode":"' + mode + '"}') == "204"
+    for value in ("true", "false"):
+        assert api("PATCH", "/configs", '{"tun":{"enable":' + value + '}}') == "204"
 
     machine.succeed("/etc/netsec-tun-check")
     # SO_BINDTODEVICE must survive transparent TCP DNAT. Redirecting these
@@ -815,7 +817,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("python3 /etc/netsec-integration.py check-node-log")
     machine.succeed("python3 /etc/netsec-integration.py connect-test")
     # MagicDNS names must retain real IPs so Tailscale's routes can win over
-    # the TUN. Its DNS transport stays DIRECT even under a GLOBAL profile.
+    # the TUN. Its DNS transport stays DIRECT in rule mode.
     machine.succeed("dig +short @127.0.0.1 -p 1053 printer.tailfixture.ts.net A | grep -qx 203.0.113.10")
     for name in ("private.core.fixture.example", "mixed.core.fixture.example"):
         machine.fail(f"setpriv --reuid=1000 --clear-groups curl --noproxy \"\" --socks5-hostname 127.0.0.1:7897 -fsS --max-time 3 http://{name}:8080/")
@@ -823,16 +825,11 @@ pkgs.testers.runNixOSTest {
         assert ipaddress.ip_address(fake) in ipaddress.ip_network("198.18.0.0/16"), fake
         machine.fail(f"setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 3 http://{fake}:8080/")
     machine.succeed("curl --noproxy \"\" --socks5-hostname 127.0.0.1:7897 -fsS --max-time 5 http://allowed.home.arpa:8080/ >/dev/null; python3 /etc/netsec-integration.py guarded-udp")
-    # Global mode must expose its real leaf too, including nested LoadBalance.
+    # Core-mode writes are discarded; the managed core stays in rule mode.
     socket = "/run/user/1000/clash-verge-rev/verge-mihomo.sock"
-    machine.succeed(f"curl --noproxy '*' -fsS --unix-socket {socket} -X PUT -H 'Content-Type: application/json' -d '{{\"name\":\"Choice\"}}' http://localhost/proxies/GLOBAL")
     machine.succeed(f"curl --noproxy '*' -fsS --unix-socket {socket} -X PATCH -H 'Content-Type: application/json' -d '{{\"mode\":\"global\"}}' http://localhost/configs")
-    # Execute a fresh complete health round while global mode is active; an old
-    # rule-mode health.json or an unrelated GLOBAL connection is insufficient.
-    machine.succeed("if python3 /etc/netsec-health.py /etc/netsec-health.json >/tmp/netsec-global-health.json; then jq -e .ok /tmp/netsec-global-health.json; else cat /tmp/netsec-global-health.json; exit 1; fi")
-    machine.succeed("journalctl -u clash-verge --no-pager | grep 'node.fixture.example:8080' | grep -q 'GLOBAL\\[Fixture\\]'")
+    machine.succeed(f"curl --noproxy '*' -fsS --unix-socket {socket} http://localhost/configs | jq -e '.mode == \"rule\"'")
     machine.fail("curl --noproxy \"\" --socks5-hostname 127.0.0.1:7897 -fsS --max-time 3 http://private.core.fixture.example:8080/")
-    machine.succeed("python3 /etc/netsec-integration.py guarded-udp-remote")
     machine.succeed("dig +short @127.0.0.1 -p 1053 other.tailfixture.ts.net A | grep -qx 203.0.113.10")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = proxy && test $(jq -r .ok /run/proxy-mode/health.json) = true", timeout=90)
     machine.succeed(f"curl --noproxy '*' -fsS --unix-socket {socket} -X PATCH -H 'Content-Type: application/json' -d '{{\"mode\":\"rule\"}}' http://localhost/configs")

@@ -91,6 +91,56 @@ def config_input(settings, config, data=None):
     return text.encode()
 
 
+def system_control_input(settings, data, effective):
+    """Reuse the accepted snapshot when only system-owned controls differ.
+
+    The GUI keeps core mode and TUN preferences in its generated profile. A
+    write to either is a silent no-op, so a later profile generation must not
+    look like an unauthorized configuration change or fail strict validation.
+    Other profile edits, including comment-only rewrites, keep the normal path.
+    """
+    if effective is None:
+        return data
+    try:
+        accepted = (effective / 'clash-verge.yaml').read_bytes()
+    except OSError:
+        return data
+    if len(data) > 64 * 1024 * 1024 or len(accepted) > 64 * 1024 * 1024:
+        return data
+    yq = settings.get('yq')
+    runtime = settings.get('runtime')
+    if not yq or not runtime:
+        return data
+    def view(value):
+        try:
+            with tempfile.NamedTemporaryFile(prefix='.control-', dir=runtime) as source:
+                source.write(value)
+                source.flush()
+                result = subprocess.run(
+                    [yq, '-o=json', '.', source.name],
+                    capture_output=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            return json.loads(result.stdout)
+        except ValueError:
+            return None
+    candidate_view, accepted_view = view(data), view(accepted)
+    if not isinstance(candidate_view, dict) or not isinstance(accepted_view, dict):
+        return data
+    controls = ('mode', 'tun')
+    candidate_control = {key: candidate_view.get(key) for key in controls}
+    accepted_control = {key: accepted_view.get(key) for key in controls}
+    if candidate_control != accepted_control:
+        candidate_rest = {key: value for key, value in candidate_view.items() if key not in controls}
+        accepted_rest = {key: value for key, value in accepted_view.items() if key not in controls}
+        if candidate_rest == accepted_rest:
+            return accepted
+    return data
+
+
 def snapshot_digest(directory):
     directory = Path(directory)
     document = {}
@@ -938,6 +988,7 @@ def stage_locked(settings, config, validate):
                 return
             phase = 'configuration invalid'
             candidate_config = config_input(settings, config, raw)
+            candidate_config = system_control_input(settings, candidate_config, previous)
             if not authorized and previous is not None:
                 if candidate_config == (effective / 'clash-verge.yaml').read_bytes() and (
                         not settings.get('source_root') or

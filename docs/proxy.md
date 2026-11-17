@@ -151,10 +151,27 @@ Systemd places the helper and core in `lf-clash-core` before execution.
 The core cannot administer host interfaces, routes or firewall tables.
 Host setup and policy changes belong to fixed root services.
 Desktop programs sharing the GUI UID can use its permitted GUI/controller operations.
-The GUI displays the declared TUN setting as read-only, preserves it across helper outages and does not write a TUN-disable setting on exit.
-Closing the GUI still stops the core, leaving C while proxy intent remains active.
-A refused configuration reload ends that GUI operation without restarting the core.
-With controlled sources, repeated GUI starts leave a running core in place; source activation belongs to the root controller.
+The packaged upstream GUI is used without source changes; the Nix package keeps its upstream unwrapped output and substitutes only the launch wrapper, helper and core.
+Its System Proxy, TUN and core-mode controls remain clickable and may update local preferences.
+They cannot change managed runtime state:
+
+- The launch wrapper starts the GUI with write-discarding helper shims.
+  A private mount namespace replaces the absolute gsettings and KDE helper paths that nixpkgs substitutes into the binary; `dconf` and the version-5 KDE helpers are replaced by path shims.
+  A memory GSettings backend and the version-5 helper names remain as a fallback when a private namespace is unavailable.
+  System-proxy, PAC and proxy-guard writes therefore return success without changing the OS.
+  Reads still use the real helpers where the shim can forward them.
+- The controller discards `PATCH /configs` for `mode` and `tun` with 204, and discards `PUT /configs` profile reloads with 204 instead of applying them.
+  Other configuration fields and all other writes remain forbidden, so a discarded reload never triggers the GUI's restart fallback.
+- The managed parser shadows the generated profile's core mode to `rule` and its whole `tun` section with the root policy before final validation.
+  A GUI preference cannot make a restart fail validation or change the live TUN.
+
+The GUI may keep and display a different local preference; it is not authoritative.
+Use the controller, `proxy-status` or the managed core for actual state.
+Missing or corrupt runtime policy cannot grant a control write.
+Status reads, managed proxy-group selection, connection closing, delay tests and logs remain available.
+The upstream "close connections on mode change" preference can still close connections when clicking a mode control. Disable that preference to preserve sessions; the core-mode request itself is discarded.
+The helper uses kernel Unix peer credentials for lifecycle requests. GUI stop requests and starts of an already running core return success without acting.
+With controlled sources, only root may request a core start. Closing the GUI leaves the managed core running; use `clash-off` to leave B.
 
 An explicitly enabled IPv4 guest TPROXY inlet binds `0.0.0.0:7896`.
 The ordinary mixed/DNS/controller endpoints remain local under `allow-lan=false`.
@@ -298,6 +315,7 @@ The core reports a `managed-policy` digest to health consumers.
 This policy digest describes system invariants.
 The separate snapshot digest binds authorized YAML and assets.
 
+On restart, a generated profile that differs only in the system-owned `mode` and `tun` fields reuses the accepted snapshot; any other change still needs `clash-on`.
 The root policy also supplies the shared domain-filter store path, additions and exceptions.
 The core checks DNS before hosts/cache/fake-IP and application targets before TCP/UDP dialing, so delegated HTTP/SOCKS resolution uses the same list as system DNS.
 Internal bootstrap resolver queries use the filter too.
@@ -309,11 +327,13 @@ See [DNS](dns.md) for split DNS, native MagicDNS and literal-IP boundaries.
 | GET / HEAD / OPTIONS | Allowed, including GUI delay tests |
 | PUT / DELETE `/proxies/<name>` | Select or release a proxy choice |
 | DELETE `/connections` or `/connections/<id>` | Close connections |
-| PATCH `/configs` | Only `mode=rule`, `mode=global` or no change |
+| PATCH `/configs` | An empty patch, `mode`, or `tun` is discarded with 204 and never applied. A patch containing any other field returns 403 |
+| PUT `/configs` | Discarded with 204; the GUI's reload path cannot replace the system-rendered profile |
 | Other writes | Forbidden by default |
 
-Configuration loads, rule disabling, provider/geodata/storage changes, restart and upgrade APIs are forbidden.
-PATCH validates canonical upstream field names and duplicate keys before applying the same decoded schema.
+Rule disabling, provider/geodata/storage changes, restart and upgrade APIs are forbidden.
+Core mode is fixed by the system-rendered profile; the managed parser also pins it to `rule`.
+Both the GUI forwarder and the direct controller socket cross the same unconditional gate, independent of policy state.
 New controller write endpoints require an explicit policy decision when upgrading the core.
 
 ## Subscription trust in compatibility mode
@@ -360,8 +380,12 @@ clash-proxy-only
 
 Both commands request proxy access, including from A or C. The terminal reports success with the selected mode, or failure with its cause.
 They do not open the GUI, send desktop notifications or print the network overview.
-Use `proxy-status` for the overview; B includes the requested/applied routing mode, transaction epoch, actual core Rule/Global mode and protocol coverage.
+Use `proxy-status` for the overview; B includes the requested/applied routing mode, transaction epoch, actual core mode and protocol coverage.
 The root interfaces are `sudo proxy-control routing rules` and `sudo proxy-control routing proxy-only`.
+Both routing submodes render core `mode: rule`.
+That core setting tells Mihomo to evaluate the rendered rule list; it does not select `rules` versus `proxy-only`.
+The GUI's Rule/Global/Direct labels are core-mode requests, not routing submode selectors.
+Those requests are discarded, so the GUI cannot switch the core away from `rule` or select a routing submode.
 
 `rules` preserves subscription conditions, including domestic DIRECT and profile REJECT, plus managed probe overrides.
 `proxy-only` replaces application conditions with the verified remote catch-all and keeps the strict browser inlet remote-only.
@@ -416,7 +440,7 @@ Candidate fallback ends there.
 
 Authorization runs at the actual selected leaf, including nested, fallback and load-balancing groups.
 A name such as `DIRECT` does not confer direct authority on a remote adapter.
-Rule and Global routing use the same checks.
+The managed parser pins the core to `rule`; the GUI cannot enable Global or Direct routing.
 `proxyOnly` still independently refuses application DIRECT.
 
 | Target reaching the core | Local DIRECT | Remote proxy |

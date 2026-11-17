@@ -5,6 +5,7 @@ import importlib.util
 import ipaddress
 import json
 import os
+import runpy
 from pathlib import Path
 import pwd
 import signal
@@ -13,9 +14,10 @@ import ssl
 import subprocess
 import sys
 import time
+DESKTOP = runpy.run_path('/etc/netsec_desktop.py')
+GUI, USER = DESKTOP['GUI'], DESKTOP['USER']
 
 SETTINGS = json.loads(Path('/etc/netsec-managed.json').read_text())
-GUI = Path('/home/lfour/.local/share/io.github.clash-verge-rev.clash-verge-rev')
 
 
 def run(*args, **kwargs):
@@ -110,7 +112,7 @@ def refresh():
         addresses = {item[4][0] for item in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)}
         assert addresses and all(ipaddress.ip_address(ip) in ipaddress.ip_network('198.18.0.0/16')
                                  for ip in addresses), (host, addresses)
-    denied = subprocess.run(['setpriv', '--reuid=1000', '--clear-groups', 'dig',
+    denied = subprocess.run(['setpriv', f'--reuid={USER.pw_uid}', '--clear-groups', 'dig',
                              '+time=1', '+tries=1', '@127.0.0.1', '-p', '1056',
                              'source.fixture.example', 'A'], capture_output=True, timeout=5)
     assert denied.returncode != 0, 'desktop borrowed source-worker DNS access'
@@ -196,12 +198,12 @@ def recover():
         assert not (state / 'config-digest').exists()
         assert Path('/run/clash-verge-rev/effective').is_symlink()
         for family, target in ((4, '1.1.1.1'), (6, '2606:4700:4700::1111')):
-            for uid in (0, 1000):
+            for uid in (0, USER.pw_uid):
                 route = json.loads(run('ip', f'-{family}', '-j', 'route', 'get', target,
                                        'uid', uid, 'mark', '0').stdout)
                 assert len(route) == 1 and route[0]['dev'] == 'ens1', route
         # Public TLS from the desktop must work without the stopped core.
-        run('setpriv', '--reuid=1000', '--clear-groups', 'curl', '--noproxy', '*',
+        run('setpriv', f'--reuid={USER.pw_uid}', '--clear-groups', 'curl', '--noproxy', '*',
             '--fail', '--silent', '--max-time', '8', '--cacert', Path(SETTINGS['tls'])/'ca.pem',
             '--resolve', 'source.fixture.example:443:1.1.1.1', 'https://source.fixture.example/one')
         wait(lambda: '1.1.1.1' in run('dig', '+short', '+time=1', '+tries=1',
@@ -229,7 +231,7 @@ def recover():
         assert not (state / 'profile-refresh-verifying.json').exists()
         download = json.loads((state / 'source-fetch.json').read_text())
         assert download['reason'] == 'http rejected' and download['http_status'] == 503, download
-        status = run('setpriv', '--reuid=1000', '--clear-groups', 'proxy-status', '--plain').stdout
+        status = run('setpriv', f'--reuid={USER.pw_uid}', '--clear-groups', 'proxy-status', '--plain').stdout
         assert 'restored accepted snapshot' in status and 'HTTP 503' in status
         print('Explicit on restored accepted source while cached input was rejected and background download returned HTTP 503')
         unavailable.unlink()
@@ -264,7 +266,7 @@ def recover():
         assert run('systemctl', 'show', '-p', 'MainPID', '--value', 'clash-verge.service').stdout == rotation_helper
         assert stage.service_request(stage_settings, 'GET', '/status')['core_pid'] != rotation_core
         assert not (source / 'approval.json').exists() and not (source / 'review.json').exists()
-        status = run('setpriv', '--reuid=1000', '--clear-groups', 'proxy-status', '--plain').stdout
+        status = run('setpriv', f'--reuid={USER.pw_uid}', '--clear-groups', 'proxy-status', '--plain').stdout
         assert 'Last auto approval:' in status and 'node_identity=1' in status
         browser_request()
         print('Root refresh auto-imported node rotation through normal audit and health gates; read-only diff retained authority')
@@ -391,7 +393,7 @@ def switch():
     assert original['source_id'] == 'one'
     index = GUI/'profiles.yaml'
     index.write_text('current: uid-two\nitems: [{uid: uid-two, url: https://unregistered.invalid/}]\n')
-    os.chown(index, 1000, pwd.getpwnam('lfour').pw_gid)
+    os.chown(index, USER.pw_uid, USER.pw_gid)
     run('clash-source', 'gui-select')
     assert Path('/var/lib/clash-source/selected').resolve().name == 'two'
     run('systemctl', 'start', 'clash-source-refresh.service')

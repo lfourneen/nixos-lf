@@ -25,12 +25,12 @@ Rust helper 在 `postPatch` 追加修改，保留继承的 Nixpkgs 处理。
 | 对象 | 仓库入口 | 目的 / 升级关注点 |
 |---|---|---|
 | Mihomo parser | [patch_mihomo.py](../../system/programs/clash/mihomo/patches/patch_mihomo.py)、[managed_profile.go](../../system/programs/clash/mihomo/config/managed_profile.go) | 最终受管策略、摘要、已知旧配置规范化，拒绝无条件 DIRECT 兜底 |
-| Mihomo controller | [managed_route.go](../../system/programs/clash/mihomo/controller/managed_route.go)、[policy_middleware.go](../../system/programs/clash/mihomo/controller/policy_middleware.go) | 同 schema PATCH 解码与运行时写白名单 |
+| Mihomo controller | [managed_route.go](../../system/programs/clash/mihomo/controller/managed_route.go)、[policy_middleware.go](../../system/programs/clash/mihomo/controller/policy_middleware.go) | 静默丢弃 mode/TUN/重载与有限的运行时写白名单 |
 | Mihomo 出站 / DNS / 日志 | [target_guard.go](../../system/programs/clash/mihomo/guard/target_guard.go)、`patch_mihomo.py` | 目标验证/固定 IP、本地与远程叶节点授权、可选直拨拒绝、rule DNS metadata、Global 实际链路日志、只用快照 geodata |
 | Vendored sing-tun | [patch_sing_tun.py](../../system/programs/clash/mihomo/patches/patch_sing_tun.py) | TUN-bound OUTPUT TCP DNAT 与访客 TPROXY socket 保留 |
 | Vendored Gost HTTP | [patch_gost.py](../../system/programs/gost/patches/patch_gost.py)、[gost_http.go](../../system/programs/gost/src/gost_http.go) | 兼容裸数字 IPv6 CONNECT，保留 Go HTTP 解析 |
-| Clash Verge helper | [patch_clash_service.py](../../system/programs/clash/service/patch_clash_service.py) | 固定 root 执行、日志及 socket/启动文件操作 |
-| Clash Verge 打包/启动 | [clash-verge.nix](../../system/programs/clash/clash-verge.nix)、[核心启动器](../../system/programs/clash/service/clash-verge-core-launcher.sh)、[stage 工具](../../system/programs/clash/service/clash-verge-stage.py)、[GUI 启动器](../../system/programs/clash/gui/clash-verge-gui.py)、[GUI defaults](../../system/programs/clash/gui/clash-verge-defaults.sh)、[GUI patch](../../system/programs/clash/gui/patch_clash_gui.py) | 授权快照、降权、singleton 处理、HTTPS 延迟默认。GUI TUN 所有权与重载拒绝后终止操作 |
+| Clash Verge helper | [patch_clash_service.py](../../system/programs/clash/service/patch_clash_service.py) | 内核 peer 身份约束生命周期、固定 root 执行、日志及 socket/启动文件操作 |
+| Clash Verge 打包/启动 | [clash-verge.nix](../../system/programs/clash/clash-verge.nix)、[核心启动器](../../system/programs/clash/service/clash-verge-core-launcher.sh)、[stage 工具](../../system/programs/clash/service/clash-verge-stage.py)、[GUI 启动器](../../system/programs/clash/gui/clash-verge-gui.py)、[GUI defaults](../../system/programs/clash/gui/clash-verge-defaults.sh)、[控制 shim](../../system/programs/clash/gui/control_shim.sh) | 授权快照、降权、singleton 处理、HTTPS 延迟默认。OS 代理写入拦截与仅控制字段变化时复用快照 |
 | dnsmasq | [default.nix](../../system/config/network/network.nix) 内联替换 `src/forward.c` | 返回 strict-order 终端 UDP SERVFAIL/REFUSED，保留 DNSSEC EDE |
 | Firefox 包 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[guard.py](../../home/programs/firefox/guard.py)、[sandbox.py](../../home/programs/firefox/sandbox.py)、[scope.c](../../home/programs/firefox/scope.c) | 不可变 policy/AutoConfig/字体、预检、外层命名空间、过滤总线、门户身份及 Landlock/seccomp。无 Gecko 源码 patch |
 | Unbound / Chrony / 网络 | [default.nix](../../system/config/network/network.nix)、[time.nix](../../system/config/network/time.nix)、[网络模块](../../system/config/network) | 声明策略和仓库自有协调器。没有本地 Unbound/Chrony 源码补丁 |
@@ -112,12 +112,15 @@ parser 修正不能替代生命周期保护。
 
 ## Clash Verge helper 与启动器
 
-GUI `.unwrapped` 应用受管 TUN 和配置激活补丁，保留继承的 Nixpkgs 补丁、前端类型检查及 Rust 构建。
+GUI `.unwrapped` 保持不变，可使用上游二进制缓存。
+本地修改只重建核心、小型 Rust helper 和启动 wrapper，不重建 GUI。
 独立 Rust helper、安装的 wrapper 和运行脚本各自保持集成。
 检查 Nixpkgs helper derivation 和继承补丁。
 覆盖 `postPatch` 或复制错 helper 会丢失集成行为。
 
-Helper patch 涉及 `src/core/manager.rs`、`server.rs`、`logger.rs`、`reconcile.rs`。
+Helper patch 涉及 `src/core/manager.rs`、`server.rs`、`logger.rs`、`reconcile.rs` 和 vendored Kode Bridge HTTP server。
+每个请求须保留内核 Unix peer 身份。非 root 的停止和已运行核心的启动请求静默丢弃，受控来源须由 root 启动。
+身份缺失或生命周期状态不可用时，不得授权 GUI 重启。
 升级时枚举所有执行、log writer、socket chmod/unlink 和已存进程恢复入口。
 受管执行须解析到 `LF_CLASH_CORE_PATH`，文件/祖先 root 所有，允许 root 所有 sticky store 祖先。
 日志始终使用私有服务目录，客户端路径/PID 不得转为 root 文件或进程操作。
@@ -132,10 +135,10 @@ GUI 保留上游 IPC 客户端及较短的请求超时。
 Helper 串行处理启动，对相同请求复用最近 30 秒内完成的结果。
 重试签名包含固定 GUI 文件的身份与变化时间。
 复用成功还要求原 PID 仍在运行且固定 socket 可连接。
-兼容导入在输入变化时重新启动，显式授权或核心已停止时也须重新启动。
-GUI 的传输重试不会反复重启核心。
-受控来源还会在 GUI 展示副本变化时保留运行中的核心，root 来源激活先显式停止核心，再启动替代实例。
-Stop IPC 等待 watchdog 退出并持久化停止意图，helper 监听保持可用。
+已授权的 root 兼容导入在输入变化时重新启动，显式授权或核心已停止时也须重新启动。
+GUI 只可在已知核心停止时执行兼容模式下的首次授权启动。
+root 来源激活先显式停止核心，再启动替代实例。
+已授权的 root 停止请求等待 watchdog 退出并持久化停止意图，helper 监听保持可用。
 配置拒绝不能触发 helper 重启。
 
 [runtime.nix](../../system/programs/clash/service/runtime.nix)、[identity.nix](../../system/programs/clash/service/identity.nix)、launcher 和 stage 工具须同步。
@@ -186,8 +189,10 @@ worker 保持非特权身份，输出固定 JSON schema 和原因词表。
 当前 Nixpkgs 以 `.verge-mihomo-wrapped` 暴露底层核心，包将公开 `verge-mihomo` 替换为授权启动器。
 GUI/打包更新需检查 wrapper 布局、`clash-on/off` 使用的 GUI 进程身份和旧同用户 singleton 清理，防止保留旧包路径。
 HTTPS delay 默认通过可写偏好设置。
-GUI 补丁在初始化、helper 故障和退出期间保持声明的 TUN 值，将开关及托盘入口设为只读，并阻止重载失败触发核心重启。
-升级 GUI 时须一起核对前端、后端偏好写入和退出清理。
+启动 wrapper 拦截 gsettings、dconf 和 KDE helper 的 System Proxy 写入，包含 Nixpkgs 注入的绝对路径。
+无法使用 mount namespace 时，使用 memory GSettings 与 KDE 5 helper 名称兜底。
+控制器静默丢弃 mode/TUN PATCH 和配置重载，解析器以默认值加 root 策略生成 TUN。
+升级 GUI 时运行 `proxy-gui` 和 `proxy-gui-vm`，在两种路由子模式下检查真实 IPC、页面控件、PAC/代理守护写入、启动/退出清理及核心连续性。
 
 ## DNS 与浏览器集成
 
@@ -372,7 +377,8 @@ VM 检查运行在隔离的虚拟机中，硬件加速需要 KVM 权限。
 | `network-identity-config` | 身份迁移边界、实际 nmcli 解析/主机名恢复、有线变体、服务范围及持久化。正常系统构建也校验目标 |
 | `network-identity-vm` | 真实有线/Wi-Fi DHCPv6 共存、新双栈身份报文、UUID/epoch/随机轮换、稳定/固定/硬件行为、profile 优先级、恢复及宿主密钥保留 |
 | `proxy-regressions` | 健康、状态、规则、DNS 租约、有界客户端 DNS 重试、预算及监督器 |
-| `proxy-profile`、`proxy-gui` | 生成配置变体、策略/模板一致、GUI 默认与进程 wrapper |
+| `proxy-profile`、`proxy-gui` | 生成配置变体、策略/模板一致、GUI 默认、进程 wrapper 与桌面命令拦截 |
+| `proxy-gui-vm` | WebKit 以改名账户和非默认 home 自动化运行未修改的生产 GUI：mode/TUN/System Proxy/PAC/代理守护静默丢弃、OS 状态与核心 PID 保持、无控制错误提示、GUI 退出及 root 路由事务 |
 | `proxy-routing` | 本次启动的不可变选择、完整证明与 epoch 绑定、准备失败、清理后的状态及真实 DNS 截止/回退拒绝 |
 | `proxy-routing-vm` | 登记来源与生产命名空间：双向子模式切换、原始规则恢复、物理对端仅节点外发、真实 DNS/来源刷新、旧回复、访客拒绝、幂等、并发选择、off/on、重启及内核到期撤权 |
 | `proxy-rules`、`proxy-egress-rules` | 构建期 LKL nft 解析完整兼容/受限模式规则 |

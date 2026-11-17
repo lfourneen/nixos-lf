@@ -36,18 +36,26 @@ def server(label, port):
     ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
 
 
-def api(mode):
-    def request(method, path, body):
+def discard_controls():
+    def request(method, path, body=None):
         conn = http.client.HTTPConnection('localhost', timeout=3)
         conn.sock = socket.socket(socket.AF_UNIX)
         conn.sock.connect('/run/clash-verge-rev/core/mihomo.sock')
-        conn.request(method, path, json.dumps(body), {'Content-Type': 'application/json'})
+        conn.request(method, path, None if body is None else json.dumps(body),
+                     {'Content-Type': 'application/json'})
         response = conn.getresponse()
-        assert response.status == 204, response.read()
+        result = response.status, response.read()
         conn.close()
-    if mode == 'global':
-        request('PUT', '/proxies/GLOBAL', {'name': 'Choice'})
-    request('PATCH', '/configs', {'mode': mode})
+        return result
+    status, body = request('GET', '/configs')
+    assert status == 200, (status, body)
+    before = json.loads(body)
+    for patch in ([{'mode': mode} for mode in ('rule', 'global', 'direct')]
+                  + [{'tun': {'enable': value}} for value in (True, False)]):
+        assert request('PATCH', '/configs', patch)[0] == 204, patch
+    status, body = request('GET', '/configs')
+    after = json.loads(body)
+    assert status == 200 and after['mode'] == before['mode'] and after['tun'] == before['tun']
 
 
 def hits(label):
@@ -80,17 +88,12 @@ def check():
     assert hits('granted') == before_granted, 'wrong inlet used remote grant'
     curl('127.0.0.1:18082', socks, True, 'granted')
     assert len(hits('granted').splitlines()) == len(before_granted.splitlines()) + 1
-    # Global mode must not carry the direct rule's local authorization into
-    # the selected remote leaf. Domain resolution remains local and pinned.
-    try:
-        api('global')
-        for proxy in (http, socks):
-            curl('local.home.arpa:18081', proxy)
-            curl('127.0.0.1:18082', proxy, proxy == socks, 'granted' if proxy == socks else None)
-        assert hits('remote') == before_remote
-    finally:
-        api('rule')
-    print('Local portal/DIRECT, remote internal denials, scoped leaf grant and global routing passed')
+    discard_controls()
+    for proxy in (http, socks):
+        curl('local.home.arpa:18081', proxy, True, 'local')
+        curl('127.0.0.1:18082', proxy, proxy == socks, 'granted' if proxy == socks else None)
+    assert hits('remote') == before_remote
+    print('Local portal/DIRECT, remote internal denials and scoped leaf grant survive discarded control writes')
 
 
 if __name__ == '__main__':

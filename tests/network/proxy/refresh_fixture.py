@@ -2,6 +2,7 @@
 import http.client
 import json
 import os
+import runpy
 from pathlib import Path
 import socket
 import subprocess
@@ -9,8 +10,8 @@ import sys
 import time
 
 import yaml
+GUI = runpy.run_path('/etc/netsec_desktop.py')['GUI']
 
-GUI = Path('/home/lfour/.local/share/io.github.clash-verge-rev.clash-verge-rev')
 CONFIG = GUI / 'clash-verge.yaml'
 STATE = Path('/run/proxy-mode')
 SOCKET = '/run/clash-verge-rev/service.sock'
@@ -63,21 +64,21 @@ def ready():
     return status == 200 and type(pid) is int and str(pid) in members
 
 
-def restart_gui(expected=200, short=False):
-    child = subprocess.run(['setpriv', '--reuid=lfour', '--regid=users', '--init-groups',
-                            'python3', __file__, 'gui-retry' if short else 'gui'],
+def restart_root(expected=200, short=False):
+    child = subprocess.run(['python3', __file__, 'root-retry' if short else 'root-start'],
                            capture_output=True, text=True, timeout=50)
     if child.returncode or json.loads(child.stdout)['status'] != expected:
         print('refresh state at failed request: ' + json.dumps(record()), flush=True)
         for log in sorted(Path('/var/lib/clash-verge-service/logs').glob('*.log')):
             print(log.read_text()[-6000:], flush=True)
-    assert child.returncode == 0, 'desktop IPC fixture failed: ' + child.stderr[-2000:]
+    assert child.returncode == 0, 'root IPC fixture failed: ' + child.stderr[-2000:]
     response = json.loads(child.stdout)
     assert response['status'] == expected, response
     return response
 
 
-def gui(short=False):
+def start_request(short=False):
+    assert os.geteuid() == 0, "configuration import requires a root caller"
     launcher = Path('/etc/netsec-launcher').read_text().strip()
     payload = dict(core_config=dict(core_path=launcher, config_dir=str(GUI), config_path=str(CONFIG),
                                    core_ipc_path='/tmp/caller-supplied-socket'),
@@ -100,13 +101,13 @@ def strict():
     before = request('GET', '/status')[1]['data']['restart_count']
     try:
         CONFIG.write_bytes(original + b'\n# strict candidate\n')
-        result = restart_gui(expected=503, short=True)
+        result = restart_root(expected=503, short=True)
         assert '78' in result['message'] and 'configuration refused' in result['message']
         time.sleep(2)
         assert request('GET', '/status')[1]['data']['restart_count'] == before
         assert record()['result'] == 'refused' and record()['policy'] == 'strict'
         CONFIG.write_bytes(original)
-        restart_gui(short=True)
+        restart_root(short=True)
         wait(ready)
         print('strict: changed input refused once; original snapshot restarted', flush=True)
     finally:
@@ -116,9 +117,9 @@ def strict():
 def auto():
     wait(lambda: record().get('result') == 'accepted')
     CONFIG.write_bytes(CONFIG.read_bytes() + b'\n# automatic refresh\n')
-    restart_gui(short=True)
+    restart_root(short=True)
     pid = request('GET', '/status')[1]['data']['core_pid']
-    restart_gui(short=True)
+    restart_root(short=True)
     assert request('GET', '/status')[1]['data']['core_pid'] == pid
     wait(lambda: record().get('result') == 'accepted')
     wait(ready)
@@ -132,12 +133,12 @@ def auto():
         else:
             candidate['hosts']['undeclared.fixture.example'] = '1.1.1.1'
         CONFIG.write_text(yaml.safe_dump(candidate, sort_keys=False))
-        restart_gui()
+        restart_root()
         assert record()['result'] == 'fallback' and digest() == settled
         assert record()['reason'] == ('configuration invalid' if kind == 'invalid' else 'blocked by audit')
         validator = Path('/run/clash-verge-rev/validator.log').stat().st_mtime_ns
         summary = record()
-        restart_gui()
+        restart_root()
         assert digest() == settled and record() == summary
         assert Path('/run/clash-verge-rev/validator.log').stat().st_mtime_ns == validator
         subprocess.run(['systemctl', 'restart', 'clash-verge.service'], check=True)
@@ -149,7 +150,7 @@ def auto():
         candidate = yaml.safe_load(original)
         candidate['proxies'][0]['port'] = port
         CONFIG.write_text(yaml.safe_dump(candidate, sort_keys=False))
-        restart_gui()
+        restart_root()
         transaction = record()
         assert transaction['result'] == 'verifying'
         rejected = digest()
@@ -175,7 +176,7 @@ def auto():
         assert json.loads(desired[0].read_text())['core_should_be_running'] is True
         assert not (STATE / 'profile-refresh-restart.json').exists()
         assert record('profile-refresh-pin.json')['digest'] == rejected
-        restart_gui()
+        restart_root()
         wait(ready)
         subprocess.run(['systemctl', 'restart', 'clash-verge.service'], check=True)
         wait(ready)
@@ -188,7 +189,7 @@ def auto():
     assert not (STATE / 'effective-config.json').exists()
     subprocess.run(['proxy-control', 'on'], check=True)
     wait(lambda: request('GET', '/status')[0] == 200, timeout=20)
-    restart_gui()
+    restart_root()
     wait(ready)
     policy = subprocess.check_output(['proxy-policy'], text=True)
     assert 'profile_refresh' in policy and 'http://' not in policy and 'Fixture' not in policy
@@ -196,4 +197,4 @@ def auto():
 
 
 if __name__ == '__main__':
-    {'gui': gui, 'gui-retry': lambda: gui(short=True), 'strict': strict, 'auto': auto}[sys.argv[1]]()
+    {'root-start': start_request, 'root-retry': lambda: start_request(short=True), 'strict': strict, 'auto': auto}[sys.argv[1]]()

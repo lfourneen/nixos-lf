@@ -2,6 +2,28 @@
 
 English | [简体中文](CN/operations_CN.md) | [Documentation](README.md)
 
+## GUI control ownership
+
+Clash Verge is the packaged upstream build; no Clash Verge GUI source is patched.
+Its System Proxy, TUN and core-mode controls remain clickable in the home page, settings, tray and hotkeys, and may update local GUI preferences.
+They are silently discarded before they reach the OS or the managed core:
+
+- System Proxy, PAC and proxy-guard helper calls are replaced at launch by write-discarding shims.
+  Absolute helper paths are masked in a private mount namespace, with a memory GSettings backend and KDE version-5 names as fallback.
+  OS proxy settings, including startup and exit cleanup, stay unchanged.
+- Controller `PATCH /configs` requests for `mode` or `tun`, and `PUT /configs` reloads, return 204 without being applied.
+  Other configuration writes, rule disabling, upgrades and restarts remain forbidden.
+- The helper identifies callers from kernel Unix peer credentials. GUI stop/restart requests cannot interrupt the managed core; controlled-source starts belong to root.
+- The managed core pins its mode to `rule` and its whole TUN section to the root policy before validation, so a local preference cannot change live state or make a restart fail.
+
+The GUI may display its local preference. Use the controller, `proxy-status` or the managed core for the actual state.
+Node selection inside managed groups, connection closing, delay tests, status reads and logs remain available.
+
+Use `clash-rules` or `clash-proxy-only` to request the system routing submode.
+Both render core `mode: rule`; the GUI's Rule indicator is the core's rule evaluator, not the selected routing submode.
+Use `proxy-status` for the network overview and the active routing submode in B.
+Missing or corrupt policy state does not enable GUI control writes.
+
 ## Source registration
 
 The private source catalog is the Sops-encrypted [system/secrets/proxy.yaml](../system/secrets/proxy.yaml), rendered at activation to root-private `/run/secrets/proxy_source` (mode 0400).
@@ -189,7 +211,7 @@ This command does not create a recovery generation or alter DNS fallback policy.
 
 Use the Nushell commands `clash-on` and `clash-off`.
 They record privileged intent, manage the GUI/helper lifecycle and wait for coherent state.
-Closing the GUI alone leaves proxy intent active and therefore enters C when the core stops.
+Closing the GUI leaves proxy intent and the managed core active. Use `clash-off` to stop managed proxy access.
 
 On this host, `clash-rules` and `clash-proxy-only` select a routing submode and request B in one command.
 They return a terminal success message naming the mode, or a nonzero result with the failed stage and available reason.

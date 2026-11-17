@@ -23,7 +23,9 @@ It uses NixOS 26.05 with selected packages from Unstable, and exposes the system
 
 - **Managed networking.**
   nftables, local DNS and Mihomo share a direct/proxy/blocked state model.
-  Clash Verge supplies the GUI.
+  Clash Verge remains the packaged upstream GUI and provides node selection and monitoring.
+  Its System Proxy, TUN and core-mode controls stay operable but are silently discarded before they reach the OS or managed core.
+  System commands select the `rules` or `proxy-only` routing submode; both use core `mode: rule`.
   The core runs in its own network namespace, and registered subscription sources control which configuration it may load.
 
 - **Firefox.**
@@ -104,7 +106,7 @@ Keep `stateVersion` unchanged unless you have reviewed and migrated the affected
 | `firefox-portal http://192.168.1.1/` | Open a temporary portal session in direct mode |
 
 A is direct access, B is healthy proxy access, and C blocks application traffic while proxy access is unavailable.
-Closing the GUI does not select A.
+Closing the GUI leaves the managed core active. Use `clash-off` to select A.
 With `clash-on`, controlled subscriptions prefer their accepted snapshot. Startup fetching waits until B is healthy.
 Registered subscriptions also refresh every 30 minutes, with routine node rotation approved automatically.
 Successful updates stay silent; failures appear in desktop notifications and `proxy-status`.

@@ -2,13 +2,16 @@
 import http.client
 import json
 import os
+import runpy
 from pathlib import Path
 import pwd
 import socket
 import subprocess
 import sys
+from urllib.parse import quote
+DESKTOP = runpy.run_path('/etc/netsec_desktop.py')
+GUI, HOME, RUNTIME, SOCKET, USER = (DESKTOP[key] for key in ('GUI', 'HOME', 'RUNTIME', 'SOCKET', 'USER'))
 
-GUI = Path('/home/lfour/.local/share/io.github.clash-verge-rev.clash-verge-rev')
 CONFIG = GUI / 'clash-verge.yaml'
 MAGIC = 'A thing of beauty is a joy for ever. Its loveliness increases; it will never pass into nothingness.'
 SENTINEL = Path('/run/proxy-mode/helper-sentinel')
@@ -31,18 +34,18 @@ def prepare():
     import yaml
     GUI.mkdir(parents=True, exist_ok=True)
     profile = json.loads(Path('/run/netsec-real-profile.json').read_text())
-    profile['external-controller-unix'] = '/run/user/1000/clash-verge-rev/verge-mihomo.sock'
+    profile['external-controller-unix'] = SOCKET
     CONFIG.write_text(yaml.safe_dump(profile, allow_unicode=True, sort_keys=False))
     for path in [GUI, *GUI.parents]:
-        if path == Path('/home'):
-            break
-        os.chown(path, 1000, pwd.getpwnam('lfour').pw_gid)
+        os.chown(path, USER.pw_uid, USER.pw_gid)
         path.chmod(0o700)
-    os.chown(CONFIG, 1000, pwd.getpwnam('lfour').pw_gid)
+        if path == HOME:
+            break
+    os.chown(CONFIG, USER.pw_uid, USER.pw_gid)
     CONFIG.chmod(0o600)
-    Path('/run/user/1000').mkdir(parents=True, exist_ok=True)
-    os.chown('/run/user/1000', 1000, pwd.getpwnam('lfour').pw_gid)
-    os.chmod('/run/user/1000', 0o700)
+    RUNTIME.mkdir(parents=True, exist_ok=True)
+    os.chown(RUNTIME, USER.pw_uid, USER.pw_gid)
+    os.chmod(RUNTIME, 0o700)
     SENTINEL.write_text('root-owned sentinel\n')
     SENTINEL.chmod(0o600)
 
@@ -54,13 +57,13 @@ def start():
             'config_dir': str(GUI), 'config_path': str(CONFIG),
             'core_ipc_path': str(SENTINEL),
         },
-        'log_config': {'directory': '/run/user/1000/untrusted-logs',
+        'log_config': {'directory': str(RUNTIME / 'untrusted-logs'),
                        'max_log_size': 1048576, 'max_log_files': 2},
     }
     # Exercise the actual IPC as a desktop group member, including the helper's
     # root spawn choke point; no substitute root ExecStart is used here.
     if os.geteuid() == 0:
-        user = pwd.getpwnam('lfour')
+        user = USER
         os.initgroups(user.pw_name, user.pw_gid)
         os.setgid(user.pw_gid)
         os.setuid(user.pw_uid)
@@ -100,28 +103,86 @@ def check():
         assert '198.18.' in result, result
     effective = Path('/run/clash-verge-rev/effective')
     assert Path('/run/clash-verge-rev').stat().st_mode & 0o777 == 0o755
-    assert subprocess.run(['setpriv', '--reuid=1000', '--clear-groups', 'test', '-w',
+    assert subprocess.run(['setpriv', f'--reuid={USER.pw_uid}', '--clear-groups', 'test', '-w',
                            '/run/clash-verge-rev']).returncode != 0
     assert effective.stat().st_uid == 0 and effective.stat().st_mode & 0o777 == 0o750
     assert (effective / 'clash-verge.yaml').stat().st_mode & 0o777 == 0o640
     # The core must not be able to replace the snapshot it was authorized with.
     assert subprocess.run(['setpriv', '--reuid=clash-core', '--regid=clash-core', '--clear-groups',
                            'test', '-w', str(effective / 'clash-verge.yaml')]).returncode != 0
-    sock = '/run/user/1000/clash-verge-rev/verge-mihomo.sock'
+    sock = SOCKET
     assert request(sock, 'PATCH', '/rules/disable', {'0': True})[0] == 403
-    assert request(sock, 'PUT', '/configs', {})[0] == 403
-    assert request(sock, 'PATCH', '/configs', {'mode': 'direct'})[0] == 403
-    assert request(sock, 'PATCH', '/configs', {'mode': 'rule'})[0] == 204
-    user = pwd.getpwnam('lfour')
-    subprocess.check_call(['setpriv', '--reuid=1000', f'--regid={user.pw_gid}', '--init-groups',
+    assert request(sock, 'PUT', '/configs', {})[0] == 204
+    check_gui_controls()
+    user = USER
+    subprocess.check_call(['setpriv', f'--reuid={USER.pw_uid}', f'--regid={user.pw_gid}', '--init-groups',
                            sys.executable, __file__, 'writer'])
     assert not Path('/run/proxy-mode/authorize-window').exists(), 'writer minted an import window'
     assert SENTINEL.read_text() == 'root-owned sentinel\n'
     assert SENTINEL.stat().st_mode & 0o777 == 0o600, 'helper chmodded caller-supplied path'
 
 
+def check_gui_controls():
+    user = USER
+    subprocess.check_call(['setpriv', f'--reuid={USER.pw_uid}', f'--regid={user.pw_gid}', '--init-groups',
+                           sys.executable, __file__, 'gui_controls'])
+
+
+def gui_controls():
+    """Desktop UID through the production GUI forwarder, not a root socket."""
+    assert os.geteuid() == USER.pw_uid
+    sock = SOCKET
+    status, body = request(sock, 'GET', '/configs')
+    assert status == 200, (status, body)
+    before = json.loads(body)
+    assert before['mode'] == 'rule', before['mode']
+    files = [GUI / 'verge.yaml', GUI / 'clash-verge.yaml',
+             Path('/run/proxy-mode/routing.json')]
+    original = {path: path.read_bytes() if path.exists() else None for path in files}
+    for patch in ([{'mode': mode} for mode in ('rule', 'global', 'direct')]
+                  + [{'tun': {'enable': value}} for value in (True, False)]):
+        status, body = request(sock, 'PATCH', '/configs', patch)
+        assert status == 204 and not body, (patch, status, body)
+    status, body = request(sock, 'PUT', '/configs', {'path': str(CONFIG)})
+    assert status == 204 and not body, (status, body)
+    status, body = request(sock, 'GET', '/configs')
+    after = json.loads(body)
+    assert status == 200 and after['mode'] == 'rule' and after['tun'] == before['tun']
+    assert original == {path: path.read_bytes() if path.exists() else None for path in files}
+    helper = '/run/clash-verge-rev/service.sock'
+    headers = {'X-IPC-Magic': MAGIC, 'X-LF-Peer-Uid': '0'}
+    status, body = request(helper, 'GET', '/status', headers=headers)
+    assert status == 200, (status, body)
+    managed = json.loads(body)['data']
+    assert managed['core_pid'], managed
+    status, body = request(helper, 'DELETE', '/clash/stop', headers=headers)
+    assert status == 200 and json.loads(body)['code'] == 0, (status, body)
+    payload = {'core_config': {
+        'core_path': Path('/etc/netsec-launcher').read_text().strip(),
+        'config_dir': str(GUI), 'config_path': str(CONFIG),
+        'core_ipc_path': '/run/clash-verge-rev/core/mihomo.sock',
+    }, 'log_config': {'directory': '/tmp/gui-unused', 'max_log_size': 1000, 'max_log_files': 1}}
+    status, body = request(helper, 'POST', '/clash/start', payload, headers)
+    assert status == 200 and json.loads(body)['code'] == 0, (status, body)
+    status, body = request(helper, 'GET', '/status', headers=headers)
+    after_managed = json.loads(body)['data']
+    for field in ('core_pid', 'desired_generation', 'desired_core_should_be_running'):
+        assert after_managed[field] == managed[field], (field, managed, after_managed)
+    # System Proxy is an OS/Tauri operation, not a Mihomo configuration field.
+    # The launch-boundary command shims cover it without a GUI rebuild.
+    status, body = request(sock, 'GET', '/proxies')
+    assert status == 200, (status, body)
+    selectors = [(name, group) for name, group in json.loads(body)['proxies'].items()
+                 if group.get('type') == 'Selector' and group.get('now') in group.get('all', [])]
+    assert selectors, 'no managed selector remains available'
+    name, group = selectors[0]
+    assert request(sock, 'PUT', '/proxies/' + quote(name, safe=''), {'name': group['now']})[0] == 204
+    assert request(sock, 'DELETE', '/connections/lf-nonexistent-test-connection')[0] == 204
+    assert request(sock, 'GET', '/connections')[0] == 200
+    print('GUI control writes discarded; core/TUN/preferences unchanged; selector and connection APIs available', flush=True)
+
 def writer():
-    directory = Path('/run/user/1000/untrusted-logs')
+    directory = RUNTIME / 'untrusted-logs'
     directory.mkdir(exist_ok=True)
     link = directory / 'service_latest.log'
     if not link.is_symlink():
@@ -136,7 +197,7 @@ def refuse():
     launcher = Path('/etc/netsec-launcher').read_text().strip()
     args = [launcher, '-d', str(GUI), '-f', str(CONFIG)]
     assert subprocess.run(args).returncode == 78
-    assert subprocess.run(['setpriv', '--reuid=1000', '--clear-groups', *args]).returncode == 78
+    assert subprocess.run(['setpriv', f'--reuid={USER.pw_uid}', '--clear-groups', *args]).returncode == 78
     assert SENTINEL.read_text() == 'root-owned sentinel\n', 'helper unlinked caller-supplied path'
 
 
@@ -153,7 +214,7 @@ def preflight_rejection():
         assert verdict['phase'] == 'prepare-policy', verdict
         assert verdict['subscription']['certificate_exceptions_rejected'] == 1, verdict
         assert json.loads(Path('/run/proxy-mode/state.json').read_text())['mode'] == 'direct'
-        shown = subprocess.check_output(['setpriv', '--reuid=1000', '--clear-groups',
+        shown = subprocess.check_output(['setpriv', f'--reuid={USER.pw_uid}', '--clear-groups',
                                          'proxy-status', '--plain'], text=True)
         assert 'Certificate or subscription policy rejected' in shown, shown
         assert 'rejected 1' in shown, shown
@@ -230,6 +291,7 @@ def provider_reject_refresh():
 
 
 {'prepare': prepare, 'start': start, 'check': check, 'refuse': refuse,
+ 'gui_controls': gui_controls, 'check_gui_controls': check_gui_controls,
  'writer': writer, 'preflight-rejection': preflight_rejection,
  'provider-setup': provider_setup, 'provider-check': provider_check,
  'provider-cache-boundary': provider_cache_boundary,

@@ -1,10 +1,42 @@
 { pkgs, config, lib, ... }:
 
 let
+  guiControlShim = pkgs.writeScript "clash-verge-gui-control-shim" ''
+    #!${pkgs.runtimeShell} -p
+    ${builtins.readFile ./gui/control_shim.sh}
+  '';
+
+  guiControlPath = pkgs.runCommand "clash-verge-gui-control-path" { } ''
+    mkdir -p "$out/bin"
+    for name in gsettings dconf kreadconfig5 kreadconfig6 kwriteconfig5 kwriteconfig6; do
+      ln -s ${guiControlShim} "$out/bin/$name"
+    done
+  '';
+
+  # nixpkgs substitutes these absolute paths into the upstream binary, so PATH
+  # alone cannot replace them. The launch wrapper binds the shim over each one
+  # and keeps the real binary at a private path for read-only commands.
+  guiControlMasks = [
+    { target = "${pkgs.unstable.glib.bin}/bin/gsettings"; real = "${pkgs.unstable.glib.bin}/bin/gsettings"; variable = "LF_GUI_REAL_GSETTINGS"; }
+    { target = "${pkgs.unstable.dconf}/bin/dconf"; real = "${pkgs.unstable.dconf}/bin/dconf"; variable = "LF_GUI_REAL_DCONF"; }
+    { target = "${pkgs.unstable.kdePackages.kconfig}/bin/kreadconfig6"; real = "${pkgs.unstable.kdePackages.kconfig}/bin/kreadconfig6"; variable = "LF_GUI_REAL_KREADCONFIG"; }
+    { target = "${pkgs.unstable.kdePackages.kconfig}/bin/kwriteconfig6"; real = "${pkgs.unstable.kdePackages.kconfig}/bin/kwriteconfig6"; variable = "LF_GUI_REAL_KWRITECONFIG"; }
+  ];
+
   guiProcess = pkgs.writeShellApplication {
     name = "clash-verge-gui-prepare";
     runtimeInputs = [ pkgs.python3 ];
-    text = ''exec python3 ${./gui/clash-verge-gui.py} "$@"'';
+    text = ''
+      export LF_GUI_BWRAP=${pkgs.bubblewrap}/bin/bwrap
+      export LF_GUI_CONTROL_SHIM=${guiControlShim}
+      export LF_GUI_CONTROL_PATH=${guiControlPath}/bin
+      export LF_GUI_CONTROL_MASKS=${lib.escapeShellArg (builtins.toJSON guiControlMasks)}
+      export LF_GUI_REAL_GSETTINGS=${pkgs.unstable.glib.bin}/bin/gsettings
+      export LF_GUI_REAL_DCONF=${pkgs.unstable.dconf}/bin/dconf
+      export LF_GUI_REAL_KREADCONFIG=${pkgs.unstable.kdePackages.kconfig}/bin/kreadconfig6
+      export LF_GUI_REAL_KWRITECONFIG=${pkgs.unstable.kdePackages.kconfig}/bin/kwriteconfig6
+      exec python3 ${./gui/clash-verge-gui.py} "$@"
+    '';
   };
 
   # Set the writable GUI preference without rebuilding the Rust application.
@@ -19,6 +51,12 @@ let
       ${guiDefaults}/bin/clash-verge-defaults ${pkgs.yq-go}/bin/yq \
       ${lib.escapeShellArg config.my.proxy.delayTestUrl}
     ${pkgs.python3}/bin/python3 ${../../../tests/home/clash/test_gui_process.py} ${./gui/clash-verge-gui.py}
+    ${pkgs.python3}/bin/python3 ${../../../tests/home/clash/test_gui_controls.py} \
+      ${./gui/clash-verge-gui.py} ${guiControlShim} ${guiControlPath}/bin \
+      ${pkgs.unstable.glib.bin}/bin/gsettings ${pkgs.unstable.dconf}/bin/dconf \
+      ${pkgs.unstable.kdePackages.kconfig}/bin/kreadconfig6 \
+      ${pkgs.unstable.gsettings-desktop-schemas}/share \
+      ${pkgs.bubblewrap}/bin/bwrap
     touch "$out"
   '';
 
@@ -79,13 +117,7 @@ let
   # remaining authorization lives in the launcher and the firewall.
   patchedService = pkgs.unstable.clash-verge-rev.service.overrideAttrs (old: {
     postPatch = (old.postPatch or "") + ''
-      ${pkgs.python3}/bin/python3 ${./service/patch_clash_service.py} .
-    '';
-  });
-
-  managedGui = pkgs.unstable.clash-verge-rev.unwrapped.overrideAttrs (old: {
-    postPatch = (old.postPatch or "") + ''
-      ${pkgs.python3}/bin/python3 ${./gui/patch_clash_gui.py} . ${lib.boolToString config.my.proxy.tunMode}
+      ${pkgs.python3}/bin/python3 ${./service/patch_clash_service.py} . "$cargoDepsCopy"
     '';
   });
 
@@ -158,7 +190,6 @@ in
     package = (pkgs.unstable.clash-verge-rev.override {
       mihomo = managedCore;
     }).overrideAttrs (old: {
-      installPhase = builtins.replaceStrings [ (toString old.passthru.unwrapped) ] [ (toString managedGui) ] old.installPhase;
       nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.makeWrapper ];
       postFixup = (old.postFixup or "") + ''
         # Replace the helper copied by the GUI package with the locally pinned
@@ -182,7 +213,12 @@ in
       passthru = (old.passthru or { }) // {
         inherit managedCore guiDefaultsCheck stageSettings;
         managedService = patchedService;
-        unwrapped = managedGui;
+        desktopIdentity = {
+          name = desktopUser;
+          uid = desktopUid;
+          home = config.users.users.${desktopUser}.home;
+          inherit guiData;
+        };
       };
     });
 

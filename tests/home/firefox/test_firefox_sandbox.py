@@ -44,7 +44,7 @@ if sys.argv[1:] and sys.argv[1] == "run":
 
 driver = module("driver", manifest["driver"])
 tls = module("tls", manifest["tlsModule"]).start(manifest["tlsDirectory"])
-private = Path("/home/lfour/private")
+private = Path.home() / "private"
 private.mkdir(exist_ok=True)
 (private / "selected.txt").write_text("chosen through the portal")
 (private / "secret.txt").write_text("must remain private")
@@ -54,14 +54,14 @@ host_socket.listen()
 with socket.socket(socket.AF_UNIX) as unconfined:
     unconfined.connect("\0firefox-host-secret")
 os.environ.update(MOZ_DISABLE_CONTENT_SANDBOX="1", MOZ_REMOTE_ALLOW_SYSTEM_ACCESS="1",
-                  SSH_AUTH_SOCK="/run/user/1000/agent.sock", FONTCONFIG_FILE="/personal/fonts.conf")
+                  SSH_AUTH_SOCK=str(Path(settings["runtime"]) / "agent.sock"), FONTCONFIG_FILE="/personal/fonts.conf")
 
 # Run a parent-process payload through the actual sandbox, not a Gecko content
 # sandbox. It must have no host files, raw desktop bus or abstract sockets.
 probe = r'''
 import ctypes, errno, json, os, pathlib, socket, subprocess
 m = MANIFEST
-home = pathlib.Path('/home/lfour')
+home = pathlib.Path.home()
 assert not (home / 'private/secret.txt').exists()
 assert not (home / '.ssh').exists()
 assert not pathlib.Path('/run/dbus/system_bus_socket').exists()
@@ -69,8 +69,8 @@ assert not pathlib.Path('/dev/input').exists()
 assert not pathlib.Path('/dev/video0').exists()
 assert not pathlib.Path('/dev/nvidia-modeset').exists()
 assert not pathlib.Path('/sys/bus/pci').exists()
-assert not pathlib.Path('/run/user/1000/firefox-managed').exists()
-assert not pathlib.Path('/run/user/1000/doc/by-app').exists()
+assert not pathlib.Path(os.environ['XDG_RUNTIME_DIR'], 'firefox-managed').exists()
+assert not pathlib.Path(os.environ['XDG_RUNTIME_DIR'], 'doc/by-app').exists()
 bundle = pathlib.Path('/etc/ssl/certs/ca-certificates.crt')
 assert bundle.is_file() and not bundle.is_symlink()
 assert 'BEGIN CERTIFICATE' in bundle.read_text()
@@ -147,10 +147,10 @@ try:
     client.call("Marionette:SetContext", {"value": "chrome"})
     actual = client.call("WebDriver:ExecuteAsyncScript", {"script": """
 const done = arguments[arguments.length - 1];
-IOUtils.exists('/home/lfour/private/secret.txt').then(privateFile => done({private: privateFile,
+IOUtils.exists(arguments[0]).then(privateFile => done({private: privateFile,
         picker: Services.prefs.getIntPref('widget.use-xdg-desktop-portal.file-picker'),
         sandbox: Services.prefs.getIntPref('security.sandbox.content.level')}));
-""", "args": [], "newSandbox": True})["value"]
+""", "args": [str(private / "secret.txt")], "newSandbox": True})["value"]
     assert actual["private"] is False and actual["picker"] == 1 and actual["sandbox"] > 0, actual
     result = client.call("WebDriver:ExecuteAsyncScript", {"script": """
 const done = arguments[arguments.length - 1];
@@ -159,8 +159,8 @@ picker.init(Services.wm.getMostRecentWindow('navigator:browser').browsingContext
             'Choose a file', Ci.nsIFilePicker.modeOpen);
 picker.open(result => done({result, path: picker.file && picker.file.path}));
 """, "args": [], "newSandbox": True})["value"]
-    assert result["result"] == 0 and result["path"].startswith("/run/user/1000/doc/"), result
-    request = json.loads(Path("/home/lfour/portal-request.json").read_text())
+    assert result["result"] == 0 and result["path"].startswith(str(Path(settings["runtime"]) / "doc") + "/"), result
+    request = json.loads((Path.home() / "portal-request.json").read_text())
     assert request[1] == sandbox.APP_ID, request
     contents = client.call("WebDriver:ExecuteAsyncScript", {"script":
         "const done = arguments[arguments.length - 1]; IOUtils.readUTF8(" +

@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/metacubex/mihomo/component/lfguard"
+	T "github.com/metacubex/mihomo/tunnel"
 )
 
 func lfManagedPolicy() (map[string]any, string, error) {
@@ -32,6 +33,9 @@ func lfManagedPolicy() (map[string]any, string, error) {
 	var policy map[string]any
 	if err = json.Unmarshal(data, &policy); err != nil {
 		return nil, "", err
+	}
+	if policy == nil {
+		return nil, "", fmt.Errorf("managed proxy policy is empty")
 	}
 	digest := sha256.Sum256(data)
 	return policy, hex.EncodeToString(digest[:]), nil
@@ -188,12 +192,48 @@ func lfValidateRuleInvariants(raw *RawConfig) error {
 	return nil
 }
 
+// Build TUN from upstream defaults and root policy, never GUI profile fields.
+func lfApplySystemControls(raw *RawConfig, policy map[string]any) error {
+	if len(policy) == 0 {
+		return fmt.Errorf("managed proxy policy is empty")
+	}
+	raw.Mode = T.Rule
+	defaults, err := UnmarshalRawConfig(nil)
+	if err != nil {
+		return err
+	}
+	enforced := defaults.Tun
+	tun := map[string]any{}
+	for key, value := range policy {
+		if strings.HasPrefix(key, "tun.") {
+			tun[strings.TrimPrefix(key, "tun.")] = value
+		}
+	}
+	data, err := json.Marshal(tun)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, &enforced); err != nil {
+		return err
+	}
+	raw.Tun = enforced
+	return nil
+}
+
 // Upgrade only known older managed values before the final policy check, on
 // every full-config path. Controller PATCH remains strict; no caller-supplied
 // value may weaken the resulting policy.
 func lfManagedProfileDefaults(raw *RawConfig) error {
 	policy, _, err := lfManagedPolicy()
 	if err != nil || policy == nil {
+		return err
+	}
+	// Core mode and the whole TUN section are system-rendered state. A GUI
+	// profile may still carry its own toggles after the controller discarded
+	// the matching write, so shadow those fields before validation. This keeps
+	// a local preference from changing the running core or making a restart
+	// fail policy validation.
+	if err := lfApplySystemControls(raw, policy); err != nil {
 		return err
 	}
 	// This transport is wholly root-owned, including across cached profiles.

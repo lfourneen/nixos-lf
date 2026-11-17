@@ -75,6 +75,29 @@ class SnapshotTests(unittest.TestCase):
     def verify(self):
         return stage.verify(self.runtime / 'effective', self.state / 'config-digest', self.state / 'authorized-config')
 
+    def test_system_controls_reuse_only_the_accepted_snapshot(self):
+        yq = os.environ.get('LF_TEST_YQ')
+        if not yq:
+            self.skipTest('yq is not supplied by the test harness')
+        self.settings['yq'] = yq
+        accepted = self.runtime / 'effective'
+        accepted.mkdir()
+        (accepted / 'clash-verge.yaml').write_text(
+            'external-controller-unix: /old.sock\nmode: rule\ntun:\n  enable: false\n'
+            'rules: [MATCH,Proxy]\n')
+        control_only = (
+            'external-controller-unix: /old.sock\nmode: global\ntun:\n  enable: true\n'
+            'rules: [MATCH,Proxy]\n').encode()
+        self.assertEqual(stage.system_control_input(self.settings, control_only, accepted),
+                         (accepted / 'clash-verge.yaml').read_bytes())
+        changed_rule = (
+            'external-controller-unix: /old.sock\nmode: global\ntun:\n  enable: true\n'
+            'rules: [MATCH,DIRECT]\n').encode()
+        self.assertEqual(stage.system_control_input(self.settings, changed_rule, accepted),
+                         changed_rule)
+        non_mapping = b'[\nexternal-controller-unix: /old.sock\n]\n'
+        self.assertEqual(stage.system_control_input(self.settings, non_mapping, accepted), non_mapping)
+
     def test_provider_cache_is_separate_from_snapshot_authority(self):
         self.authorize()
         effective=self.runtime/'effective'

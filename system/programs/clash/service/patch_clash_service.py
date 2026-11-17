@@ -223,6 +223,43 @@ def main() -> int:
             raise ValueError(f"upstream helper anchor changed: {old!r}")
         return value.replace(old, new, 1)
 
+    # Carry kernel peer identity into the helper handler, never an HTTP header
+    # supplied by a caller. This dependency is built only for the small helper.
+    if len(sys.argv) != 3:
+        raise ValueError('expected helper source and copied vendor directory')
+    bridges = list(pathlib.Path(sys.argv[2]).rglob('kode-bridge-*/src/ipc_http_server.rs'))
+    if len(bridges) != 1:
+        raise ValueError('expected one Kode Bridge HTTP server')
+    bridge = bridges[0]
+    source = bridge.read_text()
+    source = replace_once(source, 'pub struct ClientInfo {',
+                          'pub struct ClientInfo {\n    pub peer_euid: Option<u32>,')
+    count = source.count('connected_at: Instant::now(),')
+    if count != 4:
+        raise ValueError('upstream IPC client identity constructors changed')
+    source = source.replace('connected_at: Instant::now(),',
+                            'connected_at: Instant::now(),\n                peer_euid: None,')
+    source = replace_once(source,
+        '''        let client_info = ClientInfo {
+            connection_id,
+            connected_at: Instant::now(),
+                peer_euid: None,
+        };''',
+        '''        #[cfg(unix)]
+        let peer_euid = {
+            use interprocess::local_socket::traits::StreamCommon as _;
+            stream.peer_creds().ok().and_then(|credentials| credentials.euid())
+        };
+        #[cfg(not(unix))]
+        let peer_euid = None;
+        let client_info = ClientInfo {
+            connection_id,
+            connected_at: Instant::now(),
+            peer_euid,
+        };''')
+    bridge.chmod(bridge.stat().st_mode | 0o200)
+    bridge.write_text(source)
+
     # Wait in the common spawn path, covering /clash/start, desired-state
     # restore and watchdog restarts. No caller-supplied IPC path is touched.
     text = replace_once(text, 'pub struct ChildGuard {', READINESS + 'pub struct ChildGuard {')
@@ -352,6 +389,34 @@ def main() -> int:
             ..Default::default()
         })?
     } else { IpcHttpServer::new(paths.ipc_path())? };''')
+    text = replace_once(text,
+        '''                Ok(start_clash) => {
+                    match CORE_MANAGER''',
+        '''                Ok(start_clash) => {
+                    if std::env::var_os("LF_CLASH_CORE_PATH").is_some()
+                        && ctx.client_info.peer_euid != Some(0) {
+                        if std::env::var("LF_CLASH_CORE_PATH").as_deref()
+                            != Ok(start_clash.core_config.core_path.as_str()) {
+                            return service_unavailable("core path is not the configured launcher");
+                        }
+                        let system_owned = std::env::var("LF_CLASH_CONTROLLED_SOURCE").as_deref() == Ok("1")
+                            || ctx.client_info.peer_euid.is_none();
+                        let running_or_unknown = service_status_snapshot().await
+                            .map(|status| status.core_pid.is_some_and(|pid| pid > 0)).unwrap_or(true);
+                        if system_owned || running_or_unknown {
+                            return ok_empty("Core lifecycle is managed by the system controller");
+                        }
+                    }
+                    match CORE_MANAGER''')
+    text = replace_once(text,
+        '''            trace!("Received StopClash command");
+            ipc_request_context_to_auth_context(&ctx)?;''',
+        '''            trace!("Received StopClash command");
+            ipc_request_context_to_auth_context(&ctx)?;
+            if std::env::var_os("LF_CLASH_CORE_PATH").is_some()
+                && ctx.client_info.peer_euid != Some(0) {
+                return ok_empty("Core lifecycle is managed by the system controller");
+            }''')
     path.write_text(text)
 
     # Both /clash/start and /writer, including desired-state restores, pass

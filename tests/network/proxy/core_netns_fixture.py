@@ -357,8 +357,10 @@ def check():
             answer = run('runuser', '-u', 'client', '--', 'dig', '+short', '+time=2', '+tries=1', *(['+tcp'] if tcp else []), '@'+inlet, '-p', '1053', 'fixture.example', 'A').stdout.strip()
             assert ipaddress.ip_address(answer) in ipaddress.ip_network('198.18.0.0/16'), answer
             client(answer, 'tcp')
-    rejected = run('curl', '--silent', '--unix-socket', '/run/core-netns/controller.sock', '-X', 'PATCH', '-H', 'Content-Type: application/json', '-d', '{"mode":"direct"}', '-o', '/dev/null', '-w', '%{http_code}', 'http://localhost/configs').stdout
-    assert rejected == '403', rejected
+    discarded = run('curl', '--silent', '--unix-socket', '/run/core-netns/controller.sock', '-X', 'PATCH', '-H', 'Content-Type: application/json', '-d', '{"mode":"direct"}', '-o', '/dev/null', '-w', '%{http_code}', 'http://localhost/configs').stdout
+    assert discarded == '204', discarded
+    current = json.loads(run('curl', '--silent', '--unix-socket', '/run/core-netns/controller.sock', 'http://localhost/configs').stdout)
+    assert current['mode'] == 'rule', current['mode']
     print('B real core TUN, TCP/UDP, IPv4/IPv6 nodes, HTTP inlets, fake-IP and DNS TCP/UDP passed', flush=True)
     before = run('ip', '-j', 'route', 'show', 'table', 'all').stdout
     host_rules = run('nft', '-j', 'list', 'table', 'inet', 'lf_core_prototype').stdout

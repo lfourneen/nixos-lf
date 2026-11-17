@@ -1,6 +1,8 @@
-{ pkgs, firefox }:
+{ pkgs, firefox, desktopIdentity }:
 
 let
+  desktop = desktopIdentity;
+  runtime = "/run/user/${toString desktop.uid}";
   python = pkgs.python3.withPackages (p: [ p.pygobject3 ]);
   tls = import ./tls-fixture.nix { inherit pkgs; };
 
@@ -22,7 +24,8 @@ pkgs.testers.runNixOSTest {
   name = "firefox-outer-sandbox";
   nodes.machine = { ... }: {
     imports = [ ./firefox-desktop.nix ];
-    users.users.lfour = { isNormalUser = true; uid = 1000; linger = true; };
+    _module.args.desktopTestUser = desktop.name;
+    users.users.${desktop.name} = { isNormalUser = true; inherit (desktop) uid home; linger = true; };
     # Exercise NixOS's real /etc/static symlinks and NSS/p11-kit system trust.
     # The browser profile stays empty; do not import this CA with certutil.
     security.pki.certificateFiles = [ "${tls}/ca.pem" ];
@@ -36,12 +39,12 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     start_all()
-    machine.wait_for_unit("user@1000.service")
+    machine.wait_for_unit("user@${toString desktop.uid}.service")
     try:
-        machine.wait_until_succeeds("test -S /run/user/1000/wayland-0 && test -S /run/user/1000/pulse/native", timeout=40)
-        machine.succeed("runuser -u lfour -- env XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus ${python}/bin/python3 /etc/firefox-sandbox-test.py > /tmp/firefox-sandbox.log 2>&1", timeout=180)
+        machine.wait_until_succeeds("test -S ${runtime}/wayland-0 && test -S ${runtime}/pulse/native", timeout=40)
+        machine.succeed("runuser -u ${desktop.name} -- env HOME=${pkgs.lib.escapeShellArg desktop.home} XDG_RUNTIME_DIR=${runtime} WAYLAND_DISPLAY=wayland-0 DBUS_SESSION_BUS_ADDRESS=unix:path=${runtime}/bus ${python}/bin/python3 /etc/firefox-sandbox-test.py > /tmp/firefox-sandbox.log 2>&1", timeout=180)
     except Exception:
-        print(machine.execute("tail -n 70 /tmp/firefox-sandbox.log; journalctl _UID=1000 --no-pager -n 50"))
+        print(machine.execute("tail -n 70 /tmp/firefox-sandbox.log; journalctl _UID=${toString desktop.uid} --no-pager -n 50"))
         raise
     finally:
         machine.copy_from_vm("/tmp/firefox-sandbox.log")

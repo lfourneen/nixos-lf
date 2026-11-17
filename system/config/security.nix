@@ -122,7 +122,6 @@
     #clamonacc.enable = true;
     #daemon.settings = {
       #OnAccessPrevention = true;
-      #OnAccessIncludePath = "/home/lfour/Downloads";
     #};
   };
 

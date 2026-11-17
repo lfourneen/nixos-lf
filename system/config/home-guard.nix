@@ -98,13 +98,13 @@ in
 
     user = lib.mkOption {
       type = lib.types.str;
-      default = "lfour";
+      default = config.my.machine.desktopUser;
       description = "Owner the protected paths belong to; the flags are set by root, this only names who is protected.";
     };
 
     home = lib.mkOption {
       type = lib.types.str;
-      default = "/home/${cfg.user}";
+      default = config.users.users.${cfg.user}.home;
       description = "Home directory the default path list is built from.";
     };
 

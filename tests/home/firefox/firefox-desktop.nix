@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, desktopTestUser, ... }:
 let
   python = pkgs.python3.withPackages (p: [ p.pygobject3 ]);
   backend = pkgs.runCommand "firefox-test-portal" { } ''
@@ -13,7 +13,7 @@ let
 
 in
 {
-  users.users.lfour.linger = true;
+  users.users.${desktopTestUser}.linger = true;
   services.dbus.enable = true;
   security.polkit.enable = true;
   xdg.portal = {
@@ -32,7 +32,6 @@ in
   };
   systemd.user.services.test-audio = {
     wantedBy = [ "default.target" ];
-    environment.PULSE_RUNTIME_PATH = "/run/user/1000/pulse";
     serviceConfig.ExecStart = "${pkgs.pulseaudio}/bin/pulseaudio --daemonize=no --exit-idle-time=-1 --log-target=stderr --file=${pkgs.writeText "test-pulse.pa" ''
       load-module module-native-protocol-unix
       load-module module-null-sink

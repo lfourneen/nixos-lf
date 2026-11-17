@@ -19,7 +19,6 @@
       lfour = {
         uid = 1000;
         isNormalUser = true;
-        home = "/home/lfour";
         hashedPasswordFile = "/persist/passwords/lfour";
         description = "LFour";
         shell = pkgs.unstable.nushell;

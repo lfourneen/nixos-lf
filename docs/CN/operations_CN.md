@@ -2,6 +2,29 @@
 
 [English](../operations.md) | 简体中文 | [文档目录](README_CN.md)
 
+## GUI 控制权限
+
+Clash Verge 使用未修改的上游打包版本，不修改 Clash Verge GUI 源码。
+首页、设置页、托盘和快捷键中的 System Proxy、TUN 与核心模式仍可操作，并可写入 GUI 本地偏好。
+这些操作在到达操作系统或受管核心前被静默丢弃：
+
+- 启动包装用只丢弃写入的 shim 替换 System Proxy、PAC 和代理守护调用。
+  私有挂载命名空间遮蔽绝对 helper 路径，GSettings 内存后端和 KDE 5 helper 名称作为后备。
+  启动与退出时的 OS 代理清理同样不改变实际设置。
+- 控制器对 `mode`、`tun` 的 `PATCH /configs` 和 `PUT /configs` 重载返回 204 但不应用。
+  其它配置写入、禁用规则、升级和重启仍拒绝。
+- helper 以内核 Unix peer 身份区分调用者，GUI 停止或重启请求不能中断受管核心，受控来源由 root 启动。
+- 受管解析器在最终校验前把核心模式固定为 `rule`，并用 root 策略覆盖整个 `tun` 段。
+  本地偏好不能改变实际状态，也不能让重启因策略校验失败。
+
+GUI 可以显示本地偏好；实际状态以控制器、`proxy-status` 或受管核心为准。
+受管组内选择节点、关闭连接、延迟测试、状态读取和日志仍然可用。
+
+使用 `clash-rules` 或 `clash-proxy-only` 请求系统路由子模式。
+两者均渲染核心 `mode: rule`，GUI 的 Rule 表示核心按规则列表处理流量，并不代表当前路由子模式。
+使用 `proxy-status` 查看整体网络状态及 B 中的路由子模式。
+策略缺失或损坏不会开放 GUI 控制写权限。
+
 ## 来源登记
 
 来源清单保存在 Sops 加密的 [system/secrets/proxy.yaml](../../system/secrets/proxy.yaml)，激活时渲染为 root 私有 `/run/secrets/proxy_source`（0400）。
@@ -180,8 +203,7 @@ clash-diff
 ## 模式切换
 
 使用 Nushell 的 `clash-on`、`clash-off`，它们记录特权意图，管理 GUI/helper 并等待一致状态。
-关闭 GUI 不会清除代理意图。
-核心停止后因此进入 C。
+关闭 GUI 保留代理意图和受管核心运行。停止受管代理访问使用 `clash-off`。
 
 本机使用 `clash-rules`、`clash-proxy-only` 一键选择路由子模式并请求 B。
 命令在终端返回包含模式的成功结果，或以非零状态返回失败阶段及可用原因。

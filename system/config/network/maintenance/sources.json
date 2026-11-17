@@ -219,6 +219,7 @@
         "proxy-refresh",
         "proxy-control-config",
         "proxy-gui",
+        "proxy-gui-vm",
         "proxy-profile",
         "proxy-control-vm",
         "proxy-refresh-vm",
@@ -229,9 +230,10 @@
         "proxy-routing-vm"
       ],
       "entrypoints": [
-        "helper src/core/manager.rs, server.rs, logger.rs and reconcile.rs",
+        "helper src/core/manager.rs, server.rs, logger.rs, reconcile.rs and vendored Kode Bridge peer credentials",
         "Nixpkgs GUI/helper packaging and inherited patches",
-        "GUI use-system-state.ts, proxy-control-switches.tsx, tray, config initialization, feat/config.rs, feat/window.rs and core/manager/config.rs",
+        "Unchanged upstream GUI IPC, tray/hotkeys, TUN settings and System Proxy/PAC/guard helper commands",
+        "GUI launch namespace, absolute desktop helper masks and read-only command shims",
         "Installed GUI/public core wrapper, stage snapshot and service runtime",
         "system/config/network/proxy/routing.nix",
         "system/config/network/proxy/routing.py"
@@ -239,7 +241,7 @@
       "invariants": [
         "Root spawn uses only the root-owned packaged launcher; caller log/socket/PID paths never drive privileged file/process operations.",
         "Snapshot authorization covers YAML/assets, is single-use/boot-scoped and survives ordinary helper restart with correct permissions.",
-        "GUI keeps the declared TUN value, never disables it after an IPC outage or on exit, and treats reload refusal as terminal. The core retains its fixed UID and NET_ADMIN/NET_RAW capabilities.",
+        "GUI mode/TUN/reload requests and OS proxy writes succeed without applying. Kernel peer identity prevents GUI lifecycle requests from replacing or stopping the running core. Core mode is rule and all TUN fields come from defaults plus root policy; fixed UID and NET_ADMIN/NET_RAW capabilities remain enforced.",
         "Snapshot policy identity uses a stable validated blocklist path. Startup imports keep the full observation window; background downloads wait for stable verified B. Core replacement uses stop/start IPC and preserves the helper listener.",
         "Read-only preflight precedes proxy intent changes. Fast checks reuse full snapshot hashes only while protected identity and ctime metadata match, with periodic full verification.",
         "The helper/core run in the fixed core network namespace; host validators use a separate UID, the desktop forwarder stays on the host and no host INET/netlink FD reaches the core."

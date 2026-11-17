@@ -48,6 +48,9 @@ assert pkgs.lib.hasInfix "fixture-wifi" alternate.my.proxy.blockedModeRules;
 assert !pkgs.lib.hasInfix "ens1" alternate.my.proxy.proxyModeRules;
 assert alternate.home-manager.users.fixture-user.home.homeDirectory == "/home/fixture-user";
 assert alternate.home-manager.users.fixture-user.home.sessionVariables.DOCKER_HOST == "unix:///run/user/1100/docker.sock";
+assert alternate.programs.clash-verge.package.desktopIdentity.name == "fixture-user";
+assert alternate.programs.clash-verge.package.desktopIdentity.uid == 1100;
+assert alternate.programs.clash-verge.package.desktopIdentity.guiData == "${alternate.users.users.fixture-user.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev";
 assert builtins.any (a: pkgs.lib.hasInfix "unreviewed-fixture" a.message) (failed rejected);
 assert failed accepted == [ ];
 pkgs.runCommand "network-policy-config" { } ''

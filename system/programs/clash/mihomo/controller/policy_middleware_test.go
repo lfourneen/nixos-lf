@@ -2,6 +2,8 @@ package route
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -55,23 +57,61 @@ func TestLFManagedPolicyAllowsReadsAndProxySelection(t *testing.T) {
 	}
 }
 
-func TestLFManagedPolicyAllowsRuleGlobalCases(t *testing.T) {
+func TestLFManagedPolicyControlWritesAreSilentNoOps(t *testing.T) {
+	directory := t.TempDir()
+	for name, content := range map[string]string{
+		"rules":      `{"lf-private-targets":{"proxy-only":false}}`,
+		"proxy-only": `{"lf-private-targets":{"proxy-only":true}}`,
+		"corrupt":    `{`,
+		"null":       `null`,
+	} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, state := range []string{"rules", "proxy-only", "missing", "corrupt", "null", "unset"} {
+		t.Run(state, func(t *testing.T) {
+			policy := filepath.Join(directory, state)
+			if state == "unset" {
+				policy = ""
+			}
+			t.Setenv("LF_MANAGED_PROXY_POLICY", policy)
+			for _, body := range []string{
+				"", "{}",
+				`{"mode":"rule"}`, `{"mode":"global"}`, `{"mode":"direct"}`, `{"mode":null}`,
+				`{"tun":{"enable":true}}`, `{"tun":{"enable":false}}`,
+				`{"mode":"direct","tun":{"enable":true}}`,
+			} {
+				code, called := lfPolicyRun(t, http.MethodPatch, "/configs", body)
+				if code != http.StatusNoContent || called {
+					t.Fatalf("patch %q: code=%d called=%v, want a discarded 204", body, code, called)
+				}
+			}
+			code, called := lfPolicyRun(t, http.MethodPut, "/configs",
+				`{"path":"/tmp/gui-profile.yaml"}`)
+			if code != http.StatusNoContent || called {
+				t.Fatalf("config reload: code=%d called=%v, want a discarded 204", code, called)
+			}
+		})
+	}
+}
+
+func TestLFManagedPolicyRejectsUnmanagedConfigurationWrites(t *testing.T) {
 	for _, body := range []string{
-		`{"mode":"rule"}`,
-		`{"mode":"global"}`,
-		`{"mode": "rule"}`,
-		``,
+		`{"port":7898}`,
+		`{"mode":"rule","port":7898}`,
+		`{"tun":{"enable":true},"sniffer":{"enable":false}}`,
+		`not-json`,
 	} {
 		code, called := lfPolicyRun(t, http.MethodPatch, "/configs", body)
-		if code != http.StatusOK || !called {
-			t.Fatalf("patch %q: code=%d called=%v, want allowed", body, code, called)
+		if code == http.StatusNoContent || code == http.StatusOK || called {
+			t.Fatalf("patch %q: code=%d called=%v, want rejected", body, code, called)
 		}
 	}
 }
 
 func TestLFManagedPolicyRejectsControlPlaneMutation(t *testing.T) {
 	for _, tc := range []struct{ method, path, body string }{
-		{http.MethodPut, "/configs", `{"path":"/tmp/x","payload":"mode: direct"}`},
 		{http.MethodPost, "/configs/geo", ""},
 		{http.MethodPost, "/restart", ""},
 		{http.MethodPost, "/upgrade", ""},
@@ -84,10 +124,6 @@ func TestLFManagedPolicyRejectsControlPlaneMutation(t *testing.T) {
 		{http.MethodPut, "/providers/proxies/Subscription", ""},
 		{http.MethodPut, "/storage/Key", `{"value":true}`},
 		{http.MethodPost, "/unknown-future-write", ""},
-		{http.MethodPatch, "/configs", `{"mode":"direct"}`},
-		{http.MethodPatch, "/configs", `{"tun":{"enable":false}}`},
-		{http.MethodPatch, "/configs", `{"mode":"rule","sniffer":{"enable":false}}`},
-		{http.MethodPatch, "/configs", `not-json`},
 	} {
 		code, called := lfPolicyRun(t, tc.method, tc.path, tc.body)
 		if code == http.StatusOK || called {
@@ -101,9 +137,25 @@ func TestLFManagedPolicyRejectsControlPlaneMutation(t *testing.T) {
 func TestLFManagedPolicyInstalledOnRouter(t *testing.T) {
 	t.Setenv("LF_MANAGED_PROXY_POLICY", "managed-fixture")
 	router := router(false, "", "", Cors{})
+	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodPatch, "/configs", `{"mode":"global"}`},
+		{http.MethodPut, "/configs", `{"path":"/tmp/profile.yaml"}`},
+	} {
+		req, err := http.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := &lfPolicyRecorder{}
+		router.ServeHTTP(rec, req)
+		if rec.code != http.StatusNoContent {
+			t.Fatalf("actual router %s %s: code=%d, want 204", tc.method, tc.path, rec.code)
+		}
+	}
 	for _, path := range []string{"/rules/disable", "/rules/disable/"} {
 		req, err := http.NewRequest(http.MethodPatch, path, strings.NewReader(`{"0":true}`))
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		rec := &lfPolicyRecorder{}
 		router.ServeHTTP(rec, req)
 		if rec.code != http.StatusForbidden {

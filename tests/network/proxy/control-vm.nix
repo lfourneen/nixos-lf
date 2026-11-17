@@ -1,7 +1,9 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false, routing ? false }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false, routing ? false, guiControls ? false, guiPkgs ? pkgs }:
 
 let
-  dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || managedSources || assurance || ech != null);
+  desktop = clashPackage.desktopIdentity;
+  desktopRuntime = "/run/user/${toString desktop.uid}";
+  dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || managedSources || assurance || guiControls || ech != null);
   fixturePython = pkgs.python3.withPackages (p: [ p.pyyaml ] ++ pkgs.lib.optional assurance p.dnspython);
   maskSupervisor = "mkdir -p /run/systemd/system.control; ln -s /dev/null /run/systemd/system.control/proxy-mode.service; systemctl daemon-reload; systemctl stop proxy-mode.service; test $(systemctl show -p LoadState --value proxy-mode.service) = masked";
   unmaskSupervisor = "unlink /run/systemd/system.control/proxy-mode.service; systemctl daemon-reload";
@@ -20,7 +22,7 @@ let
 
 in
 pkgs.testers.runNixOSTest {
-  name = if routing then "proxy-runtime-routing" else if assurance then "proxy-authorization-and-dnssec" else if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if guiControls then "proxy-gui-controls" else if routing then "proxy-runtime-routing" else if assurance then "proxy-authorization-and-dnssec" else if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
@@ -67,8 +69,15 @@ pkgs.testers.runNixOSTest {
     ] ++ lib.optional assurance (import ../dns/assurance-config.nix { inherit sourceTls; })
       ++ lib.optional guests ../guests/guest-config.nix
       ++ lib.optional hermesContainers ../guests/hermes-container-config.nix
-      ++ lib.optional (ech != null) ../../home/firefox/firefox-desktop.nix;
-    users.users.lfour = { isNormalUser = true; uid = 1000; };
+      ++ lib.optional (ech != null || guiControls) ../../home/firefox/firefox-desktop.nix;
+    my.machine.desktopUser = desktop.name;
+    users.users.${desktop.name} = { isNormalUser = true; inherit (desktop) uid home; };
+    _module.args.desktopTestUser = desktop.name;
+    environment.etc."netsec-desktop.json".text = builtins.toJSON {
+      user = desktop.name;
+      inherit (desktop) guiData;
+    };
+    environment.etc."netsec_desktop.py".source = ./desktop.py;
     users.groups.impostor = { };
     users.users.impostor = { isSystemUser = true; uid = 1001; group = "impostor"; };
     users.groups.dhcpcd = { };
@@ -132,7 +141,7 @@ pkgs.testers.runNixOSTest {
       exceptions = [{
         interface = "ens1";
         cidr = "100.67.0.1/32";
-        uids = [ 1000 ];
+        uids = [ desktop.uid ];
         tcpPorts = [ 8080 ];
       }];
     };
@@ -169,6 +178,15 @@ pkgs.testers.runNixOSTest {
         stageSettings = clashPackage.stageSettings; launcher = "${clashPackage}/bin/verge-mihomo"; };
     };
     environment.etc."netsec-routing.py" = lib.mkIf routing { source = ./routing_fixture.py; };
+    environment.etc."netsec-gui-webdriver.py" = lib.mkIf guiControls { source = ./gui_webdriver.py; };
+    environment.etc."netsec-gui-webdriver.json" = lib.mkIf guiControls {
+      text = builtins.toJSON {
+        package = clashPackage;
+        webdriver = "${guiPkgs.webkitgtk_4_1}/bin/WebKitWebDriver";
+        gsettings = "${guiPkgs.glib.bin}/bin/gsettings";
+        schemas = "${guiPkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${guiPkgs.gsettings-desktop-schemas.name}/glib-2.0/schemas";
+      };
+    };
     users.users.routing-guest = lib.mkIf routing {
       isNormalUser = true;
       uid = 1100;
@@ -212,7 +230,7 @@ pkgs.testers.runNixOSTest {
       pkgs.curl pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.nftables pkgs.util-linux
     ] ++ lib.optionals (ech != null) [ pkgs.nssTools ]
       ++ lib.optionals dataplane [ pkgs.conntrack-tools ];
-    virtualisation.memorySize = if ech != null then 3072 else if managedSources then 2048 else 1024;
+    virtualisation.memorySize = if guiControls then 4096 else if ech != null then 3072 else if managedSources then 2048 else 1024;
   };
 
   testScript = ''
@@ -241,7 +259,7 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("nftables.service")
     machine.wait_for_unit("proxy-mode.service")
     ${pkgs.lib.optionalString (ech != null) ''
-    machine.wait_until_succeeds("test -S /run/user/1000/wayland-0 && test -S /run/user/1000/pulse/native", timeout=40)
+    machine.wait_until_succeeds("test -S ${desktopRuntime}/wayland-0 && test -S ${desktopRuntime}/pulse/native", timeout=40)
     ''}
     machine.succeed("ip netns add outside; ip link add ens1 type veth peer name peer0; ip link set peer0 netns outside")
     machine.succeed("ip addr add 100.67.0.2/24 dev ens1; ip link set ens1 up; ip -n outside addr add 100.67.0.1/24 dev peer0; ip -n outside addr add 203.0.113.10/32 dev peer0; ip -n outside link set peer0 up; ip -n outside link set lo up; ip route add default via 100.67.0.1 dev ens1 metric 1")
@@ -342,7 +360,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("nft add element inet lf_filter dns_split4 '{ ens1 . 100.67.0.1 timeout 120s }'; python3 /etc/netsec-dns.py query 100.67.0.1 --uid 985")
     machine.succeed("nft flush set inet lf_filter dns_split4; nft flush set inet lf_filter dns_plaintext4; rm /run/dns-upstream/force-plaintext; systemctl start dns-upstream.service")
     # Literal HTTP portal access in A needs no public DNS.
-    machine.succeed("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:8080/ >/dev/null")
+    machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:8080/ >/dev/null")
     ''}
 
     ${pkgs.lib.optionalString dataplane ''
@@ -350,21 +368,21 @@ pkgs.testers.runNixOSTest {
         # Hold observers still: the dataplane must protect clients independently
         # of whether the next polling round has noticed a wrong listener.
         machine.succeed("systemctl stop proxy-mode.service gost-relay.service")
-        machine.succeed("systemd-run --wait --pipe --slice=user.slice --uid=1000 python3 /etc/netsec-dataplane.py bind")
+        machine.succeed("systemd-run --wait --pipe --slice=user.slice --uid=${toString desktop.uid} python3 /etc/netsec-dataplane.py bind")
         port_range = machine.succeed("sysctl -n net.ipv4.ip_local_port_range").strip()
         reserved = machine.succeed("sysctl -n net.ipv4.ip_local_reserved_ports").strip()
         machine.succeed("sysctl -w 'net.ipv4.ip_local_port_range=33332 33333' net.ipv4.ip_local_reserved_ports=")
-        machine.succeed("systemd-run --wait --pipe --slice=user.slice --uid=1000 python3 /etc/netsec-dataplane.py autobind allowed")
+        machine.succeed("systemd-run --wait --pipe --slice=user.slice --uid=${toString desktop.uid} python3 /etc/netsec-dataplane.py autobind allowed")
         machine.succeed(f"sysctl -w net.ipv4.ip_local_reserved_ports={reserved}")
-        machine.succeed("systemd-run --wait --pipe --slice=user.slice --uid=1000 python3 /etc/netsec-dataplane.py autobind denied")
+        machine.succeed("systemd-run --wait --pipe --slice=user.slice --uid=${toString desktop.uid} python3 /etc/netsec-dataplane.py autobind denied")
         machine.succeed(f"sysctl -w 'net.ipv4.ip_local_port_range={port_range}'")
-        machine.succeed("systemd-run --wait --pipe --slice=user.slice --uid=1000 python3 /etc/netsec-dataplane.py autobind normal")
+        machine.succeed("systemd-run --wait --pipe --slice=user.slice --uid=${toString desktop.uid} python3 /etc/netsec-dataplane.py autobind normal")
         # An untrusted system service deliberately outside user.slice still
         # cannot answer managed proxy endpoints through the UID reply guard.
         machine.succeed("nft -s list chain inet lf_filter lf_local_proxy_guard >/tmp/proxy-guard.nft; nft flush chain inet lf_filter lf_local_proxy_guard")
         machine.succeed("systemd-run --unit=port-impostor --uid=1001 python3 /etc/netsec-dataplane.py impostor")
         machine.wait_for_file("/tmp/impostor-ready", timeout=10)
-        machine.succeed("setpriv --reuid=1000 --clear-groups python3 /etc/netsec-dataplane.py exchange 127.0.0.1 33332 tcp; test -s /tmp/impostor-received")
+        machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups python3 /etc/netsec-dataplane.py exchange 127.0.0.1 33332 tcp; test -s /tmp/impostor-received")
         machine.succeed("nft -f /tmp/proxy-guard.nft; rm /tmp/impostor-received")
         identity_before = drop_packets(drop_view(), "proxy-listener-identity")
         # A VM-only redirect exercises the transparent reply before reverse NAT.
@@ -372,7 +390,7 @@ pkgs.testers.runNixOSTest {
         for address in ("127.0.0.1", "::1"):
             for port in (33332, 7897, 7896, 18092):
                 for protocol in ("tcp", "udp"):
-                    machine.fail(f"setpriv --reuid=1000 --clear-groups python3 /etc/netsec-dataplane.py exchange {address} {port} {protocol}")
+                    machine.fail(f"setpriv --reuid=${toString desktop.uid} --clear-groups python3 /etc/netsec-dataplane.py exchange {address} {port} {protocol}")
         assert drop_packets(drop_view(), "proxy-listener-identity") > identity_before
         machine.succeed("proxy-inspect --drops >/tmp/drop-identity.json")
         machine.copy_from_vm("/tmp/drop-identity.json")
@@ -385,12 +403,12 @@ pkgs.testers.runNixOSTest {
         machine.succeed("jq -e '.mode == \"direct\"' /run/proxy-mode/state.json")
     with subtest("read-only preflight and controlled direct baseline"):
         machine.succeed("python3 /etc/netsec-control.py preflight-rejection")
-        machine.succeed("mv /home/lfour/.local/share/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml /tmp/preflight-profile.yaml")
+        machine.succeed("mv ${pkgs.lib.escapeShellArg "${desktop.guiData}/clash-verge.yaml"} /tmp/preflight-profile.yaml")
         machine.fail("proxy-control preflight")
-        machine.succeed("test $(jq -r .mode /run/proxy-mode/state.json) = direct; mv /tmp/preflight-profile.yaml /home/lfour/.local/share/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml")
+        machine.succeed("test $(jq -r .mode /run/proxy-mode/state.json) = direct; mv /tmp/preflight-profile.yaml ${pkgs.lib.escapeShellArg "${desktop.guiData}/clash-verge.yaml"}")
         machine.succeed("proxy-control preflight | jq -e .ready; systemd-run --unit=benchmark-origin ip netns exec outside ${pkgs.python3}/bin/python3 /etc/network-benchmark.py serve --bind 0.0.0.0")
         machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18094")
-        machine.succeed("setpriv --reuid=1000 --clear-groups python3 /etc/network-benchmark.py measure --url http://203.0.113.10:18094 --samples 10 >/tmp/baseline-direct.json")
+        machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups python3 /etc/network-benchmark.py measure --url http://203.0.113.10:18094 --samples 10 >/tmp/baseline-direct.json")
         machine.copy_from_vm("/tmp/baseline-direct.json")
     ''}
     ${pkgs.lib.optionalString dataplane ''
@@ -418,7 +436,7 @@ pkgs.testers.runNixOSTest {
             raise
         machine.succeed("systemctl stop proxy-mode.service; nft -f /etc/netsec-blocked.nft")
         machine.succeed("ip netns exec lf-clash-core python3 /etc/netsec-core-network.py localhost-probe")
-        machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 --max-time 2 -fsS http://127.0.0.1:18098/")
+        machine.fail("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 --max-time 2 -fsS http://127.0.0.1:18098/")
         machine.succeed("systemctl start proxy-mode.service")
         wait_proxy()
         machine.succeed("systemctl stop namespace-localhost.service")
@@ -479,7 +497,7 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds(f"test $(pgrep -u clash-core -f '/[.]verge-mihomo-wrapped') != {before_sleep}", timeout=35)
         wait_proxy()
     ''}
-    machine.succeed("setpriv --reuid=1000 --clear-groups proxy-status --json | jq -e '(.ready | type) == \"boolean\" and .mode == \"proxy\"'")
+    machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups proxy-status --json | jq -e '(.ready | type) == \"boolean\" and .mode == \"proxy\"'")
     ${pkgs.lib.optionalString (managedSources && !routing) ''
     with subtest("source refresh uses real filtered DNS while B returns fake-IP"):
         print(machine.succeed("python3 -u /etc/netsec-managed.py refresh", timeout=90))
@@ -523,7 +541,7 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
     ''}
     ${pkgs.lib.optionalString routing ''
-    with subtest("root routing transactions, exact outer transports and proxied real DNS"):
+    with subtest("${if guiControls then "GUI controls and root routing ownership" else "root routing transactions, exact outer transports and proxied real DNS"}"):
         try:
             print(machine.succeed("python3 -u /etc/netsec-routing.py check", timeout=600))
         except Exception:
@@ -534,7 +552,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("jq -e '.routing_requested == \"rules\" and .mode == \"direct\"' /run/proxy-mode/state.json")
     ''}
     ${pkgs.lib.optionalString (!hermesContainers && !managedSources && !assurance) ''
-    machine.succeed("setpriv --reuid=1000 --clear-groups proxy-status --no-color | grep -q 'Network status'")
+    machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups proxy-status --no-color | grep -q 'Network status'")
     ${pkgs.lib.optionalString (refresh || dataplane) ''
     with subtest("managed profile refresh and core recovery"):
         try:
@@ -559,8 +577,8 @@ pkgs.testers.runNixOSTest {
     ''}
     ${pkgs.lib.optionalString dataplane ''
     with subtest("controlled native and explicit proxy baselines"):
-        machine.succeed("setpriv --reuid=1000 --clear-groups python3 /etc/network-benchmark.py measure --url http://203.0.113.10:18094 --samples 10 >/tmp/baseline-tun.json")
-        machine.succeed("setpriv --reuid=1000 --clear-groups python3 /etc/network-benchmark.py measure --url http://203.0.113.10:18094 --proxy http://127.0.0.1:33332 --samples 10 >/tmp/baseline-http-proxy.json")
+        machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups python3 /etc/network-benchmark.py measure --url http://203.0.113.10:18094 --samples 10 >/tmp/baseline-tun.json")
+        machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups python3 /etc/network-benchmark.py measure --url http://203.0.113.10:18094 --proxy http://127.0.0.1:33332 --samples 10 >/tmp/baseline-http-proxy.json")
         machine.copy_from_vm("/tmp/baseline-tun.json")
         machine.copy_from_vm("/tmp/baseline-http-proxy.json")
         machine.succeed("python3 /etc/network-benchmark.py snapshot --tool ${../../../system/programs/clash/service/clash-verge-stage.py} >/tmp/baseline-snapshot.json")
@@ -586,9 +604,9 @@ pkgs.testers.runNixOSTest {
         for name in ("fallback.fixture.example", "fallback6.fixture.example"):
             for _ in range(5):
                 start = time.monotonic()
-                machine.succeed(f"setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 --max-time 8 -fsS http://{name}:18094/1 >/dev/null")
+                machine.succeed(f"setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 --max-time 8 -fsS http://{name}:18094/1 >/dev/null")
                 latencies.append(time.monotonic() - start)
-        machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 --max-time 8 -f http://fallback-mixed.fixture.example:18094/1")
+        machine.fail("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 --max-time 8 -f http://fallback-mixed.fixture.example:18094/1")
         assert max(latencies) < 8, latencies
         print("candidate fault latencies:", json.dumps(latencies))
         machine.succeed("ip netns exec outside nft delete table inet candidate_fault; ip -n outside addr del 203.0.113.11/32 dev peer0; systemctl stop benchmark-origin6 candidate-node; ip -n outside -6 addr del 2001:db8:ffff::10/128 dev peer0")
@@ -605,7 +623,7 @@ pkgs.testers.runNixOSTest {
                    ("native6", "2001:db8:ffff::10", "no"),
                    ("socks4", "203.0.113.10", "yes"), ("socks6", "2001:db8:ffff::10", "yes")]
         for label, address, socks in streams:
-            machine.succeed(f"systemd-run --unit=receive-{label} --uid=1000 python3 /etc/netsec-dataplane.py receive {label} {address} {socks}")
+            machine.succeed(f"systemd-run --unit=receive-{label} --uid=${toString desktop.uid} python3 /etc/netsec-dataplane.py receive {label} {address} {socks}")
             machine.wait_until_succeeds(f"test -f /tmp/receive-{label}.json && test $(jq -r .count /tmp/receive-{label}.json) -ge 5", timeout=20)
         def counts():
             return {label: json.loads(machine.succeed(f"cat /tmp/receive-{label}.json"))["count"] for label, _, _ in streams}
@@ -620,8 +638,8 @@ pkgs.testers.runNixOSTest {
         before = counts()
         machine.sleep(3)
         assert counts() == before, (before, counts())
-        machine.succeed("systemd-run --unit=local-ipc --uid=1000 python3 -m http.server 18093 --bind 127.0.0.1")
-        machine.wait_until_succeeds("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 2 http://127.0.0.1:18093/ >/dev/null", timeout=10)
+        machine.succeed("systemd-run --unit=local-ipc --uid=${toString desktop.uid} python3 -m http.server 18093 --bind 127.0.0.1")
+        machine.wait_until_succeeds("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy '*' -fsS --max-time 2 http://127.0.0.1:18093/ >/dev/null", timeout=10)
         machine.succeed("curl --noproxy \"\" -x http://127.0.0.1:7897 -fsS --max-time 3 http://node.fixture.example/ >/dev/null; systemctl stop local-ipc.service")
         # Reproduce the previous output-only boundary in this isolated VM by
         # removing just the new app-reply rules, leaving all C output cuts.
@@ -654,7 +672,7 @@ pkgs.testers.runNixOSTest {
     ${pkgs.lib.optionalString uniformProxy ''
     machine.fail("curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 3 http://application-direct.fixture.example:8080/")
     machine.succeed("curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 5 http://node.fixture.example:8080/ >/dev/null")
-    machine.succeed("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 5 http://[2001:db8:dead::1]:8080/ >/dev/null && python3 /etc/netsec-integration.py uniform-udp-direct && python3 /etc/netsec-integration.py uniform-udp")
+    machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy '*' -fsS --max-time 5 http://[2001:db8:dead::1]:8080/ >/dev/null && python3 /etc/netsec-integration.py uniform-udp-direct && python3 /etc/netsec-integration.py uniform-udp")
     ''}
     ${pkgs.lib.optionalString guests ''
     machine.succeed("python3 /etc/netsec-guests.py proxy")
@@ -664,7 +682,7 @@ pkgs.testers.runNixOSTest {
     with subtest("DNS client refusal has a bounded passive diagnostic"):
         dns_before = drop_view()
         machine.fail("python3 /etc/netsec-dns.py query 127.0.0.1 1053 --uid 1000")
-        machine.succeed("setpriv --reuid=1000 --clear-groups python3 /etc/netsec-guests.py dns-refusal-burst")
+        machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups python3 /etc/netsec-guests.py dns-refusal-burst")
         dns_after = drop_view()
         assert dns_after["policy"]["mode"] == "proxy", dns_after
         assert drop_packets(dns_after, "dns-client-policy") >= drop_packets(dns_before, "dns-client-policy") + 2048
@@ -677,7 +695,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("python3 /etc/netsec-target.py check")
     machine.succeed("systemctl stop clash-verge.service")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = blocked")
-    machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 2 http://127.0.0.1:18081/")
+    machine.fail("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 2 http://127.0.0.1:18081/")
     machine.succeed("systemctl start clash-verge.service")
     wait_proxy()
     ''}
@@ -697,8 +715,8 @@ pkgs.testers.runNixOSTest {
     ${pkgs.lib.optionalString restricted ''
     # Both ports have real peers. The permitted native private connection
     # stays direct; the other cannot escape via the running proxy/TUN.
-    machine.succeed("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:8080/ >/dev/null")
-    machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 2 http://100.67.0.1:80/")
+    machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:8080/ >/dev/null")
+    machine.fail("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy '*' -fsS --max-time 2 http://100.67.0.1:80/")
     machine.fail("curl --noproxy '*' -fsS --max-time 2 http://100.67.0.1:8080/")
     ''}
     ${pkgs.lib.optionalString (ech != null) ''
@@ -706,13 +724,13 @@ pkgs.testers.runNixOSTest {
         for transport in ("+notcp", "+tcp"):
             machine.succeed(f"dig {transport} +time=2 +tries=1 @127.0.0.1 -p {port} accepted.ech.fixture.example HTTPS | grep -q 'ech='")
     try:
-        machine.succeed("setpriv --reuid=lfour --regid=users --init-groups env HOME=/home/lfour XDG_RUNTIME_DIR=/run/user/1000 python3 /etc/netsec-ech.py")
+        machine.succeed("setpriv --reuid=${desktop.name} --regid=users --init-groups env HOME=${pkgs.lib.escapeShellArg desktop.home} XDG_RUNTIME_DIR=${desktopRuntime} python3 /etc/netsec-ech.py")
     except Exception:
         print(machine.execute("cat /run/netsec-ech/events.jsonl; tail -n 40 /run/netsec-ech/dns.log; tail -n 40 /tmp/ech-firefox-*.log"))
         raise
     machine.succeed("systemctl stop clash-verge.service")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = blocked")
-    machine.fail("setpriv --reuid=lfour --regid=users --init-groups ${ech.transparent}/bin/firefox --check")
+    machine.fail("setpriv --reuid=${desktop.name} --regid=users --init-groups ${ech.transparent}/bin/firefox --check")
     machine.succeed("systemctl start clash-verge.service")
     wait_proxy()
     ''}
@@ -748,9 +766,9 @@ pkgs.testers.runNixOSTest {
         def tun_loss_requests():
             fake = machine.succeed("dig +short @127.0.0.1 -p 1053 node.fixture.example A").strip()
             assert fake.startswith("198.18."), fake
-            requests = [f"setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 3 http://{address}:8080/"
+            requests = [f"setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy '*' -fsS --max-time 3 http://{address}:8080/"
                         for address in ("203.0.113.10", "[2001:db8:dead::1]", fake, "100.67.0.1")]
-            requests.append("setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 3 http://node.fixture.example:8080/")
+            requests.append("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy \"\" -x http://127.0.0.1:33332 -fsS --max-time 3 http://node.fixture.example:8080/")
             return requests
         requests = tun_loss_requests()
         # Every denied probe must first reach a live origin in healthy B.
@@ -794,19 +812,19 @@ pkgs.testers.runNixOSTest {
     blocked_before = drop_view()
     assert blocked_before["policy"]["mode"] == "blocked", blocked_before
     ''}
-    machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy \"\" -x http://127.0.0.1:7897 -fsS --max-time 2 http://a.ok.blocked.fixture.test:8080/")
+    machine.fail("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy \"\" -x http://127.0.0.1:7897 -fsS --max-time 2 http://a.ok.blocked.fixture.test:8080/")
     ${pkgs.lib.optionalString (dataplane || guests) ''
     with subtest("C diagnostics and denied inspection never change firewall decisions"):
         blocked_after = drop_view()
         assert blocked_after["policy"]["mode"] == "blocked", blocked_after
         assert drop_packets(blocked_after, "mode-c-output") > drop_packets(blocked_before, "mode-c-output")
         rules_before = json.loads(machine.succeed("nft -s -j list table inet lf_filter"))
-        code, output = machine.execute("setpriv --reuid=1000 --clear-groups proxy-inspect --drops")
+        code, output = machine.execute("setpriv --reuid=${toString desktop.uid} --clear-groups proxy-inspect --drops")
         denied = json.loads(output)
         assert code == 1 and not denied["available"] and denied["error"] == "permission-denied", denied
         assert denied["groups"] == [], denied
         assert json.loads(machine.succeed("nft -s -j list table inet lf_filter")) == rules_before
-        machine.fail("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 2 http://203.0.113.10:8080/")
+        machine.fail("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy '*' -fsS --max-time 2 http://203.0.113.10:8080/")
         machine.succeed("proxy-inspect --drops >/tmp/drop-blocked.json")
         machine.copy_from_vm("/tmp/drop-blocked.json")
     machine.succeed("${unmaskSupervisor}")
@@ -823,7 +841,7 @@ pkgs.testers.runNixOSTest {
     ''}
     ${pkgs.lib.optionalString restricted ''
     # Incremental rules_off must remove B's guard, not require a full reload.
-    machine.succeed("setpriv --reuid=1000 --clear-groups curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:80/ >/dev/null")
+    machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:80/ >/dev/null")
     machine.succeed("curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:8080/ >/dev/null")
     ''}
     machine.succeed("python3 /etc/netsec-control.py refuse")
@@ -842,7 +860,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed("test -e /run/netns/lf-clash-core; ip -d link show dev Mihomo | grep -q veth")
     ''}
     ${pkgs.lib.optionalString (ech != null) ''
-    machine.succeed("setpriv --reuid=lfour --regid=users --init-groups env HOME=/home/lfour XDG_RUNTIME_DIR=/run/user/1000 python3 /etc/netsec-ech.py portal")
+    machine.succeed("setpriv --reuid=${desktop.name} --regid=users --init-groups env HOME=${pkgs.lib.escapeShellArg desktop.home} XDG_RUNTIME_DIR=${desktopRuntime} python3 /etc/netsec-ech.py portal")
     machine.copy_from_vm("/tmp/ech-browser-results.json")
     machine.copy_from_vm("/run/netsec-ech/events.jsonl")
     machine.copy_from_vm("/run/netsec-ech/dns.log")

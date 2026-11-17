@@ -208,7 +208,7 @@ replace(root / "hub/route/configs.go", "general := executor.GetGeneral()",
         "general := executor.GetGeneral()\n\tgeneral.ManagedPolicy = config.ManagedPolicyID()")
 # Restrict the controller API to the GUI operations that do not change the
 # privileged core's configuration or binaries. Installed only for managed
-# builds; the middleware itself checks LF_MANAGED_PROXY_POLICY.
+# builds; controller writes remain gated independently of policy state.
 replace(root / "hub/route/server.go", "\tr := chi.NewRouter()\n\tcors.Apply(r)",
         "\tr := chi.NewRouter()\n\tlfPolicyUse(r)\n\tcors.Apply(r)")
 # Weak decoding renders a float as a string with 'E' notation, so a JSON

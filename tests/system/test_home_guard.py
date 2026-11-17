@@ -17,11 +17,19 @@ let
   custom = (base.extendModules {
     modules = [ ({ lib, ... }: { my.homeGuard.home = lib.mkForce "%s"; }) ];
   }).config;
+  moved = (base.extendModules {
+    modules = [ ({ lib, ... }: {
+      users.users.${base.config.my.homeGuard.user}.home = lib.mkForce "/srv/account-home";
+    }) ];
+  }).config;
 in {
+  accountHome = base.config.users.users.${base.config.my.homeGuard.user}.home;
   defaultHome = base.config.my.homeGuard.home;
   defaultPaths = base.config.my.homeGuard.paths;
   customHome = custom.my.homeGuard.home;
   customPaths = custom.my.homeGuard.paths;
+  movedHome = moved.my.homeGuard.home;
+  movedPaths = moved.my.homeGuard.paths;
 }
 """ % CUSTOM_HOME
 
@@ -61,17 +69,20 @@ def main():
     default_paths = data["defaultPaths"]
     custom_paths = data["customPaths"]
 
-    check(default_home == "/home/lfour", f"unexpected default home: {default_home!r}")
+    check(default_home == data["accountHome"], f"unexpected default home: {default_home!r}")
     check(custom_home == CUSTOM_HOME, f"custom home was not applied: {custom_home!r}")
     check(default_paths, "default path list is empty")
     check(custom_paths, "custom path list is empty")
     check(len(default_paths) == len(custom_paths), "path count changed with the home value")
+    check(data["movedHome"] == "/srv/account-home", "home guard ignored the account home")
+    check(all(path.startswith(data["movedHome"] + "/") for path in data["movedPaths"]),
+          "protected paths ignored the moved account home")
 
     for path in default_paths:
         check(path.startswith(default_home + "/"), f"default path ignores default home: {path}")
     for path in custom_paths:
         check(path.startswith(custom_home + "/"), f"default path ignores custom home: {path}")
-        check("/home/lfour" not in path, f"default path still uses the hardcoded home: {path}")
+        check(not path.startswith(default_home + "/"), f"default path still uses the hardcoded home: {path}")
 
     check(any(path.endswith("/.ssh/id_*") for path in custom_paths), "ssh key glob is missing")
     check(any(path.endswith("/.ssh/authorized_keys") for path in custom_paths), "authorized_keys is missing")

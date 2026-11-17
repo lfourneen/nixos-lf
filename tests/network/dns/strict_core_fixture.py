@@ -30,10 +30,14 @@ def main(core):
                 try:
                     connection.request(method, path, None if value is None else json.dumps(value),
                                        {"Content-Type": "application/json"})
-                    response = connection.getresponse(); response.read()
-                    assert response.status < 300, response.status
+                    response = connection.getresponse()
+                    return response.status, response.read()
                 finally:
                     connection.close()
+            def config():
+                status, body = api("GET", "/configs")
+                assert status == 200, (status, body)
+                return json.loads(body)
             def request():
                 return subprocess.run(["curl", "--noproxy", "", "-fsS", "--max-time", "3", "-x",
                                        "http://127.0.0.1:17897", "-w", "\n%{http_code}",
@@ -44,23 +48,32 @@ def main(core):
                 while True:
                     assert process.poll() is None, "strict core exited"
                     try:
-                        api("GET", "/configs"); break
+                        before = config()
+                        break
                     except OSError:
                         assert time.monotonic() < deadline, "strict core startup timeout"
                         time.sleep(0.05)
-                assert request().returncode != 0, "nested DIRECT leaked application data"
+                assert before["mode"] == "rule", before["mode"]
+                tun_before = before["tun"]
+                assert request().returncode != 0, "DIRECT leaked application data"
                 api("PUT", "/proxies/Choice", {"name": "Upstream"})
                 result = request()
                 assert result.returncode == 0 and result.stdout.endswith("\n200"), (
                     result.returncode, result.stdout[-100:], result.stderr)
                 api("PUT", "/proxies/Choice", {"name": "DIRECT"})
                 assert request().returncode != 0, "selector switch restored DIRECT"
-                api("PATCH", "/configs", {"mode": "global"})
-                api("PUT", "/proxies/GLOBAL", {"name": "DIRECT"})
-                assert request().returncode != 0, "GLOBAL DIRECT leaked application data"
+                for mode in ("rule", "global", "direct"):
+                    status, _ = api("PATCH", "/configs", {"mode": mode})
+                    assert status == 204, (mode, status)
+                for value in (True, False):
+                    status, _ = api("PATCH", "/configs", {"tun": {"enable": value}})
+                    assert status == 204, (value, status)
+                after = config()
+                assert after["mode"] == "rule", after["mode"]
+                assert after["tun"] == tun_before, after["tun"]
                 log.flush(); log.seek(0)
                 assert "refuses application DIRECT egress" in log.read()
-                print("strict real core: nested/changed/GLOBAL DIRECT refused; proxy leaf succeeded")
+                print("strict real core: DIRECT refused; proxy leaf succeeded; GUI controls discarded")
             except BaseException:
                 log.flush(); log.seek(0); print(log.read(), file=sys.stderr)
                 raise

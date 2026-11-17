@@ -2,6 +2,20 @@
 
 let
       pkgs = nixpkgs.legacyPackages.${system};
+      desktopUser = self.nixosConfigurations.lfour.config.my.machine.desktopUser;
+      guiFixtureConfig = (self.nixosConfigurations.lfour.extendModules {
+        modules = [ ({ lib, ... }: {
+          my.machine.desktopUser = lib.mkForce "gui-fixture";
+          users.users.gui-fixture = {
+            isNormalUser = true;
+            uid = 1107;
+            home = "/srv/gui-fixture";
+          };
+          home-manager.users = lib.mkForce {
+            gui-fixture = { imports = [ ../home ]; home.stateVersion = "26.05"; };
+          };
+        }) ];
+      }).config;
 
       # One source tree for tests that resolve paths relative to their own
       # location. Secrets and the blocklist snapshot are already build inputs
@@ -16,7 +30,7 @@ let
 
       compatibilityBrowser = (self.nixosConfigurations.lfour.extendModules {
         modules = [ ({ lib, ... }: { my.proxy.strictBrowser = lib.mkForce false; }) ];
-      }).config.home-manager.users.lfour.programs.firefox.finalPackage;
+      }).config.home-manager.users.${desktopUser}.programs.firefox.finalPackage;
       strictClashPackage = (self.nixosConfigurations.lfour.extendModules {
         modules = [ ({ lib, ... }: {
           my.proxy.subscriptionTrust = lib.mkForce "source";
@@ -165,7 +179,7 @@ let
           my.proxy.runtimeRouting = lib.mkForce false;
           my.proxy.localDnssec = lib.mkForce false;
           my.proxy.tunMode = lib.mkForce false;
-          home-manager.users.lfour.my.firefox.networkPath = lib.mkForce "http-proxy";
+          home-manager.users.${desktopUser}.my.firefox.networkPath = lib.mkForce "http-proxy";
         }) ]; }).config;
 
         variants = [ self.nixosConfigurations.lfour.config strictDnsConfig dual v6 httpOnly ];
@@ -253,6 +267,7 @@ let
       browser-sandbox-vm = import ./home/firefox/firefox-sandbox-vm.nix {
         inherit pkgs;
         firefox = compatibilityBrowser;
+        desktopIdentity = self.nixosConfigurations.lfour.config.programs.clash-verge.package.desktopIdentity;
       };
 
       browser-ech-vm = import ./network/proxy/control-vm.nix {
@@ -261,9 +276,9 @@ let
         ech = {
           http-proxy = compatibilityBrowser;
           transparent = (self.nixosConfigurations.lfour.extendModules {
-            modules = [ { home-manager.users.lfour.my.firefox.networkPath = "transparent";
-                          home-manager.users.lfour.my.firefox.dailyRequireProxy = false; } ];
-          }).config.home-manager.users.lfour.programs.firefox.finalPackage;
+            modules = [ { home-manager.users.${desktopUser}.my.firefox.networkPath = "transparent";
+                          home-manager.users.${desktopUser}.my.firefox.dailyRequireProxy = false; } ];
+          }).config.home-manager.users.${desktopUser}.programs.firefox.finalPackage;
         };
       };
 
@@ -273,15 +288,15 @@ let
         uniformProxy = true;
         ech = {
           http-proxy = (self.nixosConfigurations.lfour.extendModules {
-            modules = [ { my.proxy.proxyOnly = true; home-manager.users.lfour.my.firefox.dailyRequireProxy = false; } ];
-          }).config.home-manager.users.lfour.programs.firefox.finalPackage;
+            modules = [ { my.proxy.proxyOnly = true; home-manager.users.${desktopUser}.my.firefox.dailyRequireProxy = false; } ];
+          }).config.home-manager.users.${desktopUser}.programs.firefox.finalPackage;
           transparent = (self.nixosConfigurations.lfour.extendModules {
             modules = [ {
               my.proxy.proxyOnly = true;
-              home-manager.users.lfour.my.firefox.networkPath = "transparent";
-              home-manager.users.lfour.my.firefox.dailyRequireProxy = false;
+              home-manager.users.${desktopUser}.my.firefox.networkPath = "transparent";
+              home-manager.users.${desktopUser}.my.firefox.dailyRequireProxy = false;
             } ];
-          }).config.home-manager.users.lfour.programs.firefox.finalPackage;
+          }).config.home-manager.users.${desktopUser}.programs.firefox.finalPackage;
         };
       };
 
@@ -375,6 +390,16 @@ let
         routing = true;
       };
 
+      proxy-gui-vm = import ./network/proxy/control-vm.nix {
+        inherit pkgs;
+        clashPackage = guiFixtureConfig.programs.clash-verge.package;
+        managedSources = true;
+        assurance = true;
+        routing = true;
+        guiControls = true;
+        guiPkgs = self.inputs.nixpkgs-unstable.legacyPackages.${system};
+      };
+
       proxy-dns-strict-vm = import ./network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = strictClashPackage;
@@ -394,11 +419,13 @@ let
       };
 
       proxy-control = pkgs.runCommand "proxy-control-regressions" {
-        nativeBuildInputs = [ pkgs.python3 ];
+        nativeBuildInputs = [ pkgs.python3 pkgs.yq-go ];
       } ''
         export PYTHONDONTWRITEBYTECODE=1
+        export LF_TEST_YQ=${pkgs.yq-go}/bin/yq
         python3 ${./network/proxy/test_control.py} ${../system/programs/clash/service/clash-verge-stage.py} ${../system/config/network/proxy/health.py}
         python3 ${./network/proxy/test_authorization.py} ${../system/config/network/proxy/authorization.py}
+        python3 ${./network/proxy/test_desktop.py} ${./network/proxy/desktop.py}
         touch "$out"
       '';
 

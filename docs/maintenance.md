@@ -26,12 +26,12 @@ A build failure after an upgrade is a request to compare upstream behavior, not 
 | Target | Repository entry | Purpose / upgrade focus |
 |---|---|---|
 | Mihomo parser | [patch_mihomo.py](../system/programs/clash/mihomo/patches/patch_mihomo.py), [managed_profile.go](../system/programs/clash/mihomo/config/managed_profile.go) | Final managed-policy enforcement, policy digest, known legacy normalization, no unconditional DIRECT catch-all |
-| Mihomo controller | [managed_route.go](../system/programs/clash/mihomo/controller/managed_route.go), [policy_middleware.go](../system/programs/clash/mihomo/controller/policy_middleware.go) | Same-schema PATCH decoding and runtime write allowlist |
+| Mihomo controller | [managed_route.go](../system/programs/clash/mihomo/controller/managed_route.go), [policy_middleware.go](../system/programs/clash/mihomo/controller/policy_middleware.go) | Silent mode/TUN/reload discard and a narrow runtime write allowlist |
 | Mihomo egress / DNS / logs | [target_guard.go](../system/programs/clash/mihomo/guard/target_guard.go), `patch_mihomo.py` | Checked/pinned targets, local/remote leaf authorization, optional direct-dial refusal, rule-DNS metadata, actual global-mode route chain and snapshot-only geodata |
 | Vendored sing-tun | [patch_sing_tun.py](../system/programs/clash/mihomo/patches/patch_sing_tun.py) | TUN-bound OUTPUT TCP DNAT and guest TPROXY socket preservation |
 | Vendored Gost HTTP handler | [patch_gost.py](../system/programs/gost/patches/patch_gost.py), [gost_http.go](../system/programs/gost/src/gost_http.go) | Bare numeric IPv6 CONNECT compatibility with upstream Go HTTP parsing |
-| Clash Verge helper | [patch_clash_service.py](../system/programs/clash/service/patch_clash_service.py) | Pin root execution, fixed managed logs and constrained socket/startup file operations |
-| Clash Verge package/launch | [clash-verge.nix](../system/programs/clash/clash-verge.nix), [core launcher](../system/programs/clash/service/clash-verge-core-launcher.sh), [stage tool](../system/programs/clash/service/clash-verge-stage.py), [GUI launcher](../system/programs/clash/gui/clash-verge-gui.py), [GUI defaults](../system/programs/clash/gui/clash-verge-defaults.sh), [GUI patch](../system/programs/clash/gui/patch_clash_gui.py) | Authorized snapshots, privilege drop, GUI singleton handling and HTTPS delay-test default. GUI TUN ownership and terminal reload refusal |
+| Clash Verge helper | [patch_clash_service.py](../system/programs/clash/service/patch_clash_service.py) | Kernel peer identity for lifecycle ownership, pinned root execution, fixed logs and constrained socket/startup file operations |
+| Clash Verge package/launch | [clash-verge.nix](../system/programs/clash/clash-verge.nix), [core launcher](../system/programs/clash/service/clash-verge-core-launcher.sh), [stage tool](../system/programs/clash/service/clash-verge-stage.py), [GUI launcher](../system/programs/clash/gui/clash-verge-gui.py), [GUI defaults](../system/programs/clash/gui/clash-verge-defaults.sh), [control shim](../system/programs/clash/gui/control_shim.sh) | Authorized snapshots, privilege drop, GUI singleton handling and HTTPS delay-test default. OS proxy write interception and control-only snapshot reuse |
 | dnsmasq | [default.nix](../system/config/network/network.nix), inline `src/forward.c` replacement | Return terminal strict-order UDP SERVFAIL/REFUSED, including DNSSEC EDE |
 | Firefox package | [firefox.nix](../home/programs/firefox/firefox.nix), [guard.py](../home/programs/firefox/guard.py), [sandbox.py](../home/programs/firefox/sandbox.py), [scope.c](../home/programs/firefox/scope.c) | Immutable policy/AutoConfig/fonts, preflight, outer namespaces, filtered bus, portal identity and Landlock/seccomp. No Gecko source patch |
 | Unbound / Chrony / networking | [default.nix](../system/config/network/network.nix), [time.nix](../system/config/network/time.nix), [network modules](../system/config/network) | Declarative policy and repository-owned coordinators. No local Unbound/Chrony source patch |
@@ -120,12 +120,13 @@ The actual service must use `my.proxy.gostPackage`, not an unpatched package fro
 
 ## Clash Verge helper and launchers
 
-The GUI `.unwrapped` derivation carries the managed TUN and configuration-activation patch.
-Keep its inherited Nixpkgs patches, frontend type check and Rust build.
+The GUI `.unwrapped` derivation is unchanged and can use the upstream binary cache.
+Local changes rebuild the core, small Rust helper and launch wrappers without rebuilding the GUI.
 The separate Rust helper, installed wrapper paths and runtime scripts retain their own integration.
 Check Nixpkgs's helper derivation and inherited patches too: replacing `postPatch` or copying the wrong helper would discard integration behavior.
 
-The helper patch covers `src/core/manager.rs`, `server.rs`, `logger.rs` and `reconcile.rs`.
+The helper patch covers `src/core/manager.rs`, `server.rs`, `logger.rs`, `reconcile.rs` and the vendored Kode Bridge HTTP server.
+Keep kernel Unix peer credentials attached to each request. Non-root stop and running-core start requests are silent no-ops; controlled-source starts require root. Missing peer identity or unavailable lifecycle status must not authorize a GUI restart.
 On upgrade, enumerate all executable launch, log-writer, socket chmod/unlink and saved-process reconciliation paths.
 Managed execution must resolve to `LF_CLASH_CORE_PATH` with root-owned files/ancestors.
 Root-owned sticky store ancestors are allowed.
@@ -142,10 +143,10 @@ The GUI retains its upstream IPC client and short request timeout.
 The helper serializes starts and reuses completed results for identical requests for 30 seconds.
 The retry signature includes the fixed GUI file's identity and change timestamps.
 A success also requires the same running PID and reachable fixed socket.
-Compatibility imports launch again when input changes. Explicit authorization or a stopped core also requires a new launch.
-Controlled-source starts additionally preserve a running core across changed GUI display copies.
+Authorized root compatibility imports launch again when input changes. Explicit authorization or a stopped core also requires a new launch.
+A GUI caller may only perform the initial authorized compatibility start of a known stopped core.
 Root source activation explicitly stops the core before starting its replacement.
-The stop IPC joins the watchdog and persists stopped desired-state, while the helper listener stays available.
+An authorized root stop joins the watchdog and persists stopped desired-state, while the helper listener stays available.
 A configuration refusal must not trigger a helper restart.
 
 Keep [runtime.nix](../system/programs/clash/service/runtime.nix), [identity.nix](../system/programs/clash/service/identity.nix), the launcher and stage tool consistent.
@@ -196,8 +197,10 @@ The package replaces public `verge-mihomo` with the authorized launcher.
 Inspect wrapper layout on GUI/package updates.
 GUI process identity must remain compatible with `clash-on/off`, and obsolete same-user singletons must not retain an old package's core path.
 HTTPS delay defaults are set through writable preferences.
-The GUI patch keeps the declared TUN value during initialization, helper outages and exit, makes its switch and tray entry read-only, and prevents reload failures from triggering a core restart.
-Check frontend, backend preference writes and exit cleanup together when updating the GUI.
+The launch wrapper intercepts System Proxy writes through gsettings, dconf and KDE helpers, including absolute paths injected by Nixpkgs.
+Without mount namespaces, memory GSettings and KDE 5 helper names provide the fallback.
+The controller silently discards mode/TUN patches and config reloads. The parser derives TUN from defaults plus root policy.
+On GUI upgrades, run `proxy-gui` and `proxy-gui-vm` to check real IPC, page controls, PAC/guard writes, startup/exit cleanup and core continuity against both routing submodes.
 
 ## DNS and browser integration
 
@@ -385,7 +388,8 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 | `network-identity-config` | Identity migration boundaries, actual nmcli parsing/hostname restoration, wired variants, service scope and persistence. Target validation also runs in normal system builds |
 | `network-identity-vm` | Real wired/Wi-Fi DHCPv6 coexistence, fresh dual-stack identities, UUID/epoch/random rotation, stable/fixed/permanent behavior, profile precedence, restore and retained host keys |
 | `proxy-regressions` | Health/state/rules/DNS leases, bounded client DNS retries, budget and supervisor regressions |
-| `proxy-profile`, `proxy-gui` | Generated profile variants, policy/template agreement, GUI defaults and process wrapper |
+| `proxy-profile`, `proxy-gui` | Generated profile variants, policy/template agreement, GUI defaults, process wrapper and desktop command interception |
+| `proxy-gui-vm` | Unchanged production GUI under WebKit automation with a renamed account and custom home: mode/TUN/System Proxy/PAC/guard no-ops, preserved OS state and core PID, no control errors, GUI exit and root routing transactions |
 | `proxy-routing` | Boot-scoped immutable selection, full proof and epoch binding, failed preparation, sanitized status and real-DNS deadline/fallback refusal |
 | `proxy-routing-vm` | Registered sources and production namespace: bidirectional rules/proxy-only switching, original rules restored, physical-peer node-only evidence, real DNS/source refresh, old replies, guest refusals, idempotence, concurrent selection, off/on, reboot and kernel expiry |
 | `proxy-rules`, `proxy-egress-rules` | Complete compatibility/restricted mode rules parsed by the build-time LKL nft environment |
