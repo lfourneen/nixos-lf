@@ -393,6 +393,7 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 | `proxy-routing` | Boot-scoped immutable selection, full proof and epoch binding, failed preparation, sanitized status and real-DNS deadline/fallback refusal |
 | `proxy-routing-vm` | Registered sources and production namespace: bidirectional rules/proxy-only switching, original rules restored, physical-peer node-only evidence, real DNS/source refresh, old replies, guest refusals, idempotence, concurrent selection, off/on, reboot and kernel expiry |
 | `proxy-single-egress-vm` | Two controlled exits: rules selector separation, fixed-leaf dual-stack TCP/UDP and DNS observations, actual Firefox and strict inlet, unsupported/lost UDP, old flows, concurrent refresh, uplink/node failure, plus routing and lease regressions |
+| `proxy-ip-tunnel-vm` | Dual-stack WireGuard echo and fixed TCP/UDP exit, private proxy inlets in A/B/C, layered latency and failure observations, source acceptance, lease revocation and peer rotation |
 | `proxy-rules`, `proxy-egress-rules` | Complete compatibility/restricted mode rules parsed by the build-time LKL nft environment |
 | `proxy-firewall-vm` | A/C ownership, external-table preservation, rejected-load rollback, migration locks, idempotence and migration-target name reuse |
 | `proxy-dns-strict-rules` | Complete strict DNS firewall rules parsed in LKL |

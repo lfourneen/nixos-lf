@@ -3,7 +3,7 @@
 English | [简体中文](CN/network_CN.md) | [Documentation](README.md)
 
 The host uses strict encrypted DNS and registered subscription sources.
-Daily Firefox follows the A/B/C policy through Gost.
+Daily Firefox uses system DNS and the same transparent A/B/C policy as other desktop applications.
 `firefox-identity` uses a separate network namespace and a dedicated proxy inlet available only in B.
 Portal login in A uses a temporary browser.
 See [source registration](operations.md#source-registration) for setup.
@@ -12,30 +12,30 @@ See [source registration](operations.md#source-registration) for setup.
 
 The host uses nftables to select direct access, a managed proxy path or blocking.
 
-Three application paths converge on Mihomo when proxy mode is healthy:
+Applications use native TCP and UDP sockets. In healthy B, the TUN path and the TCP fallback converge on Mihomo:
 
 ```text
-Proxy-aware applications    Public TCP without proxy settings    TUN / fake-IP
-          |                              |                            |
-          v                              v                            v
- gost HTTP :33332              nft REDIRECT -> gost :33333       TUN "Mihomo"
-          |                              |                            |
-          +----------------> Mihomo mixed :7897 <-------------------+
-                                      |
-                              subscription routing
-                               /             \
-                            DIRECT       proxy group / node
-                               \             /
-                                    uplink
+Native TCP and UDP                    TCP fallback
+        |                                  |
+   TUN "Mihomo"                 nft REDIRECT -> Gost :33333
+        |                                  |
+        +------> Mihomo <---------- mixed :7897
+                    |
+            rules or fixed exit
 ```
 
 Gost listens in the host namespace.
 Host loopback access to core ports is translated onto a private veth.
 The core listeners and TUN live in `lf-clash-core`.
-Uppercase and lowercase environment variables, GSettings and Flatpak overrides point proxy-aware applications at `127.0.0.1:33332`.
-Gost forwards both inlets to `127.0.0.1:7897` in B, passes traffic directly in A and closes its listeners in C or unknown state.
-Explicit client connections to the transparent port `33333` are rejected before NAT.
-Only redirected flows should enter it.
+The host enables `my.proxy.transparentApplications`. Niri, Nushell, GSettings, Flatpak, Zed, the Nix daemon and Hermes use the native path without a managed application proxy setting.
+Log out and back in after applying the generation to replace inherited session variables.
+In A native sockets use direct access. C blocks ordinary external traffic.
+Installations using the compatibility default, `my.proxy.transparentApplications = false`, can still direct clients to Gost HTTP on `127.0.0.1:33332`.
+
+With transparent applications enabled, the firewall rejects ordinary TCP and UDP access to the Gost and Mihomo inlets in A, B and C.
+It checks local destinations before NAT and permits managed relay connections to the mixed and strict core inlets.
+The core controller uses a private Unix socket. Clash Verge reaches it through its managed Unix forwarder.
+The identity browser uses its own [isolated relay](browser.md#network-policy-and-identities).
 
 ### Reserved ports and service identity
 

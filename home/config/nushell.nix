@@ -191,20 +191,15 @@ in
       nix-collect-garbage --delete-older-than $age
     }
 
-    # Set proxy to the system-wide gost-relay port
+    ${lib.optionalString (!osConfig.my.proxy.transparentApplications) ''
     def --env proxy-on [] {
       $env.http_proxy = "${gostHttp}"
       $env.https_proxy = "${gostHttp}"
     }
+    ''}
 
-    # Clear the proxy environment variables
     def --env proxy-off [] {
-      hide-env http_proxy
-      hide-env https_proxy
-      # all_proxy comes from /etc/set-environment too; clear it as well so
-      # proxy-off is symmetric.
-      hide-env all_proxy
-      hide-env --ignore-errors HTTP_PROXY HTTPS_PROXY ALL_PROXY
+      hide-env --ignore-errors ${lib.concatStringsSep " " proxy.unsetNames}
       print $"(ansi yellow)Shell proxy variables cleared; host A/B/C mode is unchanged.(ansi reset)"
     }
 
@@ -343,8 +338,7 @@ in
       print $"(ansi green_bold)USBGuard enabled ✓(ansi reset)"
     }
 
-    # Autostart proxy
-    proxy-on
+    ${lib.optionalString (!osConfig.my.proxy.transparentApplications) "proxy-on"}
   '';
 }
 

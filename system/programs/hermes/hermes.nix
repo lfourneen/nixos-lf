@@ -56,6 +56,7 @@ let
   proxy = import ../../config/network/proxy/env.nix { inherit lib; };
   gostHttp = proxy.gostHttp config.my.machine.ports.gostHttp;
   gostHttpSlash = proxy.gostHttpSlash config.my.machine.ports.gostHttp;
+  explicitProxy = !config.my.proxy.transparentApplications;
   noProxy = proxy.noProxy {
     privateV4 = config.my.machine.privateV4;
     extra = [ "192.168.1.1" "*.local" ];
@@ -64,7 +65,7 @@ let
   # Proxy env for MCP servers that reach the network. Hermes only passes the
   # env keys listed per-server (plus safe defaults) to the MCP subprocess, so
   # every network-facing server has to opt the proxy in explicitly.
-  mcpProxyEnv = {
+  mcpProxyEnv = lib.optionalAttrs explicitProxy {
     HTTP_PROXY = gostHttp;
     HTTPS_PROXY = gostHttp;
     # Lowercase twins: some clients read only these.
@@ -320,9 +321,7 @@ in
         #   args = [ "--repository" "${stateDir}/workspace" ];
         # };
 
-        # Web search, no API key. open-websearch intentionally ignores the
-        # HTTP_PROXY env vars and uses USE_PROXY/PROXY_URL instead; SEARCH_MODE
-        # is pinned to "request" so it never tries to download Playwright.
+        # Request mode avoids downloading a Playwright browser.
         open-websearch = {
           command = "${lib.getExe pkgs.unstable.open-websearch}";
           args = [ ];
@@ -330,22 +329,23 @@ in
             MODE = "stdio";
             DEFAULT_SEARCH_ENGINE = "duckduckgo";
             SEARCH_MODE = "request";
+          } // lib.optionalAttrs explicitProxy {
             USE_PROXY = "true";
             PROXY_URL = gostHttp;
           };
         };
 
-        # agent-browser (vercel-labs) as an MCP server, driving the Nix
-        # Chromium through gost. --no-sandbox is required because the service
+        # --no-sandbox is required because the service
         # sandbox blocks Chrome's setuid/user-namespace sandbox.
         agent-browser = {
           command = "${lib.getExe pkgs.unstable.agent-browser}";
           args = [ "mcp" ];
           env = {
             AGENT_BROWSER_EXECUTABLE_PATH = "${lib.getExe pkgs.chromium}";
+            AGENT_BROWSER_ARGS = "--no-sandbox";
+          } // lib.optionalAttrs explicitProxy {
             AGENT_BROWSER_PROXY = gostHttp;
             AGENT_BROWSER_PROXY_BYPASS = "localhost,127.0.0.1,::1";
-            AGENT_BROWSER_ARGS = "--no-sandbox";
           };
         };
 
@@ -354,6 +354,7 @@ in
           args = [
             "--executable-path"
             "${pkgs.playwright-driver.browsers}/chromium-${pkgs.playwright-driver.passthru.browsersJSON.chromium.revision}/chrome-linux64/chrome"
+          ] ++ lib.optionals explicitProxy [
             "--proxy-server"
             "${gostHttp}"
           ];
@@ -562,9 +563,7 @@ in
     after = lib.mkAfter [ "sops-install-secrets.service" ];
     wants = lib.mkAfter [ "sops-install-secrets.service" ];
 
-    # Route the agent's model/API calls through gost-relay so it keeps working
-    # under `proxyKillSwitch` (which blocks non-root direct egress).
-    environment = {
+    environment = lib.optionalAttrs explicitProxy {
       HTTP_PROXY = gostHttpSlash;
       HTTPS_PROXY = gostHttpSlash;
 

@@ -58,6 +58,10 @@ let
   # HTTP-proxy model. Toggles the per-app guards below. Single source of
   # truth (my.proxy.tunMode) -- home/config/clash/cvr-merge.nix reads it via osConfig.
   tunMode = config.my.proxy.tunMode;
+  transparentApplications = config.my.proxy.transparentApplications;
+  privateProxyPorts = join (map toString [
+    port.gostHttp port.gostRedirect port.mihomoMixed port.mihomoStrict port.mihomoTproxy
+  ]);
   # TUN device name; home/config/clash/cvr-merge.nix pins the same value via osConfig so the
   # firewall rules and the clash Merge template can't drift apart.
   tunDev = config.my.proxy.tunDev;
@@ -479,7 +483,7 @@ in
       '';
     };
 
-    proxy = {
+    proxy = lib.mkIf (!transparentApplications) {
       default = "http://127.0.0.1:${toString port.gostHttp}/";
       noProxy = "127.0.0.1,localhost,::1,${join m.privateV4},*.local";
     };
@@ -508,7 +512,7 @@ in
   systemd.slices.hermes.sliceConfig.SocketBindDeny = reservedListenerPorts;
 
   # Uppercase proxy vars for tools that ignore the lowercase *_proxy ones
-  environment.sessionVariables = {
+  environment.sessionVariables = lib.mkIf (!transparentApplications) {
     HTTP_PROXY = "http://127.0.0.1:${toString port.gostHttp}/";
     HTTPS_PROXY = "http://127.0.0.1:${toString port.gostHttp}/";
     ALL_PROXY = "http://127.0.0.1:${toString port.gostHttp}/";
@@ -817,6 +821,18 @@ in
           oifname "lo" meta l4proto { tcp, udp } th sport { ${toString port.gostHttp}, ${toString port.gostRedirect} } meta skuid != { 0, ${toString m.uids.gost} } counter drop
           oifname "lo" meta l4proto { tcp, udp } th sport { ${toString port.mihomoMixed}, ${toString port.mihomoStrict}, ${toString port.mihomoTproxy} } meta skuid != { 0, ${toString m.uids.clashCore} } counter drop
         }
+        ${lib.optionalString transparentApplications ''
+        chain lf_proxy_inlet_guard {
+          type filter hook output priority -199; policy accept;
+          ct direction reply return
+          fib daddr type local tcp dport { ${toString port.mihomoMixed}, ${toString port.mihomoStrict} } meta skuid ${toString m.uids.gost} return
+          fib daddr type local meta l4proto { tcp, udp } th dport { ${privateProxyPorts} } meta skuid != 0 counter drop
+        }
+        chain lf_proxy_inlet_ingress {
+          type filter hook prerouting priority -199; policy accept;
+          iifname != "lo" ct direction original fib daddr type local meta l4proto { tcp, udp } th dport { ${privateProxyPorts} } counter drop
+        }
+        ''}
         chain lf_app_track {
           # After conntrack and guest identity assignment, before any DNAT.
           type filter hook output priority -198; policy accept;

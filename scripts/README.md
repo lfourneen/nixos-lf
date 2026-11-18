@@ -19,7 +19,7 @@ from the checkout.
 | `sync-to-git.sh` | Copy `/etc/nixos` into a private Git checkout without overwriting it |
 | `refresh-dns-blocklist.py` | Fetch, validate and publish the DNS blocklist snapshot and manifest |
 | `verify-network.py` | Run component checks and record exact inputs and outputs |
-| `network-benchmark.py` | Run a controlled HTTP latency and throughput baseline |
+| `network-benchmark.py` | Measure controlled HTTP throughput and network latency by layer |
 | `check-maintenance.py` | Validate the maintenance ledger against files, `flake.lock` and network sources |
 | `libvirt-qemu-migrate.sh` | Give the unprivileged QEMU user ownership of VM images and state |
 | `system-age-key.py` | Create or adopt the root-only Age identity for system secrets |
@@ -274,19 +274,27 @@ of every check. By default the run fails when an untracked build input exists;
 
 ## network-benchmark.py
 
-Runs a controlled HTTP baseline without changing network policy.
+Measures controlled network workloads using the active policy.
 
 ```sh
 ./scripts/network-benchmark.py serve --bind 127.0.0.1 --port 18094
 ./scripts/network-benchmark.py measure --url http://127.0.0.1:18094 --samples 20
-./scripts/network-benchmark.py measure --url http://example.test --proxy http://127.0.0.1:33332
+./scripts/network-benchmark.py layers --name origin.example.test --address 192.0.2.10 --samples 20
 ./scripts/network-benchmark.py snapshot --tool system/programs/clash/service/clash-verge-stage.py
 ```
 
 `serve` starts a loopback HTTP fixture. `measure` reports P50 and P95
 time-to-first-byte and total time, connections per second, bulk throughput and
-client CPU and RSS for a direct or explicit-proxy path. `snapshot` measures how
-long the full and fast verification paths take on a synthetic 32 MiB snapshot. `blocklist` measures decompression and Python
+client CPU and RSS for a native or explicit-proxy path.
+
+`layers` requires `dig`, `ping` and a controlled HTTPS origin. Replace the example name and address with the origin's DNS name and IPv4 or IPv6 address. Use `--ca-file` for a private CA.
+It queries DNS for the matching address family and records the response code, address records and DNS TTL.
+It independently uses the supplied address for ICMP echo and HTTPS, with the name as the TLS and HTTP identity.
+Add `--proxy` when the caller is authorized to use a controlled HTTP CONNECT listener.
+The JSON includes each observation and P50, P95 and maximum by phase and outcome. TCP times the client socket handshake, which may terminate in the TUN or relay.
+HTTPS success requires verified TLS and an HTTP 200 response with a body byte. `--timeout` bounds the full HTTPS sample and is also the DNS query and echo deadline.
+
+`snapshot` measures the full and fast verification paths on a synthetic 32 MiB snapshot. `blocklist` measures decompression and Python
 set construction for the committed domain snapshot.
 
 ## check-maintenance.py

@@ -1,4 +1,4 @@
-{ lib, osConfig ? { }, ... }:
+{ config, lib, osConfig ? { }, ... }:
 
 {
   imports = [ (lib.mkRenamedOptionModule [ "my" "firefox" "requireProxy" ] [ "my" "firefox" "dailyRequireProxy" ]) ];
@@ -22,7 +22,8 @@
 
   options.my.firefox.networkPath = lib.mkOption {
     type = lib.types.enum [ "http-proxy" "transparent" ];
-    default = "http-proxy";
+    default = if (osConfig.my.proxy.transparentApplications or false) && !config.my.firefox.dailyRequireProxy
+      then "transparent" else "http-proxy";
     description = ''
       HTTP proxy preserves the Gost inlet and delegates target resolution.
       Transparent uses system DNS and the host's managed TUN/firewall path,

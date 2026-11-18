@@ -7,7 +7,7 @@ let
 
 in
 {
-  systemd.services.nix-daemon = {
+  systemd.services.nix-daemon = lib.mkIf (!config.my.proxy.transparentApplications) {
     description = "Nix Daemon (downloads via gost-relay proxy)";
     # Socket-activated: only orders boot-time startup; wants, not requires.
     wants = [ "gost-relay.service" ];

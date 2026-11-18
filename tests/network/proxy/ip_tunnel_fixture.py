@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import socket
 import sys
 
 
@@ -21,6 +22,7 @@ PEER = ('ip', 'netns', 'exec', 'outside')
 TARGET = ('ip', 'netns', 'exec', 'ip-target')
 RELAY = 'ip-tunnel-relay.service'
 ASSOCIATION_OVERRIDE = Path('/run/ip-tunnel-association-override')
+BENCHMARK = '/etc/network-benchmark.py'
 
 
 def peer_routes():
@@ -108,6 +110,85 @@ def echo_stage(stage):
     return egress.status().get('ip_tunnel_health', {}).get('stage') == stage
 
 
+def inlet_probe():
+    for host in ('127.0.0.1', '::1', '::ffff:127.0.0.1', '100.67.0.2', '2001:db8:dead::2'):
+        for port in (33332, 33333, 7896, 7897, 7898):
+            try:
+                with socket.create_connection((host, port), timeout=.2):
+                    raise AssertionError(('ordinary application reached proxy listener', host, port))
+            except OSError:
+                pass
+        with socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET, socket.SOCK_DGRAM) as stream:
+            try:
+                stream.sendto(b'protected-inlet', (host, 7897))
+            except PermissionError:
+                pass
+    with socket.socket(socket.AF_UNIX) as stream:
+        try:
+            stream.connect('/run/clash-verge-rev/core/mihomo.sock')
+        except (PermissionError, FileNotFoundError):
+            return
+        raise AssertionError('ordinary application reached primary controller')
+
+
+def check_inlets(mode):
+    assert egress.status()['mode'] == mode
+    def dropped():
+        entries = json.loads(run('nft', '-j', 'list', 'chain', 'inet', 'lf_filter', 'lf_proxy_inlet_guard').stdout)
+        return sum(expr.get('counter', {}).get('packets', 0) for entry in entries['nftables']
+                   for expr in entry.get('rule', {}).get('expr', []))
+    before = dropped()
+    run(*APP, sys.executable, __file__, 'inlets')
+    # The loopback redirect guard rejects three TCP attempts before conntrack.
+    assert dropped() >= before + 27, (before, dropped())
+    print(f'{mode}: protected TCP/UDP inlets and primary Unix controller refused', flush=True)
+
+
+def layer_checks():
+    ca = json.loads(Path('/etc/netsec-egress.json').read_text())['tls'] + '/ca.pem'
+    name = 'tunnel.egress.fixture.example'
+
+    def sample(label, address, port, hostname=name, *, explicit=False, count=1, timeout=2):
+        actor = () if explicit else APP
+        proxy = ('--proxy', 'http://127.0.0.1:33332') if explicit else ()
+        result = run(*actor, sys.executable, BENCHMARK, 'layers', '--name', hostname,
+                     '--address', address, '--port', port, '--ca-file', ca,
+                     '--samples', count, '--timeout', timeout, *proxy, timeout=45)
+        (EVIDENCE / (label + '.json')).write_text(result.stdout)
+        value = json.loads(result.stdout)
+        assert all(item['https']['elapsed_ms'] <= timeout * 1000 + 200 for item in value['samples']), value
+        return value['samples']
+
+    for version, address in zip((4, 6), TARGETS):
+        for item in sample(f'layers-v{version}', address, 18443, count=5):
+            assert item['dns']['outcome'] == 'answer' and item['dns']['answers'][0]['address'] == address, item
+            assert item['echo']['outcome'] == 'echo-reply' and item['https']['outcome'] == 'ok', item
+            assert list(item['https']['stages']) == ['tcp', 'tls', 'http'], item
+    item, = sample('layers-connect', TARGETS[0], 18443, explicit=True, count=1, timeout=4)
+    assert item['https']['outcome'] == 'ok' and item['https']['stages']['connect']['status'] == 200, item
+    item, = sample('tls-certificate', TARGETS[0], 18443, 'valid.signed.fixture.example')
+    assert item['https']['outcome'] == 'certificate', item
+    for label, hostname in (('NXDOMAIN', 'absent'), ('NODATA', 'service'), ('SERVFAIL', 'bogus')):
+        item, = sample(label, TARGETS[0], 18443, f'{hostname}.signed.fixture.example', timeout=4)
+        assert item['dns']['outcome'] == label and not item['dns']['answers'], item
+        assert item['https']['outcome'] != 'ok', item
+
+    run(*TARGET, 'nft', '-f', '-', input='''
+table inet connection_fault {
+  chain input {
+    type filter hook input priority filter; policy accept;
+    tcp dport 18444 counter drop
+  }
+}
+''')
+    for label, address, port in (('port-rst', TARGETS[0], 18445), ('blackhole', TARGETS[0], 18444),
+                                 ('no-host', '9.9.9.98', 18443), ('no-mapping', '198.18.255.254', 18443)):
+        item, = sample(label, address, port)
+        assert item['https']['outcome'] != 'ok' and 'http' not in item['https']['stages'], item
+        assert item['echo']['outcome'] == ('echo-reply' if address == TARGETS[0] else 'no-echo'), item
+    print('Recorded DNS outcomes, native and CONNECT stages, TLS failure, RST, blackhole and unreachable targets')
+
+
 def udp_failures():
     run(*PEER, 'nft', 'insert', 'rule', 'inet', 'ip_tunnel_test', 'relay',
         'iifname', 'wg-fixture', 'udp', 'dport', '18081', 'drop')
@@ -139,6 +220,8 @@ def check():
     capture()
     source = Path('/var/lib/clash-source/selected').resolve()
     wait(lambda: (source / 'approved/rules/settled.json').exists())
+    check_inlets('proxy')
+    run(*APP, 'curl', '--noproxy', '*', '-fsS', '--max-time', '5', 'http://tun.fixture.example:8080/')
     run('proxy-control', 'routing', 'proxy-only', timeout=110)
     verdict = egress.status()
     assert verdict['capabilities']['icmp'] == 'verified-dual-stack', verdict
@@ -150,6 +233,8 @@ def check():
         assert json.loads(application('udp', target).stdout)['peer'] == source_address
     status, data = egress.api('GET', f'http://{TARGETS[0]}:18090/browser', inlet='/run/clash-strict/proxy.sock')
     assert status == 200 and json.loads(data)['peer'] == EXITS[0], (status, data)
+    check_inlets('proxy')
+    layer_checks()
     real = run('dig', '+short', '@127.0.0.1', '-p', '1054', 'tun.fixture.example', 'A').stdout.split()
     assert real == ['203.0.113.10'], real
     ping('tun.fixture.example')
@@ -186,6 +271,7 @@ def check():
 
     run(*PEER, 'ip', 'link', 'set', 'wg-fixture', 'down')
     wait(lambda: echo_stage('echo-both') and egress.status()['mode'] == 'blocked')
+    check_inlets('blocked')
     assert egress.status()['ip_tunnel_health']['handshake'] in ('recent', 'none-recent')
     for target in TARGETS:
         assert ping(target, required=False).returncode
@@ -199,6 +285,7 @@ def check():
     run('proxy-control', 'off')
     assert run('ip', 'link', 'show', 'lf-wg-exit', required=False).returncode
     wait(lambda: egress.status()['mode'] == 'direct')
+    check_inlets('direct')
 
     captures = {label: run('tcpdump', '-nn', '-r', EVIDENCE / (label + '.pcap')).stdout
                 for label in ('uplink', 'peer', 'target')}
@@ -264,3 +351,5 @@ elif sys.argv[1] == 'faulty-relay':
     egress.node(2, ASSOCIATION_OVERRIDE)
 elif sys.argv[1] == 'migrate':
     migrate()
+elif sys.argv[1] == 'inlets':
+    inlet_probe()

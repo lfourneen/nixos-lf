@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""Controlled HTTP latency/throughput baseline; never changes network policy."""
+"""Measure controlled network workloads and application-visible latency."""
 import argparse
 import importlib.util
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import http.client
+import ipaddress
 import json
 import math
 import os
 from pathlib import Path
 import resource
+import re
+import signal
 import socket
+import ssl
 import statistics
+import subprocess
 import threading
 import tempfile
 import time
@@ -100,6 +106,153 @@ def measure(url, proxy, samples):
             'elapsed_seconds': round(time.monotonic() - start, 3)}
 
 
+def run_probe(command, timeout):
+    return subprocess.run(command, text=True, capture_output=True, timeout=timeout,
+                          env={**os.environ, 'LC_ALL': 'C'})
+
+
+def dns_probe(name, record, timeout, resolver=None, port=53):
+    started = time.monotonic()
+    answers = []
+    try:
+        query = ['dig', '-r', '+noall', '+comments', '+answer', '+tries=1',
+                 f'+time={timeout}', '-p', str(port), '-q', name, '-t', record]
+        if resolver:
+            query.append('@' + resolver)
+        response = run_probe(query, timeout + 1)
+        status = re.search(r'status: ([A-Z0-9]+),', response.stdout)
+        for line in response.stdout.splitlines():
+            fields = line.split()
+            if len(fields) == 5 and fields[2:4] == ['IN', record]:
+                answers.append({'address': str(ipaddress.ip_address(fields[4])), 'ttl': int(fields[1])})
+        outcome = status[1] if status else 'no-response'
+        if outcome == 'NOERROR':
+            outcome = 'answer' if answers else 'NODATA'
+    except subprocess.TimeoutExpired:
+        outcome = 'timeout'
+    return {'outcome': outcome, 'elapsed_ms': elapsed_ms(started), 'answers': answers}
+
+
+def elapsed_ms(started):
+    return round((time.monotonic() - started) * 1000, 3)
+
+
+def echo_probe(address, timeout):
+    started = time.monotonic()
+    try:
+        response = run_probe(['ping', '-n', '-c', '1', '-w', str(timeout), str(address)], timeout + 1)
+    except subprocess.TimeoutExpired:
+        return {'outcome': 'timeout', 'elapsed_ms': elapsed_ms(started)}
+    rtt = re.search(r'time([=<])([\d.]+) ms', response.stdout)
+    result = {'outcome': 'echo-reply' if response.returncode == 0 else
+              'no-echo' if response.returncode == 1 else 'error', 'elapsed_ms': elapsed_ms(started)}
+    if rtt:
+        result.update(rtt_ms=float(rtt[2]), rtt_upper_bound=rtt[1] == '<')
+    return result
+
+
+def deadline_expired(*_):
+    raise TimeoutError('HTTPS sample deadline')
+
+
+def authority(address, port):
+    host = f'[{address}]' if ':' in str(address) else str(address)
+    return f'{host}:{port}'
+
+
+def https_probe(name, address, port, context, timeout, proxy=None):
+    stages = {}
+    current = None
+    started = time.monotonic()
+
+    @contextmanager
+    def stage(name):
+        nonlocal current
+        current = name
+        entered = time.monotonic()
+        stages[name] = {'outcome': 'ok'}
+        try:
+            yield stages[name]
+        finally:
+            stages[name]['elapsed_ms'] = elapsed_ms(entered)
+
+    previous = signal.signal(signal.SIGALRM, deadline_expired)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+        with ExitStack() as stack:
+            with stage('tcp'):
+                endpoint = (proxy.hostname, proxy.port or 80) if proxy else (str(address), port)
+                stream = stack.enter_context(socket.create_connection(endpoint, timeout=timeout))
+            if proxy:
+                with stage('connect') as result:
+                    target = authority(address, port)
+                    stream.sendall(f'CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n'.encode('ascii'))
+                    with http.client.HTTPResponse(stream, method='HEAD') as reply:
+                        reply.begin()
+                        result['status'] = reply.status
+                        if not 200 <= reply.status < 300:
+                            result['outcome'] = 'proxy-rejected'
+                            return {'outcome': result['outcome'], 'elapsed_ms': elapsed_ms(started), 'stages': stages}
+            with stage('tls') as result:
+                tls = stack.enter_context(context.wrap_socket(stream, server_hostname=name))
+                result['version'] = tls.version()
+            with stage('http') as result:
+                host = authority(name, port)
+                tls.sendall(f'GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n'.encode('ascii'))
+                with http.client.HTTPResponse(tls) as reply:
+                    reply.begin()
+                    result['status'] = reply.status
+                    if reply.status != 200:
+                        result['outcome'] = 'unexpected-status'
+                    elif not reply.read(1):
+                        result['outcome'] = 'empty-body'
+    except (OSError, http.client.HTTPException) as error:
+        outcomes = {TimeoutError: 'timeout', ConnectionRefusedError: 'refused',
+                    ConnectionResetError: 'reset', BrokenPipeError: 'closed',
+                    http.client.RemoteDisconnected: 'closed',
+                    ssl.SSLCertVerificationError: 'certificate', ssl.SSLEOFError: 'closed'}
+        stages[current]['outcome'] = outcomes.get(type(error), 'tls-error' if isinstance(error, ssl.SSLError) else 'error')
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+    return {'outcome': stages[current]['outcome'], 'elapsed_ms': elapsed_ms(started), 'stages': stages}
+
+
+def measure_layers(args):
+    name = args.name.rstrip('.').encode('idna').decode('ascii')
+    if not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?', name):
+        raise ValueError('expected a DNS hostname')
+    proxy = urlsplit(args.proxy) if args.proxy else None
+    if proxy and (proxy.scheme != 'http' or not proxy.hostname or proxy.username is not None
+                  or proxy.path not in ('', '/') or proxy.query or proxy.fragment):
+        raise ValueError('expected an HTTP proxy without credentials')
+    context = ssl.create_default_context(cafile=args.ca_file)
+    record = 'A' if args.address.version == 4 else 'AAAA'
+    samples = []
+    timings = {}
+
+    def collect(phase, observation, field='elapsed_ms'):
+        if field in observation:
+            timings.setdefault(phase, {}).setdefault(observation['outcome'], []).append(observation[field] / 1000)
+
+    for _ in range(args.samples):
+        dns = dns_probe(name, record, args.timeout, args.resolver, args.dns_port)
+        echo = echo_probe(args.address, args.timeout)
+        https = https_probe(name, args.address, args.port, context, args.timeout, proxy)
+        samples.append({'dns': dns, 'echo': echo, 'https': https})
+        collect('dns', dns)
+        collect('echo_wait', echo)
+        collect('echo_rtt', echo, 'rtt_ms')
+        collect('https_total', https)
+        for phase, observation in https['stages'].items():
+            collect(phase, observation)
+    return {'schema': 1, 'name': name, 'address': str(args.address), 'port': args.port,
+            'path': 'http-connect' if proxy else 'native-socket', 'timeout_seconds': args.timeout,
+            'samples': samples, 'timings': {
+                phase: {outcome: distribution(values) for outcome, values in groups.items()}
+                for phase, groups in timings.items()}}
+
+
 def main():
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest='command', required=True)
@@ -110,6 +263,16 @@ def main():
     run.add_argument('--url', required=True)
     run.add_argument('--proxy')
     run.add_argument('--samples', type=int, choices=range(5, 101), default=20)
+    layers = commands.add_parser('layers')
+    layers.add_argument('--name', required=True, help='DNS query, TLS identity and HTTP Host')
+    layers.add_argument('--address', required=True, type=ipaddress.ip_address, help='fixed HTTPS and echo target')
+    layers.add_argument('--port', type=int, default=443)
+    layers.add_argument('--proxy', help='HTTP CONNECT endpoint')
+    layers.add_argument('--ca-file')
+    layers.add_argument('--resolver', type=ipaddress.ip_address)
+    layers.add_argument('--dns-port', type=int, default=53)
+    layers.add_argument('--samples', type=int, choices=range(1, 101), default=5)
+    layers.add_argument('--timeout', type=int, choices=range(1, 31), default=5)
     snapshot = commands.add_parser('snapshot')
     snapshot.add_argument('--tool', required=True)
     blocklist = commands.add_parser('blocklist')
@@ -117,6 +280,9 @@ def main():
     args = parser.parse_args()
     if args.command == 'serve':
         return serve(args.bind, args.port)
+    if args.command == 'layers':
+        print(json.dumps(measure_layers(args), indent=2))
+        return
     if args.command == 'blocklist':
         import hashlib
         import lzma

@@ -29,7 +29,10 @@ let
       };
 
       compatibilityBrowser = (self.nixosConfigurations.lfour.extendModules {
-        modules = [ ({ lib, ... }: { my.proxy.strictBrowser = lib.mkForce false; }) ];
+        modules = [ ({ lib, ... }: {
+          my.proxy.strictBrowser = lib.mkForce false;
+          my.proxy.transparentApplications = lib.mkForce false;
+        }) ];
       }).config.home-manager.users.${desktopUser}.programs.firefox.finalPackage;
       strictClashPackage = (self.nixosConfigurations.lfour.extendModules {
         modules = [ ({ lib, ... }: {
@@ -177,6 +180,7 @@ let
 
         httpOnly = (self.nixosConfigurations.lfour.extendModules { modules = [ ({ lib, ... }: {
           my.proxy.runtimeRouting = lib.mkForce false;
+          my.proxy.transparentApplications = lib.mkForce false;
           my.proxy.localDnssec = lib.mkForce false;
           my.proxy.tunMode = lib.mkForce false;
           home-manager.users.${desktopUser}.my.firefox.networkPath = lib.mkForce "http-proxy";
@@ -254,13 +258,16 @@ let
 
       browser-privacy = import ./home/firefox/firefox.nix {
         inherit pkgs;
-        config = self.nixosConfigurations.lfour.config;
+        config = (self.nixosConfigurations.lfour.extendModules {
+          modules = [ ({ lib, ... }: { my.proxy.transparentApplications = lib.mkForce false; }) ];
+        }).config;
         compatConfig = (self.nixosConfigurations.lfour.extendModules {
-          modules = [ {
+          modules = [ ({ lib, ... }: {
+            my.proxy.transparentApplications = lib.mkForce false;
             home-manager.users.${self.nixosConfigurations.lfour.config.my.machine.desktopUser} = {
               my.firefox.videoSiteCompat = true;
             };
-          } ];
+          }) ];
         }).config;
       };
 
@@ -276,8 +283,12 @@ let
         ech = {
           http-proxy = compatibilityBrowser;
           transparent = (self.nixosConfigurations.lfour.extendModules {
-            modules = [ { home-manager.users.${desktopUser}.my.firefox.networkPath = "transparent";
-                          home-manager.users.${desktopUser}.my.firefox.dailyRequireProxy = false; } ];
+            modules = [ {
+              home-manager.users.${desktopUser}.my.firefox = {
+                networkPath = "transparent";
+                dailyRequireProxy = false;
+              };
+            } ];
           }).config.home-manager.users.${desktopUser}.programs.firefox.finalPackage;
         };
       };
@@ -288,13 +299,19 @@ let
         uniformProxy = true;
         ech = {
           http-proxy = (self.nixosConfigurations.lfour.extendModules {
-            modules = [ { my.proxy.proxyOnly = true; home-manager.users.${desktopUser}.my.firefox.dailyRequireProxy = false; } ];
+            modules = [ ({ lib, ... }: {
+              my.proxy.proxyOnly = true;
+              my.proxy.transparentApplications = lib.mkForce false;
+              home-manager.users.${desktopUser}.my.firefox.dailyRequireProxy = false;
+            }) ];
           }).config.home-manager.users.${desktopUser}.programs.firefox.finalPackage;
           transparent = (self.nixosConfigurations.lfour.extendModules {
             modules = [ {
               my.proxy.proxyOnly = true;
-              home-manager.users.${desktopUser}.my.firefox.networkPath = "transparent";
-              home-manager.users.${desktopUser}.my.firefox.dailyRequireProxy = false;
+              home-manager.users.${desktopUser}.my.firefox = {
+                networkPath = "transparent";
+                dailyRequireProxy = false;
+              };
             } ];
           }).config.home-manager.users.${desktopUser}.programs.firefox.finalPackage;
         };

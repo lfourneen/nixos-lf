@@ -11,7 +11,8 @@ let
 
   sourceTls = import ../../home/firefox/tls-fixture.nix {
     inherit pkgs;
-    extraDnsNames = [ "source.fixture.example" "dot.fixture.test" "v4.egress.fixture.example" "v6.egress.fixture.example" ];
+    extraDnsNames = [ "source.fixture.example" "dot.fixture.test" "v4.egress.fixture.example" "v6.egress.fixture.example" ]
+      ++ pkgs.lib.optional ipTunnel "tunnel.egress.fixture.example";
     extraIpAddresses = pkgs.lib.optional assurance "203.0.113.53";
   };
 
@@ -98,6 +99,7 @@ pkgs.testers.runNixOSTest {
     my.proxy.subscriptionAudit = if refresh || managedSources then "enforce" else "warn";
     my.proxy.controlledSources = managedSources;
     my.proxy.runtimeRouting = routing;
+    my.proxy.transparentApplications = ipTunnel;
     my.proxy.ipTunnel = lib.mkIf ipTunnel {
       endpointAddress = "1.1.1.1";
       endpointPort = 51820;

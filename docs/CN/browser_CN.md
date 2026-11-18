@@ -71,8 +71,8 @@ Gecko 沙箱继续启用，锁定的隐私策略仍禁用 WebGL。
 受管 profile 在重启后保留。
 `firefox --check` 还检查私有 runtime 目录、桌面 socket 和 Landlock 支持，不打开窗口。
 
-网络继续使用桌面 UID 及已有 A/B/C 规则，包括 Gost `33332`、系统 DNS 和可选的原生 ECH 路径。
-外层策略不为代理端口认证浏览器，也不隔离其它本地 TCP 服务。
+日常透明路径使用桌面 UID、系统 DNS 和 A/B/C 规则。
+它保留对其它已授权本机服务的访问。
 Wayland、音频、Downloads、profile 和用户选择的文档是明确开放的权限。
 已在桌面 UID 下无隔离运行的其它程序仍属于信任基础，可以自行调用包内私有二进制。
 
@@ -80,7 +80,7 @@ Wayland、音频、Downloads、profile 和用户选择的文档是明确开放�
 
 | 入口 | 可用模式 | Profile 与网络 |
 |---|---|---|
-| `firefox` | 默认允许 A 和健康 B | 持久化日常 profile，使用 Gost 或配置的透明路径 |
+| `firefox` | 默认允许 A 和健康 B | 持久化日常 profile，本机使用原生 socket |
 | `firefox-identity` | 仅健康 B | 独立 profile、缓存和下载目录，无扩展，不复制已有账号数据 |
 | `firefox-portal URL` | 仅显式 A | 临时 profile，只能通过 relay 连接一个字面 IP 的 80/443 端口，最多运行 15 分钟 |
 
@@ -118,14 +118,15 @@ GREASE 添加形似 ECH 的合成扩展。
 
 | `my.firefox.networkPath` | 名称发现与传输 | ECH 行为 |
 |---|---|---|
-| `"http-proxy"`，默认 | 严格本地 relay 或兼容 Gost HTTP 代理，目标解析委托核心 | 锁定的 Firefox 160.0 将 HTTPS CONNECT 排除在 HTTPS-RR 发现之外。保留 GREASE，HTTPS-RR 发现使用下方透明路径 |
-| `"transparent"` | 系统 DNS 与原生 HTTPS-RR 查询。A 使用直连 socket，B 使用宿主 TUN/防火墙路径 | NSS 可使用返回的 ECHConfig，与支持的站点进行真实 ECH 握手 |
+| `"transparent"`，本机默认 | 系统 DNS 与原生 HTTPS-RR 查询。A 使用直连 socket，B 使用宿主 TUN/防火墙路径 | NSS 可使用返回的 ECHConfig，与支持的站点进行真实 ECH 握手 |
+| `"http-proxy"` | 严格本地 relay 或兼容 Gost HTTP 代理，目标解析委托核心 | 锁定的 Firefox 160.0 将 HTTPS CONNECT 排除在 HTTPS-RR 发现之外，保留 GREASE |
 
 Firefox 的[连接门](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_160_0_RELEASE/netwerk/protocol/http/nsHttpChannel.cpp)同时检查代理 DNS 策略和 `UsingConnect()`，单改 DNS 传输不会改变这个门。
 
 本包禁用仅供测试的 `force_use_https_rr` override，透明选项复用打包浏览器，不修改 Gecko 源码。
 
-在系统配置中显式选择：
+在 `my.proxy.transparentApplications = true` 且 `dailyRequireProxy = false` 时，日常 Firefox 默认使用 `"transparent"`。兼容配置默认使用 `"http-proxy"`。
+也可以单独选择浏览器的透明路径：
 
 ```nix
 my.proxy.tunMode = true;
@@ -205,7 +206,7 @@ AutoConfig `lockPref` 覆盖 enterprise policy 无法锁定的命名空间，对
 | 跟踪与状态 | Strict protection、FPP、Total Cookie Protection 减少脚本和跨站状态关联 |
 | URL 与分析 | 查询参数清理、bounce 清理、跨源 referrer 限制和 GPC。禁用建议、预连接、遥测、studies、赞助内容、Sync 与内置 IP Protection |
 | API 与字体 | 禁用 WebRTC、WebGPU、地理位置、电池和传感器。严格隐私另禁 WebGL，仅暴露固定 DejaVu/Noto/CJK/emoji 字体 |
-| ECH / TLS | 启用原生 HTTPS-RR、ECH 和 GREASE。透明模式支持 ECH 发现，锁定浏览器的默认 CONNECT 路径不支持 |
+| ECH / TLS | 启用 ECH 和 GREASE。日常透明路径通过原生 HTTPS 记录发现 ECH |
 | 出口地址 | 共用 A/B/C 与路由策略。默认 B 按 Rule 选择 DIRECT 或代理节点 |
 
 严格扩展策略阻止未声明扩展，强制安装 uBlock Origin，KISS Translator 可移除。

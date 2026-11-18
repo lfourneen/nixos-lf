@@ -3,7 +3,7 @@
 [English](../network.md) | 简体中文 | [文档目录](README_CN.md)
 
 本机使用严格加密 DNS 和已登记的订阅来源。
-日常 Firefox 经 Gost 遵循 A/B/C 策略。
+日常 Firefox 使用系统 DNS，与其它桌面应用共用透明 A/B/C 路径。
 `firefox-identity` 使用独立网络命名空间，只通过 B 中的专用代理入口联网。
 A 中的门户登录使用临时浏览器。
 初始化方法见[来源登记](operations_CN.md#来源登记)。
@@ -12,29 +12,29 @@ A 中的门户登录使用临时浏览器。
 
 宿主通过 nftables 选择直连、受管代理或阻断。
 
-代理健康时，三类应用路径汇入 Mihomo：
+应用使用原生 TCP 和 UDP socket。健康 B 中，TUN 路径与 TCP 后备路径汇入 Mihomo。
 
 ```text
-读取代理设置的应用          不读取代理设置的公网 TCP         TUN / fake-IP
-        |                            |                           |
-        v                            v                           v
- gost HTTP :33332          nft REDIRECT -> gost :33333      TUN "Mihomo"
-        |                            |                           |
-        +---------------> Mihomo mixed :7897 <------------------+
-                                   |
-                               订阅规则匹配
-                              /            \
-                           DIRECT       代理组 / 节点
-                              \            /
-                                   上行
+原生 TCP 和 UDP                       TCP 后备
+        |                                 |
+   TUN "Mihomo"                nft REDIRECT -> Gost :33333
+        |                                 |
+        +------> Mihomo <--------- mixed :7897
+                    |
+               rules 或固定出口
 ```
 
 Gost 监听于宿主命名空间。
 宿主回环核心入口经私有 veth 转发，核心监听和实际 TUN 位于 `lf-clash-core`。
-大小写环境变量、GSettings 和 Flatpak 覆盖将应用指向 `127.0.0.1:33332`。
-Gost 在 B 中把两种入口转给 `127.0.0.1:7897`，A 中直通，C 或未知状态下关闭监听。
-客户端显式连接透明入口 `33333` 会在 NAT 前被拒绝。
-该入口只供重定向流量使用。
+本机启用 `my.proxy.transparentApplications`。Niri、Nushell、GSettings、Flatpak、Zed、Nix daemon 和 Hermes 使用原生路径，无须受管应用代理设置。
+应用配置代次后，注销并重新登录，使会话进程使用新的环境变量。
+A 中原生 socket 直连，C 阻断普通外部流量。
+采用兼容默认值 `my.proxy.transparentApplications = false` 的安装仍可让应用使用 `127.0.0.1:33332` 上的 Gost HTTP。
+
+启用透明应用路径时，防火墙在 A、B 和 C 中拒绝普通应用使用 TCP 或 UDP 直访 Gost 和 Mihomo 入口。
+它在 NAT 前检查本机目标，并允许受管 relay 连接核心的 mixed 和 strict 入口。
+核心控制器使用私有 Unix socket，Clash Verge 通过受管 Unix 转发器访问。
+身份浏览器使用独立的[隔离 relay](browser_CN.md#网络策略与身份)。
 
 ### 保留端口与服务身份
 

@@ -66,6 +66,8 @@ def drop_groups(settings):
         ('lf_local_dns_guard', 'dns-listener-identity', 'local-dns-listeners'),
         ('lf_local_dns_guard', 'dns-local-policy', 'local-dns'),
         ('lf_local_proxy_guard', 'proxy-listener-identity', 'local-proxy-listeners'),
+        ('lf_proxy_inlet_guard', 'proxy-inlet-access', 'host-applications'),
+        ('lf_proxy_inlet_ingress', 'proxy-inlet-access', 'non-loopback-ingress'),
         ('lf_socket_guest_private', 'socket-guest-target-policy', 'socket-guests'),
         ('lf_socket_guest_dns_guard', 'socket-guest-dns-policy', 'socket-guests'),
         ('lf_socket_guest_dns_after_nat', 'socket-guest-dns-path', 'socket-guests'),

@@ -36,10 +36,11 @@ let
       // integration (niri creates the X11 socket and sets DISPLAY). Do not
       // hardcode ":0" here: it would override niri's value and break X apps.
 
-      // Proxy
+      ${lib.optionalString (!osConfig.my.proxy.transparentApplications) ''
       http_proxy "${gostHttp}"
       https_proxy "${gostHttp}"
       all_proxy "${gostHttp}"
+      ''}
     }
 
     input {

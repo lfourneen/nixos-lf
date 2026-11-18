@@ -29,11 +29,16 @@ def answer(packet, tcp=False, transport='dot'):
     response = dns.message.make_response(request)
     response.flags |= dns.flags.AA
     if request.question and request.question[0].name.to_text().endswith('.egress.fixture.example.'):
+        addresses = {
+            'v4.egress.fixture.example.': {'A': '203.0.113.10'},
+            'v6.egress.fixture.example.': {'AAAA': '2001:db8:ffff::10'},
+            'tunnel.egress.fixture.example.': {'A': '9.9.9.99', 'AAAA': '2606:4700:1111::99'},
+        }
         for question in request.question:
-            if question.rdtype == dns.rdatatype.A and question.name.to_text().startswith('v4.'):
-                response.answer.append(dns.rrset.from_text(question.name, 1, 'IN', 'A', '203.0.113.10'))
-            if question.rdtype == dns.rdatatype.AAAA and question.name.to_text().startswith('v6.'):
-                response.answer.append(dns.rrset.from_text(question.name, 1, 'IN', 'AAAA', '2001:db8:ffff::10'))
+            record = dns.rdatatype.to_text(question.rdtype)
+            address = addresses.get(question.name.to_text(), {}).get(record)
+            if address:
+                response.answer.append(dns.rrset.from_text(question.name, 1, 'IN', record, address))
         return response.to_wire()
     if request.question and request.question[0].name.to_text() in (
             'source.fixture.example.', 'source-node.fixture.example.', 'source-node-updated.fixture.example.',

@@ -48,6 +48,9 @@ in
     assertion = valid;
     message = "my.proxy.fakeIpRange must be an IPv4 CIDR with prefix length 8..30.";
   } {
+    assertion = !config.my.proxy.transparentApplications || (config.my.proxy.tunMode && config.my.proxy.coreNetns);
+    message = "my.proxy.transparentApplications requires the managed core namespace and TUN.";
+  } {
     assertion = config.my.proxy.routeTable <= 4294967295
       && !(builtins.elem config.my.proxy.routeTable [ 52 100 253 254 255 ]);
     message = "Mihomo route table must not collide with Tailscale, TPROXY or built-in routing tables.";
@@ -71,6 +74,11 @@ in
     default = false;
     description = "Accept only root-registered, controlled subscription generations; ignore GUI candidates. Register privately using clash-source before enabling proxy intent.";
   };
+
+  options.my.proxy.transparentApplications = lib.mkEnableOption ''
+    native application networking with direct access to local proxy inlets
+    restricted to managed services and administrators
+  '';
 
   options.my.proxy.strictBrowser = lib.mkOption {
     type = lib.types.bool;

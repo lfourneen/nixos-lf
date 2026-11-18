@@ -80,7 +80,7 @@ The managed profile persists across that restart.
 
 | Entry | Available modes | Profile and network |
 |---|---|---|
-| `firefox` | A and healthy B by default | Persistent daily profile, using Gost or the configured transparent path |
+| `firefox` | A and healthy B by default | Persistent daily profile using native sockets on this host |
 | `firefox-identity` | Healthy B only | Separate profile, cache and downloads, with no extensions or copied account data |
 | `firefox-portal URL` | Explicit A only | Temporary profile and a relay restricted to one literal IP on ports 80/443, for up to 15 minutes |
 
@@ -123,15 +123,16 @@ A real ECH handshake uses the server's ECHConfig to encrypt ClientHelloInner.
 
 | `my.firefox.networkPath` | Name discovery and transport | ECH behavior |
 |---|---|---|
-| `"http-proxy"`, default | Strict local relay or compatibility Gost HTTP proxy. Target resolution is delegated to the core | The pinned Firefox 160.0 excludes HTTPS CONNECT from HTTPS-RR discovery. GREASE remains enabled. HTTPS-RR discovery uses the transparent path below |
-| `"transparent"` | System DNS and native HTTPS-RR queries. A uses direct sockets, B uses the host TUN/firewall path | NSS can use the returned ECHConfig and perform a real ECH handshake with a compatible origin |
+| `"transparent"`, host default | System DNS and native HTTPS-RR queries. A uses direct sockets, B uses the host TUN/firewall path | NSS can use the returned ECHConfig and perform a real ECH handshake with a compatible origin |
+| `"http-proxy"` | Strict local relay or compatibility Gost HTTP proxy. Target resolution is delegated to the core | The pinned Firefox 160.0 excludes HTTPS CONNECT from HTTPS-RR discovery. GREASE remains enabled |
 
 Firefox's [connection gate](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_160_0_RELEASE/netwerk/protocol/http/nsHttpChannel.cpp) checks both the proxy DNS strategy and `UsingConnect()`.
 Changing DNS transport alone does not change this gate.
 This package keeps the test-only `force_use_https_rr` override disabled.
 The transparent option uses the packaged browser without a Gecko source patch.
 
-Select it explicitly in the system configuration:
+Daily Firefox selects `"transparent"` by default when `my.proxy.transparentApplications = true` and `dailyRequireProxy = false`.
+The compatibility default is `"http-proxy"`. To select the transparent browser path independently:
 
 ```nix
 my.proxy.tunMode = true;
@@ -218,7 +219,7 @@ AutoConfig `lockPref` covers preferences beyond enterprise policy lock support a
 | Tracking and state | Strict protection, FPP and Total Cookie Protection reduce scripts and cross-site state correlation |
 | URLs and profiling | Query stripping, bounce cleanup, cross-origin referrer restrictions and GPC. Suggestions, speculation, telemetry, studies, sponsored content, Sync and built-in IP Protection disabled |
 | APIs and fonts | WebRTC, WebGPU, geolocation, battery and sensors disabled. Strict privacy also disables WebGL and restricts visibility to fixed DejaVu/Noto/CJK/emoji fonts |
-| ECH / TLS | Native HTTPS records, ECH and GREASE enabled. Transparent mode supports ECH discovery, while the pinned browser's default CONNECT path does not |
+| ECH / TLS | ECH and GREASE enabled. The daily transparent path supports ECH discovery through native HTTPS records |
 | Exit address | Shared A/B/C and routing policy. Default B Rule routing selects DIRECT or a proxy node |
 
 Strict extension policy blocks undeclared extensions. uBlock Origin is force-installed and KISS Translator is removable.

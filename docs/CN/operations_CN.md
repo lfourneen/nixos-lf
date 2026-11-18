@@ -376,6 +376,7 @@ policy 记录包含所观测模式、转换原因和代次。
 | `guest-target-policy` | 路由访客的受保护或不支持目标 |
 | `dns-client-policy` | 应用访问内部解析器入口 |
 | `dns-listener-identity`、`proxy-listener-identity` | 未授权本地 socket UID 的回复 |
+| `proxy-inlet-access` | 对受保护本地代理端口的显式访问 |
 
 计数仅覆盖列出链中带 counter 的 drop。
 `uncounted_rules` 给出选中但没有计数器的 drop 数。

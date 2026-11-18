@@ -1,7 +1,6 @@
 { config, lib, osConfig, pkgs, ... }:
 
 let
-  # Browser traffic follows the same gost relay as the rest of the session.
   requireProxy = config.my.firefox.dailyRequireProxy;
   relay = "127.0.0.1:${if requireProxy then "18080" else toString osConfig.my.machine.ports.gostHttp}";
   strictPrivacy = true;
@@ -346,8 +345,14 @@ in
 {
   imports = [ ./options.nix ];
   assertions = [{
-    assertion = (!transparent || osConfig.my.proxy.tunMode) && (!requireProxy || (!transparent && osConfig.my.proxy.strictBrowser));
+    assertion = !transparent || osConfig.my.proxy.tunMode;
     message = "Firefox transparent networking requires my.proxy.tunMode=true.";
+  } {
+    assertion = !requireProxy || (!transparent && osConfig.my.proxy.strictBrowser);
+    message = "Firefox dailyRequireProxy requires strictBrowser and the http-proxy path.";
+  } {
+    assertion = !osConfig.my.proxy.transparentApplications || transparent || requireProxy;
+    message = "Firefox must use transparent networking or the isolated strict relay when proxy inlets are private.";
   }];
 
   home.packages = [ identityBrowser identityDesktop (isolatedBrowser "portal" true) ];

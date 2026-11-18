@@ -13,7 +13,7 @@
 | `sync-to-git.sh` | 把 `/etc/nixos` 复制到私有 Git 工作目录，不覆盖已有仓库 |
 | `refresh-dns-blocklist.py` | 获取、校验并发布 DNS 黑名单快照与 manifest |
 | `verify-network.py` | 运行组件检查并记录准确的输入与输出 |
-| `network-benchmark.py` | 运行受控的 HTTP 延迟与吞吐基准 |
+| `network-benchmark.py` | 测量受控 HTTP 吞吐与网络各层时延 |
 | `check-maintenance.py` | 用文件、`flake.lock` 和网络来源校验维护台账 |
 | `libvirt-qemu-migrate.sh` | 把 VM 镜像和状态的属主交给非特权 QEMU 用户 |
 | `system-age-key.py` | 创建或接管用于系统秘密的 root 专属 Age 身份 |
@@ -213,16 +213,25 @@ sudo usbguard block-device 42
 
 ## network-benchmark.py
 
-运行受控的 HTTP 基准，不改变网络策略。
+使用当前网络策略测量受控负载。
 
 ```sh
 ./scripts/network-benchmark.py serve --bind 127.0.0.1 --port 18094
 ./scripts/network-benchmark.py measure --url http://127.0.0.1:18094 --samples 20
-./scripts/network-benchmark.py measure --url http://example.test --proxy http://127.0.0.1:33332
+./scripts/network-benchmark.py layers --name origin.example.test --address 192.0.2.10 --samples 20
 ./scripts/network-benchmark.py snapshot --tool system/programs/clash/service/clash-verge-stage.py
 ```
 
-`serve` 启动回环 HTTP 夹具。`measure` 对直连或显式代理路径输出 P50 和 P95 的首字节时间与总时间、每秒连接数、批量吞吐，以及客户端 CPU 和 RSS。`snapshot` 在合成的 32 MiB 快照上测量完整与快速校验路径的耗时。`blocklist` 测量已提交域名快照的解压和 Python 集合构建。
+`serve` 启动回环 HTTP 夹具。`measure` 对原生或显式代理路径输出 P50 和 P95 的首字节时间与总时间、每秒连接数、批量吞吐，以及客户端 CPU 和 RSS。
+
+`layers` 需要 `dig`、`ping` 和受控的 HTTPS 源站。把示例名称及地址换成源站的 DNS 名称和 IPv4 或 IPv6 地址。私有 CA 可用 `--ca-file` 指定。
+命令查询对应地址族的 DNS 记录，记录结果码、地址记录和 DNS TTL。
+ICMP echo 和 HTTPS 独立使用指定地址，TLS 和 HTTP 使用指定名称。
+调用者有权访问受控 HTTP CONNECT 入口时，可使用 `--proxy`。
+JSON 包含每次观测，并按阶段和结果给出 P50、P95 及最大值。TCP 耗时衡量客户端 socket 握手，握手端可能是 TUN 或 relay。
+HTTPS 成功要求 TLS 校验通过，且 HTTP 200 响应包含正文首字节。`--timeout` 限制整个 HTTPS 样本，同时用于 DNS 查询和 echo 的截止时间。
+
+`snapshot` 在合成的 32 MiB 快照上测量完整与快速校验路径的耗时。`blocklist` 测量已提交域名快照的解压和 Python 集合构建。
 
 ## check-maintenance.py
 

@@ -394,6 +394,7 @@ This view does not establish readiness.
 | `guest-target-policy` | Routed guest protected or unsupported target |
 | `dns-client-policy` | Application access to an internal resolver inlet |
 | `dns-listener-identity`, `proxy-listener-identity` | Replies from an unauthorized local socket UID |
+| `proxy-inlet-access` | Attempts to connect directly to protected local proxy ports |
 
 Counts cover only drops with counters in the listed chains.
 `uncounted_rules` reports selected drops without counters.

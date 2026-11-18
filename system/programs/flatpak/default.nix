@@ -19,23 +19,18 @@ in
       onCalendar = "daily";
     };
     
-    # Global override: route all Flatpak apps through gost's HTTP listener,
-    # since sandboxes cannot reliably read host dconf proxy settings. The
-    # kernel policy exempts the core mark, not arbitrary root traffic.
     overrides.settings.global = {
       Environment = {
+        GTK_THEME = "Adwaita-dark";
+        QT_QPA_PLATFORMTHEME = "gtk3";
+      } // lib.optionalAttrs (!config.my.proxy.transparentApplications) {
         HTTP_PROXY = "${gostHttp}";
         HTTPS_PROXY = "${gostHttp}";
-
-        # Lowercase twins: Electron/Chromium and some Go/Rust tooling read only
-        # these. ALL_PROXY is deliberately absent - clients that treat it as a
-        # SOCKS URL break on an http:// value. NO_PROXY matches the host list.
         http_proxy = "${gostHttp}";
         https_proxy = "${gostHttp}";
         NO_PROXY = noProxy;
-        GTK_THEME = "Adwaita-dark";
-        QT_QPA_PLATFORMTHEME = "gtk3";
       };
+      
       Context = {
         filesystems = [ "xdg-run/dconf" ];
       };
@@ -49,6 +44,7 @@ in
         filesystems = [ "~/Projects" "~/.config/LCEDA-Pro" ];
         sockets = [ "!x11" "wayland" ];
       };
+      
       "Session Bus Policy" = {
         "org.freedesktop.FileManager1" = "talk";
       };
@@ -67,6 +63,7 @@ in
       Context = {
         filesystems = [ "${pkgs.wemeet-cursor-hook}" ];
       };
+      
       Environment = {
         LD_PRELOAD = "${pkgs.wemeet-cursor-hook}/lib/libwemeet-cursor-hook.so";
       };
@@ -131,7 +128,7 @@ in
 
   # Order install/update startup behind the relay. Root traffic remains subject
   # to the same mark-based kernel policy; A passthrough is an explicit mode.
-  systemd.services.flatpak-managed-install = {
+  systemd.services.flatpak-managed-install = lib.mkIf (!config.my.proxy.transparentApplications) {
     wants = [ "gost-relay.service" ];
     after = [ "gost-relay.service" ];
   };
