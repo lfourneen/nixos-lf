@@ -1,14 +1,30 @@
-# nixos-lf
+# nixos-lf · 个人 NixOS 系统配置
 
 [English](README.md) | 简体中文
 
-这是一套以 Niri、Noctalia 和 Home Manager 为基础的个人 NixOS 工作站配置。
-桌面、加密存储、启动时重置的根文件系统、开发工具、AI agent 和网络策略都由同一个 Nix flake 管理。
+这是一套通过 Nix flakes 和 Home Manager 管理的个人 NixOS 系统配置，涵盖 Niri 桌面、应用软件、开发环境和加密存储。
+工作站的网络配置集成了 nftables 防火墙、Mihomo（Clash）系统级透明代理，以及支持 DNSSEC 验证的加密 DNS。
+配置面向 `x86_64-linux`，基于 NixOS 26.05，部分软件来自 Unstable，系统构建入口为 `nixosConfigurations.lfour`。
 
-配置面向 `x86_64-linux`，基于 NixOS 26.05，部分软件来自 Unstable。
-系统构建入口为 `nixosConfigurations.lfour`。
+## 网络安全与架构
 
-## 包含哪些功能
+主机由 nftables 管理 IPv4 和 IPv6 入站、出站及访客转发，systemd 服务以原子事务切换策略。请求代理时先进入 C，监听端口、路由、DNS 和 TUN 通过健康检查后才进入 B。内核中的 B 授权租约最长为 60 秒，健康检查持续通过才能续期，授权到期后已建立的应用连接也会被阻断。见[模式与执行](docs/CN/network_CN.md#模式与执行)。
+
+| 模式 | 普通应用流量 | 公网 DNS |
+|---|---|---|
+| **A** · 直连 | 原生 socket 通过有线或 Wi-Fi 出站 | Unbound 经 DoT 查询并在本地验证 DNSSEC |
+| **B** · 代理 | TCP/UDP 经 TUN 进入 Mihomo。TCP 可由 nftables 重定向，经 Gost 进入核心 | Mihomo 在本地验证 DNSSEC，使用 DoH 查询上游。通常返回 fake-IP，使用 WireGuard 出口时返回验证后的真实地址 |
+| **C** · 阻断 | 阻断普通外部流量，仅放行必要的链路维护和代理恢复流量 | 保留本地解析和符合条件的缓存应答 |
+
+- **透明代理和出口策略。** TUN 和 Gost 两条路径都经私有 veth 进入 Mihomo 的独立网络命名空间，主机防火墙在边界复核核心流量。B 下的 `rules` 按订阅规则决定直连、代理或拒绝，`proxy-only` 将受支持的流量固定到一个已批准的出口，并阻断应用独立出站。可选的 WireGuard 对端承载固定 SOCKS5 中继及原生 IPv4/IPv6 ping。见[流量路径](docs/CN/network_CN.md#流量路径)和[路由策略](docs/CN/proxy_CN.md#路由策略)。
+- **订阅信任和 GUI 权限。** 由 root 管理的服务登记订阅并授权通过审计的配置快照，低权限进程负责下载和生成候选配置。系统服务管理路由策略，保留 DNS 和代理监听端口。Clash Verge 通过受限的 Unix socket 查看状态和选择获准的节点。见[受控订阅与服务身份](docs/CN/proxy_CN.md)。
+- **DNS 分流和过滤。** 系统查询沿 `systemd-resolved → dnsmasq → Unbound 或 Mihomo` 解析。nftables 接管普通出站的 53 端口查询，dnsmasq 与 Mihomo 共用域名过滤列表。在允许直连例外的模式下，经批准的 Wi-Fi 分流 DNS 和 Tailscale MagicDNS 各有受限路径。见 [DNS 策略](docs/CN/dns_CN.md)。
+- **上行链路和本地服务。** dhcpcd 管理有线，NetworkManager 管理 Wi-Fi。支持按 Wi-Fi 配置管理 MAC、DHCP 和 IPv6 身份，也可固定 IPv4 网关的 ARP 绑定。防火墙按模式放行必要的链路维护、使用 NTS 认证的 Chrony 时间同步，以及 Sunshine 等已声明的 Tailscale 服务。见[链路身份](docs/CN/identity_CN.md)和[直连例外](docs/CN/egress_CN.md)。
+- **访客和浏览器隔离。** 经主机路由的访客流量按网桥和源网段授权，B 中可显式启用 IPv4 TPROXY。直接创建主机 socket 的受限容器后端按独立 UID 识别。日用 Firefox 遵循主机策略，身份浏览器使用独立网络命名空间和仅在 B 开放的专用中继，门户登录在 A 中使用临时浏览器。见[访客网络](docs/CN/network_CN.md#访客与容器)和 [Firefox 网络策略](docs/CN/browser_CN.md#网络策略与身份)。
+
+[网络模块源码](system/config/network/)和 [NixOS 虚拟机测试定义](tests/checks.nix)涵盖模式切换、DNS 路由、访客隔离和 WireGuard 出口。配置与恢复方法见[网络文档](docs/CN/README_CN.md)。
+
+## 桌面与系统
 
 - **Wayland 桌面。**
   默认使用 Niri，Noctalia 提供状态栏、启动器、通知和随壁纸变化的主题。
@@ -20,13 +36,6 @@
 
 - **开发环境。**
   配置 Nushell、带语言服务器的 Neovim、VS Code 和 Zed，提供 rootless Docker、虚拟化工具，以及供传统 Linux 软件使用的 FHS 环境。
-
-- **受管网络。**
-  nftables、本地 DNS 和 Mihomo 协同控制直连、代理和阻断三种状态。
-  Clash Verge 保持上游打包版本，提供节点选择与监控。
-  System Proxy、TUN 和核心模式控件仍可操作，但会在到达操作系统或受管核心前被静默丢弃。
-  系统命令选择 `rules` 或 `proxy-only` 路由子模式，两者均使用核心 `mode: rule`。
-  核心运行在独立网络命名空间中，只加载已登记来源授权的配置。
 
 - **Firefox。**
   原生软件包包含锁定的隐私设置、文件系统沙箱、独立身份 profile 和临时门户浏览器，启动时检查网络状态。
@@ -40,7 +49,6 @@
   首次启用及设备授权见 [USBGuard 使用说明](scripts/README_CN.md#usbguard-策略)。
 
 各功能的模块入口见[源码目录](docs/CN/layout_CN.md)。
-网络设计和日常命令见[网络文档](docs/CN/README_CN.md)。
 
 ## 使用这套配置
 
@@ -107,6 +115,8 @@ sudo nixos-rebuild switch --flake .#lfour
 
 A 表示直连，B 表示代理健康可用，C 在代理不可用时阻断应用流量。
 关闭 GUI 保留受管核心运行。使用 `clash-off` 切换到 A。
+Clash Verge 保持上游打包版本，用于选择和监控节点。系统会丢弃 GUI 发出的 System Proxy、TUN 和核心模式请求。
+使用系统命令选择 `rules` 或 `proxy-only`，两种路由均使用 Mihomo 的 `mode: rule`。
 运行 `clash-on` 时，受控订阅优先恢复已接受快照。进入健康 B 后，再在后台获取启动更新。
 已登记订阅也会每 30 分钟刷新，正常节点轮换自动批准。
 成功更新不弹窗，失败通过桌面通知和 `proxy-status` 提示。

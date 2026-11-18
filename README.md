@@ -1,13 +1,30 @@
-# nixos-lf
+# nixos-lf · Personal NixOS workstation configuration
 
 English | [简体中文](README_CN.md)
 
-A personal NixOS workstation built around Niri, Noctalia and Home Manager.
-This repository brings the desktop, an encrypted and ephemeral root filesystem, development tools, an AI agent and network policy into one Nix flake.
-The configuration targets `x86_64-linux`.
-It uses NixOS 26.05 with selected packages from Unstable, and exposes the system as `nixosConfigurations.lfour`.
+A personal NixOS system configuration managed with Nix flakes and Home Manager. It includes a Niri desktop, applications, development tools and encrypted storage.
+The workstation network integrates an nftables firewall, system-wide transparent proxying with Mihomo (Clash), and encrypted DNS with DNSSEC validation.
+The system output is `nixosConfigurations.lfour` for `x86_64-linux`, based on NixOS 26.05 with selected packages from Unstable.
 
-## What is included
+## Network security and architecture
+
+The host's nftables firewall controls IPv4 and IPv6 ingress, egress and guest forwarding. A systemd coordinator applies mode changes atomically. Entering proxy mode passes through C and opens B after listener, route, DNS and TUN health checks pass. A 60-second kernel lease ties B to fresh health checks. When the lease expires, nftables blocks ordinary application traffic, including existing flows. See [modes and enforcement](docs/network.md#modes-and-enforcement).
+
+| Mode | Ordinary application traffic | Public DNS |
+|---|---|---|
+| **A** · Direct | Native sockets use Ethernet or Wi-Fi | Unbound uses DoT and validates DNSSEC locally |
+| **B** · Proxy | TCP/UDP enters Mihomo through TUN. The TCP fallback uses nftables redirection via Gost | Mihomo uses local DNSSEC validation and DNS over HTTPS (DoH). Answers are normally fake IPs, or validated real addresses with the WireGuard exit |
+| **C** · Blocked | Ordinary external traffic is blocked, with scoped link maintenance and recovery traffic allowed | Local and eligible cached answers remain available |
+
+- **Transparent proxy and exit policy.** Both paths into Mihomo cross a private veth link into its network namespace. The host firewall checks the core's transport across that boundary. In B, `rules` applies the subscription's direct, proxy and reject rules. `proxy-only` pins supported traffic to one approved exit and blocks independent application egress. An optional WireGuard peer carries the fixed SOCKS5 relay's traffic and native IPv4/IPv6 ping. See [traffic paths](docs/network.md#traffic-paths) and [routing policy](docs/proxy.md#routing-policy).
+- **Subscription trust and GUI controls.** A root-owned broker registers subscription sources and authorizes audited snapshots. An unprivileged worker fetches and renders candidates. System services own the routing policy and reserve the DNS and proxy ports. Clash Verge uses a restricted Unix socket for monitoring and permitted node selection. See [controlled sources and service identities](docs/proxy.md).
+- **DNS routing and filtering.** System queries follow `systemd-resolved → dnsmasq → Unbound or Mihomo`. nftables redirects ordinary outbound port 53 queries, and dnsmasq and Mihomo share a domain blocklist. Approved Wi-Fi split DNS and Tailscale MagicDNS have scoped paths in compatible modes. See [DNS policy](docs/dns.md).
+- **Uplinks and local services.** dhcpcd manages Ethernet and NetworkManager manages Wi-Fi. Wi-Fi supports per-profile MAC, DHCP and IPv6 identities, and either uplink can pin its IPv4 gateway with ARP. Mode-specific firewall allowances cover link maintenance, Chrony with Network Time Security (NTS), and Tailscale access to declared services such as Sunshine. See [link identity](docs/identity.md) and [direct egress exceptions](docs/egress.md).
+- **Guests and browser isolation.** Routed guests use bridge- and subnet-scoped rules, with opt-in IPv4 TPROXY in B. Restricted container backends that open host sockets are identified by dedicated UIDs. Daily Firefox follows host policy, the identity profile uses a separate network namespace and a B-only proxy relay, and portal login uses a temporary browser in A. See [guest networking](docs/network.md#guests-and-containers) and [Firefox network policy](docs/browser.md#network-policy-and-identities).
+
+The [network modules](system/config/network/) and [NixOS VM test definitions](tests/checks.nix) cover mode switches, DNS routing, guest isolation and WireGuard egress. See the [network documentation](docs/README.md) for configuration and recovery.
+
+## Desktop and system
 
 - **Wayland desktop.**
   Niri is the default session, with Noctalia for the bar, launcher, notifications and wallpaper-based theming.
@@ -20,13 +37,6 @@ It uses NixOS 26.05 with selected packages from Unstable, and exposes the system
 
 - **Development environment.**
   Nushell, Neovim with language servers, VS Code and Zed sit alongside rootless Docker, virtualisation tools and FHS environments for software that needs a conventional Linux layout.
-
-- **Managed networking.**
-  nftables, local DNS and Mihomo share a direct/proxy/blocked state model.
-  Clash Verge remains the packaged upstream GUI and provides node selection and monitoring.
-  Its System Proxy, TUN and core-mode controls stay operable but are silently discarded before they reach the OS or managed core.
-  System commands select the `rules` or `proxy-only` routing submode; both use core `mode: rule`.
-  The core runs in its own network namespace, and registered subscription sources control which configuration it may load.
 
 - **Firefox.**
   A native package includes locked privacy settings, a filesystem sandbox, a separate identity profile and a temporary portal browser.
@@ -41,7 +51,6 @@ It uses NixOS 26.05 with selected packages from Unstable, and exposes the system
   The [USBGuard guide](scripts/README.md#usbguard-policy) covers first-time setup and device authorization.
 
 The [source layout](docs/layout.md) identifies the modules behind these features.
-The [network guides](docs/README.md) explain the network policy and daily commands.
 
 ## Using this configuration
 
@@ -108,6 +117,8 @@ Keep `stateVersion` unchanged unless you have reviewed and migrated the affected
 
 A is direct access, B is healthy proxy access, and C blocks application traffic while proxy access is unavailable.
 Closing the GUI leaves the managed core active. Use `clash-off` to select A.
+Clash Verge is the upstream GUI for node selection and monitoring. The system discards its System Proxy, TUN and core-mode requests.
+Use the system commands to select `rules` or `proxy-only`. Both keep Mihomo in `mode: rule`.
 With `clash-on`, controlled subscriptions prefer their accepted snapshot. Startup fetching waits until B is healthy.
 Registered subscriptions also refresh every 30 minutes, with routine node rotation approved automatically.
 Successful updates stay silent; failures appear in desktop notifications and `proxy-status`.
