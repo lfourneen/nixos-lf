@@ -2,7 +2,7 @@
 
 let
   pname = "dsh-desktop";
-  version = "2.0.22";
+  version = "2.0.23";
 
   # Upstream publishes a type-2 AppImage for Linux. The AppDir keeps the
   # Electron tree at its root (AppRun + dsh-desktop-next + resources) and adds
@@ -11,7 +11,7 @@ let
   # child process must read) beside it in resources/app.asar.unpacked.
   src = pkgs.fetchurl {
     url = "https://github.com/anywhere-labs/dsh-desktop/releases/download/v${version}-next/DSH-NEXT-${version}-next-x86_64.AppImage";
-    hash = "sha256-U04xJC0pWnHPkqgAHrXH536cc2EmU1+pMCbtI7NzZGc=";
+    hash = "sha256-xE90bxeSx2JcCgEoAV/If7hCA/JwGUw8eFLi1aehdjY=";
   };
 
   # Single unpack, reused as the runtime tree plus the desktop entry and icons.
