@@ -81,7 +81,7 @@ Wayland、音频、Downloads、profile 和用户选择的文档是明确开放�
 | 入口 | 可用模式 | Profile 与网络 |
 |---|---|---|
 | `firefox` | 默认允许 A 和健康 B | 持久化日常 profile，本机使用原生 socket |
-| `firefox-identity` | 仅健康 B | 独立 profile、缓存和下载目录，无扩展，不复制已有账号数据 |
+| `firefox-identity` | 仅健康 B | 独立 profile、缓存和下载目录，仅允许 uBlock Origin |
 | `firefox-portal URL` | 仅显式 A | 临时 profile，只能通过 relay 连接一个字面 IP 的 80/443 端口，最多运行 15 分钟 |
 
 `my.firefox.dailyRequireProxy=false` 允许日常 Firefox 在 A 中直连，在 B 中按订阅 Rule 分流，后者可能包含 DIRECT。
@@ -209,7 +209,8 @@ AutoConfig `lockPref` 覆盖 enterprise policy 无法锁定的命名空间，对
 | ECH / TLS | 启用 ECH 和 GREASE。日常透明路径通过原生 HTTPS 记录发现 ECH |
 | 出口地址 | 共用 A/B/C 与路由策略。默认 B 按 Rule 选择 DIRECT 或代理节点 |
 
-严格扩展策略阻止未声明扩展，强制安装 uBlock Origin，KISS Translator 可移除。
+严格扩展策略阻止未声明扩展。日常和身份 Firefox 均强制安装 uBlock Origin。
+日常 Firefox 的 KISS Translator 可移除，门户浏览器禁止所有扩展。
 签名包及更新经选定网络路径从 Mozilla Add-ons 获取，需要联网。
 包策略和 Gecko 保护不依赖扩展下载完成。
 

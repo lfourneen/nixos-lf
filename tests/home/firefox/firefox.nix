@@ -7,6 +7,10 @@ let
 
   manifest = pkgs.writeText "firefox-test.json" (builtins.toJSON {
     package = firefox;
+    isolatedBrowsers = pkgs.lib.genAttrs [ "identity" "portal" ] (name:
+      let launcher = pkgs.lib.findFirst (pkg: pkgs.lib.getName pkg == "firefox-${name}")
+        (throw "Missing firefox-${name} launcher") home.home.packages;
+      in launcher.netsec.package);
     driver = ./firefox_driver.py;
     inherit (firefox.netsec) settings prefs;
     rootHealthSettings = config.my.proxy.healthSettings;

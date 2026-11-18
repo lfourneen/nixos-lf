@@ -51,6 +51,19 @@ assert policies["Proxy"] == dict(Mode="manual", Locked=True,
     SSLProxy="127.0.0.1:" + str(manifest["relayPort"]),
     UseHTTPProxyForAllProtocols=True, Passthrough="")
 assert policies["DNSOverHTTPS"] == {"Enabled": False, "Locked": True}
+u_block_id = "uBlock0@raymondhill.net"
+blocked_extensions = {"*": {"installation_mode": "blocked"}}
+u_block = {
+    "installation_mode": "force_installed",
+    "install_url": "https://addons.mozilla.org/firefox/downloads/latest/uBlock0@raymondhill.net/latest.xpi",
+}
+for name, expected in {
+    "identity": {**blocked_extensions, u_block_id: u_block},
+    "portal": blocked_extensions,
+}.items():
+    isolated = Path(manifest["isolatedBrowsers"][name])
+    document = json.loads((isolated / "lib/firefox/distribution/policies.json").read_text())
+    assert document["policies"]["ExtensionSettings"] == expected, name
 assert not any((p if isinstance(p, str) else p.get("appId")) in
                {"app.zen_browser.zen", "com.google.Chrome"} for p in manifest["flatpaks"])
 for desktop in [manifest["desktop"], *manifest["aliases"]]:

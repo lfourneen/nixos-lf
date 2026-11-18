@@ -81,7 +81,7 @@ The managed profile persists across that restart.
 | Entry | Available modes | Profile and network |
 |---|---|---|
 | `firefox` | A and healthy B by default | Persistent daily profile using native sockets on this host |
-| `firefox-identity` | Healthy B only | Separate profile, cache and downloads, with no extensions or copied account data |
+| `firefox-identity` | Healthy B only | Separate profile, cache and downloads. Only uBlock Origin is allowed |
 | `firefox-portal URL` | Explicit A only | Temporary profile and a relay restricted to one literal IP on ports 80/443, for up to 15 minutes |
 
 `my.firefox.dailyRequireProxy=false` lets daily Firefox use direct access in A and subscription Rule routing in B.
@@ -222,7 +222,8 @@ AutoConfig `lockPref` covers preferences beyond enterprise policy lock support a
 | ECH / TLS | ECH and GREASE enabled. The daily transparent path supports ECH discovery through native HTTPS records |
 | Exit address | Shared A/B/C and routing policy. Default B Rule routing selects DIRECT or a proxy node |
 
-Strict extension policy blocks undeclared extensions. uBlock Origin is force-installed and KISS Translator is removable.
+Strict extension policy blocks undeclared extensions. Daily and identity Firefox force-install uBlock Origin.
+KISS Translator is removable in daily Firefox. The portal browser blocks all extensions.
 Signed packages/updates come from Mozilla Add-ons through the selected network path and require connectivity.
 Package policy and Gecko protections do not depend on extension download completing.
 

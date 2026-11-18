@@ -164,18 +164,20 @@ let
     (name: value: "lockPref(${builtins.toJSON name}, ${builtins.toJSON value});") prefs);
 
   encId = id: lib.replaceStrings [ "{" "}" ] [ "%7B" "%7D" ] id;
+  uBlockId = "uBlock0@raymondhill.net";
+  blockedExtensions = { "*".installation_mode = "blocked"; };
   extensionSettings = lib.mapAttrs
     (id: mode: {
       installation_mode = mode;
       install_url = "https://addons.mozilla.org/firefox/downloads/latest/${encId id}/latest.xpi";
     })
     {
-      "uBlock0@raymondhill.net" = "force_installed";
+      ${uBlockId} = "force_installed";
       "{fb25c100-22ce-4d5a-be7e-75f3d6f0fc13}" = "normal_installed"; # KISS Translator
     };
 
   policies = {
-    ExtensionSettings = lib.optionalAttrs strictPrivacy { "*".installation_mode = "blocked"; } // extensionSettings;
+    ExtensionSettings = lib.optionalAttrs strictPrivacy blockedExtensions // extensionSettings;
     DisableTelemetry = true;
     DisableFirefoxStudies = true;
     DisableEncryptedClientHello = false;
@@ -262,8 +264,7 @@ let
 
   settings = pkgs.writeText "firefox-launch.json" (builtins.toJSON settingsData);
 
-  # A separate package/policy and storage identity; no extensions, cookie or
-  # downloaded files are inherited from the daily browser.
+  # Separate browser packages have their own policies and profile data.
   isolatedBrowser = name: portal: let
     isolatedSettings = pkgs.writeText "firefox-${name}.json" (builtins.toJSON (settingsData // {
       profile = "${config.programs.firefox.configPath}/${name}";
@@ -284,7 +285,9 @@ let
       extraPrefs = lib.concatStringsSep "\n" (lib.mapAttrsToList
         (key: value: "lockPref(${builtins.toJSON key}, ${builtins.toJSON value});") isolatedPrefs);
       extraPolicies = policies // {
-        ExtensionSettings = { "*".installation_mode = "blocked"; };
+        ExtensionSettings = blockedExtensions // lib.optionalAttrs (!portal) {
+          ${uBlockId} = extensionSettings.${uBlockId};
+        };
         Proxy = { Mode = "manual"; Locked = true; HTTPProxy = "127.0.0.1:18080"; SSLProxy = "127.0.0.1:18080"; UseHTTPProxyForAllProtocols = true; Passthrough = ""; };
       } // lib.optionalAttrs portal {
         HttpsOnlyMode = "disallowed";
@@ -306,7 +309,9 @@ let
   (pkgs.writeShellScriptBin "firefox-${name}" ''
     exec ${isolated}/bin/firefox "$@"
   '').overrideAttrs (old: {
-    passthru = (old.passthru or {}) // { netsec.settings = isolatedSettings; };
+    passthru = (old.passthru or {}) // {
+      netsec = { settings = isolatedSettings; package = isolated; };
+    };
   });
 
 
