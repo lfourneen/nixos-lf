@@ -18,14 +18,14 @@ Ordinary desktop and other applications retain the ledger below.
 ## Proxy-only egress
 
 The ledger below describes rules-mode exceptions. Runtime proxy-only adds a separate host boundary before those exceptions can grant physical egress.
-Only the selected pinned core node address and its fixed TCP/UDP ports can carry outer transports. Other accepted source nodes are absent from the effective snapshot and physical grant.
+The outer transport accepts the selected core node's fixed TCP/UDP tuple. With the WireGuard exit configured, the physical allowlist instead pins the peer's UDP endpoint and the relay tuple is allowed only inside the tunnel.
 Ordinary native applications, root services and restricted socket identities receive no independent public, LAN, multicast, Chrony, Tailscale or inbound-reply permission.
 Existing direct reply flows are cut as well as new requests. Loopback IPC, scoped DHCP/NDP and necessary errors for authorized outer transports remain available.
 
 Configured IPv4 transparent guests may use their declared core inlet. Other routed guest traffic, including public IPv6 and private forwarding, is refused in strict mode.
 This controls traffic routed by the host; same-bridge layer-two traffic remains a separate boundary.
 Restricted backends continue to require real-address DNS and cannot borrow explicit host proxy ports or fake-IP targets.
-Proxy-only refuses real and fake-IP ICMP echo. An adapter without UDP support reports `unsupported`; supported UDP is not continuously probed. IPv6 targets depend on the selected node, and one node does not independently prove one remote NAT address.
+With the [WireGuard exit](proxy.md#wireguard-exit-with-real-ping), public IPv4 and IPv6 echo requests use the same peer as the fixed relay. Fake-IP echo is refused, and ordinary application echo requires the live kernel lease. With application-proxy transport, proxy-only refuses echo. UDP remains outside the continuous data-plane probe.
 
 The whole switch passes through C and consumes a fresh, epoch-bound full proof before kernel authorization is renewed.
 Explicit `clash-off` restores A. Returning to rules uses the same controlled transaction.

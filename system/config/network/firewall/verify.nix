@@ -136,7 +136,14 @@ in
             DIG=${pkgs.dnsutils}/bin/dig
             DNS_PORT=${toString port.dnsmasq}
             source ${./client_dns.sh}
-            if ! client_dns ${lib.escapeShellArg (if config.my.proxy.tunMode then config.my.proxy.fakeIpNet else "0.0.0.0/0")} 20 "''${dns_names[@]}"; then
+            dns_pool=${lib.escapeShellArg (if config.my.proxy.tunMode then config.my.proxy.fakeIpNet else "0.0.0.0/0")}
+            ${lib.optionalString (config.my.proxy.ipTunnel != null) ''
+            if [ "$(printf '%s' "$state" | jq -r '.routing_requested')" = proxy-only ]; then
+              dns_exclude=$dns_pool
+              dns_pool=0.0.0.0/0
+            fi
+            ''}
+            if ! client_dns "$dns_pool" 20 "''${dns_names[@]}"; then
               live_fail "client DNS probe failed: $client_dns_error"
             fi
           fi

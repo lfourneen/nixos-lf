@@ -7,7 +7,21 @@
   port, strictReplyRules, actorConnmark, appConnmark, tunIpv4Address,
   addRules, guestReplyRules }:
 
-{
+let
+  tunnel = config.my.proxy.ipTunnelPolicy;
+  tunnelEnabled = config.my.proxy.ipTunnel != null;
+  tunnelDevice = ''"${tunnel.device}"'';
+  endpointFamily = if lib.hasInfix ":" tunnel.endpointAddress then "ip6" else "ip";
+  # WireGuard preserves the inner socket owner during encapsulation.
+  outer = ''oifname { "${wired}", "${wireless}" } ${endpointFamily} daddr ${tunnel.endpointAddress} udp sport ${toString tunnel.listenPort} udp dport ${toString tunnel.endpointPort} meta mark ${tunnel.outerMark}'';
+  echo = [
+    { family = "ip"; icmp = "icmp"; probe = tunnel.probeIpv4; }
+    { family = "ip6"; icmp = "icmpv6"; probe = tunnel.probeIpv6; }
+  ];
+  probe = chain: verdict: lib.concatMapStrings ({ family, icmp, probe }: ''
+    add rule inet lf_filter ${chain} oifname ${tunnelDevice} meta skuid 0 meta mark ${tunnel.probeMark} ${family} daddr ${probe} ${icmp} type echo-request ct mark set ${tunnel.probeMark} ${verdict}
+  '') echo;
+in {
   proxyModeRules = lib.optionalString proxyKillSwitch ''
     # One atomic load: the mode-dependent NAT tables are torn down here, inside the
     # same `nft -f`, so the fragment is applied or not (no partial window).
@@ -27,6 +41,10 @@
     ''}
 
     flush chain inet lf_filter proxymode_drops
+    ${lib.optionalString tunnelEnabled ''
+    ${probe "proxymode_drops" "accept"}
+    add rule inet lf_filter proxymode_drops ${outer} accept
+    ''}
     # The proxy core marks its own outbound sockets (routing-mark): allow it, it
     # must reach the nodes directly.
     add rule inet lf_filter proxymode_drops ${coreSocket} accept
@@ -41,6 +59,9 @@
     add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } ip6 daddr != { ${exempt6} } counter drop
 
     flush chain inet lf_filter proxymode_tail
+    ${lib.optionalString tunnelEnabled ''
+    add rule inet lf_filter proxymode_tail oifname ${tunnelDevice} meta l4proto { icmp, icmpv6 } accept
+    ''}
     add rule inet lf_filter proxymode_tail ${coreSocket} accept
     add rule inet lf_filter proxymode_tail oifname != { "lo", "${tunDev}" } ip daddr != { ${join multicast4} } counter drop
     add rule inet lf_filter proxymode_tail oifname != { "lo", "${tunDev}" } ip6 daddr != ${join m.multicastV6} counter drop
@@ -113,11 +134,18 @@
     add rule inet lf_filter lf_tailnet_guard ${actorConnmark} ${appConnmark} ct direction reply ct original ip daddr != 127.0.0.0/8 counter drop
     add rule inet lf_filter lf_tailnet_guard ${actorConnmark} ${appConnmark} ct direction reply ct original ip6 daddr != ::1 counter drop
     add rule inet lf_filter lf_tailnet_guard ${actorConnmark} ${appConnmark} ct direction reply meta l4proto { tcp, udp } ct original proto-dst { ${toString port.mihomoMixed}, ${toString port.mihomoStrict}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
+    ${lib.optionalString tunnelEnabled ''
+    add rule inet lf_filter lf_tailnet_guard iifname ${tunnelDevice} ct mark != ${tunnel.probeMark} counter drop
+    ''}
     flush set inet lf_filter dns_plaintext4
     ${guestGuard "blocked"}
     ${lib.optionalString vmTproxy "flush chain ip lf_mangle proxymode_tproxy"}
 
     flush chain inet lf_filter lf_blocked_guard
+    ${lib.optionalString tunnelEnabled ''
+    ${probe "lf_blocked_guard" "accept"}
+    add rule inet lf_filter lf_blocked_guard ${outer} accept
+    ''}
     # Refuse non-root access to local proxy inlets while recovery probes run.
     add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip daddr 127.0.0.0/8 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoStrict}, ${toString port.mihomoDns}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop
     add rule inet lf_filter lf_blocked_guard meta skuid != 0 ip6 daddr ::1 meta l4proto { tcp, udp } th dport { ${toString port.mihomoMixed}, ${toString port.mihomoStrict}, ${toString port.mihomoDns}, ${toString port.mihomoTproxy}, ${toString port.gostHttp}, ${toString port.gostRedirect} } counter drop

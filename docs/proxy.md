@@ -403,8 +403,10 @@ Exit IDs bind the complete pinned node definition. Health, leases, refreshes and
 Off/on and switching to rules retain the strict exit choice for this boot; reboot clears it.
 If a source changes the chosen node's address, credentials or transport, the old ID cannot authorize its replacement. Accept the updated source in rules before selecting its new ID.
 
+A system generation can replace the active routing policy or its health artifacts. If the active selection belongs to a previous generation, the proxy stays blocked. Run `clash-rules` to revoke the old selection and start a new rules transaction. Then use `clash-egress` to select a strict exit for the new policy.
+
 `proxy-status --json` reports `capabilities.egress="fixed-leaf"` for the strict selection.
-UDP is `unsupported` when the actual adapter lacks it; otherwise its continuous scope remains `not-probed`. IPv6 targets remain node-dependent, and unsupported requests cannot use another leaf or DIRECT.
+`capabilities.udp_declared` reports the selected adapter's UDP flag when available. UDP is `unsupported` when the adapter lacks it. Continuous UDP coverage otherwise remains `not-probed`. IPv6 targets remain node-dependent, and unsupported requests cannot use another leaf or DIRECT.
 `capabilities.remote_nat="not-measured"` keeps the remote boundary explicit: one node can still use different NAT addresses for TCP/UDP or destinations.
 A single NAT guarantee requires independent target observations. IPv4 and IPv6 may have separate declared exit addresses.
 
@@ -424,7 +426,38 @@ See [strict egress](egress.md#proxy-only-egress).
 
 The reusable module defaults `runtimeRouting=false`. Enabling it requires controlled sources, isolated TUN, local DNSSEC, strict encrypted DNS and a kernel authorization lease.
 The older build-time `proxyOnly` option remains available for configurations without runtime routing; it controls core routing and DIRECT refusal, independently of host exceptions.
-Keep it false when runtime routing is enabled. Fixed-port supported node protocols carry TCP/UDP; port hopping and real ICMP tunnelling are outside this mode.
+Keep it false when runtime routing is enabled. The application-proxy transport supports fixed-port TCP/UDP nodes.
+
+### WireGuard exit with real ping
+
+Set `my.proxy.ipTunnel` to use a controlled WireGuard exit in runtime `proxy-only`. System DNS then returns validated real addresses, so both `ping hostname` and `ping IP` can send native echo requests. The core and strict Firefox use a fixed SOCKS5 relay on the same WireGuard peer. The peer forwards ICMP at the IP layer and originates the proxied TCP/UDP connections.
+
+Configure the two ends before selecting the mode.
+
+1. On the peer, authorize the client's tunnel addresses as one IPv4 host route and one IPv6 host route. Enable forwarding for both families and allow related ICMP errors, including IPv4 fragmentation-needed and IPv6 Packet Too Big. Configure forwarded echo and the SOCKS5 relay to use the same public source address per family.
+2. Bind the peer's SOCKS5 listener to a public literal address reachable inside the tunnel. This can be the same address as the WireGuard endpoint. Scope inbound access to the WireGuard interface and the client addresses. The SOCKS5 UDP association must advertise the configured relay address and fixed relay port. Register that SOCKS5 node in the source's remote catch-all with `udp: true`. Use a reachable rules-mode node to complete initial source acceptance before starting the tunnel.
+3. Declare the endpoint, peer key, client addresses, relay and two controlled public echo targets beyond the peer. Keep the client private key in a root-only runtime file, such as a sops secret.
+
+```nix
+my.proxy.ipTunnel = {
+  endpointAddress = "<peer public address>";
+  endpointPort = 51820;
+  listenPort = 51821;
+  publicKey = "<peer WireGuard public key>";
+  privateKeyFile = config.sops.secrets."wireguard-exit-key".path;
+  clientIpv4 = "172.31.77.2";
+  clientIpv6 = "fd42:77::2";
+  relayAddress = "<relay public address>";
+  relayPort = 1080;
+  probeIpv4 = "<controlled IPv4 echo target>";
+  probeIpv6 = "<controlled IPv6 echo target>";
+  mtu = 1380;
+};
+```
+
+After applying the configuration, use `clash-proxy-only`. `clash-egress` lists compatible leaves on the declared relay. `proxy-status --json` reports `capabilities.icmp="verified-dual-stack"` after the kernel route checks, both echo probes and the existing application and DNS checks pass. Loss of the tunnel leaves C in force. `clash-rules` and `clash-off` remove the WireGuard interface and its routes.
+
+The status reports the current WireGuard health stage, including a route or echo failure by address family. If both echo probes fail, it also reports whether a recent peer handshake was observed. Each address family gets one retry for a missing echo reply within the same health budget. Both must pass to grant or renew the lease. To activate a changed peer or relay while the old policy is selected, use the `clash-rules` recovery transaction before selecting the new exit.
 
 ## Domain targets
 

@@ -15,14 +15,14 @@ A/C 在原子规则事务中拒绝核心 `7898` 的收发，B 才开放。
 ## Proxy-only 出口
 
 下方清单描述 rules 中的例外。运行时 proxy-only 增加独立宿主边界，先于这些例外限制物理出口。
-外层传输只允许所选固定核心节点的地址及其固定 TCP/UDP 端口。其它已接受来源节点不进入有效快照及物理授权。
+外层传输只允许所选核心节点的固定 TCP/UDP 端点。配置 WireGuard 出口后，物理出口只放行固定的对端 UDP 端点，relay 端点只允许经隧道访问。
 普通原生应用、root 服务和受限 socket 身份均没有独立公网、LAN、组播、Chrony、Tailscale 或入站回复权限。
 既有直连回包与新请求同时被撤销。Loopback IPC、限定的 DHCP/NDP，以及授权外层传输所需的网络错误继续可用。
 
 已配置的 IPv4 透明访客可以使用声明的核心入口，其余经宿主路由的访客流量，包括公网 IPv6 和私网转发，在严格模式拒绝。
 此约束作用于宿主路由，同桥二层流量仍属于独立边界。
 受限后端继续要求真实地址 DNS，不得借用宿主显式代理端口或 fake-IP 目标。
-Proxy-only 拒绝真实地址和 fake-IP 的 ICMP echo。不支持 UDP 的适配器显示 `unsupported`，支持的 UDP 不持续探测。IPv6 目标能力取决于所选节点，同一节点也不能独立证明远端单一 NAT。
+配置 [WireGuard 出口](proxy_CN.md#包含真实-ping-的-wireguard-出口)后，公网 IPv4 和 IPv6 echo 请求与固定 relay 使用同一对端。Fake-IP echo 会被拒绝，普通应用的 echo 需要有效的内核租约。应用代理传输下的 proxy-only 拒绝 echo。健康检查仍不持续探测 UDP 数据面。
 
 切换全程经过 C，只有绑定当前 epoch 的新鲜完整证明才能续内核授权。
 显式 `clash-off` 恢复 A，返回 rules 也走同一受管事务。

@@ -19,6 +19,7 @@ let
   settings = pkgs.writeText "proxy-authorization.json" (builtins.toJSON {
     nft = "${pkgs.nftables}/bin/nft";
     seconds = config.my.proxy.authorizationLeaseSeconds;
+    ip_tunnel = config.my.proxy.ipTunnelSettings;
   });
 
   command = pkgs.writeShellScript "proxy-authorization" ''

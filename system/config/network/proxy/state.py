@@ -338,9 +338,11 @@ def routing_view(root=Path('/run'), policy=None, boot_id=None):
                 or not isinstance(value.get('routing_policy_digest'), str) \
                 or not re.fullmatch('[a-f0-9]{64}', value['routing_policy_digest']):
             return result
-        if hashlib.sha256((root / 'proxy-mode/routing-active/policy.json').read_bytes()).hexdigest() != value['routing_policy_digest']:
+        managed = (root / 'proxy-mode/routing-active/policy.json').read_bytes()
+        if hashlib.sha256(managed).hexdigest() != value['routing_policy_digest']:
             return result
-    except OSError:
+        tunnel = bool(json.loads(managed).get('lf-ip-tunnel'))
+    except (OSError, ValueError, AttributeError):
         return result
     keys = ('routing_requested', 'routing_applied', 'routing_epoch', 'routing_policy_digest', 'routing_phase')
     if 'egress_epoch' in value:
@@ -349,6 +351,8 @@ def routing_view(root=Path('/run'), policy=None, boot_id=None):
             return result
         keys += ('egress_requested', 'egress_epoch')
     result.update({key: value[key] for key in keys})
+    if tunnel:
+        result['routing_transport'] = 'wireguard'
     result['routing_consistent'] = all(policy.get(key) == value[key] for key in keys)
     return result
 
@@ -449,7 +453,7 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     health = read(root / 'proxy-mode/health.json')
     health_current = health.get('boot_id') == boot_id and fresh(health.get('monotonic_seconds'), now, maximum)
     if routing:
-        health_current = health_current and all(health.get(key) == routing[key]
+        health_current = health_current and routing['routing_consistent'] and all(health.get(key) == routing[key]
             for key in ('routing_epoch', 'routing_policy_digest'))
         if routing.get('routing_requested') == 'proxy-only' and 'egress_epoch' in routing:
             health_current = health_current and all(health.get(key) == routing[key]
@@ -457,13 +461,20 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     core_mode = health.get('core_mode') if health_current and health.get('core_mode') in ('rule', 'global', 'direct') else 'unknown'
     identity = (health.get('exit_identities') or {}).get('mixed') if health_current else None
     identity = identity[:12] if isinstance(identity, str) and re.fullmatch('[a-f0-9]{64}', identity) else None
+    udp_declared = health.get('node_udp_supported') if health_current else None
+    if type(udp_declared) is not bool:
+        udp_declared = None
+    tunnel_health = health.get('ip_tunnel') if health_current and routing.get('routing_transport') == 'wireguard' else None
     return {**routing, "ready": not reasons, "target": target, "policy_version": version,
             'core_mode': core_mode, 'sampled_egress_identity': identity,
+            **({'ip_tunnel_health': tunnel_health} if isinstance(tunnel_health, dict) else {}),
             'capabilities': {'dns': ('validated-via-proxy' if routing.get('routing_applied') == 'proxy-only'
                 and health_current and health.get('real_dns_ok') is True else 'pending' if routing.get('routing_requested') == 'proxy-only'
-                else 'policy-selected'), 'udp': 'unsupported' if health_current
-                    and health.get('node_udp_supported') is False else 'not-probed',
-                'icmp': 'blocked' if routing.get('routing_requested') == 'proxy-only' else 'not-probed',
+                else 'policy-selected'), 'udp': 'unsupported' if udp_declared is False else 'not-probed',
+                'udp_declared': udp_declared,
+                'icmp': ('verified-dual-stack' if not reasons and health_current and health.get('ip_tunnel_ok') is True
+                         else 'pending') if routing.get('routing_transport') == 'wireguard'
+                    else 'blocked' if routing.get('routing_requested') == 'proxy-only' else 'not-probed',
                 'egress': 'fixed-leaf' if routing.get('routing_requested') == 'proxy-only'
                     and routing.get('egress_requested') else 'policy-selected',
                 'remote_nat': 'not-measured', 'ipv6_target': 'node-dependent'},

@@ -99,7 +99,7 @@ Localhost compatibility and the GUI channel use [separate Unix relays](proxy.md#
 | Mode | Entry | Application egress | Default DNS upstream |
 |---|---|---|---|
 | A / `direct` | Cold boot with direct boot policy, or explicit `clash-off` | Direct access | Validating Unbound DoT, with bounded plaintext recovery |
-| B / `proxy` | Proxy intent, authorized core, required TUN routes and health proof | Proxy, explicit exceptions, or drop | Mihomo fake-IP |
+| B / `proxy` | Proxy intent, authorized core, required TUN routes and health proof | Proxy, explicit exceptions, or drop | Managed fake-IP or validated real addresses with the WireGuard exit |
 | C / `blocked` | Proxy requested but not ready, crashed or unhealthy | Blocked except recovery and link infrastructure | Unbound. External DoT is cut, eligible cached answers are served |
 
 `proxy-mode` follows root-written, boot-scoped intent.
@@ -135,7 +135,7 @@ They cannot authorize B or renew its lease. Only the complete `ok=true` verdict 
 
 `health.json.scope` declares the invocation's coverage.
 Only `ok=true` confirms successful completion.
-`scope.requests` lists the TCP request paths and is empty for `--fast`.
+`scope.requests` lists the active request paths and is empty for `--fast`. The WireGuard exit adds real-address DNS plus native IPv4 and IPv6 echo to the full proof.
 `scope.udp_data_plane="not-probed"` makes the UDP boundary explicit: listener identity is checked, while UDP reachability and association return traffic are not continuously proven.
 A UDP-only failure can therefore leave B and its TCP verdict healthy. In runtime proxy-only, the selected adapter reports `unsupported` when it lacks UDP; IPv6 target support remains node-dependent.
 

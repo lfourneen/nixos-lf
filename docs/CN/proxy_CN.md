@@ -377,8 +377,10 @@ GUI 的 Rule/Global/Direct 是核心模式请求，不是路由子模式选择�
 Off/on 及返回 rules 保留本次启动的严格出口选择，重启清除它。
 来源更改所选节点的地址、凭据或传输后，旧 ID 不授权替代节点。先在 rules 接受更新后的来源，再选择新 ID。
 
+系统重建可能替换当前路由策略或其健康检查产物。如果运行时选择仍属于旧一代系统，代理保持阻断。运行 `clash-rules` 撤销旧选择并启动新的 rules 事务，然后用 `clash-egress` 为新策略选择严格出口。
+
 `proxy-status --json` 为严格选择报告 `capabilities.egress="fixed-leaf"`。
-实际适配器不支持 UDP 时显示 `unsupported`，其余 UDP 的持续探测范围仍为 `not-probed`。IPv6 目标能力取决于节点，不支持的请求不能转到另一叶子或 DIRECT。
+`capabilities.udp_declared` 显示所选适配器的 UDP 声明，缺少该信息时留空。实际适配器不支持 UDP 时显示 `unsupported`，其余 UDP 的持续探测范围为 `not-probed`。IPv6 目标能力取决于节点，不支持的请求不能转到另一叶子或 DIRECT。
 `capabilities.remote_nat="not-measured"` 明确远端边界：同一节点仍可能为 TCP/UDP 或不同目标使用不同 NAT 地址。
 单一 NAT 保证需要独立的目标观测。IPv4 和 IPv6 可以分别声明出口地址。
 
@@ -399,7 +401,38 @@ Proxy-only 禁用 LAN、组播、时间同步、Tailscale 和入站服务回复�
 
 可复用模块的 `runtimeRouting` 默认为 false，启用时要求受控来源、隔离 TUN、本地 DNSSEC、严格加密 DNS 和内核授权租约。
 原构建期 `proxyOnly` 选项保留给不使用运行时切换的配置，只控制核心路由与 DIRECT 拒绝，宿主例外仍独立。
-使用运行时切换时保持它为 false。当前支持固定端点节点的 TCP/UDP，不提供端口跳跃或真实 ICMP 隧道。
+使用运行时切换时保持它为 false。应用代理传输支持固定端口的 TCP/UDP 节点。
+
+### 包含真实 ping 的 WireGuard 出口
+
+配置 `my.proxy.ipTunnel` 后，运行时 `proxy-only` 使用受控的 WireGuard 出口。系统 DNS 返回本地验证过的真实地址，`ping 域名` 和 `ping IP` 都可发送原生 echo 请求。核心和严格 Firefox 使用同一个 WireGuard 对端上的固定 SOCKS5 relay。对端在 IP 层转发 ICMP，并发起代理的 TCP/UDP 连接。
+
+切换前先配置两端。
+
+1. 在远端为客户端配置 IPv4 和 IPv6 两条隧道主机路由，开启双栈转发，并允许相关 ICMP 错误，包括 IPv4 需要分片和 IPv6 Packet Too Big。让远端转发的 echo 与 SOCKS5 relay 在每个地址族使用相同的公网源地址。
+2. SOCKS5 relay 使用隧道内可达的公网字面地址，可以与 WireGuard 外层端点共用地址。远端防火墙将 relay 入站访问限制于 WireGuard 接口和客户端地址。SOCKS5 UDP association 须返回配置中的 relay 地址和固定端口。将此节点登记到来源的远程兜底组，设置 `udp: true`。启动隧道前，用 rules 下可达的节点完成首次来源接受。
+3. 在客户端声明外层端点、对端公钥、客户端地址、relay，以及位于远端之后的两个受控公网 echo 目标。客户端私钥放在仅 root 可读的运行时文件中，可由 sops 提供。
+
+```nix
+my.proxy.ipTunnel = {
+  endpointAddress = "<对端公网地址>";
+  endpointPort = 51820;
+  listenPort = 51821;
+  publicKey = "<对端 WireGuard 公钥>";
+  privateKeyFile = config.sops.secrets."wireguard-exit-key".path;
+  clientIpv4 = "172.31.77.2";
+  clientIpv6 = "fd42:77::2";
+  relayAddress = "<relay 公网地址>";
+  relayPort = 1080;
+  probeIpv4 = "<受控 IPv4 echo 目标>";
+  probeIpv6 = "<受控 IPv6 echo 目标>";
+  mtu = 1380;
+};
+```
+
+应用配置后运行 `clash-proxy-only`。`clash-egress` 列出声明的 relay 上兼容的叶子。内核路由、双栈 echo 及现有应用和 DNS 检查全部通过后，`proxy-status --json` 报告 `capabilities.icmp="verified-dual-stack"`。隧道故障时保持 C。`clash-rules` 和 `clash-off` 会移除 WireGuard 接口及其路由。
+
+状态会显示当前 WireGuard 健康阶段，按地址族标明路由或 echo 探测失败。双栈 echo 均失败时，还会显示是否有近期握手。未收到 echo 回包时，每个地址族在同一健康预算内可重试一次，双栈都通过才发放或更新租约。旧策略仍处于选中状态时，使用 `clash-rules` 恢复事务，再选择配置更新后的出口。
 
 ## 域名目标
 

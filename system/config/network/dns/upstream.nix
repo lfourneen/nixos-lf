@@ -316,7 +316,7 @@ in
         }
         dns_ok() {
           for name in ${lib.concatStringsSep " " config.my.proxy.tunProbeNames}; do
-            answer=$(dig +time=2 +tries=1 +short @127.0.0.1 -p ${toString port.mihomoDns} "$name" A 2>/dev/null)
+            answer=$(dig +time=2 +tries=1 +short @127.0.0.1 -p "$proxy_dns_port" "$name" A 2>/dev/null)
             [ -z "$answer" ] || return 0
           done
           return 1
@@ -383,7 +383,7 @@ in
           fi
           new_conf='server=127.0.0.1#${toString port.unbound}'
           if [ "$target" = proxy ]; then
-            new_conf='server=127.0.0.1#${toString port.mihomoDns}'
+            new_conf="server=127.0.0.1#$proxy_dns_port"
           elif [ "$target" = split-error ] || [ "$target" = resolver-error ]; then
             # no-resolv + an empty servers-file disables forwarding. Do not
             # send unknown enterprise suffixes to a default public resolver.
@@ -478,6 +478,13 @@ in
           fi
           policy_version=$(jq -r '.policy_version // .version // -1' /run/proxy-mode/state.json 2>/dev/null || echo -1)
           mode=$(jq -r '.mode // "unknown"' /run/proxy-mode/state.json 2>/dev/null || echo unknown)
+          proxy_dns_port=${toString port.mihomoDns}
+          ${lib.optionalString (config.my.proxy.ipTunnel != null) ''
+          if [ "$(jq -r '.routing_requested' /run/proxy-mode/state.json 2>/dev/null)" = proxy-only ]; then
+            proxy_dns_port=${toString port.coreRealDns}
+            split='{"entries":[],"context":null}'
+          fi
+          ''}
           new_status=blocked
           state_reason="mode-$mode: encrypted resolver only"
           servers=""
@@ -491,7 +498,7 @@ in
           elif [ "$mode" = proxy ]; then
             if dns_ok; then hits=$((hits + 1)); misses=0; else hits=0; misses=$((misses + 1)); fi
             if [ "$hits" -ge 2 ]; then
-              new_status=proxy; state_reason='mode-b: mihomo DNS healthy'
+              new_status=proxy; state_reason='mode-b: managed DNS healthy'
             elif [ "$current" = proxy ] && [ "$misses" -lt 2 ]; then
               new_status=proxy; state_reason='mode-b: one DNS miss, awaiting confirmation'
             else

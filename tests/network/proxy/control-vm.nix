@@ -1,8 +1,9 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false, routing ? false, guiControls ? false, guiPkgs ? pkgs, egressBrowser ? null, evidenceIdentity ? {} }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false, routing ? false, guiControls ? false, guiPkgs ? pkgs, egressBrowser ? null, evidenceIdentity ? {}, ipTunnelRelay ? null }:
 
 let
   desktop = clashPackage.desktopIdentity;
   desktopRuntime = "/run/user/${toString desktop.uid}";
+  ipTunnel = ipTunnelRelay != null;
   dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || managedSources || assurance || guiControls || ech != null);
   fixturePython = pkgs.python3.withPackages (p: [ p.pyyaml ] ++ pkgs.lib.optional assurance p.dnspython);
   maskSupervisor = "mkdir -p /run/systemd/system.control; ln -s /dev/null /run/systemd/system.control/proxy-mode.service; systemctl daemon-reload; systemctl stop proxy-mode.service; test $(systemctl show -p LoadState --value proxy-mode.service) = masked";
@@ -24,7 +25,7 @@ let
 
 in
 pkgs.testers.runNixOSTest {
-  name = if guiControls then "proxy-gui-controls" else if routing then "proxy-runtime-routing" else if assurance then "proxy-authorization-and-dnssec" else if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if ipTunnel then "proxy-ip-tunnel" else if guiControls then "proxy-gui-controls" else if routing then "proxy-runtime-routing" else if assurance then "proxy-authorization-and-dnssec" else if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
@@ -97,6 +98,22 @@ pkgs.testers.runNixOSTest {
     my.proxy.subscriptionAudit = if refresh || managedSources then "enforce" else "warn";
     my.proxy.controlledSources = managedSources;
     my.proxy.runtimeRouting = routing;
+    my.proxy.ipTunnel = lib.mkIf ipTunnel {
+      endpointAddress = "1.1.1.1";
+      endpointPort = 51820;
+      publicKey = "U3JNCueB0ffXi2NXLcnaoKythypekdCzoCaFBLL5TQs=";
+      privateKeyFile = "/run/wireguard-test/client.key";
+      clientIpv4 = "172.31.77.2";
+      clientIpv6 = "fd42:77::2";
+      relayAddress = "1.1.1.1";
+      relayPort = 18081;
+      probeIpv4 = "9.9.9.99";
+      probeIpv6 = "2606:4700:1111::99";
+    };
+    specialisation = lib.mkIf ipTunnel {
+      rotated-peer.configuration.my.proxy.ipTunnel.endpointPort = lib.mkForce 51822;
+      subscription-only.configuration.my.proxy.ipTunnel = lib.mkForce null;
+    };
     my.proxy.proxyOnlyDnsUpstreams = lib.mkIf routing [ "https://203.0.113.53/dns-query" ];
     my.proxy.strictBrowser = managedSources;
     my.proxy.subscriptionTrust = lib.mkIf managedSources "fixed";
@@ -176,18 +193,20 @@ pkgs.testers.runNixOSTest {
     };
 
     environment.etc."netsec-managed.json" = lib.mkIf managedSources {
-      text = builtins.toJSON { tls = sourceTls; inherit routing; egress = egressBrowser != null; stage = ../../../system/programs/clash/service/clash-verge-stage.py;
+      text = builtins.toJSON { tls = sourceTls; inherit routing; egress = egressBrowser != null || ipTunnel; stage = ../../../system/programs/clash/service/clash-verge-stage.py;
         stageSettings = clashPackage.stageSettings; launcher = "${clashPackage}/bin/verge-mihomo"; };
     };
 
     environment.etc."netsec-routing.py" = lib.mkIf routing { source = ./routing_fixture.py; };
-    environment.etc."netsec-egress.py" = lib.mkIf (egressBrowser != null) { source = ./egress_fixture.py; };
-    environment.etc."netsec-egress.json" = lib.mkIf (egressBrowser != null) {
-      text = builtins.toJSON {
+    environment.etc."netsec-ip-tunnel.py" = lib.mkIf ipTunnel { source = ./ip_tunnel_fixture.py; };
+    environment.etc."netsec-egress.py" = lib.mkIf (egressBrowser != null || ipTunnel) { source = ./egress_fixture.py; };
+    environment.etc."netsec-egress.json" = lib.mkIf (egressBrowser != null || ipTunnel) {
+      text = builtins.toJSON ({
         tls = sourceTls;
-        browser = { package = egressBrowser; settings = egressBrowser.netsec.settings; };
         identity = evidenceIdentity;
-      };
+      } // lib.optionalAttrs (egressBrowser != null) {
+        browser = { package = egressBrowser; settings = egressBrowser.netsec.settings; };
+      });
     };
 
     environment.etc."netsec-gui-webdriver.py" = lib.mkIf guiControls { source = ./gui_webdriver.py; };
@@ -243,6 +262,7 @@ pkgs.testers.runNixOSTest {
       fixturePython
       pkgs.curl pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.nftables pkgs.util-linux
     ] ++ lib.optionals (ech != null || egressBrowser != null) [ pkgs.nssTools pkgs.tcpdump ]
+      ++ lib.optionals ipTunnel [ pkgs.wireguard-tools pkgs.iputils pkgs.tcpdump ipTunnelRelay ]
       ++ lib.optionals dataplane [ pkgs.conntrack-tools ];
     virtualisation.memorySize = if guiControls || egressBrowser != null then 4096 else if ech != null then 3072 else if managedSources then 2048 else 1024;
   };
@@ -554,7 +574,25 @@ pkgs.testers.runNixOSTest {
         machine.succeed("proxy-control off")
         machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
     ''}
-    ${pkgs.lib.optionalString routing ''
+    ${pkgs.lib.optionalString ipTunnel ''
+    with subtest("WireGuard carries real dual-stack ICMP and the fixed TCP/UDP relay"):
+        try:
+            print(machine.succeed("python3 -u /etc/netsec-ip-tunnel.py check", timeout=420))
+        except Exception:
+            print(machine.execute("cat /run/proxy-mode/state.json /run/proxy-mode/health.json /run/clash-verge-rev/validator.log 2>/dev/null || true; ip rule; ip -6 rule; wg show; nft list table inet lf_routing; journalctl -u proxy-mode -u clash-verge -u nftables-verify -n 60"))
+            print(machine.execute("ip -4 route get 9.9.9.99 ipproto icmp; ip -6 route get 2606:4700:1111::99 ipproto ipv6-icmp; ping -4 -c 1 -w 2 -m 1279655953 -I 172.31.77.2 9.9.9.99 || true; ping -6 -c 1 -w 2 -m 1279655953 -I fd42:77::2 2606:4700:1111::99 || true"))
+            print(machine.execute("for location in uplink peer target; do tcpdump -nn -r /tmp/ip-tunnel-evidence/$location.pcap 'icmp or icmp6' 2>/dev/null | tail -16; done"))
+            raise
+        finally:
+            machine.execute("systemctl stop ip-tunnel-capture-uplink.service ip-tunnel-capture-peer.service ip-tunnel-capture-target.service")
+            machine.copy_from_vm("/tmp/ip-tunnel-evidence")
+    with subtest("WireGuard generations rotate, disable and roll back through C"):
+        print(machine.succeed("python3 -u /etc/netsec-ip-tunnel.py migrate", timeout=600))
+    machine.reboot()
+    machine.wait_for_unit("proxy-mode.service")
+    machine.succeed("jq -e '.routing_requested == \"rules\" and .mode == \"direct\"' /run/proxy-mode/state.json; ! ip link show lf-wg-exit")
+    ''}
+    ${pkgs.lib.optionalString (routing && !ipTunnel) ''
     ${pkgs.lib.optionalString (egressBrowser != null) ''
     with subtest("fixed leaf, observed dual-stack TCP/UDP exits and revocation"):
         try:

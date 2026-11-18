@@ -263,7 +263,7 @@ def node_identity(node):
                                     separators=(',', ':')).encode()).hexdigest()
 
 
-def egress_nodes(document):
+def egress_nodes(document, tunnel=None):
     """Return ordered, fixed leaves reachable from the subscription catch-all."""
     nodes = {node['name']: node for node in document['proxies']}
     groups = {group['name']: group for group in document['proxy-groups']}
@@ -286,6 +286,10 @@ def egress_nodes(document):
     visit(document['rules'][-1].split(',')[1], set())
     if not result:
         raise Refused('empty catchall')
+    if tunnel:
+        result = [node for node in result if node.get('type') == 'socks5'
+                  and node.get('server') == tunnel['relayAddress']
+                  and node.get('port') == tunnel['relayPort'] and node.get('udp') is True]
     return result
 
 
@@ -413,14 +417,16 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
     if policy.get('lf-private-targets', {}).get('single-egress') is True:
         if not proxy_only:
             raise Refused('single egress requires proxy-only')
-        candidates = egress_nodes(result)
-        selected = next((node for node in candidates if node_identity(node) == egress_id), None) if egress_id else candidates[0]
+        candidates = egress_nodes(result, policy.get('lf-ip-tunnel'))
+        selected = next((node for node in candidates if not egress_id or node_identity(node) == egress_id), None)
         if selected is None:
             raise Refused('selected egress unavailable')
         result['proxies'] = [selected]
         result['proxy-groups'] = [{'name': 'lf-remote', 'type': 'select', 'proxies': [selected['name']]}]
         result['rules'] = ['IN-NAME,lf-strict,lf-remote', 'MATCH,lf-remote']
     for key, value in policy.items():
+        if key == 'lf-ip-tunnel':
+            continue
         target = result
         parts = key.split('.')
         for part in parts[:-1]:

@@ -177,6 +177,7 @@ Mode A's `my.machine.dotEndpoints` list is independent of both B roles.
 TLS certificate checks remain enabled in Mihomo, and upstream failure grants no plaintext fallback.
 
 Runtime `proxy-only` keeps both local validators and their independent budgets, but sends both roles through authenticated literal-address DoH endpoints bound to the same fixed remote leaf as application traffic.
+With the [WireGuard exit](proxy.md#wireguard-exit-with-real-ping), system DNS also uses the application validator's real-address gateway so hostname pings can reach the destination over native ICMP.
 It removes domestic resolver-policy maps, direct bootstrap and MagicDNS transport.
 The core starts from accepted, pinned node addresses, preserving TLS server names; switching does not require a network fetch or direct name lookup.
 An unavailable node or validator keeps C active.

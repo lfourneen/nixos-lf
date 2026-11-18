@@ -228,7 +228,9 @@ let
     pkgs.writeText "routing-${mode}-health.json" (builtins.toJSON (healthConfig // {
       routing_state = "/run/proxy-mode/routing.json";
       routing_mode = mode;
-      real_dns_port = if mode == "proxy-only" then port.socketGuestDns else null;
+      real_dns_port = if mode != "proxy-only" then null
+        else if config.my.proxy.ipTunnel != null then port.coreRealDns else port.socketGuestDns;
+      ip_tunnel = if mode == "proxy-only" then config.my.proxy.ipTunnelSettings else null;
       tun_route_classes = if mode == "proxy-only"
         then lib.mapAttrs (_: _: "proxy") healthConfig.tun_route_classes else healthConfig.tun_route_classes;
       expected = healthConfig.expected // {
@@ -1039,7 +1041,8 @@ NFT_OFF
           ${lib.optionalString config.my.proxy.runtimeRouting ''
           if [ "$1" = on ]; then
             ${config.my.proxy.routingCommand} initialize
-            exec "$0" routing "$(${config.my.proxy.routingCommand} requested)"
+            requested=$(${config.my.proxy.routingCommand} requested)
+            exec "$0" routing "$requested"
           fi
           ''}
           # Serialize the whole operation, including service start/stop. This is
@@ -1090,6 +1093,9 @@ NFT_OFF
               ${modeScript} --request-proxy
               exit 1
             fi
+            ${lib.optionalString config.my.proxy.runtimeRouting ''
+            ${config.my.proxy.routingCommand} stop-ip-tunnel
+            ''}
             exec 9>/run/proxy-mode/authorization.lock
             flock -x -w 30 9
             rm -f /run/proxy-mode/authorized-config /run/proxy-mode/config-digest \
@@ -1168,7 +1174,7 @@ NFT_OFF
 
 in
 {
-  imports = [ ./authorization.nix ./routing.nix ];
+  imports = [ ./authorization.nix ./routing.nix ./ip-tunnel.nix ];
 
   options.my.proxy.proxyModeRules = lib.mkOption {
     type = lib.types.str;

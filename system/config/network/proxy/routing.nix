@@ -27,7 +27,7 @@ let
       };
     };
     "dns.nameserver-policy" = { };
-  };
+  } // lib.optionalAttrs (p.ipTunnel != null) { lf-ip-tunnel = p.ipTunnelPolicy; };
 
   policies = {
     rules = pkgs.writeText "routing-rules-policy.json" (builtins.toJSON p.managedProfile);
@@ -77,6 +77,15 @@ let
     validator_port = m.ports.unbound;
     ipv6 = config.networking.enableIPv6;
     observer = p.coreTopology.observer;
+    ip_tunnel = p.ipTunnelSettings;
+    ip_tunnel_cleanup = {
+      module = ./ip_tunnel.py;
+      ip = "${pkgs.iproute2}/bin/ip";
+      ownership = "/run/proxy-mode/ip-tunnel-owner.json";
+    };
+    fake = p.fakeIpNet;
+    nat64 = p.nat64Prefixes;
+    icmp_excluded = import ../lib/private-addresses.nix { inherit config lib; };
   } else { enabled = false; }));
 
   command = pkgs.writeShellScript "proxy-routing" ''

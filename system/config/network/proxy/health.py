@@ -36,6 +36,7 @@ def failure_stage(detail):
         ('managed DNS did not return', 'fake-ip-dns'),
         ('TUN DNS self-test', 'tun-dns'),
         ('real-address DNS self-test', 'real-address-dns'),
+        ('WireGuard', 'ip-tunnel'),
         ('total probe deadline', 'deadline'),
         ('configuration changed', 'configuration'),
         ('managed TCP/UDP listener', 'listener'),
@@ -522,6 +523,25 @@ class Probe:
                     return
         raise ProbeFailure('dns', 'real-address DNS self-test did not answer')
 
+    def ip_tunnel(self, fast):
+        settings = self.settings.get('ip_tunnel')
+        if not settings:
+            return
+        self.diagnostics['ip_tunnel_ok'] = False
+        try:
+            completed = subprocess.run([sys.executable, settings['module'], 'verify' if fast else 'probe'],
+                                       input=json.dumps(settings), text=True, capture_output=True,
+                                       timeout=self.remaining(5), check=True)
+            outcome = json.loads(completed.stdout)
+        except subprocess.TimeoutExpired:
+            outcome = {'stage': 'deadline'}
+        except (OSError, ValueError, subprocess.SubprocessError):
+            outcome = {'stage': 'unavailable'}
+        self.diagnostics['ip_tunnel'] = outcome
+        if outcome['stage'] != ('path-verified' if fast else 'echo-verified'):
+            raise ProbeFailure('tun', 'WireGuard path proof failed')
+        self.diagnostics['ip_tunnel_ok'] = True
+
     def run(self, fast=False):
         self.routing = self.routing_binding()
         def listeners():
@@ -538,12 +558,14 @@ class Probe:
         self.core_mode = initial.get('mode', 'unknown')
         fingerprint = self.timed("config", lambda: check_config(initial, self.settings))
         self.diagnostics['config_ok'] = True
-        if self.routing.get('egress_requested'):
+        if not fast and self.routing.get('egress_requested'):
             graph = self.api('/proxies')['proxies']
             selected = graph['lf-remote']['now']
             self.diagnostics['node_udp_supported'] = graph[selected].get('udp') is True
         if fast:
+            self.timed('ip_tunnel', lambda: self.ip_tunnel(fast=True))
             return fingerprint
+        self.timed('ip_tunnel', lambda: self.ip_tunnel(fast=False))
         with tempfile.TemporaryDirectory(prefix="health-", dir=self.settings["runtime"]) as temporary:
             log_path = Path(temporary) / "logs"
             with log_path.open("w") as stream:
@@ -596,7 +618,8 @@ def main():
     result = {"ok": False, "reason": "obs", "scope": {
         "listener_transports": ["tcp", "udp"],
         "requests": [] if fast else ["mixed-tcp"] + (["fake-ip-tcp"] if settings.get("require_tun") else [])
-            + (['real-address-dns'] if settings.get('real_dns_port') else []),
+            + (['real-address-dns'] if settings.get('real_dns_port') else [])
+            + (['icmp4-echo', 'icmp6-echo'] if settings.get('ip_tunnel') else []),
         "udp_data_plane": "not-probed",
     }}
     try:

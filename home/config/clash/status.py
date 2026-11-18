@@ -198,7 +198,13 @@ def rows(state):
         yield 'Core mode', state.get('core_mode', 'unknown')
         yield 'Sampled TCP leaf', state.get('sampled_egress_identity') or 'Not proven'
         capabilities = state.get('capabilities', {})
-        yield 'Protocol coverage', 'DNS: ' + capabilities.get('dns', 'unknown') + ' · UDP: ' + capabilities.get('udp', 'not-probed') + ' · ICMP: ' + capabilities.get('icmp', 'not-probed')
+        udp = capabilities.get('udp', 'not-probed')
+        if capabilities.get('udp_declared') is True:
+            udp += ' (declared by node)'
+        yield 'Protocol coverage', 'DNS: ' + capabilities.get('dns', 'unknown') + ' · UDP: ' + udp + ' · ICMP: ' + capabilities.get('icmp', 'not-probed')
+    tunnel = state.get('ip_tunnel_health', {})
+    if mode in ('proxy', 'blocked') and tunnel:
+        yield 'WireGuard health', tunnel['stage'] + (' · handshake: ' + tunnel['handshake'] if 'handshake' in tunnel else '')
     if mode == 'proxy':
         yield 'Application egress', ('Uniform proxy routing' if state.get('routing_applied') == 'proxy-only'
             else 'Rule routing · DIRECT or proxy' if state.get('routing_applied') == 'rules'

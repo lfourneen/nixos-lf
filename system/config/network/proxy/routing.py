@@ -33,6 +33,10 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def ip_tunnel(settings):
+    return module(settings['ip_tunnel']['module'], 'routing_ip_tunnel')
+
+
 def atomic(path, value, mode=0o644):
     path = Path(path)
     descriptor, name = tempfile.mkstemp(prefix='.routing-', dir=path.parent)
@@ -55,12 +59,17 @@ def safe_file(path, private=False):
     return Path(path)
 
 
-def binding(settings):
+class StalePolicy(ValueError):
+    """A boot-scoped selection cannot be used with the current artifacts."""
+
+
+def selection(settings):
     state = Path(settings['state'])
     record = read(safe_file(state / 'routing.json'))
     record.setdefault('egress_requested', None)
     record.setdefault('egress_epoch', 0)
     target = record.get('routing_requested')
+    active = state / 'routing-active'
     if (record.get('schema') != 1 or target not in MODES
             or record.get('routing_applied') not in (*MODES, None)
             or type(record.get('routing_epoch')) is not int or record['routing_epoch'] < 1
@@ -68,9 +77,20 @@ def binding(settings):
             or type(record.get('egress_epoch', 0)) is not int or record.get('egress_epoch', 0) < 0
             or record.get('routing_phase') not in ('preparing', 'verifying', 'ready', 'failed')
             or record.get('boot_id') != (state / 'boot-id').read_text().strip()
-            or record.get('routing_policy_digest') != sha(Path(settings['policies'][target]).read_bytes())
-            or (state / 'routing-active').resolve(strict=True) != Path(settings['artifacts'][target]).resolve(strict=True)):
+            or not re.fullmatch('[a-f0-9]{64}', str(record.get('routing_policy_digest')))):
         raise ValueError('routing authority is missing or inconsistent')
+    # Only artifacts from this generation can be used for forwarding. The
+    # record still carries the epoch for explicit recovery if an old artifact
+    # was garbage collected or the symlink update was interrupted.
+    stale = (not active.is_symlink() or active.readlink() != Path(settings['artifacts'][target])
+             or record['routing_policy_digest'] != sha(Path(settings['policies'][target]).read_bytes()))
+    return record, stale
+
+
+def binding(settings):
+    record, stale = selection(settings)
+    if stale:
+        raise StalePolicy('routing policy changed; run clash-rules to recover')
     return record
 
 
@@ -90,7 +110,8 @@ def initialize(settings):
     if not (state / 'boot-id').exists():
         (state / 'boot-id').write_text(Path('/proc/sys/kernel/random/boot_id').read_text())
     if (state / 'routing.json').exists() or (state / 'routing-active').is_symlink():
-        binding(settings)
+        # The supervisor can enforce C for an older generation without adopting it.
+        selection(settings)
         return
     activate(settings, 'rules')
     atomic(state / 'routing.json', dict(schema=1, boot_id=(state / 'boot-id').read_text().strip(),
@@ -111,13 +132,21 @@ def transition_locks(settings):
         yield source
 
 
+def stop_ip_tunnel(settings):
+    cleanup = settings['ip_tunnel_cleanup']
+    if Path(cleanup['ownership']).exists():
+        module(cleanup['module'], 'routing_ip_tunnel').stop(cleanup)
+
+
 def begin(settings, target, egress_id=None):
     if target not in MODES:
         raise ValueError('invalid routing target')
     if egress_id is not None and (target != 'proxy-only' or not re.fullmatch('[a-f0-9]{64}', egress_id)):
         raise ValueError('invalid egress selection')
     with transition_locks(settings) as source_settings:
-        current = binding(settings)
+        current, stale = selection(settings)
+        if stale and target != 'rules':
+            raise StalePolicy('routing policy changed; run clash-rules to recover')
         state = Path(settings['state'])
         (state / 'routing-failure.json').unlink(missing_ok=True)
         if (state / 'intent').read_text().strip() != 'proxy':
@@ -125,16 +154,18 @@ def begin(settings, target, egress_id=None):
         stage = module(settings['stage_tool'], 'routing_stage')
         stage.clear_refresh(state, settings['runtime'], keep_health_pin=True)
         record = dict(current, routing_requested=target, routing_epoch=current['routing_epoch'] + 1,
-            egress_requested=egress_id or current.get('egress_requested'),
-            egress_epoch=current.get('egress_epoch', 0) + int(target == 'proxy-only'),
+            egress_requested=None if stale else egress_id or current['egress_requested'],
+            egress_epoch=current['egress_epoch'] + int(stale or target == 'proxy-only'),
             routing_policy_digest=sha(Path(settings['policies'][target]).read_bytes()), routing_phase='preparing')
         # The core has stopped and C is installed before the immutable policy changes.
         activate(settings, target)
         atomic(state / 'routing.json', record)
-        for name in ('authorized-config', 'config-digest', 'effective-config-sha256',
+        for name in ('authorize-window', 'authorized-config', 'config-digest', 'effective-config-sha256',
                      'effective-config.json', 'health.json', 'source-refresh-stable.json', 'profile-refresh-settled.json'):
             (state / name).unlink(missing_ok=True)
         enforce(settings, 'blocked')
+        if target == 'rules' or not settings.get('ip_tunnel'):
+            stop_ip_tunnel(settings)
         broker = module(settings['source_tool'], 'routing_source')
         source = broker.selected(Path(source_settings['root']))
         selected = broker.render_local(source_settings, source, target, current['routing_requested'])
@@ -142,6 +173,8 @@ def begin(settings, target, egress_id=None):
             if not isinstance(selected, str) or not re.fullmatch('[a-f0-9]{64}', selected):
                 raise ValueError('selected egress unavailable')
             record['egress_requested'] = selected
+        if target == 'proxy-only' and settings.get('ip_tunnel'):
+            ip_tunnel(settings).start(settings['ip_tunnel'])
         (state / 'authorize-window').touch(mode=0o600)
         (state / 'source-refresh-pending').touch(mode=0o600)
         atomic(state / 'routing.json', dict(record, routing_phase='verifying'))
@@ -160,7 +193,7 @@ def applied(settings):
     record, proof = binding(settings), read(state / 'health.json')
     authorization = module(settings['authorization_tool'], 'routing_authorization')
     if (record['routing_phase'] not in ('verifying', 'ready')
-            or not authorization.full_routing_proof(proof, record['routing_requested'])
+            or not authorization.full_routing_proof(proof, record['routing_requested'], settings.get('ip_tunnel'))
             or proof.get('boot_id') != record['boot_id']
             or any(proof.get(key) != record[key] for key in ('routing_epoch', 'routing_policy_digest'))
             or record['routing_requested'] == 'proxy-only' and any(proof.get(key) != record.get(key)
@@ -196,6 +229,36 @@ def endpoints(settings, record):
     return sorted(result)
 
 
+def tunnel_rules(settings, nodes, uplinks):
+    tunnel = ip_tunnel(settings)
+    policy = settings['ip_tunnel']['policy']
+    values = tunnel.addresses(policy)
+    address = values['endpointAddress']
+    field = 'ip' if address.version == 4 else 'ip6'
+    wg = json.dumps(policy['device'])
+    port, listen_port, outer_mark = policy['endpointPort'], policy['listenPort'], policy['outerMark']
+    outer = f'{field} daddr {address} udp sport {listen_port} udp dport {port} meta mark {outer_mark}'
+    incoming = (f' iifname {uplinks} ct direction reply ct state established,related '
+                f'ct original {field} daddr {address} ct protocol udp '
+                f'ct original proto-src {listen_port} ct original proto-dst {port} return\n')
+    outgoing = f' oifname {uplinks} {outer} return\n'
+    exclusions = {
+        4: settings['icmp_excluded']['ipv4'] + ['192.0.0.0/24', '198.18.0.0/15', settings['fake'], '224.0.0.0/3'],
+        6: settings['icmp_excluded']['ipv6'] + ['::/96', '::ffff:0:0/96', 'ff00::/8',
+            '64:ff9b::/96', '64:ff9b:1::/48', '2001::/32', '2002::/16'] + settings['nat64'],
+    }
+    for family, field, echo in [(4, 'ip', 'icmp'), (6, 'ip6', 'icmpv6')]:
+        client = values[f'clientIpv{family}']
+        incoming += (f' iifname {wg} ct direction reply ct state established,related '
+                     f'ct reply {field} daddr {client} return\n')
+        excluded = ', '.join(dict.fromkeys(exclusions[family]))
+        outgoing += (f' oifname {wg} meta iif 0 {field} saddr {client} {field} daddr != {{ {excluded} }} '
+                     f'{echo} type echo-request return\n')
+    relay = values['relayAddress']
+    eligible = {(relay.version, str(relay), protocol, policy['relayPort']) for protocol in ('tcp', 'udp')}
+    return incoming, outgoing, sorted(set(nodes) & eligible), f' oifname {wg}', f' iifname {wg}'
+
+
 def firewall(settings, mode):
     result = 'destroy table inet lf_routing\ntable inet lf_routing {\n'
     if mode == 'direct':
@@ -213,6 +276,9 @@ def firewall(settings, mode):
     t, dev = settings['topology'], json.dumps(settings['interface'])
     uplinks = '{ ' + ', '.join(map(json.dumps, settings['uplinks'])) + ' }'
     guests = '{ ' + ', '.join(map(json.dumps, settings['guest_interfaces'])) + ' }'
+    tunnel_in, tunnel_out, to_tunnel, from_tunnel = '', '', '', ''
+    if record is not None and settings.get('ip_tunnel'):
+        tunnel_in, tunnel_out, nodes, to_tunnel, from_tunnel = tunnel_rules(settings, nodes, uplinks)
     for family in (4, 6):
         elements = [f'{address} . {protocol} . {port}' for version, address, protocol, port in nodes if version == family]
         result += f'set nodes{family} {{ type ipv{family}_addr . inet_proto . inet_service;'
@@ -226,6 +292,7 @@ def firewall(settings, mode):
  iifname {uplinks} udp sport 67 udp dport 68 return
  iifname {uplinks} udp sport 547 udp dport 546 return
  iifname {uplinks} ip6 hoplimit 255 icmpv6 type {{ nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert }} return
+{tunnel_in}
 '''
     if settings['guest_interfaces']:
         result += f' iifname {guests} meta l4proto {{ tcp, udp }} th dport {{ 53, 67 }} return\n'
@@ -233,6 +300,7 @@ def firewall(settings, mode):
     result += f'''chain lf_routing_output {{ type filter hook postrouting priority 101; policy accept;
  oifname "lo" return
  meta iif 0 oifname {dev} meta l4proto {{ tcp, udp }} return
+{tunnel_out}
 '''
     for guest in settings['guests']:
         sources = [value for value in guest['sources'] if ':' not in value]
@@ -244,9 +312,9 @@ def firewall(settings, mode):
     for family in (4, 6):
         field = 'ip' if family == 4 else 'ip6'
         core = t[f'core{family}']
-        result += (f' iifname {dev} ct original {field} saddr {core} ct direction original '
+        result += (f' iifname {dev}{to_tunnel} ct original {field} saddr {core} ct direction original '
             f'meta l4proto {{ tcp, udp }} {field} daddr . meta l4proto . th dport @nodes{family} return\n')
-        result += (f' oifname {dev} ct direction reply ct state established,related '
+        result += (f' oifname {dev}{from_tunnel} ct direction reply ct state established,related '
             f'ct original {field} saddr {core} ct original {field} daddr . ct protocol . ct original proto-dst @nodes{family} return\n')
     result += f''' oifname {uplinks} meta skuid {{ 0, {settings['dhcp_uid']} }} udp sport 68 udp dport 67 return
  oifname {uplinks} meta skuid {{ 0, {settings['dhcp_uid']} }} udp sport 546 udp dport 547 return
@@ -367,7 +435,10 @@ def main():
             worker, base, *_ = broker.local_source(source_settings, broker.selected(Path(source_settings['root'])), 'proxy-only')
             print(json.dumps([dict(id=worker.node_identity(node), name=node['name'], protocol=node['type'],
                 udp=node.get('udp', node['type'] in ('hysteria2', 'tuic')) is True)
-                for node in worker.egress_nodes(base)], ensure_ascii=True))
+                for node in worker.egress_nodes(base, settings['ip_tunnel']['policy'] if settings.get('ip_tunnel') else None)],
+                ensure_ascii=True))
+    elif command == 'stop-ip-tunnel' and len(sys.argv) == 3:
+        stop_ip_tunnel(settings)
     elif command == 'failed':
         phase(settings, 'failed')
     elif command == 'applied':
@@ -375,7 +446,10 @@ def main():
     elif command in ('enforce', 'check') and len(sys.argv) == 4 and sys.argv[3] in ('direct', 'proxy', 'blocked'):
         (enforce if command == 'enforce' else check)(settings, sys.argv[3])
     elif command == 'same-ready' and len(sys.argv) in (4, 5):
-        record = binding(settings)
+        try:
+            record = binding(settings)
+        except StalePolicy:
+            raise SystemExit(1) from None
         state = module(settings['state_tool'], 'routing_readiness')
         ready = state.readiness(root=Path(settings['state']).parent, target='proxy')
         if (record['routing_requested'] != sys.argv[3] or ready.get('ready') is not True
@@ -397,6 +471,7 @@ if __name__ == '__main__':
             'source requires pinned public endpoints': 'pinned-endpoints-required',
             'original Rule data is unavailable': 'original-rules-unavailable',
             'routing authority is missing or inconsistent': 'routing-authority-invalid',
+            'routing policy changed; run clash-rules to recover': 'routing-policy-changed (run clash-rules)',
             'routing firewall differs from the declared transport boundary': 'routing-firewall-drift',
             'routing requires a complete current health proof': 'complete-health-proof-required',
         }

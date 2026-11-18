@@ -103,7 +103,8 @@ let
   # Loopback listeners owned by the core, DNS, relay and guest DNS services.
   # A process outside that trusted set that binds one of these can shadow the
   # real listener while it restarts.
-  reservedListenerPorts = import ./lib/reserved-ports.nix { inherit lib; ports = port; };
+  reservedListenerPorts = (import ./lib/reserved-ports.nix { inherit lib; ports = port; })
+    ++ lib.optional (config.my.proxy.ipTunnel != null) (toString config.my.proxy.ipTunnel.listenPort);
   coreSocket = "meta skuid { 0, ${toString m.uids.clashCore} } socket mark ${coreMark} meta mark ${coreMark}";
 
   # Tailscale's LinuxBypassMarkNum (tsconst/linuxfw.go), also used by its
@@ -819,7 +820,7 @@ in
         chain lf_app_track {
           # After conntrack and guest identity assignment, before any DNAT.
           type filter hook output priority -198; policy accept;
-          meta skuid != { 0, ${toString m.uids.clashCore}, ${toString m.uids.gost} } ct direction original ct mark 0 meta l4proto { tcp, udp } ct mark set ${appConnmark}
+          meta skuid != { 0, ${toString m.uids.clashCore}, ${toString m.uids.gost} } ct direction original ct mark 0 ${lib.optionalString (config.my.proxy.ipTunnel != null) "meta mark != ${config.my.proxy.ipTunnelPolicy.outerMark} "}meta l4proto { tcp, udp } ct mark set ${appConnmark}
         }
         # Guest source, host and routed-reply checks precede generic accepts.
         ${guestPolicy.nft}
@@ -1017,6 +1018,16 @@ in
       # NAT
       table ip lf_nat {
         ${lib.optionalString config.my.proxy.coreNetns ''include "${config.my.proxy.coreNetworkPolicy}/nat4.nft"''}
+        ${lib.optionalString (config.my.proxy.ipTunnel != null) ''
+        chain lf_tunnel_echo_route {
+          type route hook output priority -199; policy accept;
+          icmp type echo-request meta mark 0 meta mark set ${config.my.proxy.ipTunnelPolicy.echoMark}
+        }
+        chain lf_tunnel_echo {
+          type nat hook postrouting priority 98; policy accept;
+          meta iif 0 oifname "${config.my.proxy.ipTunnelPolicy.device}" icmp type echo-request snat to ${config.my.proxy.ipTunnel.clientIpv4}
+        }
+        ''}
         ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
         chain socket_guest_dns {
           type nat hook output priority -190; policy accept;
@@ -1048,6 +1059,16 @@ in
       # reached in the clear. Same selector; ::1 and the tailnet are exempt.
       table ip6 lf_nat {
         ${lib.optionalString config.my.proxy.coreNetns ''include "${config.my.proxy.coreNetworkPolicy}/nat6.nft"''}
+        ${lib.optionalString (config.my.proxy.ipTunnel != null) ''
+        chain lf_tunnel_echo_route {
+          type route hook output priority -199; policy accept;
+          icmpv6 type echo-request meta mark 0 meta mark set ${config.my.proxy.ipTunnelPolicy.echoMark}
+        }
+        chain lf_tunnel_echo {
+          type nat hook postrouting priority 98; policy accept;
+          meta iif 0 oifname "${config.my.proxy.ipTunnelPolicy.device}" icmpv6 type echo-request snat to ${config.my.proxy.ipTunnel.clientIpv6}
+        }
+        ''}
         ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
         chain socket_guest_dns {
           type nat hook output priority -190; policy accept;

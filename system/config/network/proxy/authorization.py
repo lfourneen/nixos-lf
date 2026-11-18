@@ -15,14 +15,18 @@ def read(path):
     return json.loads(path.read_text())
 
 
-def full_routing_proof(proof, target):
+def full_routing_proof(proof, target, tunnel=None):
     scope = proof.get('scope')
     requests = scope.get('requests') if isinstance(scope, dict) else None
     required = {'mixed-tcp', 'fake-ip-tcp'} | ({'real-address-dns'} if target == 'proxy-only' else set())
+    requires_icmp = target == 'proxy-only' and tunnel is not None
+    if requires_icmp:
+        required |= {'icmp4-echo', 'icmp6-echo'}
     return (proof.get('ok') is True and isinstance(requests, list)
         and all(isinstance(value, str) for value in requests) and required <= set(requests)
         and all(proof.get(key) is True for key in ('data_plane_ok', 'route_ok', 'dns_ok', 'tun_ok', 'config_ok', 'listener_ok'))
-        and (target != 'proxy-only' or proof.get('real_dns_ok') is True))
+        and (target != 'proxy-only' or proof.get('real_dns_ok') is True)
+        and (not requires_icmp or proof.get('ip_tunnel_ok') is True))
 
 
 def grant(settings, version, root=Path('/run'), now=None, run=subprocess.run):
@@ -47,7 +51,7 @@ def grant(settings, version, root=Path('/run'), now=None, run=subprocess.run):
         routing = {key: policy.get(key) for key in ('routing_epoch', 'routing_policy_digest')}
         if policy.get('routing_requested') == 'proxy-only' and 'egress_epoch' in selected:
             routing.update({key: policy.get(key) for key in ('egress_requested', 'egress_epoch')})
-        if (not full_routing_proof(proof, policy.get('routing_requested'))
+        if (not full_routing_proof(proof, policy.get('routing_requested'), settings.get('ip_tunnel'))
                 or policy.get('routing_applied') != policy.get('routing_requested')
                 or policy.get('routing_phase') != 'ready'
                 or selected.get('boot_id') != boot

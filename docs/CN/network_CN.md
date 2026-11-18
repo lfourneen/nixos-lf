@@ -99,7 +99,7 @@ localhost 兼容和 GUI 通道使用[独立 Unix relay](proxy_CN.md#组件与身
 | 模式 | 进入条件 | 应用出站 | 默认 DNS 上游 |
 |---|---|---|---|
 | A / `direct` | 默认直连策略下冷启动，或显式 `clash-off` | 直连 | 本地验证的 Unbound DoT，必要时有界明文恢复 |
-| B / `proxy` | 代理意图、已授权核心、所需 TUN 选路和健康证明均成立 | 代理、明确例外或丢弃 | Mihomo fake-IP |
+| B / `proxy` | 代理意图、已授权核心、所需 TUN 选路和健康证明均成立 | 代理、明确例外或丢弃 | 受管 fake-IP，配置 WireGuard 出口时返回已验证真实地址 |
 | C / `blocked` | 已请求代理但未就绪、崩溃或不健康 | 除恢复与链路基础设施外阻断 | Unbound。外部 DoT 被切断，符合缓存条件的答案继续返回 |
 
 `proxy-mode` 遵循 root 写入的单次开机意图。
@@ -131,7 +131,7 @@ HTTP 路由证明使用核心日志，或请求仍在进行时采集的连接表
 这些字段不授权 B，也不续租，只有完整的 `ok=true` 结论才可以。
 
 `health.json.scope` 声明本次调用的检查范围，只有 `ok=true` 才证明这些检查完成。
-`scope.requests` 列出 TCP 请求路径，`--fast` 时为空。
+`scope.requests` 列出本轮请求路径，`--fast` 时为空。WireGuard 出口的完整证明包含真实地址 DNS，以及原生 IPv4 和 IPv6 echo。
 `scope.udp_data_plane="not-probed"` 明确 UDP 边界：核对监听身份，但不持续证明 UDP 可达性和 association 回程。
 单独的 UDP 故障因此可能让 B 与 TCP 健康结果保持正常。运行时 proxy-only 在所选适配器不支持 UDP 时报告 `unsupported`，IPv6 目标能力仍取决于节点。
 

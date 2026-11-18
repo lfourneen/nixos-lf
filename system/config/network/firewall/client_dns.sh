@@ -23,6 +23,10 @@ client_dns() {
         client_dns_error="$name returned no address inside $pool"
         continue
       fi
+      if [ -n "${dns_exclude:-}" ] && printf '%s\n' "$answer" | "$RULE_CHECK" address "$dns_exclude" >/dev/null; then
+        client_dns_error="$name returned an address inside the synthetic pool"
+        continue
+      fi
       return 0
     done
     if [ "$round" -lt 3 ] && [ "$SECONDS" -lt "$deadline" ]; then sleep 1; fi

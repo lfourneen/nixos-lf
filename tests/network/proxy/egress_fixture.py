@@ -83,7 +83,7 @@ def header(host, port):
     return bytes([1 if ip.version == 4 else 4]) + ip.packed + struct.pack('!H', port)
 
 
-def node(number):
+def node(number, association_override=None):
     port = 18079 + number
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp.bind(('1.1.1.1', port))
@@ -126,7 +126,11 @@ def node(number):
             target_port = struct.unpack('!H', exact(client, 2))[0]
             assert version == 5
             if command == 3:
-                client.sendall(b'\5\0\0' + header('1.1.1.1', port))
+                bind = ('1.1.1.1', port)
+                if association_override is not None and association_override.exists():
+                    host, bound_port = association_override.read_text().split()
+                    bind = (host, int(bound_port))
+                client.sendall(b'\5\0\0' + header(*bind))
                 while client.recv(1024):
                     pass
                 return

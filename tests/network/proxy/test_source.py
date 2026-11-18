@@ -55,6 +55,20 @@ class SourceTests(unittest.TestCase):
         with self.assertRaises(w.Refused):
             w.render(changed, {}, policy, egress_id=identity)
 
+    def test_wireguard_egress_requires_the_declared_udp_relay(self):
+        other = dict(NODE, server='8.8.4.4')
+        relay = {'name': 'relay', 'type': 'socks5', 'server': '1.1.1.1', 'port': 1080, 'udp': True}
+        tcp_only = dict(relay, name='tcp-only', udp=False)
+        document = dict(DOC, proxies=[other, tcp_only, relay],
+                        **{'proxy-groups': [dict(DOC['proxy-groups'][0], proxies=['n', 'tcp-only', 'relay'])]})
+        policy = {'lf-private-targets': {'proxy-only': True, 'single-egress': True},
+                  'lf-ip-tunnel': {'relayAddress': relay['server'], 'relayPort': relay['port']}}
+        candidate = w.load(w.render(document, {}, policy))
+        self.assertEqual(candidate['proxies'], [relay])
+        self.assertNotIn('lf-ip-tunnel', candidate)
+        with self.assertRaisesRegex(w.Refused, 'selected egress unavailable'):
+            w.render(document, {}, policy, egress_id=w.node_identity(tcp_only))
+
     def test_single_egress_refresh_pins_all_source_nodes_before_selecting(self):
         document = json.loads(json.dumps(DOC))
         document['proxies'].append(dict(document['proxies'][0], name='other'))

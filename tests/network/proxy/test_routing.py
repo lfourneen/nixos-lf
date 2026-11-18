@@ -58,6 +58,7 @@ class RoutingTests(unittest.TestCase):
         self.settings = dict(enabled=True, state=str(self.state), runtime=str(self.root / 'core'),
                              authorization_tool=str(ROOT / 'system/config/network/proxy/authorization.py'),
                              rules_tool=str(ROOT / 'system/config/network/firewall/rules.py'),
+                             ip_tunnel_cleanup={'ownership': self.state / 'ip-tunnel-owner.json', 'module': 'tunnel'},
                              policies={}, artifacts={})
         for mode in routing.MODES:
             artifact = self.root / mode
@@ -95,6 +96,55 @@ class RoutingTests(unittest.TestCase):
         (self.state / 'routing-active').symlink_to(self.root)
         with self.assertRaises(ValueError):
             routing.binding(self.settings)
+
+    def test_new_generation_requires_explicit_rules_and_retires_old_egress(self):
+        previous = dict(routing.binding(self.settings), routing_requested='proxy-only',
+                        routing_applied='proxy-only', routing_epoch=3, routing_phase='ready',
+                        egress_requested='a' * 64, egress_epoch=2,
+                        routing_policy_digest=routing.sha(Path(self.settings['policies']['proxy-only']).read_bytes()))
+        routing.activate(self.settings, 'proxy-only')
+        routing.atomic(self.state / 'routing.json', previous)
+        source = self.root / 'source'
+        source.mkdir()
+        source_settings = self.root / 'source-settings'
+        source_settings.write_text(json.dumps({'root': str(source)}))
+        next_artifact = self.root / 'updated-strict'
+        next_artifact.mkdir()
+        next_policy = next_artifact / 'policy.json'
+        next_policy.write_text('{"proxy-only": true, "new-generation": true}')
+        self.settings.update(source_settings=source_settings, stage_tool='stage', source_tool='source',
+                             ip_tunnel=None)
+        self.settings['policies']['proxy-only'] = next_policy
+        self.settings['artifacts']['proxy-only'] = next_artifact
+        (self.state / 'intent').write_text('proxy')
+        (self.state / 'health.json').write_text('old')
+        (self.state / 'authorize-window').touch()
+        self.settings['ip_tunnel_cleanup']['ownership'].touch()
+
+        routing.initialize(self.settings)
+        self.assertEqual(routing.read(self.state / 'routing.json'), previous)
+        with self.assertRaises(routing.StalePolicy):
+            routing.binding(self.settings)
+        with self.assertRaises(routing.StalePolicy):
+            routing.begin(self.settings, 'proxy-only', 'b' * 64)
+        (self.root / 'proxy-only/policy.json').unlink()
+        (self.root / 'proxy-only').rmdir()
+        routing.initialize(self.settings)
+
+        calls = Mock()
+        stage = SimpleNamespace(clear_refresh=Mock())
+        broker = SimpleNamespace(selected=lambda root: root, render_local=calls.render)
+        tools = {'stage': stage, 'source': broker, 'tunnel': SimpleNamespace(stop=calls.stop)}
+        with patch.object(routing, 'module', side_effect=lambda path, _: tools[path]), \
+                patch.object(routing, 'enforce', calls.enforce):
+            routing.begin(self.settings, 'rules')
+
+        record = routing.binding(self.settings)
+        self.assertEqual((record['routing_requested'], record['routing_epoch']), ('rules', 4))
+        self.assertEqual((record['egress_requested'], record['egress_epoch']), (None, 3))
+        self.assertEqual(record['routing_phase'], 'verifying')
+        self.assertFalse((self.state / 'health.json').exists())
+        self.assertEqual([call[0] for call in calls.mock_calls], ['enforce', 'stop', 'render'])
 
     def test_partial_cross_epoch_and_cross_digest_proofs_cannot_apply_routing(self):
         record = routing.binding(self.settings)

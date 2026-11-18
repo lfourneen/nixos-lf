@@ -121,7 +121,8 @@
         "proxy-assurance-vm",
         "proxy-routing",
         "proxy-routing-vm",
-        "proxy-single-egress-vm"
+        "proxy-single-egress-vm",
+        "proxy-ip-tunnel-vm"
       ],
       "entrypoints": [
         "config/config.go: ParseRawConfig, RawConfig/RawTun schema and controller General",
@@ -269,7 +270,8 @@
         "blocklist-tests",
         "maintenance-ledger",
         "proxy-routing",
-        "proxy-routing-vm"
+        "proxy-routing-vm",
+        "proxy-ip-tunnel-vm"
       ],
       "entrypoints": [
         "dnsmasq src/forward.c: strict-order terminal retry and sent-to index",
@@ -362,13 +364,15 @@
         "hermes-activation-vm",
         "security-behavior-vm",
         "proxy-routing",
-        "proxy-routing-vm"
+        "proxy-routing-vm",
+        "proxy-ip-tunnel-vm"
       ],
       "entrypoints": [
         "nft transaction parsing, socket/conntrack expressions and JSON output",
         "systemd start/reload/stop and NetworkManager dispatcher/resolver coordination",
         "system/config/network/proxy/routing.nix",
-        "system/config/network/proxy/routing.py"
+        "system/config/network/proxy/routing.py",
+        "system/config/network/proxy/ip_tunnel.py"
       ],
       "invariants": [
         "Owned static/safety policy commits once under the shared lock; foreign tables survive and rejected transactions retain the previous policy.",
@@ -376,7 +380,7 @@
         "Ordered expressions, canonical JSON and expiring DNS leases remain verifiable; stopping owners leaves protection installed.",
         "Desktop cgroup bind restrictions, automatic-port reservations and proxy reply UIDs protect managed listeners. Tracked ordinary application replies stop in C while root/core recovery and guest ownership marks survive.",
         "Host setup owns only the declared veth, namespace and route priorities; core marks are scrubbed, forwarded transport is independently constrained and internal address overlap refuses readiness.",
-        "Proxy-only permits outer traffic only to the selected pinned node transport tuples; root services, LAN exceptions and established direct replies cannot bypass it."
+        "Proxy-only limits physical egress to the selected node tuple or the pinned WireGuard UDP tuple. Native echo and the fixed tunnel relay share the WireGuard peer, and kernel lease expiry revokes application echo."
       ]
     },
     "link-identity": {
@@ -421,7 +425,8 @@
         "proxy-source-config",
         "proxy-managed-netns-vm",
         "proxy-routing",
-        "proxy-routing-vm"
+        "proxy-routing-vm",
+        "proxy-ip-tunnel-vm"
       ],
       "entrypoints": [
         "system/programs/clash/service/source_worker.py",

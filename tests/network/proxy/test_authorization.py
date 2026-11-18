@@ -107,5 +107,16 @@ class AuthorizationTests(unittest.TestCase):
         self.assertEqual(lease['routing_epoch'], 4)
         self.assertEqual(lease['routing_policy_digest'], 'a' * 64)
 
+    def test_wireguard_lease_needs_both_echo_paths(self):
+        proof = dict(ok=True, scope={'requests': ['mixed-tcp', 'fake-ip-tcp', 'real-address-dns',
+                                                  'icmp4-echo', 'icmp6-echo']},
+                     **dict.fromkeys(('data_plane_ok', 'route_ok', 'dns_ok', 'tun_ok', 'config_ok',
+                                      'listener_ok', 'real_dns_ok', 'ip_tunnel_ok'), True))
+        for family in ('icmp4-echo', 'icmp6-echo'):
+            without_echo = dict(proof, scope={'requests': [name for name in proof['scope']['requests'] if name != family]})
+            self.assertFalse(authorization.full_routing_proof(without_echo, 'proxy-only', {}))
+        self.assertFalse(authorization.full_routing_proof(dict(proof, ip_tunnel_ok=False), 'proxy-only', {}))
+        self.assertTrue(authorization.full_routing_proof(proof, 'proxy-only', {}))
+
 
 unittest.main()

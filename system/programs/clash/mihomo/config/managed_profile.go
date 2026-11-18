@@ -100,6 +100,13 @@ func lfValidate(document map[string]any, partial bool) (string, error) {
 	}
 	for path, expected := range policy {
 		actual, exists := lfValue(document, path)
+		// The host binds the WireGuard transport to the policy digest.
+		if path == "lf-ip-tunnel" {
+			if exists {
+				return "", fmt.Errorf("managed proxy configuration rejects %s", path)
+			}
+			continue
+		}
 		if path == "tun.stack" {
 			if text, ok := actual.(string); ok {
 				actual = strings.ToLower(text)
