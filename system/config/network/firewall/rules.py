@@ -110,15 +110,19 @@ def policy(document):
         if kind == "metainfo":
             continue
         table = obj.get("name") if kind == "table" else obj.get("table")
-        if table not in TABLES:
-            continue
         key = (obj["family"], table)
+        if key != ("arp", "lf_arp") and table not in TABLES:
+            continue
         bucket = tables.setdefault(key, {"objects": {}, "rules": {}})
         if kind == "rule":
             bucket["rules"].setdefault(obj["chain"], []).append(normalize(obj))
         else:
             if kind == "set" and key == ("inet", "lf_filter") and obj.get("name") in LEASE_SETS:
                 obj = lease_set(obj)
+            if kind == "set" and key == ("arp", "lf_arp") and obj.get("name") in {
+                    "observe", "enforce", "gateways", "bindings"}:
+                # The ARP reconciler checks the current link-scoped elements.
+                obj = {k: v for k, v in obj.items() if k != "elem"}
             bucket["objects"][(kind, obj.get("name", ""))] = normalize(obj)
     if ("inet", "lf_filter") not in tables:
         raise ValueError("inet lf_filter is missing")

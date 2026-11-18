@@ -386,7 +386,8 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 | `proxy-refresh-vm` | Real auto/enforce helper/core: healthy acceptance, rejected-candidate fallback, pinned restarts, rollback and desired-state recovery |
 | `proxy-upgrade-review` | Selected source/dependency/recipe baselines, component coverage, check-name validation and source compatibility checks. The input gate also runs in normal system builds |
 | `network-identity-config` | Identity migration boundaries, actual nmcli parsing/hostname restoration, wired variants, service scope and persistence. Target validation also runs in normal system builds |
-| `network-identity-vm` | Real wired/Wi-Fi DHCPv6 coexistence, fresh dual-stack identities, UUID/epoch/random rotation, stable/fixed/permanent behavior, profile precedence, restore and retained host keys |
+| `network-identity-vm` | Real wired/Wi-Fi DHCPv6 coexistence, fresh dual-stack identities, UUID/epoch/random rotation, stable/fixed/permanent behavior, profile precedence, restore, retained host keys and per-profile ARP cleanup |
+| `proxy-arp-vm` | ARP reply scope and counters, gateway conflicts, B lease revocation, link recovery and IPv6 regression checks |
 | `proxy-regressions` | Health/state/rules/DNS leases, bounded client DNS retries, budget and supervisor regressions |
 | `proxy-profile`, `proxy-gui` | Generated profile variants, policy/template agreement, GUI defaults, process wrapper and desktop command interception |
 | `proxy-gui-vm` | Unchanged production GUI under WebKit automation with a renamed account and custom home: mode/TUN/System Proxy/PAC/guard no-ops, preserved OS state and core PID, no control errors, GUI exit and root routing transactions |

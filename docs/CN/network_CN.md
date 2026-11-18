@@ -180,6 +180,7 @@ Mihomo 管理私有命名空间内的自有表，固定 setup 另安装私有 `l
 | `ip lf_nat`、`ip6 lf_nat` | 受管 DNS 重定向。IPv4 另提供已声明访客网络的地址伪装 |
 | `ip lf_proxymode_nat`、`ip6 lf_proxymode_nat` | B 的 TCP 重定向 |
 | `ip lf_mangle` | 可选 IPv4 访客 TPROXY |
+| `arp lf_arp` | 在声明的链路上检查 IPv4 ARP 帧的可选策略 |
 | `inet lf_bootstrap` | 早期入站/转发基线，由成功的完整加载移除 |
 
 启动、重载和漂移修复使用同一范围。
@@ -283,6 +284,7 @@ Wi-Fi `wlo1` 由 NetworkManager 管理，以 PCI 路径稳定匹配。
 Profile 显式设置优先于 MAC 默认值。
 
 [链路身份](identity_CN.md)介绍按 profile 协调 MAC/DHCP/IPv6 迁移、有线替代策略、持久状态及重新授权。
+[IPv4 ARP 防护](identity_CN.md#ipv4-arp-防护)介绍可信网关、应答范围和链路隔离。
 
 Tailscale 不自动接受 DNS、子网路由或出口节点。
 只有已认证 tailnet 的 MagicDNS 后缀获得条件 DNS 路由。

@@ -132,6 +132,41 @@ Ensure the intended MAC is authorized by any portal, allowlist or DHCP reservati
 Wired policy applies to the primary uplink.
 It has no NetworkManager per-network profile selector.
 
+## IPv4 ARP protection
+
+By default, the host answers ARP for addresses on the receiving interface and prefers a source address appropriate to the target link. `my.hardening.arp.sameSubnetReplies` further limits replies to senders on a shared IPv4 subnet, using the kernel's `arp_ignore=2` setting on the named uplinks or guest interfaces. For a Wi-Fi interface, this setting applies across profiles. Enable it on links where the router and clients use a common subnet. [Linux ARP parameters](https://docs.kernel.org/networking/ip-sysctl.html#ip-variables)
+
+Verify the subnet, gateway IP and gateway MAC through the router console or managed network inventory before enrolling a connection or replacing a router. DHCP and observed ARP traffic can help identify differences. Use the verified virtual MAC if the routers share one for failover.
+
+```nix
+my.hardening.arp = {
+  wired = {
+    subnet = "192.0.2.0/24";
+    gateway = "192.0.2.1";
+    mac = "02:00:00:00:02:01";
+    filter = "observe";
+  };
+  wifi."11111111-1111-4111-8111-111111111111" = {
+    subnet = "198.51.100.0/24";
+    gateway = "198.51.100.1";
+    mac = "02:00:00:00:51:01";
+    filter = "observe";
+  };
+  sameSubnetReplies = [ "ens1" ];
+  managedInterfaces.virbr0 = "observe";
+};
+```
+
+`wired` applies to the dedicated dhcpcd-managed interface. `wifi` keys are NetworkManager connection UUIDs, available from `nmcli -f UUID,NAME connection show`. Both uplinks can have their own bindings at the same time. The reconciler checks the link's address and the IPv4 main routing table before installing a permanent neighbour. It removes owned entries on carrier loss or when the connection changes. The default configuration leaves bindings empty, and unlisted Wi-Fi profiles use dynamic ARP.
+
+`network-arp status` reports `pinned`, `dynamic` and binding failures. An active binding failure prevents entering B or renewing its lease. After both the link and the normal proxy health checks pass, B can recover. IPv6 continues to use the separate NDP policy.
+
+`filter = "observe"` pins the gateway and counts invalid frames and conflicting claims at the host's ARP input hook. Use `sudo nft list table arp lf_arp` to inspect the counters, then select `"enforce"` for rejection on a compatible connection. `managedInterfaces` applies the frame checks to explicitly declared guest interfaces. Valid address conflict probes and announcements remain possible. [IPv4 address conflict detection](https://www.rfc-editor.org/rfc/rfc5227.html)
+
+Use `clash-off` for explicit A access. The configured bindings still apply in A. If a binding itself prevents recovery, activate a configuration with the corrected values, set `wired = null` for the wired link, or remove the affected Wi-Fi UUID. The connection can then obtain its gateway dynamically. Restore `"observe"` to retain the pin while backing out frame rejection.
+
+The active link MAC remains visible within its broadcast domain. For network-side isolation, verify same-AP, across-AP and wired-bridge reachability with the intended VLAN or AP isolation settings. When using DHCP Snooping and Dynamic ARP Inspection, verify the VLANs, trusted uplinks, static bindings and whether access ports reject a station reusing both an authorized IP and MAC. For workloads that require a separate neighbour view, use a network namespace such as the [identity browser's network sandbox](browser.md#network-policy-and-identities). [OpenWrt wireless isolation](https://openwrt.org/docs/guide-user/network/wifi/basic?s%5B%5D=2&s%5B%5D=server), [Cisco Dynamic ARP Inspection](https://www.cisco.com/c/en/us/td/docs/switches/lan/catalyst9400/software/release/16-6/configuration_guide/sec/b_166_sec_9400_cg/configuring_dynamic_arp_inspection.html)
+
 ## Persisted state and validation
 
 Identity backups persist in `/var/lib/network-identity` with root-only directory/file permissions.

@@ -41,6 +41,20 @@ pkgs.testers.runNixOSTest {
     my.machine.wired = { mac = "52:54:00:12:09:01"; driver = "virtio_net"; };
     my.hardening.wired.clonedMacAddress = "random";
     my.hardening.wifi.identities = policies;
+    my.hardening.arp = {
+      wired = {
+        subnet = "192.168.9.0/24";
+        gateway = "192.168.9.10";
+        mac = "02:00:00:00:09:10";
+        filter = "enforce";
+      };
+      wifi."${builtins.head uuids}" = {
+        subnet = "10.44.0.0/24";
+        gateway = "10.44.0.1";
+        mac = "02:00:00:00:44:01";
+      };
+    };
+
     virtualisation.vlans = [ 9 ];
     virtualisation.memorySize = 1024;
     networking.useDHCP = false;
@@ -53,7 +67,7 @@ pkgs.testers.runNixOSTest {
     services.avahi.enable = lib.mkForce false;
     services.tailscale.enable = lib.mkForce false;
 
-    systemd.services = (lib.genAttrs [ "proxy-mode" "dnsmasq" "unbound" "chronyd" ]
+    systemd.services = (lib.genAttrs [ "dnsmasq" "unbound" "chronyd" ]
       (_: { enable = lib.mkForce false; })) // {
         dhcpcd.wantedBy = lib.mkForce [ ];
       };
@@ -82,7 +96,7 @@ pkgs.testers.runNixOSTest {
       dhcp-leasefile=/tmp/identity-ap.leases
     '';
 
-    environment.systemPackages = [ pkgs.python3 pkgs.jq pkgs.iw pkgs.hostapd pkgs.dnsmasq pkgs.ethtool ];
+    environment.systemPackages = [ pkgs.python3 pkgs.jq pkgs.iw pkgs.hostapd pkgs.dnsmasq pkgs.ethtool pkgs.tcpdump ];
   };
 
   nodes.router = { pkgs, lib, ... }: {
@@ -129,6 +143,14 @@ pkgs.testers.runNixOSTest {
     def mac(machine, interface):
         return machine.succeed(f"cat /sys/class/net/{interface}/address").strip()
 
+    def arp_state(interface, state):
+        try:
+            client.wait_until_succeeds(
+                f"network-arp status | jq -e '.interfaces.{interface}.state == \"{state}\"'", timeout=30)
+        except Exception:
+            print(client.execute(f"network-arp status; ip -j addr show dev {interface}; ip -4 route show table main; journalctl -u proxy-mode --no-pager -n 30"))
+            raise
+
     def packets(machine, path, address):
         return [r for r in (json.loads(line) for line in machine.succeed(f"cat {path}").splitlines())
                 if r['mac'] == address and r['clientid']
@@ -159,6 +181,7 @@ pkgs.testers.runNixOSTest {
     client.wait_for_unit("NetworkManager.service")
     router.wait_for_unit("dnsmasq.service")
     router.wait_for_file("/tmp/wired-identities.ready")
+    router.succeed("ip link set eth1 address 02:00:00:00:09:10")
     client.succeed("test -d /sys/class/net/ens1; ethtool -P ens1 | grep -qi 52:54:00:12:09:01")
     client.succeed("systemctl start dhcpcd")
     client.wait_until_succeeds("ip -4 addr show ens1 | grep -q 192.168.9.", timeout=40)
@@ -168,13 +191,19 @@ pkgs.testers.runNixOSTest {
     first = mac(client, "ens1")
     assert first != "52:54:00:12:09:01" and int(first[:2], 16) & 3 == 2, first
     first_ids = observations(router, "/tmp/wired-identities.jsonl", first)
+    arp_state("ens1", "pinned")
+    client.succeed("ip neigh show to 192.168.9.10 dev ens1 | grep -q '02:00:00:00:09:10.*PERMANENT'")
     assert first_ids[4] == "01" + first.replace(":", ""), first_ids
     assert first_ids[6].endswith(first.replace(":", "")), first_ids
-    client.succeed("systemctl stop dhcpcd; ip link set ens1 down; systemctl start dhcpcd")
+    client.succeed("systemctl stop dhcpcd; ip link set ens1 down")
+    arp_state("ens1", "disconnected")
+    client.fail("ip neigh show dev ens1 | grep -q PERMANENT")
+    client.succeed("systemctl start dhcpcd")
     client.wait_until_succeeds("ip -4 addr show ens1 | grep -q 192.168.9.", timeout=40)
     second = mac(client, "ens1")
     assert first != second, (first, second)
     second_ids = observations(router, "/tmp/wired-identities.jsonl", second)
+    arp_state("ens1", "pinned")
     assert all(first_ids[key] != second_ids[key] for key in (4, 6, 'ipv6-source')), (first_ids, second_ids)
     # RFC 7844 anonymity uses a common zero IAID, not a retained host identifier.
     assert first_ids['iaid'] == second_ids['iaid'] == '00000000', (first_ids, second_ids)
@@ -186,13 +215,26 @@ pkgs.testers.runNixOSTest {
     client.succeed("modprobe mac80211_hwsim radios=2; udevadm settle")
     client.wait_for_unit("wpa_supplicant.service")
     client.wait_until_succeeds("test -d /sys/class/net/wlan0 && test -d /sys/class/net/wlan1", timeout=20)
-    client.succeed("nmcli device set wlan1 managed no; ip link set wlan0 down; ip link set wlan0 name wlo1; ip netns add identity-ap; iw phy phy1 set netns name identity-ap")
-    client.succeed("ip -n identity-ap link set wlan1 name ap0; ip -n identity-ap addr add 10.44.0.1/24 dev ap0; ip -n identity-ap -6 addr add fd42:44::1/64 dev ap0 nodad; ip -n identity-ap link set lo up; ip -n identity-ap link set ap0 up")
+    radio_macs = client.succeed("cat /sys/class/ieee80211/phy0/macaddress /sys/class/ieee80211/phy1/macaddress").split()
+    client.succeed("nmcli device set wlan1 managed no; ip link set wlan0 down")
+    client.succeed("ip link set hwsim0 up; systemd-run --unit=identity-scan tcpdump -U -i hwsim0 -w /tmp/identity-scan.pcap 'type mgt subtype probe-req'")
+    client.wait_for_file("/tmp/identity-scan.pcap")
+    client.succeed("ip link set wlan0 name wlo1; ip netns add identity-ap; iw phy phy1 set netns name identity-ap")
+    client.succeed("ip -n identity-ap link set wlan1 name ap0; ip -n identity-ap link set ap0 address 02:00:00:00:44:01; ip -n identity-ap addr add 10.44.0.1/24 dev ap0; ip -n identity-ap -6 addr add fd42:44::1/64 dev ap0 nodad; ip -n identity-ap link set lo up; ip -n identity-ap link set ap0 up")
     client.succeed("systemd-run --unit=identity-ap ip netns exec identity-ap ${pkgs.hostapd}/bin/hostapd /etc/identity-hostapd.conf; systemd-run --unit=identity-dhcp ip netns exec identity-ap ${pkgs.dnsmasq}/bin/dnsmasq --keep-in-foreground --conf-file=/etc/identity-ap-dhcp.conf; systemd-run --unit=identity-capture ip netns exec identity-ap ${pkgs.python3}/bin/python3 /etc/identity-capture.py ap0 /tmp/wifi-identities.jsonl")
     client.wait_for_file("/tmp/wifi-identities.ready")
     client.wait_for_unit("identity-ap.service")
     client.wait_for_unit("identity-dhcp.service")
     client.wait_until_succeeds("nmcli device wifi list ifname wlo1 | grep -q identity-fixture", timeout=30)
+    initial_macs = "|".join(f"SA:{address}" for address in [*radio_macs, "02:00:00:00:44:01"])
+    probe = ("tcpdump -enn -r /tmp/identity-scan.pcap 2>/dev/null | grep 'SA:.*Probe Request' "
+             f"| grep -m 1 -vE '{initial_macs}'")
+    try:
+        client.wait_until_succeeds(f"{probe} || (nmcli device wifi rescan ifname wlo1; false)", timeout=30)
+    except Exception:
+        print(client.execute("tcpdump -enn -r /tmp/identity-scan.pcap -c 15; journalctl -u identity-scan --no-pager"))
+        raise
+    scan = client.succeed(probe).split("SA:")[1].split()[0]
     for index, uuid in enumerate(uuids):
         client.succeed(f"nmcli connection add type wifi ifname wlo1 con-name identity-{index} ssid identity-fixture connection.uuid {uuid} connection.autoconnect no ipv4.method auto ipv6.method auto")
     # First activate an existing default identity, creating NM's actual host
@@ -200,8 +242,14 @@ pkgs.testers.runNixOSTest {
     client.succeed("nmcli general logging level INFO domains IP6,DHCP6")
     client.succeed(f"nmcli --wait 30 connection up uuid {uuids[0]}")
     legacy_mac = mac(client, "wlo1")
+    assert scan != legacy_mac and int(scan[:2], 16) & 3 == 2, (scan, legacy_mac)
+    print(f"Scan MAC {scan}, associated MAC {legacy_mac}")
+    arp_state("ens1", "pinned")
+    arp_state("wlo1", "pinned")
+    client.succeed("ip neigh show to 10.44.0.1 dev wlo1 | grep -q '02:00:00:00:44:01.*PERMANENT'")
     legacy_ids = observations(client, "/tmp/wifi-identities.jsonl", legacy_mac, private=False)
     client.succeed(f"nmcli connection down uuid {uuids[0]}")
+    arp_state("wlo1", "disconnected")
     host_identity = client.succeed("sha256sum /etc/machine-id /var/lib/NetworkManager/secret_key")
     for uuid in uuids:
         before = client.succeed(f"nmcli -g connection.stable-id connection show uuid {uuid}")
@@ -216,6 +264,9 @@ pkgs.testers.runNixOSTest {
         client.succeed(f"nmcli --wait 30 connection up uuid {uuid}")
         address = mac(client, "wlo1")
         ids = observations(client, "/tmp/wifi-identities.jsonl", address, private=private)
+        arp_state("wlo1", "pinned" if uuid == uuids[0] else "dynamic")
+        if uuid != uuids[0]:
+            client.fail("ip neigh show to 10.44.0.1 dev wlo1 | grep -q PERMANENT")
         client.fail(f"network-identity apply {uuid}")
         client.succeed(f"nmcli connection down uuid {uuid}")
         return address, ids
@@ -253,5 +304,13 @@ pkgs.testers.runNixOSTest {
     # Persisted settings survive daemon restart; no global identity deletion.
     client.succeed("systemctl restart NetworkManager")
     client.succeed(f"network-identity apply {uuids[0]} | grep -q unchanged")
+    client.succeed(f"nmcli --wait 30 connection up uuid {uuids[0]}")
+    arp_state("wlo1", "pinned")
+    client.succeed("systemctl reload nftables")
+    arp_state("wlo1", "pinned")
+    client.succeed("systemctl stop network-arp-watch proxy-mode")
+    client.fail("ip neigh show to 10.44.0.1 dev wlo1 | grep -q PERMANENT")
+    client.fail("ip neigh show to 192.168.9.10 dev ens1 | grep -q PERMANENT")
+    client.fail("nft list table arp lf_arp")
   '';
 }

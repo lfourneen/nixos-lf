@@ -1611,6 +1611,9 @@ class EventTests(unittest.TestCase):
                      "add rule inet mihomo output counter accept"):
             self.assertTrue(events.needs_wake(line))
         self.assertFalse(events.needs_wake("add rule inet libvirt_network input accept"))
+        self.assertFalse(events.needs_wake('add element arp lf_arp enforce { "ens1" }'))
+        self.assertFalse(events.needs_wake("flush set arp lf_arp bindings"))
+        self.assertTrue(events.needs_wake("delete table arp lf_arp"))
 
 
 class SleepTests(unittest.TestCase):
@@ -1831,6 +1834,29 @@ tun_ready() { [ "$tun_good" = 1 ]; }
 health_ok() { tun_good=0; return 0; }
 sync_pass
 [ "$mode" = blocked ] && [ "$installed" = blocked ] && [ "$reason" = no-tun ]
+'''
+            self.run_shell(script, directory)
+
+    def test_arp_binding_required_before_health_and_unchanged_at_commit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            script = self.setup_shell(directory) + shell_function("sync_pass") + '''
+ARP_SYNC=arp_sync
+arp_sync() { [ "$arp_token" != invalid ] && echo "$arp_token"; }
+AUTHORIZATION_ENABLED=1
+AUTHORIZATION=authorize
+authorize() { grants=$((grants+1)); }
+grants=0; arp_token=invalid
+health_ok() { exit 99; }
+sync_pass
+[ "$mode" = blocked ] && [ "$reason" = arp-binding ] && [ "$grants" = 0 ] || exit 1
+arp_token=before
+health_ok() { arp_token=after; return 0; }
+sync_pass
+[ "$mode" = blocked ] && [ "$reason" = arp-binding ] && [ "$grants" = 0 ] || exit 1
+health_ok() { return 0; }
+sync_pass
+[ "$mode" = proxy ] && [ "$grants" = 1 ]
 '''
             self.run_shell(script, directory)
 

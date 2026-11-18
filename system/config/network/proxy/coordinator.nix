@@ -291,6 +291,7 @@ let
     AUTHORIZATION=${config.my.proxy.authorizationCommand}
     AUTHORIZATION_ENABLED=${if config.my.proxy.authorizationLeaseSeconds == null then "0" else "1"}
     LEASE_SECONDS=${builtins.toJSON config.my.proxy.authorizationLeaseSeconds}
+    ARP_SYNC=${lib.escapeShellArg (if config.my.hardening.arp.command == null then "" else toString config.my.hardening.arp.command)}
 
     TUNDEV=${config.my.proxy.tunDev}
     REQUIRE_TUN=${if requireTun then "1" else "0"}
@@ -358,7 +359,7 @@ let
     # event (or a base-ruleset reload, which recreates the fragment chains empty)
     # must not leave the guard off for long -- and long when settled in direct,
     # where nothing is loaded and events still drive transitions.
-    cap_for() { case "$1" in proxy|blocked|unenforced) echo 5 ;; *) echo 60 ;; esac; }
+    cap_for() { if [ "$1" = direct ] && [ -z "$ARP_SYNC" ]; then echo 60; else echo 5; fi; }
     [ "''${1:-}" = "--once" ] && once=1
 
     log() { echo "proxy-mode: $*" >&2; }
@@ -503,7 +504,9 @@ NFT_OFF
       rm -f "$transaction"
       forget_snapshot
       ${lib.optionalString config.my.proxy.runtimeRouting ''[ "$rc" != 0 ] || "$ROUTING" enforce "$target" || rc=$?''}
-      [ "$rc" = 0 ] && matches "$target"
+      [ "$rc" = 0 ] && matches "$target" || return 1
+      if [ -n "$ARP_SYNC" ]; then "$ARP_SYNC" sync >/dev/null || true; fi
+      return 0
     }
     safety_mode() {
       if $IS_CLASH_ON || [ "$(read_intent)" = proxy ] \
@@ -666,6 +669,9 @@ NFT_OFF
         return 0
       fi
 
+      local arp_before arp_after arp_ok=1
+      if [ -n "''${ARP_SYNC:-}" ]; then arp_before=$("$ARP_SYNC" sync) || arp_ok=0; fi
+
       if $IS_CLASH_ON; then
         # Remember that the core ran this boot; the marker is what turns "core
         # vanished" into a block instead of a silent drop to Mode A.
@@ -701,6 +707,8 @@ NFT_OFF
           # restored by the helper) while the boot default is Mode A stays
           # blocked instead of silently turning the host into Mode B.
           want=blocked; want_reason="unauthorized-core"
+        elif [ "$arp_ok" != 1 ]; then
+          want=blocked; want_reason="arp-binding"
         elif [ "$tun_ok" = "1" ]; then
           # A TUN-up core in "direct" mode leaks exactly like a node-dead one:
           # everything leaves DIRECT under the exempt mark. The mode is read over
@@ -769,6 +777,11 @@ NFT_OFF
       fi
       if [ "$want" = proxy ] && [ "$REQUIRE_TUN" = 1 ] && ! tun_ready; then
         want=blocked; want_reason=no-tun
+      fi
+      if [ "$want" = proxy ] && [ -n "''${ARP_SYNC:-}" ]; then
+        if ! arp_after=$("$ARP_SYNC" sync) || [ "$arp_after" != "$arp_before" ]; then
+          want=blocked; want_reason=arp-binding; proof_renew=0
+        fi
       fi
       ${lib.optionalString config.my.proxy.runtimeRouting ''
       if [ "$want" = proxy ] && [ "$proof_renew" = 1 ] && ! "$ROUTING" applied; then

@@ -47,6 +47,7 @@ let
     ${src} tcp dport 25565 accept                           # Minecraft
     # ${src} tcp dport 22 accept                            # SSH (ssh.nix)
   '';
+  
   # The AP uses its own guest role; a Wi-Fi client remains an uplink.
   hotspotEnable = config.my.hardening.hotspot.enable;
   tailnetTcp = lib.concatStringsSep ", " config.my.hardening.tailnetTcpPorts;
@@ -62,9 +63,11 @@ let
   privateProxyPorts = join (map toString [
     port.gostHttp port.gostRedirect port.mihomoMixed port.mihomoStrict port.mihomoTproxy
   ]);
+  
   # TUN device name; home/config/clash/cvr-merge.nix pins the same value via osConfig so the
   # firewall rules and the clash Merge template can't drift apart.
   tunDev = config.my.proxy.tunDev;
+  
   # Network form of the fake-ip pool; the Mode-C guard exempts root to it so
   # proxy-mode's own TUN self-test can run while blocked.
   fakeIpNet = config.my.proxy.fakeIpNet;
@@ -97,6 +100,7 @@ let
   # (6666 -> 0x00001a0a), so the fragment emits that form and the live rules
   # compare equal to it.
   coreMark = "0x" + lib.toLower (lib.fixedWidthString 8 "0" (lib.toHexString m.mihomoMark));
+  
   # Root is an explicit administrative actor (also used by isolated fixtures),
   # not a blanket UID exemption. Other UIDs and packet-only marks cannot borrow
   # the core transport. This does not isolate a NET_ADMIN-capable core or root.
@@ -104,6 +108,7 @@ let
   # identities (0x47500000 + UID) and from routing/socket marks.
   appConnmark = "0x4c460001";
   actorConnmark = "ct mark" + lib.optionalString config.my.proxy.coreNetns " & 0x7fffffff";
+  
   # Loopback listeners owned by the core, DNS, relay and guest DNS services.
   # A process outside that trusted set that binds one of these can shadow the
   # real listener while it restarts.
@@ -118,7 +123,6 @@ let
   # isolation boundary against root, which can set SO_MARK itself.
   tailscaleMark = "0x" + lib.toLower (lib.fixedWidthString 8 "0"
     (lib.toHexString config.my.hardening.tailscale.transportMark));
-
   redirectExemptUidSet = "{ ${toString config.users.users.gost.uid} }";
 
   # The :53 redirect must exempt dnsmasq's own upstream sockets or they loop back
@@ -308,6 +312,7 @@ in
     ./firewall/service-policy.nix
     ./hardening.nix
     ./identity/default.nix
+    ./identity/arp.nix
     ./time.nix
     ./dns/socket-guest.nix
     ./tailscale/transport.nix
@@ -588,9 +593,11 @@ in
       cache-size = 4096;
       "neg-ttl" = "30";       # default negative TTL when an upstream supplies no SOA TTL
       servers-file = "/run/dns-upstream/servers.conf";  # hot-reloaded with SIGHUP
+
       # Blocked names answer NXDOMAIN here and never reach an upstream. Empty
       # by default, so an unconfigured machine behaves exactly as before.
       address = map (d: "/${d}/") blockedDomains;
+
       # Exceptions inside a blocked domain. dnsmasq prefers the more specific
       # domain, and `#` means "use the standard servers", so these follow the
       # per-mode servers-file instead of the blocklist.
@@ -648,9 +655,11 @@ in
         ignore-cd-flag = true;
         harden-dnssec-stripped = true;
         ede = true;
+
         # Upstream failures are otherwise silent at verbosity 1, which is why the
         # last outage could only be inferred from the statistics counter.
         log-servfail = true;
+
         # While the DoT upstream is unreachable, answer from cache with data
         # that already passed validation instead of failing the query outright.
         # Local validation may use this cache or synthesize NSEC denials. An
@@ -660,8 +669,10 @@ in
         serve-expired-ttl = 900;
         serve-expired-reply-ttl = 30;
         serve-expired-client-timeout = config.my.proxy.dnsStaleWaitMilliseconds;
+
         # Additional-section records that were not validated stay out of cache.
         val-clean-additional = true;
+
         # Only upstream answers are filtered; explicit local-data/private-domain
         # remain available for deliberately configured internal names.
         # 198.18/15 is the RFC 2544 benchmarking block, which mihomo also uses
@@ -1133,6 +1144,7 @@ in
     wants = [ "nftables.service" ];
     wantedBy = [ "multi-user.target" ];
     requires = lib.optional config.my.proxy.coreNetns "clash-core-network.service";
+
     # The marked packet reaches the namespace; only that namespace owns TPROXY.
     # Routes can exist before the GUI starts the core: only the healthy Mode-B
     # fragment installs TPROXY rules, and the verifier checks listener identity.
@@ -1206,6 +1218,7 @@ in
   boot.kernel.sysctl = lib.mkMerge [ (lib.mkIf ((config.my.proxy.coreNetns && config.networking.enableIPv6)
     || lib.any (n: n.source6 != [ ]) guestPolicy.networks) {
     "net.ipv6.conf.all.forwarding" = 1;
+
     # Keep uplink router discovery when declared ULA guests need forwarding.
     "net.ipv6.conf.${wired}.accept_ra" = 2;
     "net.ipv6.conf.${wireless}.accept_ra" = 2;

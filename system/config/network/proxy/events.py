@@ -8,7 +8,8 @@ import sys
 import time
 
 
-OWNED = re.compile(r"\b(?:inet|ip|ip6)\s+(?:lf_[A-Za-z0-9_]+|mihomo)\b")
+OWNED = re.compile(r"\b(?:(?:inet|ip|ip6)\s+(?:lf_[A-Za-z0-9_]+|mihomo)|arp\s+lf_arp)\b")
+ARP_ELEMENTS = re.compile(r"^\s*(?:(?:add|delete) element|flush set) arp lf_arp (?:observe|enforce|gateways|bindings)\b")
 LEASE_ELEMENT = re.compile(
     r"^\s*(?:add|delete) element inet lf_filter "
     r"(?:dns_plaintext4|dns_split4|dns_split6|b_authorization)\s+\{")
@@ -19,7 +20,7 @@ def needs_wake(line):
     # rule/object change still wake supervision; rules.py validates lease bounds.
     if re.fullmatch(r'\s*flush set inet lf_filter b_authorization\s*', line):
         return False
-    return bool(OWNED.search(line) and not LEASE_ELEMENT.match(line))
+    return bool(OWNED.search(line) and not LEASE_ELEMENT.match(line) and not ARP_ELEMENTS.match(line))
 
 
 def main():

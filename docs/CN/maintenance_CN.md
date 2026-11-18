@@ -375,7 +375,8 @@ VM 检查运行在隔离的虚拟机中，硬件加速需要 KVM 权限。
 | `proxy-refresh-vm` | 真实 auto/enforce helper 与核心：健康接受、坏候选回退、pin 重启、回滚及 desired-state 恢复 |
 | `proxy-upgrade-review` | 所选源码/依赖/recipe 基线、组件覆盖、检查名称及源码兼容性检查。输入检查也接入正常系统构建 |
 | `network-identity-config` | 身份迁移边界、实际 nmcli 解析/主机名恢复、有线变体、服务范围及持久化。正常系统构建也校验目标 |
-| `network-identity-vm` | 真实有线/Wi-Fi DHCPv6 共存、新双栈身份报文、UUID/epoch/随机轮换、稳定/固定/硬件行为、profile 优先级、恢复及宿主密钥保留 |
+| `network-identity-vm` | 真实有线/Wi-Fi DHCPv6 共存、新双栈身份报文、UUID/epoch/随机轮换、稳定/固定/硬件行为、profile 优先级、恢复、宿主密钥保留以及按 profile 清理 ARP 邻居 |
+| `proxy-arp-vm` | ARP 应答范围与计数、网关冲突、B 撤租、链路恢复及 IPv6 回归 |
 | `proxy-regressions` | 健康、状态、规则、DNS 租约、有界客户端 DNS 重试、预算及监督器 |
 | `proxy-profile`、`proxy-gui` | 生成配置变体、策略/模板一致、GUI 默认、进程 wrapper 与桌面命令拦截 |
 | `proxy-gui-vm` | WebKit 以改名账户和非默认 home 自动化运行未修改的生产 GUI：mode/TUN/System Proxy/PAC/代理守护静默丢弃、OS 状态与核心 PID 保持、无控制错误提示、GUI 退出及 root 路由事务 |

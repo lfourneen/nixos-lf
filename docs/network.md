@@ -186,6 +186,7 @@ The loader owns these exact table family/name pairs:
 | `ip lf_nat`, `ip6 lf_nat` | Managed DNS redirection. IPv4 also supplies declared guest masquerading |
 | `ip lf_proxymode_nat`, `ip6 lf_proxymode_nat` | Mode-B TCP redirection |
 | `ip lf_mangle` | Optional IPv4 guest TPROXY |
+| `arp lf_arp` | Optional IPv4 ARP frame validation on declared links |
 | `inet lf_bootstrap` | Early ingress/forwarding baseline, removed by a successful complete load |
 
 Startup, reload and drift repair use this same scope.
@@ -293,6 +294,7 @@ Connections default to `stable-ssid`.
 Persisted NetworkManager state and machine ID retain that MAC identity across root rollback.
 Explicit profile settings override the MAC default.
 [Link identity](identity.md) explains coordinated per-profile MAC/DHCP/IPv6 migration, wired alternatives, persistent state and reauthorization.
+See [IPv4 ARP protection](identity.md#ipv4-arp-protection) for trusted gateways, reply scope and link-level isolation.
 
 Tailscale accepts neither DNS, subnet routes nor an exit node automatically.
 Only the authenticated tailnet's MagicDNS suffix receives conditional resolver routing.

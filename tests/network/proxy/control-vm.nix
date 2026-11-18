@@ -1,10 +1,10 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false, routing ? false, guiControls ? false, guiPkgs ? pkgs, egressBrowser ? null, evidenceIdentity ? {}, ipTunnelRelay ? null }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false, routing ? false, guiControls ? false, guiPkgs ? pkgs, egressBrowser ? null, evidenceIdentity ? {}, ipTunnelRelay ? null, arpProtection ? false }:
 
 let
   desktop = clashPackage.desktopIdentity;
   desktopRuntime = "/run/user/${toString desktop.uid}";
   ipTunnel = ipTunnelRelay != null;
-  dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || managedSources || assurance || guiControls || ech != null);
+  dataplane = !(refresh || restricted || strictDns || targetPolicy || guests || uniformProxy || managedSources || assurance || guiControls || ech != null || arpProtection);
   fixturePython = pkgs.python3.withPackages (p: [ p.pyyaml ] ++ pkgs.lib.optional assurance p.dnspython);
   maskSupervisor = "mkdir -p /run/systemd/system.control; ln -s /dev/null /run/systemd/system.control/proxy-mode.service; systemctl daemon-reload; systemctl stop proxy-mode.service; test $(systemctl show -p LoadState --value proxy-mode.service) = masked";
   unmaskSupervisor = "unlink /run/systemd/system.control/proxy-mode.service; systemctl daemon-reload";
@@ -26,7 +26,7 @@ let
 
 in
 pkgs.testers.runNixOSTest {
-  name = if ipTunnel then "proxy-ip-tunnel" else if guiControls then "proxy-gui-controls" else if routing then "proxy-runtime-routing" else if assurance then "proxy-authorization-and-dnssec" else if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if arpProtection then "proxy-arp-protection" else if ipTunnel then "proxy-ip-tunnel" else if guiControls then "proxy-gui-controls" else if routing then "proxy-runtime-routing" else if assurance then "proxy-authorization-and-dnssec" else if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
@@ -95,11 +95,23 @@ pkgs.testers.runNixOSTest {
     };
 
     my.proxy.profileRefreshPolicy = if refresh || managedSources then "auto" else "strict";
-    my.proxy.authorizationLeaseSeconds = lib.mkIf (managedSources && !assurance) 60;
+    my.proxy.authorizationLeaseSeconds = lib.mkIf ((managedSources && !assurance) || arpProtection) 60;
+    my.hardening.arp = lib.mkIf arpProtection {
+      wired = {
+        subnet = "100.67.0.0/24";
+        gateway = "100.67.0.1";
+        mac = "02:00:00:00:67:01";
+        filter = "enforce";
+      };
+      sameSubnetReplies = [ "ens1" ];
+      managedInterfaces.virbr0 = "observe";
+    };
+
     my.proxy.subscriptionAudit = if refresh || managedSources then "enforce" else "warn";
     my.proxy.controlledSources = managedSources;
     my.proxy.runtimeRouting = routing;
     my.proxy.transparentApplications = ipTunnel;
+
     my.proxy.ipTunnel = lib.mkIf ipTunnel {
       endpointAddress = "1.1.1.1";
       endpointPort = 51820;
@@ -112,10 +124,12 @@ pkgs.testers.runNixOSTest {
       probeIpv4 = "9.9.9.99";
       probeIpv6 = "2606:4700:1111::99";
     };
+
     specialisation = lib.mkIf ipTunnel {
       rotated-peer.configuration.my.proxy.ipTunnel.endpointPort = lib.mkForce 51822;
       subscription-only.configuration.my.proxy.ipTunnel = lib.mkForce null;
     };
+
     my.proxy.proxyOnlyDnsUpstreams = lib.mkIf routing [ "https://203.0.113.53/dns-query" ];
     my.proxy.strictBrowser = managedSources;
     my.proxy.subscriptionTrust = lib.mkIf managedSources "fixed";
@@ -126,16 +140,19 @@ pkgs.testers.runNixOSTest {
     my.proxy.healthBudgetSeconds = lib.mkIf assurance 18;
     my.proxy.dnsEncryption = if strictDns || managedSources || assurance then "strict" else "opportunistic";
     security.pki.certificateFiles = lib.optional (managedSources || assurance) "${sourceTls}/ca.pem";
+
     services.unbound.settings.server.local-zone = lib.mkIf managedSources [
       ''"source.fixture.example." static''
       ''"source-node.fixture.example." static''
       ''"source-node-updated.fixture.example." static''
     ];
+
     services.unbound.settings.server.local-data = lib.mkIf managedSources [
       ''"source.fixture.example. 60 IN A 1.1.1.1"''
       ''"source-node.fixture.example. 60 IN A 1.1.1.1"''
       ''"source-node-updated.fixture.example. 60 IN A 1.1.1.1"''
     ];
+
     systemd.timers.clash-source-refresh.wantedBy = lib.mkIf managedSources (lib.mkForce [ ]);
     my.proxy.proxyOnly = uniformProxy;
     my.proxy.blockedDomains = [ "ads.fixture.example" "blocked.fixture.test" "metrics.home.arpa" ];
@@ -265,6 +282,7 @@ pkgs.testers.runNixOSTest {
       pkgs.curl pkgs.jq pkgs.dnsutils pkgs.iproute2 pkgs.nftables pkgs.util-linux
     ] ++ lib.optionals (ech != null || egressBrowser != null) [ pkgs.nssTools pkgs.tcpdump ]
       ++ lib.optionals ipTunnel [ pkgs.wireguard-tools pkgs.iputils pkgs.tcpdump ipTunnelRelay ]
+      ++ lib.optional arpProtection pkgs.iputils
       ++ lib.optionals dataplane [ pkgs.conntrack-tools ];
     virtualisation.memorySize = if guiControls || egressBrowser != null then 4096 else if ech != null then 3072 else if managedSources then 2048 else 1024;
   };
@@ -298,6 +316,9 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("test -S ${desktopRuntime}/wayland-0 && test -S ${desktopRuntime}/pulse/native", timeout=40)
     ''}
     machine.succeed("ip netns add outside; ip link add ens1 type veth peer name peer0; ip link set peer0 netns outside")
+    ${pkgs.lib.optionalString arpProtection ''
+    machine.succeed("ip -n outside link set peer0 address 02:00:00:00:67:01")
+    ''}
     machine.succeed("ip addr add 100.67.0.2/24 dev ens1; ip link set ens1 up; ip -n outside addr add 100.67.0.1/24 dev peer0; ip -n outside addr add 203.0.113.10/32 dev peer0; ip -n outside link set peer0 up; ip -n outside link set lo up; ip route add default via 100.67.0.1 dev ens1 metric 1")
     machine.succeed("ip -6 addr add 2001:db8:dead::2/64 dev ens1 nodad; ip -n outside -6 addr add 2001:db8:dead::1/64 dev peer0 nodad; ip -6 route add default via 2001:db8:dead::1 dev ens1 metric 1")
     ${pkgs.lib.optionalString assurance ''
@@ -343,6 +364,10 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"systemd-run --unit=control-node ip netns exec outside {core} -d /run/netsec-node -f /run/netsec-node.json")
     machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18080")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
+    ${pkgs.lib.optionalString arpProtection ''
+    ${builtins.readFile ./arp_vm.py}
+    check_arp_direct(machine, ${toString desktop.uid})
+    ''}
     ${pkgs.lib.optionalString assurance ''
     machine.wait_for_unit("netsec-assurance-dns.service")
     try:
@@ -456,6 +481,9 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_file("/run/clash-verge-rev/service.sock")
     machine.succeed("python3 /etc/netsec-control.py start")
     wait_proxy()
+    ${pkgs.lib.optionalString arpProtection ''
+    check_arp_proxy(machine, ${toString desktop.uid}, wait_proxy)
+    ''}
     ${pkgs.lib.optionalString dataplane ''
     with subtest("the production core cannot obtain host network administration"):
         machine.succeed("python3 /etc/netsec-core-network.py confinement", timeout=60)

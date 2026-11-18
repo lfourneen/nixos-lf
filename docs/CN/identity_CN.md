@@ -132,6 +132,49 @@ my.hardening.wired.clonedMacAddress = "random";
 重连前确认门户、MAC 白名单或 DHCP 预约已授权目标地址。
 有线策略作用于主上行，不提供 NetworkManager 的按网络 profile 选择器。
 
+## IPv4 ARP 防护
+
+宿主默认只对接收接口上的地址应答 ARP，并优先选用适合目标链路的源地址。
+`my.hardening.arp.sameSubnetReplies` 可在指定的上行或访客接口启用 `arp_ignore=2`，进一步要求请求方与目标地址位于同一子网。
+Wi-Fi 接口启用后对所有 profile 生效，适合路由器与客户端共用 IPv4 子网的链路。[Linux ARP 参数](https://docs.kernel.org/networking/ip-sysctl.html#ip-variables)
+
+登记连接或更换路由器前，从路由器管理控制台或受管网络清单核验网段、网关 IP 和 MAC。
+DHCP 与观察到的 ARP 报文可以用来定位差异。故障转移网关共用虚拟 MAC 时，登记核验后的虚拟 MAC。
+
+```nix
+my.hardening.arp = {
+  wired = {
+    subnet = "192.0.2.0/24";
+    gateway = "192.0.2.1";
+    mac = "02:00:00:00:02:01";
+    filter = "observe";
+  };
+  wifi."11111111-1111-4111-8111-111111111111" = {
+    subnet = "198.51.100.0/24";
+    gateway = "198.51.100.1";
+    mac = "02:00:00:00:51:01";
+    filter = "observe";
+  };
+  sameSubnetReplies = [ "ens1" ];
+  managedInterfaces.virbr0 = "observe";
+};
+```
+
+`wired` 对 dhcpcd 管理的专用有线口生效。
+`wifi` 以 NetworkManager 的连接 UUID 为键，可用 `nmcli -f UUID,NAME connection show` 查询。
+双上行可以各自绑定。策略先核对接口地址与 IPv4 主路由表，再安装永久邻居。断链或换网后会清理策略创建的旧项。
+默认配置未登记网关，未登记的 Wi-Fi profile 使用动态 ARP。
+
+`network-arp status` 显示 `pinned`、`dynamic` 和绑定失配状态。活动上行失配会阻止开通 B 或续租。链路绑定与代理健康检查均通过后可以恢复 B。IPv6 继续使用独立的 NDP 策略。
+
+`filter = "observe"` 固定网关，并在宿主 ARP 入站 hook 统计无效帧和冲突声明。用 `sudo nft list table arp lf_arp` 查看计数，在确认兼容的连接上选择 `"enforce"` 拒绝这些帧。
+`managedInterfaces` 对显式声明的访客接口应用帧检查。合法的地址冲突探测与换址通告仍可通过。[IPv4 地址冲突检测](https://www.rfc-editor.org/rfc/rfc5227.html)
+
+需要显式进入 A 时使用 `clash-off`，已配置的绑定在 A 中仍生效。
+如果绑定阻碍恢复，激活带有正确参数的配置，或为有线设置 `wired = null`、为 Wi-Fi 移除对应 UUID，让该连接重新使用动态解析。恢复 `"observe"` 可撤回帧拒绝并保留固定邻居。
+
+当前链路 MAC 对所在广播域内的设备可见。使用 VLAN 或 AP 隔离时，分别核对同 AP、跨 AP 与有线桥接的可达范围。部署 DHCP Snooping 和 Dynamic ARP Inspection 时，核对 VLAN、受信上行、静态绑定及接入端口能否拒绝同时冒用已授权 IP 和 MAC 的设备。对需要隔离邻居查询的工作负载，可使用独立网络命名空间，例如[身份浏览器的网络沙箱](browser_CN.md#网络策略与身份)。[OpenWrt 无线隔离](https://openwrt.org/docs/guide-user/network/wifi/basic?s%5B%5D=2&s%5B%5D=server) · [Cisco Dynamic ARP Inspection](https://www.cisco.com/c/en/us/td/docs/switches/lan/catalyst9400/software/release/16-6/configuration_guide/sec/b_166_sec_9400_cg/configuring_dynamic_arp_inspection.html)
+
 ## 持久状态与验证
 
 身份备份保存在持久化的 `/var/lib/network-identity`，目录和文件仅 root 可访问。

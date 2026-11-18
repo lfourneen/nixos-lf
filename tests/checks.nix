@@ -355,6 +355,12 @@ let
         clashPackage = strictClashPackage;
       };
 
+      proxy-arp-vm = import ./network/proxy/control-vm.nix {
+        inherit pkgs;
+        clashPackage = strictClashPackage;
+        arpProtection = true;
+      };
+
       proxy-uniform-vm = import ./network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = strictClashPackage;
