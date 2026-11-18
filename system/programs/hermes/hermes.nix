@@ -429,7 +429,6 @@ in
       # Document processing
       pandoc
       poppler-utils
-      texliveFull
 
       # Nix tools
       nh

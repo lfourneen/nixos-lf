@@ -91,17 +91,12 @@
     fontDir.enable = true;
 
     packages = with pkgs; [
-      google-fonts
       font-awesome
-      maple-mono.NF
       maple-mono.NF-CN
       noto-fonts
       noto-fonts-cjk-sans
       noto-fonts-cjk-serif
       noto-fonts-color-emoji
-      nerd-fonts.jetbrains-mono
-      nerd-fonts.ubuntu
-      nerd-fonts.ubuntu-mono
       twitter-color-emoji
       times-newer-roman
     ];

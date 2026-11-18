@@ -8,6 +8,17 @@ in
   # Dconf
   programs.dconf.enable = true;
 
+  environment.gnome.excludePackages = with pkgs; [
+    epiphany
+    gnome-calendar
+    gnome-connections
+    gnome-contacts
+    gnome-maps
+    gnome-music
+    gnome-tour
+    gnome-weather
+  ];
+
   # Default applications live at the system level so ~/.config/mimeapps.list
   # stays a writable file the desktop can rewrite ("set as default").
   # See system/config/mimeapps.nix for why home-manager's xdg.mimeApps broke it.
@@ -112,7 +123,6 @@ in
     ddcutil
     gnome-software
     gnome-tweaks
-    hydrapaper
     ptyxis
 
 

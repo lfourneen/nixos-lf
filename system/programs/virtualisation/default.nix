@@ -88,8 +88,7 @@ in
     #pkgs.unstable.podman-compose
     #pkgs.unstable.pods
 
-    # Kubernetes
-    pkgs.unstable.kubernetes
+    # Kubernetes client tools
     pkgs.unstable.kubectl
     pkgs.unstable.kubernetes-helm-wrapped
     pkgs.unstable.kubernetes-validate

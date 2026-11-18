@@ -395,12 +395,6 @@ let
       open-floating true
     }
 
-    // Peazip
-    window-rule {
-      match app-id=r#"^peazip$"#
-      open-floating true
-    }
-
     // Prismlauncher
     window-rule {
       match app-id=r#"^org.prismlauncher.PrismLauncher$"#

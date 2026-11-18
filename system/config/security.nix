@@ -90,11 +90,6 @@
     enable = true;
 
     wrappedBinaries = {
-      media-downloader = {
-        executable = "${lib.getBin pkgs.media-downloader}/bin/media-downloader";
-        profile = "${pkgs.firejail}/etc/firejail/default.profile";
-      };
-
       mpv = {
         executable = "${lib.getBin pkgs.mpv}/bin/mpv";
         profile = "${pkgs.firejail}/etc/firejail/mpv.profile";

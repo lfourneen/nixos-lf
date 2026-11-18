@@ -38,7 +38,6 @@
 
     # Archives
     p7zip
-    peazip
     unrar
     unzip
     zip
@@ -50,9 +49,6 @@
     # Network
     dhcpcd
     networkmanagerapplet
-
-    # Test
-    jmeter
 
     # Monitoring
     btop
@@ -75,7 +71,6 @@
     python3Packages.arxiv2bib
 
     # Document
-    texliveFull
     poppler-utils
     pandoc
     tesseract
@@ -89,11 +84,5 @@
 
     # Media
     ffmpeg-full
-
-    # Rust
-    dioxus-cli
-
-    # Flatpak
-    flatpak-builder
   ];
 }

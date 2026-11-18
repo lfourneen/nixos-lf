@@ -10,36 +10,17 @@
     gnumake
     pkg-config
     pkgconf
-    meson
     ninja
 
     # Mixed
     gcc_multi
     gdb
     
-    # C / C++
-    llvmPackages_latest.clang
-    llvmPackages_latest.clang-tools
-    llvmPackages_latest.lldb
-    llvmPackages_latest.libcxx
-    llvmPackages_latest.libllvm
-
     # Android
     android-tools
 
-    # GTK3 && GTK4
-    gtk3
-    gtk4
-
-    # Electron
-    electron
-
     # Java
     jdk
-
-    # .NET
-    dotnet-sdk
-    dotnet-runtime
 
     # Python
     python313
@@ -56,7 +37,6 @@
 
     # Rust
     cargo
-    cargo-tauri
     rustc
     rustfmt
 
@@ -69,7 +49,6 @@
     verilator
     yosys
     python313Packages.cocotb
-    surfer
 
     # waveform conversion / runtime for wave-mcp
     zlib
