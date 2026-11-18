@@ -1,6 +1,15 @@
 {
   "schema": 1,
   "network_sources": "system/config/network/maintenance/sources.json",
+  "network_defaults": {
+    "owner": "lfour",
+    "kind": "nix-flake-pin",
+    "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
+    "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
+    "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
+    "review_command": "nix build --no-link .#checks.x86_64-linux.proxy-upgrade-review",
+    "pins": []
+  },
   "items": [
     {
       "id": "flake-nixpkgs",
@@ -227,7 +236,11 @@
       "pins": [
         {
           "file": "home/programs/firefox/firefox.nix",
-          "pattern": "\"uBlock0@raymondhill.net\" = \"force_installed\";\n"
+          "pattern": "uBlockId = \"uBlock0@raymondhill.net\";\n"
+        },
+        {
+          "file": "home/programs/firefox/firefox.nix",
+          "pattern": "${uBlockId} = \"force_installed\";\n"
         },
         {
           "file": "home/programs/firefox/firefox.nix",
@@ -395,10 +408,9 @@
       "id": "dsh-desktop-appimage",
       "owner": "lfour",
       "kind": "appimage-pin",
-      "upstream": "anywhere-labs/dsh-desktop GitHub release v2.0.22-next x86_64 AppImage",
+      "upstream": "anywhere-labs/dsh-desktop GitHub NEXT release x86_64 AppImage",
       "update_mode": "bump version and hash in overlays/dsh-desktop-appimage.nix, review the repack anchors, then rebuild",
       "current": {
-        "version": "2.0.22",
         "summary": "Electron AppImage repacked with build checks for sharp WASM and landlock-run"
       },
       "signature": "SHA-256 pinned in Nix; the upstream release has no publisher signature checked by this repository",
@@ -408,46 +420,32 @@
       "pins": [
         {
           "file": "overlays/dsh-desktop-appimage.nix",
-          "pattern": "version = \"2.0.22\";\n"
-        },
-        {
-          "file": "overlays/dsh-desktop-appimage.nix",
           "pattern": "url = \"https://github.com/anywhere-labs/dsh-desktop/releases/download/v${version}-next/DSH-NEXT-${version}-next-x86_64.AppImage\";\n"
-        },
-        {
-          "file": "overlays/dsh-desktop-appimage.nix",
-          "pattern": "hash = \"sha256-U04xJC0pWnHPkqgAHrXH536cc2EmU1+pMCbtI7NzZGc=\";\n"
         }
-      ]
+      ],
+      "nix_release": {
+        "file": "overlays/dsh-desktop-appimage.nix",
+        "hash_count": 1
+      }
     },
     {
       "id": "dsh-tui-release",
       "owner": "lfour",
       "kind": "appimage-pin",
-      "upstream": "ccch1mneyyy/dsh-TUI GitHub release v0.20.1 standalone Linux runtime",
+      "upstream": "ccch1mneyyy/dsh-TUI GitHub release standalone Linux runtime",
       "update_mode": "bump version and per-platform hashes in overlays/dsh-tui/dsh-tui.nix, then rebuild against the locked DSH host",
       "current": {
-        "version": "0.20.1",
         "summary": "standalone JavaScript runtime; /update and updateTui are disabled, and the host peer range is checked at build"
       },
       "signature": "Per-platform SHA-256 pinned in Nix; the upstream release has no publisher signature checked by this repository",
       "fallback": "restore the previous version and hashes in the overlay and switch to the recorded generation",
       "max_patch_delay_days": 30,
       "review_command": "nixos-rebuild build --flake .#lfour; verify the host peer-range and Cordis identity checks",
-      "pins": [
-        {
-          "file": "overlays/dsh-tui/dsh-tui.nix",
-          "pattern": "version = \"0.20.1\";\n"
-        },
-        {
-          "file": "overlays/dsh-tui/dsh-tui.nix",
-          "pattern": "hash = \"sha256-uVQMEL618ZQXfQ5G/zoz9j9909K+dOv7WA8qujZTIoM=\";\n"
-        },
-        {
-          "file": "overlays/dsh-tui/dsh-tui.nix",
-          "pattern": "hash = \"sha256-h4WW1oHm/+gnNWqCXGeBDCv1S5RuZsGdRd2sm3toh7o=\";\n"
-        }
-      ]
+      "pins": [],
+      "nix_release": {
+        "file": "overlays/dsh-tui/dsh-tui.nix",
+        "hash_count": 2
+      }
     },
     {
       "id": "dsh-desktop-plugins",
@@ -581,194 +579,110 @@
     },
     {
       "id": "network-mihomo",
-      "owner": "lfour",
-      "kind": "nix-flake-pin",
       "upstream": "Mihomo (Clash Meta) core and managed profile parser",
-      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
       "current": {
-        "summary": "Proxy core, parser, controller, DNS and routing paths; versions, source hashes and dependency fingerprints stay in sources.json"
+        "summary": "Proxy core, parser, controller, DNS and routing paths"
       },
-      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
-      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
       "max_patch_delay_days": 7,
-      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
-      "pins": [],
       "network_ref": "mihomo"
     },
     {
       "id": "network-sing-tun",
-      "owner": "lfour",
-      "kind": "nix-flake-pin",
       "upstream": "Mihomo vendored sing-tun redirect implementation",
-      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
       "current": {
-        "summary": "Vendored dependency inside the Mihomo source tree; versions, source hashes and dependency fingerprints stay in sources.json"
+        "summary": "Vendored dependency inside the Mihomo source tree"
       },
-      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
-      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
       "max_patch_delay_days": 7,
-      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
-      "pins": [],
       "network_ref": "sing-tun"
     },
     {
       "id": "network-socks",
-      "owner": "lfour",
-      "kind": "nix-flake-pin",
       "upstream": "Mihomo SOCKS inbound and transport code",
-      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
       "current": {
-        "summary": "Vendored Mihomo transport path; versions, source hashes and dependency fingerprints stay in sources.json"
+        "summary": "Vendored Mihomo transport path"
       },
-      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
-      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
       "max_patch_delay_days": 7,
-      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
-      "pins": [],
       "network_ref": "socks"
     },
     {
       "id": "network-gost",
-      "owner": "lfour",
-      "kind": "nix-flake-pin",
       "upstream": "Gost relay and vendored HTTP handler",
-      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
       "current": {
-        "summary": "Relay binary and vendored go-gost/x handler; versions, source hashes and dependency fingerprints stay in sources.json"
+        "summary": "Relay binary and vendored go-gost/x handler"
       },
-      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
-      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
       "max_patch_delay_days": 14,
-      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
-      "pins": [],
       "network_ref": "gost"
     },
     {
       "id": "network-clash",
-      "owner": "lfour",
-      "kind": "nix-flake-pin",
       "upstream": "Clash Verge GUI, helper and packaged core wrapper",
-      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
       "current": {
-        "summary": "GUI, Rust helper and packaging integration; versions, source hashes and dependency fingerprints stay in sources.json"
+        "summary": "GUI, Rust helper and packaging integration"
       },
-      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
-      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
       "max_patch_delay_days": 14,
-      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
-      "pins": [],
       "network_ref": "clash"
     },
     {
       "id": "network-dns",
-      "owner": "lfour",
-      "kind": "nix-flake-pin",
       "upstream": "dnsmasq, Unbound and Chrony network services",
-      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
       "current": {
-        "summary": "DNS forwarding, validation, NTS and time services; versions, source hashes and dependency fingerprints stay in sources.json"
+        "summary": "DNS forwarding, validation, NTS and time services"
       },
-      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
-      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
       "max_patch_delay_days": 7,
-      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
-      "pins": [],
       "network_ref": "dns"
     },
     {
       "id": "network-firefox",
-      "owner": "lfour",
-      "kind": "nix-flake-pin",
       "upstream": "Firefox package plus bubblewrap, xdg-dbus-proxy and seccomp",
-      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
       "current": {
-        "summary": "Browser policy, sandbox and ECH integration; versions, source hashes and dependency fingerprints stay in sources.json"
+        "summary": "Browser policy, sandbox and ECH integration"
       },
-      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
-      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
       "max_patch_delay_days": 7,
-      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
-      "pins": [],
       "network_ref": "firefox"
     },
     {
       "id": "network-tailscale",
-      "owner": "lfour",
-      "kind": "nix-flake-pin",
       "upstream": "Tailscale CLI and transport package",
-      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
       "current": {
-        "summary": "Socket marks, STUN and tailnet transport; versions, source hashes and dependency fingerprints stay in sources.json"
+        "summary": "Socket marks, STUN and tailnet transport"
       },
-      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
-      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
       "max_patch_delay_days": 14,
-      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
-      "pins": [],
       "network_ref": "tailscale"
     },
     {
       "id": "network-firewall",
-      "owner": "lfour",
-      "kind": "nix-flake-pin",
       "upstream": "nftables, NetworkManager and systemd firewall integration",
-      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
       "current": {
-        "summary": "Firewall rule generation and lifecycle ownership; versions, source hashes and dependency fingerprints stay in sources.json"
+        "summary": "Firewall rule generation and lifecycle ownership"
       },
-      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
-      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
       "max_patch_delay_days": 7,
-      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
-      "pins": [],
       "network_ref": "firewall"
     },
     {
       "id": "network-link-identity",
-      "owner": "lfour",
-      "kind": "nix-flake-pin",
       "upstream": "NetworkManager, systemd and dhcpcd link identity",
-      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
       "current": {
-        "summary": "Stable identity, DHCP and IPv6 address behavior; versions, source hashes and dependency fingerprints stay in sources.json"
+        "summary": "Stable identity, DHCP and IPv6 address behavior"
       },
-      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
-      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
       "max_patch_delay_days": 14,
-      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
-      "pins": [],
       "network_ref": "link-identity"
     },
     {
       "id": "network-controlled-source",
-      "owner": "lfour",
-      "kind": "nix-flake-pin",
       "upstream": "Mihomo and helper source-controlled configuration",
-      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
       "current": {
-        "summary": "Registered source, parser, audit and snapshot path; versions, source hashes and dependency fingerprints stay in sources.json"
+        "summary": "Registered source, parser, audit and snapshot path"
       },
-      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
-      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
       "max_patch_delay_days": 7,
-      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
-      "pins": [],
       "network_ref": "controlled-source"
     },
     {
       "id": "network-browser-isolation",
-      "owner": "lfour",
-      "kind": "nix-flake-pin",
       "upstream": "Firefox, bubblewrap, systemd, Mihomo, xdg-dbus-proxy and seccomp",
-      "update_mode": "update the package or flake input, review the sources.json entrypoints and invariants, run the upgrades.py plan checks, then update the baseline",
       "current": {
-        "summary": "Strict browser namespace and proxy boundary; versions, source hashes and dependency fingerprints stay in sources.json"
+        "summary": "Strict browser namespace and proxy boundary"
       },
-      "signature": "SHA-256 source, dependency and recipe fingerprints in sources.json plus the configured Nix cache signature policy",
-      "fallback": "revert the package or input change, rerun the upgrades.py plan checks, and switch to the recorded generation",
       "max_patch_delay_days": 7,
-      "review_command": "nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources > /tmp/network-selected.json && python3 system/config/network/maintenance/upgrades.py check system/config/network/maintenance/sources.json /tmp/network-selected.json",
-      "pins": [],
       "network_ref": "browser-isolation"
     }
   ],

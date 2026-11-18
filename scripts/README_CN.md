@@ -235,7 +235,8 @@ HTTPS 成功要求 TLS 校验通过，且 HTTP 200 响应包含正文首字节�
 
 ## check-maintenance.py
 
-校验 `maintenance/inventory.json`。检查器确认 schema、条目 id 唯一性、仓库文件中的字面 pin、`flake.lock` 中的根 flake 输入版本，以及指向 `system/config/network/maintenance/sources.json` 的 `network_ref`。默认运行不发起网络请求。
+校验 `maintenance/inventory.json`。检查器确认 schema、条目 id 唯一性、仓库文件中的字面 pin、`flake.lock` 中的根 flake 输入版本，以及指向 `system/config/network/maintenance/sources.json` 的 `network_ref`。
+网络条目沿用 `network_defaults` 中共享的核查说明。`nix_release` 条目从指定的 Nix 文件读取版本，并检查 SHA-256 哈希的数量。`--json` 在 `nix_releases` 中显示读到的版本和哈希。默认运行不发起网络请求。
 
 ```sh
 python3 scripts/check-maintenance.py

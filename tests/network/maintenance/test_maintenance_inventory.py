@@ -163,6 +163,52 @@ class MaintenanceInventoryTests(unittest.TestCase):
         self.assert_error(outcome, 'network-duplicate-version')
         self.assert_error(outcome, 'network-duplicate-pin')
 
+    def test_network_defaults_fill_shared_fields(self):
+        inventory = self.inventory()
+        item = next(item for item in inventory['items'] if 'network_ref' in item)
+        fields = ('owner', 'kind', 'update_mode', 'signature', 'fallback', 'review_command', 'pins')
+        inventory['network_defaults'] = {field: item.pop(field) for field in fields}
+        self.save_inventory(inventory)
+
+        result, outcome = self.run_checker()
+        self.assertEqual(result.returncode, 0, outcome['errors'])
+        self.assertEqual(outcome['stats']['network_refs'], 1)
+
+        inventory['items'][1].pop('review_command')
+        self.save_inventory(inventory)
+        result, outcome = self.run_checker()
+        self.assertEqual(result.returncode, 1)
+        self.assert_error(outcome, 'required')
+
+    def test_nix_release_tracks_overlay_upgrades(self):
+        inventory = self.inventory()
+        item = copy.deepcopy(inventory['items'][1])
+        item.update(id='nix-release-example', kind='appimage-pin', pins=[])
+        overlay = 'overlays/example.nix'
+        item['nix_release'] = {'file': overlay, 'hash_count': 2}
+        inventory['items'].append(item)
+        self.save_inventory(inventory)
+
+        first_hash = 'sha256-' + 'A' * 43 + '='
+        for version, second_hash in (('1.0', first_hash), ('1.1', 'sha256-' + 'B' * 42 + 'A=')):
+            with self.subTest(version=version):
+                self.write_text(
+                    overlay,
+                    f'{{\n  version = "{version}";\n'
+                    f'  x86_64-linux = {{\n    hash = "{first_hash}";\n  }};\n'
+                    f'  aarch64-linux = {{\n    hash = "{second_hash}";\n  }};\n}}\n',
+                )
+                result, outcome = self.run_checker()
+                self.assertEqual(result.returncode, 0, outcome['errors'])
+                self.assertEqual(outcome['nix_releases']['nix-release-example'], {
+                    'file': overlay, 'version': version, 'hashes': [first_hash, second_hash],
+                })
+
+        self.write_text(overlay, f'{{\n  version = "1.1";\n  hash = "{first_hash}";\n}}\n')
+        result, outcome = self.run_checker()
+        self.assertEqual(result.returncode, 1)
+        self.assert_error(outcome, 'nix-release')
+
     def test_duplicate_ids_fail(self):
         inventory = self.inventory()
         inventory['items'].append(copy.deepcopy(inventory['items'][1]))

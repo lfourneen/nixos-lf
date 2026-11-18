@@ -302,7 +302,11 @@ set construction for the committed domain snapshot.
 Validates `maintenance/inventory.json`. The checker confirms the schema, unique
 item ids, literal pins against repository files, root flake input revisions
 against `flake.lock`, and `network_ref` entries against
-`system/config/network/maintenance/sources.json`. The default run makes no network requests.
+`system/config/network/maintenance/sources.json`. Network entries inherit their
+shared review instructions from `network_defaults`. For `nix_release` entries,
+the checker reads the version and expected number of SHA-256 hashes from
+the specified Nix file. The `--json` output includes these values under
+`nix_releases`. The default run makes no network requests.
 
 ```sh
 python3 scripts/check-maintenance.py

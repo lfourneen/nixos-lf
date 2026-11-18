@@ -146,10 +146,12 @@ sudo SOPS_AGE_KEY_FILE=/persist/secrets/age/system.key \
 | [home/](home) | Home Manager 模块和用户应用 |
 | [overlays/](overlays) | 软件包覆盖 |
 | [local-data/](local-data) | 纳入版本管理的构建输入，如 DNS 黑名单快照 |
+| [maintenance/](maintenance) | 全仓库更新台账和核查命令 |
 | [scripts/](scripts) | 配置复制工具和黑名单刷新脚本 |
 | [tests/](tests) | 软件包、策略和隔离 VM 检查 |
 | [docs/](docs/CN/README_CN.md) | 架构、配置、日常操作和维护手册 |
 
+运行 `python3 scripts/check-maintenance.py` 校验更新台账。
 修改网络组件或更新相关依赖前，可按[维护手册](docs/CN/maintenance_CN.md)选择检查，并核对本地补丁。
 
 ## 许可证

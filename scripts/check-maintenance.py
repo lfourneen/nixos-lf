@@ -27,14 +27,15 @@ REQUIRED = (
     'id', 'owner', 'kind', 'upstream', 'update_mode', 'current', 'signature',
     'fallback', 'max_patch_delay_days', 'review_command', 'pins',
 )
-ITEM_FIELDS = set(REQUIRED) | {'network_ref', 'flake'}
+ITEM_FIELDS = set(REQUIRED) | {'network_ref', 'flake', 'nix_release'}
 CURRENT_FIELDS = {'version', 'summary'}
 PIN_FIELDS = {'file', 'pattern'}
 FLAKE_FIELDS = {'input', 'rev', 'version'}
-TOP_FIELDS = {'schema', 'network_sources', 'items', 'lock_graph_sha256'}
+NETWORK_DEFAULT_FIELDS = {'owner', 'kind', 'update_mode', 'signature', 'fallback', 'review_command', 'pins'}
+TOP_FIELDS = {'schema', 'network_sources', 'network_defaults', 'items', 'lock_graph_sha256'}
 ID_PATTERN = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*')
+NIX_RELEASE_ASSIGNMENT = re.compile(r'^[ \t]*(version|hash)[ \t]*=[ \t]*"([^"\r\n]+)"[ \t]*;', re.MULTILINE)
 INVENTORY = Path('maintenance/inventory.json')
-NETWORK_SOURCES = Path('system/config/network/maintenance/sources.json')
 FLAKE_LOCK = Path('flake.lock')
 
 
@@ -124,6 +125,39 @@ def check_pins(root, item, item_id, errors, stats):
                       item=item_id, file=filename, pattern=pattern)
 
 
+def check_nix_release(root, item, item_id, errors, stats):
+    release = item['nix_release']
+    if item.get('kind') != 'appimage-pin' or not isinstance(release, dict) or set(release) != {'file', 'hash_count'}:
+        add_error(errors, 'nix-release', f'{item_id}: appimage-pin nix_release needs file and hash_count', item=item_id)
+        return
+    hash_count = release['hash_count']
+    if type(hash_count) is not int or hash_count < 1:
+        add_error(errors, 'nix-release', f'{item_id}: hash_count must be a positive integer', item=item_id)
+        return
+    current = item.get('current')
+    if isinstance(current, dict) and 'version' in current:
+        add_error(errors, 'nix-release', f'{item_id}: read the version from nix_release.file', item=item_id)
+
+    filename = release['file']
+    path = repository_file(root, filename, errors, 'nix-release', 'nix_release.file', item=item_id)
+    if path is None:
+        return
+    try:
+        assignments = NIX_RELEASE_ASSIGNMENT.findall(path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError) as error:
+        add_error(errors, 'nix-release', f'{item_id}: cannot read {filename!r}: {error}', item=item_id)
+        return
+    versions = [value for key, value in assignments if key == 'version']
+    hashes = [value for key, value in assignments if key == 'hash']
+    if len(versions) != 1 or not re.fullmatch(r'[0-9][0-9A-Za-z.+_-]*', versions[0]):
+        add_error(errors, 'nix-release', f'{item_id}: expected one literal version in {filename!r}', item=item_id)
+    elif len(hashes) != hash_count or any(not re.fullmatch(r'sha256-[A-Za-z0-9+/]{43}=', value) for value in hashes):
+        add_error(errors, 'nix-release',
+                  f'{item_id}: expected {hash_count} literal SHA-256 SRI hash(es) in {filename!r}', item=item_id)
+    else:
+        stats['nix_releases'][item_id] = {'file': filename, 'version': versions[0], 'hashes': hashes}
+
+
 def resolve_flake_input(lock, input_name, errors, item_id):
     if not isinstance(lock, dict):
         add_error(errors, 'flake-lock', f'{item_id}: flake.lock must contain an object', item=item_id)
@@ -200,10 +234,12 @@ def check_flake(item, item_id, errors, stats, lock_state):
                       item=item_id, field=field, expected=expected_value, actual=actual)
 
 
-def check_item(root, item, index, errors, stats, seen):
+def check_item(root, item, index, errors, stats, seen, network_defaults):
     if not isinstance(item, dict):
         add_error(errors, 'item', f'item #{index} must be an object')
         return
+    if 'network_ref' in item:
+        item = {**network_defaults, **item}
     raw_id = item.get('id')
     item_id = raw_id if is_text(raw_id) else f'<item #{index}>'
     if not is_text(raw_id):
@@ -231,6 +267,8 @@ def check_item(root, item, index, errors, stats, seen):
         add_error(errors, 'delay', f'{item_id}: max_patch_delay_days must be a non-negative integer', item=item_id)
     check_current(item, item_id, errors)
     check_pins(root, item, item_id, errors, stats)
+    if 'nix_release' in item:
+        check_nix_release(root, item, item_id, errors, stats)
     network_ref = item.get('network_ref')
     flake = item.get('flake')
     if 'network_ref' in item:
@@ -285,7 +323,7 @@ def check(root):
     errors = []
     stats = {
         'items': 0, 'pins': 0, 'network_components': 0,
-        'network_refs': 0, 'network_ref_list': [], 'flake_inputs': 0,
+        'network_refs': 0, 'network_ref_list': [], 'flake_inputs': 0, 'nix_releases': {},
         'lock_state': {'root': root, 'data': None, 'failed': False},
     }
     path = root / INVENTORY
@@ -303,6 +341,10 @@ def check(root):
     extra = set(inventory) - TOP_FIELDS
     if extra:
         add_error(errors, 'inventory', f'unknown top-level field(s): {", ".join(sorted(extra))}')
+    network_defaults = inventory.get('network_defaults', {})
+    if not isinstance(network_defaults, dict) or set(network_defaults) - NETWORK_DEFAULT_FIELDS:
+        add_error(errors, 'inventory', 'network_defaults must contain only shared network item fields')
+        network_defaults = {}
     if 'lock_graph_sha256' in inventory:
         lock = read_json(root / FLAKE_LOCK, errors, 'flake-lock', 'flake.lock')
         if isinstance(lock, dict):
@@ -327,14 +369,15 @@ def check(root):
     stats['items'] = len(items)
     seen = set()
     for index, item in enumerate(items):
-        check_item(root, item, index, errors, stats, seen)
+        check_item(root, item, index, errors, stats, seen, network_defaults)
     check_network_refs(components, errors, stats)
     return result(errors, stats)
 
 
 def result(errors, stats):
-    public = {key: value for key, value in stats.items() if key not in ('network_ref_list', 'lock_state')}
-    return {'ok': not errors, 'errors': errors, 'stats': public}
+    public = {key: value for key, value in stats.items()
+              if key not in ('network_ref_list', 'lock_state', 'nix_releases')}
+    return {'ok': not errors, 'errors': errors, 'stats': public, 'nix_releases': stats['nix_releases']}
 
 
 def command(args):

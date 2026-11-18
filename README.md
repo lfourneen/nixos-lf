@@ -147,10 +147,12 @@ Secret names and service ownership are declared in [sops.nix](system/programs/so
 | [home/](home) | Home Manager modules and user applications |
 | [overlays/](overlays) | Package overrides |
 | [local-data/](local-data) | Versioned inputs such as the DNS blocklist snapshot |
+| [maintenance/](maintenance) | Repository-wide update inventory and review commands |
 | [scripts/](scripts) | Configuration copy tools and blocklist refresh utility |
 | [tests/](tests) | Package, policy and isolated VM checks |
 | [docs/](docs/README.md) | Architecture, configuration, operations and maintenance |
 
+Run `python3 scripts/check-maintenance.py` to validate the update inventory.
 For changes to the network stack, use the [maintenance guide](docs/maintenance.md) to choose the relevant checks and review local patches before updating dependencies.
 
 ## License
