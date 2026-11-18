@@ -28,8 +28,8 @@ in
   systemd.user.services.ollama.Service.TimeoutStopSec = "10s";
 
   home.packages = with pkgs; [
-    llama-cpp
-    unstable-pkgs.lmstudio
+    #llama-cpp
+    #unstable-pkgs.lmstudio
   ];
 }
 
