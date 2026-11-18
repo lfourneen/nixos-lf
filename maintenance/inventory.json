@@ -273,9 +273,9 @@
       "owner": "lfour",
       "kind": "flatpak-runtime",
       "upstream": "Flathub applications and their resolved runtimes",
-      "update_mode": "services.flatpak.update.auto runs daily; app and runtime refs follow the Flathub stable channels",
+      "update_mode": "automatic updates are disabled. Use flatpak update --system for applications and runtimes from the Flathub stable channels",
       "current": {
-        "summary": "18 Flathub app ids in system/programs/flatpak/default.nix; resolved runtime commits are not pinned locally"
+        "summary": "18 Flathub app ids in system/programs/flatpak/apps.nix; resolved runtime commits are not pinned locally"
       },
       "signature": "Flathub GPG-signed OSTree commits; remote verification stays enabled, and mirror transport does not replace it",
       "fallback": "reinstall the previous flatpak commit for one app or switch to the previous NixOS generation; the app id list is repository-owned",
@@ -283,75 +283,79 @@
       "review_command": "flatpak remotes --show-details; flatpak info --show-permissions <app-id>; flatpak remote-info --show-commit flathub <app-id>",
       "pins": [
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/settings.nix",
+          "pattern": "update.auto.enable = false;\n"
+        },
+        {
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"com.baidu.NetDisk\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"com.dingtalk.DingTalk\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"com.discordapp.Discord\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"com.qq.QQ\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"im.riot.Riot\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"com.tencent.WeChat\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"com.tencent.wemeet\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"org.telegram.desktop\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"cn.lceda.LCEDAPro\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"com.st.STM32CubeMX\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"com.vysp3r.ProtonPlus\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"moe.kopuz.kopuz\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"net.lutris.Lutris\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"org.prismlauncher.PrismLauncher\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"com.spotify.Client\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"cn.wps.wps_365\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"com.github.tchx84.Flatseal\"\n"
         },
         {
-          "file": "system/programs/flatpak/default.nix",
+          "file": "system/programs/flatpak/apps.nix",
           "pattern": "\"org.octave.Octave\"\n"
         }
       ]
@@ -361,7 +365,7 @@
       "owner": "lfour",
       "kind": "flatpak-runtime",
       "upstream": "Flathub repository through the USTC mirror",
-      "update_mode": "flatpak-mirror.service adds flathub, points its URL at the USTC mirror at boot, and leaves daily updates enabled",
+      "update_mode": "flatpak-mirror.service adds flathub and points its URL at the USTC mirror at boot",
       "current": {
         "summary": "flathub remote is rewritten to https://mirrors.ustc.edu.cn/flathub after the official remote file is fetched"
       },

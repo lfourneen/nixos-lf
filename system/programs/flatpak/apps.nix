@@ -1,0 +1,57 @@
+{
+  services.flatpak.packages = [
+    # Communication tools
+    "com.baidu.NetDisk"
+    "com.dingtalk.DingTalk"
+    "com.discordapp.Discord"
+    "com.qq.QQ"
+    "im.riot.Riot"
+    "com.tencent.WeChat"
+    "com.tencent.wemeet"
+    "org.telegram.desktop"
+
+    # Development tools
+    #"cc.arduino.IDE2"
+    "cn.lceda.LCEDAPro"
+    #"com.jetbrains.CLion"
+    #"com.jetbrains.PyCharm-Professional"
+    "com.st.STM32CubeMX"
+    #"io.qt.Designer"
+    #"io.qt.Linguist"
+    #"io.qt.QtCreator"
+    #"io.qt.qdbusviewer"
+    #"org.kicad.KiCad"
+
+    # Games & entertainment
+    #"com.ranfdev.DistroShelf"
+    #"com.usebottles.bottles"
+    "com.vysp3r.ProtonPlus"
+    "moe.kopuz.kopuz"
+    "net.lutris.Lutris"
+    "org.prismlauncher.PrismLauncher"
+    #"io.github.screwys.Rufin"
+    "com.spotify.Client"
+
+    # Multimedia & creativity
+    #"com.obsproject.Studio"
+    #"org.blender.Blender"
+    #"org.freecad.FreeCAD"
+    #"org.gimp.GIMP"
+    #"org.inkscape.Inkscape"
+    #"org.kde.kdenlive"
+    #"org.kde.krita"
+    #"org.shotcut.Shotcut"
+
+    # Office & productivity
+    "cn.wps.wps_365"
+    #"com.jgraph.drawio.desktop"
+    #"md.obsidian.Obsidian"
+    #"org.onlyoffice.desktopeditors"
+    #"org.texstudio.TeXstudio"
+
+    # Utilities & system tools
+    "com.github.tchx84.Flatseal"
+    "org.octave.Octave"
+    #"org.videolan.VLC"
+  ];
+}
