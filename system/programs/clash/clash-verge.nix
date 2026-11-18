@@ -190,12 +190,21 @@ in
     enable = true;
     package = (pkgs.unstable.clash-verge-rev.override {
       mihomo = managedCore;
-    }).overrideAttrs (old: {
+    }).overrideAttrs (old: let
+      upstreamService = old.passthru.service;
+      installPhase = builtins.unsafeDiscardStringContext old.installPhase;
+      upstreamCopy = builtins.unsafeDiscardStringContext
+        "cp ${upstreamService}/bin/clash-verge-service $out/bin/clash-verge-service";
+      upstreamDrv = builtins.unsafeDiscardStringContext upstreamService.drvPath;
+      otherInputs = builtins.removeAttrs (builtins.getContext old.installPhase) [ upstreamDrv ];
+    in {
+      # Drop the upstream copy and its dependency before building the wrapper.
+      installPhase = assert lib.hasInfix upstreamCopy installPhase;
+        builtins.appendContext (lib.replaceStrings [ upstreamCopy ] [ "" ] installPhase) otherInputs;
       nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.makeWrapper ];
+
       postFixup = (old.postFixup or "") + ''
-        # Replace the helper copied by the GUI package with the locally pinned
-        # build. The module starts bin/clash-verge-service from this package.
-        rm -f "$out/bin/clash-verge-service"
+        # Keep the service binary outside the GUI wrapper hook.
         install -m 0755 ${patchedService}/bin/clash-verge-service "$out/bin/clash-verge-service"
         # bin/.verge-mihomo-wrapped is the package's symlink to the real
         # mihomo binary; keep it as the launcher's read-only passthrough
@@ -211,6 +220,7 @@ in
           --add-flags "--launch $out/bin/clash-verge $out/bin/.clash-verge-launcher ${guiDefaults}/bin/clash-verge-defaults" \
           --add-flags ${lib.escapeShellArg (lib.escapeShellArg config.my.proxy.delayTestUrl)}
       '';
+
       passthru = (old.passthru or { }) // {
         inherit managedCore guiDefaultsCheck stageSettings;
         managedService = patchedService;

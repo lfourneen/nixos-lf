@@ -1,6 +1,8 @@
 """Offline tests for scripts/check-maintenance.py and maintenance/inventory.json."""
+from contextlib import redirect_stderr
 import copy
 import importlib.util
+import io
 from unittest.mock import patch
 import json
 from pathlib import Path
@@ -179,6 +181,60 @@ class MaintenanceInventoryTests(unittest.TestCase):
         result, outcome = self.run_checker()
         self.assertEqual(result.returncode, 1)
         self.assert_error(outcome, 'required')
+
+    def test_pin_update_previews_then_refreshes_only_changed_records(self):
+        spec = importlib.util.spec_from_file_location('checker', CHECKER)
+        checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(checker)
+        inventory = self.inventory()
+        inventory['lock_graph_sha256'] = checker.lock_graph_digest(FIXTURE_LOCK)
+        self.save_inventory(inventory)
+        lock = copy.deepcopy(FIXTURE_LOCK)
+        new_revision = 'b' * 40
+        lock['nodes']['nixpkgs']['locked']['rev'] = new_revision
+        self.write_json('flake.lock', lock)
+        sources = copy.deepcopy(FIXTURE_SOURCES['sources'])
+        sources['alpha']['version'] = '1.1'
+        sources['alpha']['source'] = 'sha256-new-fixture'
+        sources_path = self.root / inventory['network_sources']
+
+        def plan(review, selected):
+            changed = review['sources'] != selected
+            return {'changed': ['alpha'] if changed else [], 'checks': ['alpha-check'] if changed else []}
+
+        with patch.object(checker.subprocess, 'check_output', return_value=json.dumps(sources)), \
+                patch.object(checker.runpy, 'run_path', return_value={'plan': plan}):
+            preview = checker.update_pins(self.root, checker.check(self.root))
+            self.assertEqual(preview['pin_update']['flake_inputs'], ['nixpkgs'])
+            self.assertEqual(preview['pin_update']['network_checks'], ['alpha-check'])
+            diff = preview['pin_update']['diff']
+            self.assertIn(f'-        "rev": "{FIXTURE_REV}"', diff)
+            self.assertIn(f'+        "rev": "{new_revision}"', diff)
+            self.assertIn('-      "source": "sha256-fixture"', diff)
+            self.assertIn('+      "source": "sha256-new-fixture"', diff)
+            self.assertEqual(self.inventory(), inventory)
+            self.assertEqual(json.loads(sources_path.read_text()), FIXTURE_SOURCES)
+
+            for response in ('\n', 'n\n', ''):
+                with self.subTest(response=response):
+                    with patch.object(checker.sys, 'stdin', io.StringIO(response)), redirect_stderr(io.StringIO()) as stderr:
+                        declined = checker.update_pins(self.root, checker.check(self.root), checker.confirm_pin_update)
+                    self.assertIn(diff + 'Update these JSON files? [y/N]', stderr.getvalue())
+                    self.assertTrue(declined['pin_update']['declined'])
+                    self.assertEqual(self.inventory(), inventory)
+                    self.assertEqual(json.loads(sources_path.read_text()), FIXTURE_SOURCES)
+
+            with patch.object(checker.sys, 'stdin', io.StringIO('y\n')), redirect_stderr(io.StringIO()):
+                updated = checker.update_pins(self.root, checker.check(self.root), checker.confirm_pin_update)
+            self.assertTrue(updated['ok'], updated['errors'])
+            self.assertTrue(updated['pin_update']['written'])
+            self.assertEqual(self.inventory()['items'][0]['flake']['rev'], new_revision)
+            self.assertEqual(self.inventory()['items'][1:], inventory['items'][1:])
+            self.assertEqual(self.inventory()['lock_graph_sha256'], checker.lock_graph_digest(lock))
+            self.assertEqual(json.loads(sources_path.read_text()), {**FIXTURE_SOURCES, 'sources': sources})
+
+            repeat = checker.update_pins(self.root, checker.check(self.root), confirm=lambda _: self.fail('unexpected prompt'))
+            self.assertEqual(repeat['pin_update']['files'], [])
 
     def test_nix_release_tracks_overlay_upgrades(self):
         inventory = self.inventory()

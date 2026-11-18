@@ -120,9 +120,8 @@ The actual service must use `my.proxy.gostPackage`, not an unpatched package fro
 
 ## Clash Verge helper and launchers
 
-The GUI `.unwrapped` derivation is unchanged and can use the upstream binary cache.
-Local changes rebuild the core, small Rust helper and launch wrappers without rebuilding the GUI.
-The separate Rust helper, installed wrapper paths and runtime scripts retain their own integration.
+The GUI uses the Nixpkgs `.unwrapped` derivation and can reuse its exact store path from the local store or binary cache. A Nixpkgs update can change that path through its dependencies even when the GUI version stays the same.
+`clash-verge-service-ipc` is the separately packaged Rust background service. The patched service and Mihomo build from source when their outputs are missing, and the wrapper installs the patched service directly.
 Check Nixpkgs's helper derivation and inherited patches too: replacing `postPatch` or copying the wrong helper would discard integration behavior.
 
 The helper patch covers `src/core/manager.rs`, `server.rs`, `logger.rs`, `reconcile.rs` and the vendored Kode Bridge HTTP server.
@@ -322,7 +321,13 @@ Normal system builds require these inputs to match the configured source baselin
 A same-version source or recipe change still requires compatibility checks.
 A Mihomo change also selects its vendored sing-tun and SOCKS components.
 
-Generate the current input inventory and inspect a plan from the checkout:
+Preview changes to the lock inventory and network baseline from the checkout. Use `nix flake update <input>` to limit an application update to its input. Use `nix build --dry-run .#nixosConfigurations.lfour.config.system.build.toplevel` to see which store paths the candidate system would download and build.
+
+```sh
+python3 scripts/check-maintenance.py --plan-pins
+```
+
+Generate a detailed network plan for source entrypoints and invariants:
 
 ```sh
 nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources \
@@ -342,9 +347,8 @@ jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json 
   | xargs -r nix build --no-link
 ```
 
-Compare upstream sources and packaging and complete the component checks before changing its baseline entries.
-Then run `proxy-upgrade-review` and build the candidate system.
-The plan tool never updates the baseline.
+Review upstream sources and packaging, then run `python3 scripts/check-maintenance.py --sync-pins`. Inspect the version and hash diffs and enter `y` to write the inventory and network baseline. Run the affected component checks, `proxy-upgrade-review` and the candidate system build.
+The sync updates only the root inventory when network fingerprints match.
 Its schema requires each component's minimum source and regression coverage, and the flake checks that the named checks exist.
 
 The gate checks source versions and fingerprints.

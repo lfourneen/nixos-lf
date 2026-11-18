@@ -35,7 +35,7 @@
 
     nix-flatpak.url = "github:gmodena/nix-flatpak";
 
-    hermes-agent.url = "github:NousResearch/hermes-agent/v0.23.1";
+    hermes-agent.url = "github:NousResearch/hermes-agent/v0.23.2";
 
     llm-agents.url = "github:numtide/llm-agents.nix";
   };

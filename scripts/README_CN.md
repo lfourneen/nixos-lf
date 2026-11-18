@@ -244,6 +244,8 @@ python3 scripts/check-maintenance.py --json
 python3 scripts/check-maintenance.py --online --json
 ```
 
+`--plan-pins` 显示版本和哈希 diff，并列出受影响的网络检查。`--sync-pins` 显示同样的 diff，提示 `[y/N]`，确认后才写入有变化的 JSON。两者都读取当前 `flake.lock`，并求值实际选用的网络包指纹。
+
 `--online` 从 Mozilla 官方扩展 API 记录版本、权限和文件摘要，不安装更新，也不验证下载的 XPI 签名。`--snapshot FILE` 以私有权限记录 Firefox、Flatpak、Docker 和插件的已安装元数据。`--baseline FILE` 在观测结果变化时失败，不可访问的运行时会明确标记。Docker 观测记录 digest，不验证发布者签名。台账还通过 `lock_graph_sha256` 校验整个 flake 锁图。
 
 ```sh

@@ -497,6 +497,9 @@ let
 
       proxy-control-config = let
         c = self.nixosConfigurations.lfour.config;
+        clash = c.programs.clash-verge.package;
+        installInputs = builtins.getContext clash.installPhase;
+        fixupInputs = builtins.getContext clash.postFixup;
         small = self.checks.${system}.proxy-control-vm.config.nodes.machine;
         broad = self.checks.${system}.proxy-network-vm.config.nodes.machine;
         uid = c.my.machine.uids.clashCore;
@@ -504,8 +507,10 @@ let
       assert pkgs.lib.count (u: u.uid == uid) (pkgs.lib.attrValues c.users.users) == 1;
       assert small.users.users.clash-core.uid == uid && broad.users.users.clash-core.uid == uid;
       assert small.programs.clash-verge.package == strictClashPackage;
-      assert strictClashPackage.managedCore.src == c.programs.clash-verge.package.managedCore.src;
-      assert strictClashPackage.managedService == c.programs.clash-verge.package.managedService;
+      assert strictClashPackage.managedCore.src == clash.managedCore.src;
+      assert strictClashPackage.managedService == clash.managedService;
+      assert builtins.hasAttr (builtins.unsafeDiscardStringContext clash.managedService.drvPath) fixupInputs;
+      assert !(builtins.hasAttr (builtins.unsafeDiscardStringContext clash.service.drvPath) installInputs);
       assert broad.programs.clash-verge.package == strictClashPackage;
       assert small.systemd.services.clash-verge.serviceConfig.CapabilityBoundingSet
         == c.systemd.services.clash-verge.serviceConfig.CapabilityBoundingSet;

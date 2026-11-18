@@ -4,7 +4,7 @@ English | [简体中文](CN/operations_CN.md) | [Documentation](README.md)
 
 ## GUI control ownership
 
-Clash Verge is the packaged upstream build; no Clash Verge GUI source is patched.
+The Clash Verge GUI uses Nixpkgs's upstream build. The separately compiled Rust helper carries the local service patches.
 Its System Proxy, TUN and core-mode controls remain clickable in the home page, settings, tray and hotkeys, and may update local GUI preferences.
 They are silently discarded before they reach the OS or the managed core:
 

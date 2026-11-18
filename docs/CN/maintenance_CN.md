@@ -112,9 +112,8 @@ parser 修正不能替代生命周期保护。
 
 ## Clash Verge helper 与启动器
 
-GUI `.unwrapped` 保持不变，可使用上游二进制缓存。
-本地修改只重建核心、小型 Rust helper 和启动 wrapper，不重建 GUI。
-独立 Rust helper、安装的 wrapper 和运行脚本各自保持集成。
+GUI 复用 Nixpkgs 的 `.unwrapped` derivation。当前 store 路径能从本地或二进制缓存取得时，直接复用该产物。更新 Nixpkgs 后，即使 GUI 版本号相同，依赖变化也可能产生新路径。
+`clash-verge-service-ipc` 是 Clash Verge 独立打包的 Rust 后台服务。本地补丁版和 Mihomo 核心在对应构建产物缺失时从源码编译，wrapper 直接装入补丁版服务。
 检查 Nixpkgs helper derivation 和继承补丁。
 覆盖 `postPatch` 或复制错 helper 会丢失集成行为。
 
@@ -312,7 +311,13 @@ HTTP-only 探针必须解析出 IPv4 答案，不能仅接受非空诊断或 CNA
 即使版本号未变，源码或 recipe 改变仍须检查兼容性。
 Mihomo 变化也会选中其 vendored sing-tun 和 SOCKS 组件。
 
-在仓库中生成当前输入清单并查看计划：
+先用以下命令查看锁定输入和网络基线的更新计划。若只升级一个应用，使用 `nix flake update <input>` 限定输入；`nix build --dry-run .#nixosConfigurations.lfour.config.system.build.toplevel` 可提前查看候选系统需下载和本地构建的路径。
+
+```sh
+python3 scripts/check-maintenance.py --plan-pins
+```
+
+需要查看网络组件的源码入口和不变量时，生成详细计划：
 
 ```sh
 nix eval --json .#nixosConfigurations.lfour.config.my.proxy.upgradeSources \
@@ -332,8 +337,8 @@ jq -r '.checks[] | ".#checks.x86_64-linux." + .' /tmp/network-upgrade-plan.json 
   | xargs -r nix build --no-link
 ```
 
-先比较上游源码与打包配置并完成组件检查，再修改对应基线条目，随后运行 `proxy-upgrade-review` 并构建候选系统。
-计划工具不会更新基线。
+复核上游源码与打包配置后，运行 `python3 scripts/check-maintenance.py --sync-pins`。仔细核对显示的版本和哈希差异，输入 `y` 后写入根台账和网络基线。随后运行受影响组件的检查、`proxy-upgrade-review` 和候选系统构建。
+锁更新若未改变网络指纹，脚本只更新根台账。
 Schema 要求各组件保留最小源码与回归覆盖，flake 也检查所列检查是否存在。
 
 该门检查源码版本与指纹。

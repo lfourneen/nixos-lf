@@ -314,6 +314,11 @@ python3 scripts/check-maintenance.py --json
 python3 scripts/check-maintenance.py --online --json
 ```
 
+`--plan-pins` shows the version and hash diffs and lists affected network
+checks. `--sync-pins` displays the same diffs and prompts `[y/N]` before writing
+the changed JSON files. Both read the current `flake.lock` and evaluate the
+fingerprints of the selected network packages.
+
 `--online` records current version, permissions and file digest from the official
 Mozilla addon API. It does not install updates or verify downloaded XPI signatures.
 `--snapshot FILE` writes private installed metadata for Firefox, Flatpak, Docker

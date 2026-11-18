@@ -4,7 +4,7 @@
 
 ## GUI 控制权限
 
-Clash Verge 使用未修改的上游打包版本，不修改 Clash Verge GUI 源码。
+Clash Verge GUI 复用 Nixpkgs 的上游构建。独立编译的 Rust 后台服务带有本地补丁。
 首页、设置页、托盘和快捷键中的 System Proxy、TUN 与核心模式仍可操作，并可写入 GUI 本地偏好。
 这些操作在到达操作系统或受管核心前被静默丢弃：
 

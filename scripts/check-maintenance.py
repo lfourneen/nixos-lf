@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Check source pins and compare installed or official update metadata."""
 import argparse
+import difflib
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import runpy
+import stat
 import subprocess
 import sys
+import tempfile
 import urllib.request
 import urllib.parse
 
@@ -318,6 +323,10 @@ def check_network_refs(components, errors, stats):
                       f'sources.json component {name!r} is referenced {count} times')
 
 
+def lock_graph_digest(lock):
+    return hashlib.sha256(json.dumps(lock.get('nodes'), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
 def check(root):
     root = root.resolve()
     errors = []
@@ -348,9 +357,7 @@ def check(root):
     if 'lock_graph_sha256' in inventory:
         lock = read_json(root / FLAKE_LOCK, errors, 'flake-lock', 'flake.lock')
         if isinstance(lock, dict):
-            digest = hashlib.sha256(json.dumps(lock.get('nodes'), sort_keys=True,
-                                               separators=(',', ':')).encode()).hexdigest()
-            if digest != inventory['lock_graph_sha256']:
+            if lock_graph_digest(lock) != inventory['lock_graph_sha256']:
                 add_error(errors, 'flake-graph', 'flake input graph changed; review all transitive inputs and update lock_graph_sha256')
     sources_path = repository_file(root, inventory.get('network_sources'), errors, 'network-sources',
                                    'network_sources', item=None)
@@ -378,6 +385,128 @@ def result(errors, stats):
     public = {key: value for key, value in stats.items()
               if key not in ('network_ref_list', 'lock_state', 'nix_releases')}
     return {'ok': not errors, 'errors': errors, 'stats': public, 'nix_releases': stats['nix_releases']}
+
+
+def replace_text(path, text):
+    mode = stat.S_IMODE(path.stat().st_mode)
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            handle.write(text)
+            handle.close()
+            temporary.chmod(mode)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def write_pin_updates(root, original, updates):
+    descriptor = os.open(root, os.O_RDONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        if any(path.read_text(encoding='utf-8') != text for path, text in original.items()):
+            raise ValueError('maintenance inputs changed during evaluation, rerun the update')
+        written = []
+        try:
+            for path, text in updates.items():
+                replace_text(path, text)
+                written.append(path)
+        except OSError:
+            for path in reversed(written):
+                if path.read_text(encoding='utf-8') == updates[path]:
+                    replace_text(path, original[path])
+            raise
+    finally:
+        os.close(descriptor)
+
+
+def update_pins(root, outcome, confirm=None):
+    if any(error['code'] not in {'flake-graph', 'flake-mismatch'} for error in outcome['errors']):
+        return outcome
+
+    inventory_path = root / INVENTORY
+    lock_path = root / FLAKE_LOCK
+    original = {path: path.read_text(encoding='utf-8') for path in (inventory_path, lock_path)}
+    inventory = json.loads(original[inventory_path])
+    lock = json.loads(original[lock_path])
+    sources_path = repository_file(root, inventory['network_sources'], outcome['errors'], 'network-sources',
+                                   'network_sources')
+    if sources_path is None:
+        outcome['ok'] = False
+        return outcome
+    original[sources_path] = sources_path.read_text(encoding='utf-8')
+    review = json.loads(original[sources_path])
+
+    args = ['nix', 'eval', '--no-update-lock-file', '--json', '.#nixosConfigurations.lfour.config.my.proxy.upgradeSources']
+    selected = json.loads(subprocess.check_output(args, cwd=root, text=True))
+    plan = runpy.run_path(str(sources_path.with_name('upgrades.py')))['plan'](review, selected)
+
+    changed_inputs = []
+    errors = []
+    for item in inventory['items']:
+        if 'flake' not in item:
+            continue
+        pin = item['flake']
+        locked = resolve_flake_input(lock, pin['input'], errors, item['id'])
+        if locked is None:
+            continue
+        before = pin.copy()
+        for field in pin.keys() & {'rev', 'version'}:
+            value = locked.get(field)
+            if not is_text(value):
+                add_error(errors, 'flake-mismatch', f'{item["id"]}: flake.lock has no {field}', item=item['id'])
+            else:
+                pin[field] = value
+        if before != pin:
+            changed_inputs.append(pin['input'])
+    if errors:
+        outcome['errors'] = errors
+        outcome['ok'] = False
+        return outcome
+
+    digest = lock_graph_digest(lock)
+    graph_changed = 'lock_graph_sha256' in inventory and inventory['lock_graph_sha256'] != digest
+    updates = {}
+    if graph_changed:
+        inventory['lock_graph_sha256'] = digest
+    if changed_inputs or graph_changed:
+        updates[inventory_path] = json.dumps(inventory, indent=2, ensure_ascii=False) + '\n'
+    if plan['changed']:
+        for name, record in review['sources'].items():
+            record.update(selected[name])
+        updates[sources_path] = json.dumps(review, indent=2, ensure_ascii=False) + '\n'
+    diff = ''.join(line for path, text in updates.items() for line in difflib.unified_diff(
+        original[path].splitlines(keepends=True), text.splitlines(keepends=True),
+        fromfile=f'a/{path.relative_to(root)}', tofile=f'b/{path.relative_to(root)}',
+    ))
+    update = {
+        'flake_inputs': sorted(set(changed_inputs)),
+        'lock_graph_changed': graph_changed,
+        'network_components': plan['changed'],
+        'network_checks': plan['checks'],
+        'files': [str(path.relative_to(root)) for path in updates],
+        'diff': diff,
+        'written': False,
+        'declined': False,
+    }
+    if updates and confirm is not None:
+        if confirm(diff):
+            write_pin_updates(root, original, updates)
+            outcome = check(root)
+            update['written'] = True
+        else:
+            update['declined'] = True
+    if not update['written']:
+        outcome['errors'] = []
+        outcome['ok'] = True
+    outcome['pin_update'] = update
+    return outcome
+
+
+def confirm_pin_update(diff):
+    print(diff, end='', file=sys.stderr)
+    print('Update these JSON files? [y/N] ', end='', file=sys.stderr, flush=True)
+    return sys.stdin.readline().strip().lower() in ('y', 'yes')
 
 
 def command(args):
@@ -448,9 +577,20 @@ def main(argv=None):
     parser.add_argument('--online', action='store_true', help='observe official AMO metadata')
     parser.add_argument('--snapshot', type=Path, help='write private runtime observation JSON')
     parser.add_argument('--baseline', type=Path, help='compare observations with a reviewed snapshot')
+    pin_modes = parser.add_mutually_exclusive_group()
+    pin_modes.add_argument('--plan-pins', action='store_true', help='show pin diffs and affected network checks')
+    pin_modes.add_argument('--sync-pins', action='store_true', help='show pin diffs and ask before writing')
     args = parser.parse_args(argv)
+    if (args.plan_pins or args.sync_pins) and (args.online or args.snapshot or args.baseline):
+        parser.error('pin updates and runtime observations are separate operations')
     root = Path(__file__).resolve().parent.parent
     outcome = check(root)
+    if args.plan_pins or args.sync_pins:
+        try:
+            outcome = update_pins(root, outcome, confirm=confirm_pin_update if args.sync_pins else None)
+        except (OSError, KeyError, ValueError, subprocess.CalledProcessError) as error:
+            add_error(outcome['errors'], 'pin-update', str(error))
+            outcome['ok'] = False
     if args.snapshot or args.baseline or args.online:
         try:
             observed = observe(Path.home()) if args.snapshot or args.baseline else {}
@@ -472,6 +612,20 @@ def main(argv=None):
         outcome['ok'] = not outcome['errors']
     if args.json:
         print(json.dumps(outcome, indent=2, sort_keys=True))
+    elif outcome['ok'] and 'pin_update' in outcome:
+        update = outcome['pin_update']
+        if update['declined']:
+            print('Pin update cancelled')
+        elif update['files']:
+            if args.plan_pins:
+                print(update['diff'], end='')
+            print(f'{"Updated" if update["written"] else "Would update"}: ' + ', '.join(update['files']))
+            print('Flake inputs: ' + (', '.join(update['flake_inputs']) or 'unchanged'))
+            print('Network components: ' + (', '.join(update['network_components']) or 'unchanged'))
+            if update['network_checks']:
+                print('Network checks: ' + ' '.join(update['network_checks']))
+        else:
+            print('Flake and network pins are current')
     elif outcome['ok']:
         stats = outcome['stats']
         print(f'maintenance inventory: {stats["items"]} items, {stats["pins"]} pins, '
