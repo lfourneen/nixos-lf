@@ -57,6 +57,8 @@ let
       done
       ln -s ${host} "$out/node_modules/@deepseek-ai/dsh"
 
+      node ${./patch-host-compat.mjs} "$out" ${host}
+
       node - "$out" ${host} ${version} <<'JS'
       const { createRequire } = require('node:module');
       const { realpathSync } = require('node:fs');

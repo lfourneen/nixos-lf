@@ -7,12 +7,14 @@
 
 - TUI：GitHub `v0.20.1` Linux standalone release 中已编译的 JavaScript 和原生依赖，
   校验 SHA-256 后解包，不运行 npm install、TypeScript 编译或源码构建。
-- DSH：现有 `pkgs.dsh`，来自 flake 锁定的 `llm-agents`，目前为 `0.2.2-rc.3`。
+- DSH：现有 `pkgs.dsh`，来自 flake 锁定的 `llm-agents`，目前为 `0.2.2-rc.4`。
   更新 `llm-agents` 后随系统更新，不在启动时联网追踪 npm latest。
 - 便携包自带的 DSH 及其 `@deepseek-ai/*` 依赖被替换为原生 DSH 的链接，TUI 与宿主
   共用 Cordis、Loader 和 DSH 服务。构建时检查宿主 peer 版本范围和 Cordis 实例，
   避免混用两套框架。
 - 上游 `v0.20.1` 的主验证线是 `0.2.2-rc.3`，`0.2.2-rc.2` 等旧验证线仍在契约内。
+  [本地兼容补丁](patch-host-compat.mjs)为 `v0.20.1` 和 `0.2.2-rc.4` 增补精确版本，
+  并校验 262 个适配器相关类型声明的摘要。相比 `rc.3`，这些声明只新增了 `CONTENT_REFUSED` 错误码。
   [运行时检查](check-runtime.mjs)加载真实宿主导出、Loader 和 TUI，核对适配器契约
   与共享 Cordis。
 - Node 和 pnpm 由 Nix 提供。DSH `0.2.2` 要求 Node `>=24.9`，FHS 使用 nixpkgs 的
@@ -95,8 +97,8 @@ TUI 专用贡献还可能声明 `dsh-plugin.json` 和 `tui.dsh/*` 协议。
 TUI 与原生 DSH 由 Nix 管理，`dsh-tui update` 和程序内 `/update` 不替换它们。
 更新 TUI 时修改本目录 `dsh-tui.nix` 的版本及 release hashes。更新宿主时更新
 `llm-agents` input，再执行常规 NixOS 构建和切换。第三方插件仍由 DSH 管理。
-宿主超出当前 TUI 的 peer 范围时构建会报错，应改用上游已支持的组合或等待 TUI
-发布对应版本。
+宿主超出当前 TUI 的 peer 范围和本地兼容记录时，构建会报错。升级到上游已支持
+`0.2.2-rc.4` 的 TUI 版本时，可以移除这条兼容补丁。
 
 上游依据（固定到此次打包版本）：
 
