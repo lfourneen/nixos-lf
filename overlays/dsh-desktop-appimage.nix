@@ -2,7 +2,7 @@
 
 let
   pname = "dsh-desktop";
-  version = "2.0.23";
+  version = "2.0.24";
 
   # Upstream publishes a type-2 AppImage for Linux. The AppDir keeps the
   # Electron tree at its root (AppRun + dsh-desktop-next + resources) and adds
@@ -11,7 +11,7 @@ let
   # child process must read) beside it in resources/app.asar.unpacked.
   src = pkgs.fetchurl {
     url = "https://github.com/anywhere-labs/dsh-desktop/releases/download/v${version}-next/DSH-NEXT-${version}-next-x86_64.AppImage";
-    hash = "sha256-xE90bxeSx2JcCgEoAV/If7hCA/JwGUw8eFLi1aehdjY=";
+    hash = "sha256-sd7ZyxtGobJ0G6dCOv6ZZWAI10bmBmjLFpgPdrPk+8I=";
   };
 
   # Single unpack, reused as the runtime tree plus the desktop entry and icons.
@@ -43,12 +43,12 @@ let
       # patch and add `autoHideMenuBar: true` to the primary BrowserWindow.
       substituteInPlace "$app/lib/main.js" \
         --replace-fail \
-        'Menu.setApplicationMenu(process.platform === "win32" ? null : Menu.buildFromTemplate([' \
-        'Menu.setApplicationMenu(true ? null : Menu.buildFromTemplate(['
+        'Menu.setApplicationMenu(process.platform === "win32" ? null : Menu.buildFromTemplate(roleApplicationMenuTemplate(native.items(), windowsLanguage)));' \
+        'Menu.setApplicationMenu(null);'
       substituteInPlace "$app/lib/main.js" \
         --replace-fail \
-        'if (process.platform !== "win32") Menu.setApplicationMenu(Menu.buildFromTemplate([' \
-        'if (false) Menu.setApplicationMenu(Menu.buildFromTemplate(['
+        'if (process.platform !== "win32") Menu.setApplicationMenu(Menu.buildFromTemplate(roleApplicationMenuTemplate(this.items(), this.options.language())));' \
+        ""
 
       # Attachment uploads are fixed upstream since 2.0.18: web-document.js
       # injects __DSH_FILE_UPLOAD__ into APP_BOOT_SCRIPT itself, so the page
