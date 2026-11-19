@@ -31,6 +31,40 @@ DENY = dict(verdict='deny', deny={'node_identity': 1}, warn={}, unknown={})
 
 
 class SourceRefreshTests(unittest.TestCase):
+    def test_prepared_startup_rejects_a_replaced_generation(self):
+        expected = stage.snapshot_digest(self.candidate)
+        _, config = stage.prepared_source(self.settings, expected)
+        self.assertEqual(Path(config).parent, self.candidate)
+        (self.candidate / 'clash-verge.yaml').write_text(self.original)
+        with self.assertRaisesRegex(stage.RefreshError, 'snapshot mismatch'):
+            stage.prepared_source(self.settings, expected)
+
+    def test_manual_selection_uses_verifier_and_ignores_an_older_or_unrelated_verdict(self):
+        candidate = 'a' * 64
+        now = time.time()
+        (self.state / 'state.json').write_text('{"mode":"proxy"}')
+        (self.state / 'source.json').write_text(json.dumps(dict(boot_id=self.boot, source_id='source-one')))
+        audit = self.state / 'profile-refresh.json'
+        history = [dict(digest=candidate, result='accepted', at=now - 30),
+                   dict(digest='b' * 64, result='accepted', at=now + 1)]
+        audit.write_text(json.dumps(dict(boot_id=self.boot, history=history)))
+
+        def verify_round(*_):
+            history.append(dict(digest=candidate, result='rolled_back', reason='obs', at=now + 2))
+            audit.write_text(json.dumps(dict(boot_id=self.boot, history=history)))
+
+        lock = Mock()
+        with patch.object(refresh, 'restart_source', return_value='verifying') as restart, \
+                patch.object(refresh.grp, 'getgrnam', return_value=Mock(gr_gid=os.getgid())), \
+                patch.object(refresh.subprocess, 'run') as systemctl, \
+                patch.object(refresh, 'automatic_download_ready', side_effect=AssertionError('manual refresh must not defer')), \
+                patch.object(refresh.time, 'sleep', side_effect=verify_round) as sleep:
+            result = refresh.verify_selection(self.settings, stage, candidate, 'proxy', lock)
+        self.assertEqual(restart.call_args.kwargs, dict(expected=candidate, lock_operator=lock))
+        self.assertEqual(systemctl.call_args.args[0][-1], 'profile-refresh-verify.service')
+        sleep.assert_called_once()
+        self.assertEqual(result, dict(result='rolled_back', reason='obs', active_source='source-one'))
+
     def test_automatic_download_defers_in_c_then_consumes_one_pending_request_in_b(self):
         (self.state / 'state.json').write_text('{"mode":"blocked"}')
         with patch.object(refresh.subprocess, 'run', side_effect=AssertionError('C must not try a download')):

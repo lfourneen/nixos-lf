@@ -209,6 +209,24 @@ table inet routing_wire {
     run('proxy-control', 'on', timeout=160)
     assert status()['routing_applied'] == 'proxy-only'
 
+    # Emulate an activation whose new routing artifacts no longer match the
+    # previous boot-scoped selection, with direct intent already committed.
+    run('proxy-control', 'off')
+    runtime = Path('/run/proxy-mode')
+    active = runtime / 'routing-active'
+    epoch_before_reload = json.loads((runtime / 'routing.json').read_text())['routing_epoch']
+    active.unlink()
+    active.symlink_to('/etc')
+    run('systemctl', 'reload', 'nftables.service', timeout=20)
+    run('systemctl', 'restart', 'proxy-mode.service', timeout=20)
+    assert (runtime / 'intent').read_text().strip() == 'direct'
+    assert json.loads((runtime / 'state.json').read_text())['mode'] == 'direct'
+    direct = json.loads((runtime / 'routing.json').read_text())
+    assert direct['routing_requested'] == 'rules' and direct['routing_epoch'] > epoch_before_reload
+    assert not (runtime / 'authorized-config').exists()
+    assert run('systemctl', 'is-active', 'clash-verge.service', required=False).returncode != 0
+    route('proxy-only')
+
     # Missing complete evidence remains C and cannot reuse a prior epoch proof.
     baseline = source / 'approved/rules' / rule_snapshot / 'source-data.json'
     corrupt = baseline.read_bytes()

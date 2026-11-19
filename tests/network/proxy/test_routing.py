@@ -84,6 +84,58 @@ class RoutingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             routing.initialize(self.settings)
 
+    def test_direct_switch_rebinds_stale_policy_without_requesting_proxy(self):
+        record = routing.binding(self.settings)
+        routing.activate(self.settings, 'proxy-only')
+        routing.atomic(self.state / 'routing.json', dict(record, routing_requested='proxy-only',
+            routing_applied='proxy-only', routing_phase='ready', egress_requested='a' * 64,
+            routing_policy_digest=routing.sha(Path(self.settings['policies']['proxy-only']).read_bytes())))
+        Path(self.settings['policies']['proxy-only']).write_text('{"proxy-only":true,"changed":true}')
+        (self.state / 'intent').write_text('direct')
+        routing.initialize(self.settings, 'blocked')
+        with self.assertRaises(routing.StalePolicy):
+            routing.binding(self.settings)
+        routing.initialize(self.settings, 'direct')
+        current = routing.binding(self.settings)
+        self.assertEqual(current['routing_epoch'], record['routing_epoch'] + 1)
+        self.assertEqual(current['routing_requested'], 'rules')
+        self.assertIsNone(current['routing_applied'])
+        self.assertIsNone(current['egress_requested'])
+        self.assertEqual((self.state / 'intent').read_text(), 'direct')
+        self.assertFalse((self.state / 'authorized-config').exists())
+
+    def test_blocked_transport_reloads_when_candidate_authority_appears(self):
+        record = routing.binding(self.settings)
+        routing.activate(self.settings, 'proxy-only')
+        routing.atomic(self.state / 'routing.json', dict(record, routing_requested='proxy-only',
+            routing_policy_digest=routing.sha(Path(self.settings['policies']['proxy-only']).read_bytes())))
+        self.settings.update(topology={'core4': '10.255.253.2', 'core6': 'fd46:6c66:636f::2'},
+            interface='clash0', uplinks=['uplink'], guest_interfaces=[], guests=[], dhcp_uid=101, stage_tool='stage')
+        calls = []
+
+        def firewall_call(settings, *args, **kwargs):
+            if 'input' in kwargs:
+                calls.append(kwargs['input'])
+            return SimpleNamespace(stdout='{}')
+
+        verify = Mock()
+        with patch.object(routing, 'nft', side_effect=firewall_call), \
+                patch.object(routing, 'table_view', return_value={}), \
+                patch.object(routing, 'module', return_value=SimpleNamespace(verify=verify)):
+            routing.enforce(self.settings, 'blocked')
+            effective = Path(self.settings['runtime']) / 'effective'
+            effective.mkdir(parents=True)
+            (effective / 'source-manifest.json').write_text(json.dumps({'policy':
+                routing.binding(self.settings)['routing_policy_digest']}))
+            (effective / 'clash-verge.yaml').write_text('proxies: [{server: 1.1.1.1, port: 443, type: vless}]')
+            (self.state / 'authorized-config').write_text('candidate')
+            routing.enforce(self.settings, 'blocked')
+            routing.enforce(self.settings, 'blocked')
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn('elements =', calls[0])
+        self.assertIn('1.1.1.1 . tcp . 443', calls[1])
+        verify.assert_called_with(effective, self.state / 'config-digest', self.state / 'authorized-config', fast=True)
+
     def test_unknown_stale_digest_and_foreign_policy_paths_never_become_rules(self):
         original = json.loads((self.state / 'routing.json').read_text())
         for change in (dict(routing_requested='global'), dict(routing_epoch=0), dict(boot_id='old'),

@@ -25,6 +25,23 @@ spec.loader.exec_module(health_probe)
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_snapshot_publication_holds_policy_lock_through_both_authority_writes(self):
+        write_authority = stage.atomic_authority
+
+        def observe(path, digest):
+            if path.parent == self.state:
+                with (self.state / 'lock').open('a') as observer:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(observer, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            write_authority(path, digest)
+
+        with patch.object(stage, 'atomic_authority', side_effect=observe) as publish:
+            self.authorize()
+        self.assertEqual([call.args[0].name for call in publish.call_args_list],
+                         ['authorized-config', 'config-digest'])
+        with (self.state / 'lock').open('a') as observer:
+            fcntl.flock(observer, fcntl.LOCK_SH | fcntl.LOCK_NB)
+
     def test_busy_source_fetch_does_not_block_the_verifier_or_operator(self):
         with (self.root / 'source.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)

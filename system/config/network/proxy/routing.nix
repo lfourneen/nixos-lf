@@ -131,8 +131,6 @@ in
       message = "Runtime routing requires controlled sources, local DNSSEC, strict encrypted DNS, isolated TUN, kernel leases and proxyOnly=false for the rules boot default.";
     };
 
-    systemd.services.proxy-mode.preStart = lib.mkIf p.runtimeRouting ''${command} initialize'';
-
     systemd.services.proxy-real-dns = lib.mkIf p.runtimeRouting {
       description = "Validated real-address DNS through the selected application path";
       wantedBy = [ "multi-user.target" ];

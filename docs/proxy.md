@@ -10,7 +10,8 @@ The GUI-specific import and mutable-provider descriptions below apply to that co
 
 `clash-source` registers sources through a root-only broker, with one source selected at a time.
 Each has its own subscription, providers, revision, approvals and accepted baseline.
-`use <id>` selects a registered source.
+`add <id>` reviews and registers a catalog entry, then downloads, selects and verifies it.
+`use <id>` performs the same immediate download and verification for an existing registration.
 The GUI can select only sources mapped to a root-approved `gui-profile` UID.
 
 An unprivileged worker downloads the HTTPS subscription and registered HTTP providers, pins public endpoint addresses and renders the configuration.
@@ -70,6 +71,7 @@ The refresh service checks candidates before interrupting a ready core.
 Rejected or unchanged candidates preserve that core only while its snapshot authority, integrity, full health and readiness remain valid.
 An unhealthy or unauthorized runtime follows C recovery.
 Applying a changed candidate enters C before restarting the core and must pass startup checks again.
+The coordinator checks the transport firewall against the staged digest before a health round. In `proxy-only`, this installs the candidate's pinned endpoint tuples while the application lease is revoked.
 Without a compatible fallback, C remains in effect.
 
 When the mixed HTTP probe fails, the health check concurrently delay-tests every `lf-remote` member through the core group-delay API (the same path the GUI uses to display latency), ranks the usable results, switches to the best leaf and retries. It refuses only when every member times out. Testing and retries stay inside the health budget; the audit and authorization are unchanged.

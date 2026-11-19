@@ -1,6 +1,7 @@
 """Selection transactions with synthetic root-approved registries and no network."""
 import importlib.util
 import fcntl
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,65 @@ worker = sys.argv.pop(1)
 
 
 class RegistryTests(unittest.TestCase):
+    def test_add_confirms_replaces_current_revision_and_verifies_after_publication(self):
+        self.register('source-one')
+        previous = self.register('source-two')
+        catalog = self.root / 'catalog'
+        definition = {'id': 'source-two', 'subscription': {'url': 'https://fixture.example/new'}}
+        b.atomic(catalog, json.dumps({'sources': [definition]}).encode())
+        settings = self.root / 'settings'
+        stage_settings = self.root / 'stage-settings'
+        stage_settings.write_text(json.dumps(dict(state=str(self.root), snapshot_tool='/fixed/stage')))
+        settings.write_text(json.dumps(dict(root=str(self.root), catalog=str(catalog),
+            stageSettings=str(stage_settings), manual_refresh='/fixed/refresh', launcher='/fixed/launcher')))
+        candidate = 'a' * 64
+
+        def download(config, path):
+            self.assertEqual(config['_expected_selection'].name, 'source-one')
+            self.assertEqual(b.selected(self.root).name, 'source-one')
+            self.assertEqual(b.read_private(path / 'registry.json'), b.canonical(json.dumps(definition)))
+            generation = path / 'generation'
+            generation.mkdir()
+            (path / 'current').symlink_to(generation)
+
+        def verify(config, stage, digest, mode, acquire):
+            with (self.root / 'source.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertEqual(b.selected(self.root).name, 'source-two')
+            self.assertEqual((digest, mode), (candidate, 'proxy'))
+            return dict(result='accepted', reason=None, active_source='source-two')
+
+        stage = SimpleNamespace(read_record=lambda _: {'mode': 'proxy'}, snapshot_digest=lambda _: candidate)
+        manual = SimpleNamespace(module=lambda *_: stage, verify_selection=verify)
+        with patch.object(sys, 'argv', ['clash-source', str(settings), 'add', 'source-two']), \
+                patch.object(b.os, 'geteuid', return_value=0), patch.object(b, 'load_module', return_value=manual), \
+                patch.object(b, 'refresh', side_effect=download), patch('builtins.input', return_value='yes'), \
+                patch.object(sys, 'stdout', new_callable=StringIO) as output:
+            b.main()
+        reviewed, verdict = map(json.loads, output.getvalue().splitlines())
+        self.assertEqual(reviewed['previous'], b.digest(previous))
+        self.assertEqual(verdict, dict(requested_source='source-two', active_source='source-two',
+                                      result='accepted', reason=None))
+        self.assertNotIn('https://', output.getvalue())
+
+    def test_add_refuses_catalog_changes_while_awaiting_confirmation(self):
+        previous = self.register('source-one')
+        catalog = self.root / 'catalog'
+        definition = json.loads(previous)
+        b.atomic(catalog, previous)
+
+        def change_catalog():
+            definition['subscription']['url'] = 'https://fixture.example/changed'
+            b.atomic(catalog, json.dumps(definition).encode())
+            return 'yes'
+
+        with (self.root / 'source.lock').open('a') as lock, patch('builtins.input', side_effect=change_catalog), \
+                patch.object(sys, 'stdout', new_callable=StringIO):
+            b.acquire(lock)
+            with self.assertRaisesRegex(b.DefinitionError, 'changed during confirmation'):
+                b.confirm_add({'catalog': catalog}, self.root, lock, 'source-one')
+        self.assertEqual(b.read_private(self.root / 'sources/source-one/registry.json'), previous)
+
     def test_authorized_sources_parse_and_fail_closed(self):
         directory = Path(tempfile.mkdtemp())
         path = directory / 'sources'

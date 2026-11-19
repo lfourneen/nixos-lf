@@ -102,22 +102,27 @@ def activate(settings, target):
     temporary.replace(state / 'routing-active')
 
 
-def initialize(settings):
+def initialize(settings, mode=None):
     if not settings.get('enabled'):
         return
     state = Path(settings['state'])
     state.mkdir(mode=0o755, exist_ok=True)
     if not (state / 'boot-id').exists():
         (state / 'boot-id').write_text(Path('/proc/sys/kernel/random/boot_id').read_text())
+    epoch, egress_epoch = 1, 0
     if (state / 'routing.json').exists() or (state / 'routing-active').is_symlink():
-        # The supervisor can enforce C for an older generation without adopting it.
-        selection(settings)
-        return
+        record, stale = selection(settings)
+        # In A there is no live B authority to carry across the switch. Rebind
+        # the inactive selection to the new generation's safe default.
+        if not stale or mode != 'direct':
+            return
+        epoch = record['routing_epoch'] + 1
+        egress_epoch = record['egress_epoch'] + 1
     activate(settings, 'rules')
     atomic(state / 'routing.json', dict(schema=1, boot_id=(state / 'boot-id').read_text().strip(),
-        routing_requested='rules', routing_applied=None, routing_epoch=1,
+        routing_requested='rules', routing_applied=None, routing_epoch=epoch,
         routing_policy_digest=sha(Path(settings['policies']['rules']).read_bytes()), routing_phase='verifying',
-        egress_requested=None, egress_epoch=0))
+        egress_requested=None, egress_epoch=egress_epoch))
 
 
 @contextmanager
@@ -138,7 +143,7 @@ def stop_ip_tunnel(settings):
         module(cleanup['module'], 'routing_ip_tunnel').stop(cleanup)
 
 
-def begin(settings, target, egress_id=None):
+def begin(settings, target, egress_id=None, prepared=None):
     if target not in MODES:
         raise ValueError('invalid routing target')
     if egress_id is not None and (target != 'proxy-only' or not re.fullmatch('[a-f0-9]{64}', egress_id)):
@@ -147,11 +152,19 @@ def begin(settings, target, egress_id=None):
         current, stale = selection(settings)
         if stale and target != 'rules':
             raise StalePolicy('routing policy changed; run clash-rules to recover')
+        stage = module(settings['stage_tool'], 'routing_stage')
+        if prepared is not None:
+            if stale or target != current['routing_requested'] or egress_id is not None:
+                raise ValueError('prepared source routing changed')
+            if target == 'proxy-only':
+                broker = module(settings['source_tool'], 'routing_source')
+                source = broker.selected(Path(source_settings['root']))
+                broker.local_source(source_settings, source, target)
+            stage.prepared_source(read(settings['stage_settings']), prepared)
         state = Path(settings['state'])
         (state / 'routing-failure.json').unlink(missing_ok=True)
         if (state / 'intent').read_text().strip() != 'proxy':
             raise ValueError('proxy intent required')
-        stage = module(settings['stage_tool'], 'routing_stage')
         stage.clear_refresh(state, settings['runtime'], keep_health_pin=True)
         record = dict(current, routing_requested=target, routing_epoch=current['routing_epoch'] + 1,
             egress_requested=None if stale else egress_id or current['egress_requested'],
@@ -166,17 +179,21 @@ def begin(settings, target, egress_id=None):
         enforce(settings, 'blocked')
         if target == 'rules' or not settings.get('ip_tunnel'):
             stop_ip_tunnel(settings)
-        broker = module(settings['source_tool'], 'routing_source')
-        source = broker.selected(Path(source_settings['root']))
-        selected = broker.render_local(source_settings, source, target, current['routing_requested'])
-        if target == 'proxy-only':
-            if not isinstance(selected, str) or not re.fullmatch('[a-f0-9]{64}', selected):
-                raise ValueError('selected egress unavailable')
-            record['egress_requested'] = selected
+        if prepared is None:
+            broker = module(settings['source_tool'], 'routing_source')
+            source = broker.selected(Path(source_settings['root']))
+            selected = broker.render_local(source_settings, source, target, current['routing_requested'])
+            if target == 'proxy-only':
+                if not isinstance(selected, str) or not re.fullmatch('[a-f0-9]{64}', selected):
+                    raise ValueError('selected egress unavailable')
+                record['egress_requested'] = selected
         if target == 'proxy-only' and settings.get('ip_tunnel'):
             ip_tunnel(settings).start(settings['ip_tunnel'])
-        (state / 'authorize-window').touch(mode=0o600)
-        (state / 'source-refresh-pending').touch(mode=0o600)
+        if prepared is not None:
+            stage.atomic_text(state / 'authorize-window', prepared, mode=0o600)
+        else:
+            (state / 'authorize-window').touch(mode=0o600)
+            (state / 'source-refresh-pending').touch(mode=0o600)
         atomic(state / 'routing.json', dict(record, routing_phase='verifying'))
 
 
@@ -425,10 +442,11 @@ def main():
         return
     if os.geteuid() != 0:
         raise ValueError('routing changes require root')
-    if command == 'initialize':
-        initialize(settings)
+    if command == 'initialize' and (len(sys.argv) == 3 or len(sys.argv) == 4 and sys.argv[3] in ('direct', 'blocked')):
+        initialize(settings, sys.argv[3] if len(sys.argv) == 4 else None)
     elif command == 'begin' and len(sys.argv) in (4, 5):
-        begin(settings, sys.argv[3], sys.argv[4] if len(sys.argv) == 5 else None)
+        begin(settings, sys.argv[3], sys.argv[4] if len(sys.argv) == 5 else None,
+              os.environ.get('LF_SOURCE_GENERATION'))
     elif command == 'egresses' and len(sys.argv) == 3:
         with transition_locks(settings) as source_settings:
             broker = module(settings['source_tool'], 'routing_source')

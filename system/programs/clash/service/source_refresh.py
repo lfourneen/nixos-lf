@@ -181,7 +181,7 @@ def check_candidate(settings, stage, validate):
         return dict(accepted=False, digest=digest, binding=identity, findings=findings, reason=reason)
 
 
-def restart_source(settings, stage, validate=None, activate=None):
+def restart_source(settings, stage, validate=None, activate=None, expected=None, lock_operator=None):
     state = Path(settings['state'])
     if validate is None:
         validate = lambda directory: stage.validate_snapshot(settings, settings['managed_core'],
@@ -192,16 +192,26 @@ def restart_source(settings, stage, validate=None, activate=None):
                            check=True, timeout=25)
             stage.restart_core(settings)
     with (state / 'operator.lock').open('a') as operator:
-        fcntl.flock(operator, fcntl.LOCK_EX)
+        if lock_operator is None:
+            fcntl.flock(operator, fcntl.LOCK_EX)
+        else:
+            lock_operator(operator)
         # A competing network fetch must not hold up clash-off behind this lock.
         with stage.source_lock(settings, blocking=False) as acquired:
-            if not acquired or (state / 'intent').read_text().strip() != 'proxy':
-                return
+            if not acquired:
+                return 'busy'
+            if (state / 'intent').read_text().strip() != 'proxy':
+                return 'proxy intent changed'
+            if expected is not None:
+                stage.prepared_source(settings, expected)
             with (state / 'authorization.lock').open('a') as authorization:
                 fcntl.flock(authorization, fcntl.LOCK_EX)
                 if any((state / name).exists() for name in ('profile-refresh-verifying.json',
                         'profile-refresh-restart.json', 'profile-refresh-commit.json')):
-                    return  # The existing acceptance/rollback worker owns it.
+                    pending = stage.read_record(state / 'profile-refresh-verifying.json')
+                    if expected is not None and pending.get('digest') == expected:
+                        return 'verifying'
+                    return 'busy'  # The existing acceptance/rollback worker owns it.
                 current = healthy_runtime(settings, stage)
             # Keep the authority lock available to launch/sleep/recovery
             # writers while checks run. Recheck after reacquiring EX.
@@ -214,7 +224,7 @@ def restart_source(settings, stage, validate=None, activate=None):
                 if ((state / 'intent').read_text().strip() != 'proxy'
                         or any((state / name).exists() for name in ('profile-refresh-verifying.json',
                             'profile-refresh-restart.json', 'profile-refresh-commit.json'))):
-                    return
+                    return 'proxy intent or verification changed'
                 if current is not None:
                     if (decision['accepted'] and decision['digest'] != current
                             and settings.get('refresh_policy', 'strict') == 'strict'):
@@ -228,21 +238,81 @@ def restart_source(settings, stage, validate=None, activate=None):
                             settings.get('refresh_policy', 'strict'),
                             decision['digest'], current, decision['reason'],
                             previous.get('snapshot_at', 0), decision['findings'])
-                        return
+                        return 'decided'
                     if still_healthy and decision['digest'] == current and decision['accepted']:
                         previous = stage.read_record(state / 'profile-refresh.json')
                         if previous.get('digest') != current or previous.get('result') != 'accepted':
                             stage.audit(state, 'accepted', settings.get('refresh_policy', 'strict'),
                                 current, current, snapshot_at=previous.get('snapshot_at', 0),
                                 findings=decision['findings'])
-                        return
+                        return 'accepted'
                     # SH source + EX operator/auth locks freeze the normal
                     # publishers. Bind one more time before any destructive step.
                     if decision['accepted'] and source_binding(settings, stage)[3] != decision['binding']:
-                        return
+                        return 'source changed during validation'
             # No precheck grants import authority. The helper revalidates and
             # reaudits the same source under SH, then health accepts or rolls back.
             activate()
+            return 'verifying'
+
+
+def verify_selection(settings, stage, candidate, initial_mode, lock_operator):
+    """Wait outside the operator/source locks for this candidate's verdict."""
+    state = Path(settings['state'])
+    boot, started = stage.boot_id(state), time.time()
+
+    def result(outcome, reason=None):
+        source = stage.read_record(state / 'source.json')
+        mode = stage.read_record(state / 'state.json').get('mode')
+        active = source.get('source_id') if source.get('boot_id') == boot and mode != 'direct' else None
+        return dict(result=outcome, reason=reason, active_source=active or None)
+
+    activation_failed = False
+    try:
+        if initial_mode == 'direct':
+            # Use the same protected startup and routing transaction as clash-on.
+            subprocess.run(['/run/current-system/sw/bin/proxy-control', 'on'], check=True, timeout=120,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=dict(os.environ, LF_SOURCE_GENERATION=candidate))
+        else:
+            settings = dict(settings, core_gid=grp.getgrnam('clash-core').gr_gid)
+            deadline = time.monotonic() + 90
+            while True:
+                decision = restart_source(settings, stage, expected=candidate, lock_operator=lock_operator)
+                if decision != 'busy' or time.monotonic() >= deadline:
+                    break
+                time.sleep(1)
+            if decision == 'accepted':
+                return result('accepted')
+            if decision not in ('verifying', 'decided'):
+                return result('refused', decision)
+    except stage.RefreshError as error:
+        return result('refused', str(error) if str(error) in stage.REASONS else 'snapshot mismatch')
+    except (OSError, ValueError, http.client.HTTPException, subprocess.SubprocessError):
+        activation_failed = True
+
+    if not activation_failed:
+        try:
+            subprocess.run([settings['systemctl'], 'start', '--no-block', 'profile-refresh-verify.service'],
+                           check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # The periodic verifier also owns this transaction.
+    deadline = time.monotonic() + 100
+    while True:
+        audit = stage.read_record(state / 'profile-refresh.json')
+        if audit.get('boot_id') == boot:
+            for entry in reversed(audit.get('history', [])):
+                if entry.get('digest') != candidate or entry.get('at', 0) < started:
+                    continue
+                verdict = entry.get('result')
+                if verdict in ('accepted', 'refused', 'fallback', 'rolled_back'):
+                    return result(verdict, entry.get('reason'))
+                break
+        if activation_failed or (state / 'intent').read_text().strip() != 'proxy':
+            return result('refused', 'candidate activation failed' if activation_failed else 'proxy intent changed')
+        if time.monotonic() >= deadline:
+            return result('pending', 'verification timed out')
+        time.sleep(1)
 
 
 def main():

@@ -173,8 +173,9 @@ The shared proxy-intent guard must not enqueue updates. These rules prevent acti
 Automatic attempts in C defer rather than using retries or weakening the application guard.
 Keep that path and refresh prechecks consistent.
 
-Periodic downloads release the source publication lock during network waits, then recheck registration and selection under the lock before publishing.
+Periodic downloads and explicit `add` or `use` release the source publication lock during network waits, then recheck registration and selection under the lock before publishing.
 Preserve that recheck so foreground startup stays available without allowing revoked input to be published.
+Explicit operations in A or B bypass the automatic stability interval and wait for the verifier's result for the downloaded digest. The wait holds neither the operator nor the source lock.
 
 Within the current boot, health-failure pins survive explicit on/off requests for their remaining TTL. Startup imports keep the full 60-second window. Later imports with repeated fresh full failures can roll back after the configured grace. Successful acceptance always keeps the full window.
 
@@ -185,6 +186,9 @@ The authorization lock is released during checks and reacquired to recheck runti
 Pending acceptance or rollback defers the refresh.
 The fixed `clash-source-guard.service` transaction enters C before restart, with `CAP_NET_ADMIN` kept outside the download/parser service.
 Guard failure must prevent restart. Actual import still validates and audits again, then uses health acceptance or rollback.
+Snapshot authority is published under the policy lock, after the authorization lock. The coordinator verifies the transport firewall before releasing the policy lock and binds its health observation to that snapshot digest. Generation or snapshot changes invalidate the observation.
+
+The mode coordinator signals systemd readiness after verifying the initial A or C firewall. Full B health is checked by the running loop, after its dependent units can start. When a switch changes the routing generation in A, the inactive selection resets to the new generation's `rules` policy and proxy intent stays off.
 
 `profile-refresh-verify.timer` runs every ten seconds.
 The mode supervisor publishes `/run/proxy-mode/boot-id`, and `refresh.nix` defines the five-minute user notification timer.

@@ -612,12 +612,16 @@ def switch_snapshot(runtime, state, destination, digest):
     link.unlink(missing_ok=True)
     link.symlink_to(destination)
     effective = runtime / 'effective'
-    # Compatibility with the older, real-directory snapshot layout.
-    if effective.exists() and not effective.is_symlink():
-        effective.rename(runtime / 'snapshots' / ('legacy-' + str(time.time_ns())))
-    link.replace(effective)
-    atomic_authority(state / 'authorized-config', digest)
-    atomic_authority(state / 'config-digest', digest)
+    # Publish under the policy lock so transport enforcement reads exactly
+    # one snapshot and can bind the next health observation to its digest.
+    with (state / 'lock').open('a') as policy_lock:
+        fcntl.flock(policy_lock, fcntl.LOCK_EX)
+        # Compatibility with the older, real-directory snapshot layout.
+        if effective.exists() and not effective.is_symlink():
+            effective.rename(runtime / 'snapshots' / ('legacy-' + str(time.time_ns())))
+        link.replace(effective)
+        atomic_authority(state / 'authorized-config', digest)
+        atomic_authority(state / 'config-digest', digest)
     verify(effective, state / 'config-digest', state / 'authorized-config')
     publish_effective(runtime, state)
 
@@ -839,6 +843,18 @@ def source_input(settings):
     return dict(settings, gui_data=str(directory), desktop_uid=0), str(directory / 'clash-verge.yaml')
 
 
+def prepared_source(settings, expected):
+    inputs, config = source_input(settings)
+    directory = Path(config).parent
+    manifest = read_record(directory / 'source-manifest.json')
+    routing = routing_binding(settings)
+    if (manifest.get('policy') != validator_policy_digest(settings)
+            or routing.get('routing_requested') == 'proxy-only' and not routing.get('egress_requested')
+            or snapshot_digest(directory) != expected):
+        raise RefreshError('snapshot mismatch')
+    return inputs, config
+
+
 def accepted_policy(settings, directory, manifest):
     """Permit only a blocklist-location difference in an accepted policy."""
     path = Path(os.environ.get('LF_MANAGED_PROXY_POLICY', settings['managed_policy']))
@@ -965,9 +981,12 @@ def stage_locked(settings, config, validate):
         restore_persistent(settings, runtime, state, gid)
         window = state / 'authorize-window'
         authorized = False
+        prepared = ''
         try:
             age = time.time() - window.stat().st_mtime
             authorized = 0 <= age <= 300
+            if authorized and settings.get('source_root'):
+                prepared = window.read_text().strip()
         except FileNotFoundError:
             pass
         window.unlink(missing_ok=True)
@@ -992,8 +1011,11 @@ def stage_locked(settings, config, validate):
         phase = 'input unreadable'
         try:
             if settings.get('source_root'):
-                settings, config = (startup_input(settings) if authorized and policy == 'auto'
-                                    else source_input(settings))
+                if prepared:
+                    settings, config = prepared_source(settings, prepared)
+                else:
+                    settings, config = (startup_input(settings) if authorized and policy == 'auto'
+                                        else source_input(settings))
             # Keep a fingerprint even when UTF-8/controller normalization fails.
             relative = Path(os.path.abspath(config)).relative_to(settings['gui_data'])
             raw = read_input(settings['gui_data'], relative, settings['desktop_uid'])
@@ -1032,6 +1054,8 @@ def stage_locked(settings, config, validate):
             (candidate / 'cache.db').symlink_to(Path(settings['data']) / 'cache.db')
             provider_cache(candidate, settings['data'])
             candidate_digest = snapshot_digest(candidate)
+            if prepared and pinned(state, candidate_digest) and read_record(state / 'profile-refresh-pin.json').get('health') is True:
+                raise RefreshError('recent health failure')
             if not authorized and policy == 'auto' and pinned(state, candidate_digest) and not (
                     settings.get('source_root') and ((source_directory(settings) / 'approval.json').exists() or
                     (settings.get('audit_auto_approve') and read_record(state / 'profile-refresh.json').get('reason')

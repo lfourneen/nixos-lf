@@ -309,7 +309,10 @@ def download_window(settings):
     # Never queue another download while holding the publication lock: the
     # first worker must reacquire that lock before it can finish.
     with (Path(settings['root']) / 'download.lock').open('a') as download:
-        fcntl.flock(download, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(download, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise TimeoutError('another source download is in progress') from None
         fcntl.flock(lock, fcntl.LOCK_UN)
         try:
             yield
@@ -361,7 +364,7 @@ def refresh_generation(settings, root):
     # Downloading grants no authority. Registration and selection can change
     # while the worker runs, so reject its result before touching generations.
     if read_private(root / 'registry.json') != raw or (settings.get('_fetch_lock') is not None
-            and selected(Path(settings['root'])) != root):
+            and selected(Path(settings['root'])) != settings.get('_expected_selection', root)):
         raise ValueError('source registration or selection changed during download')
     if Path(settings['policy']).read_bytes() != policy_bytes or (routing is not None
             and Path(settings['routing_state']).read_bytes() != routing):
@@ -560,6 +563,56 @@ def acquire(stream, operation=fcntl.LOCK_EX):
             time.sleep(.05)
 
 
+def confirm_add(settings, root, lock, identity):
+    catalog = settings['catalog']
+    values = definitions(read_private(catalog), identity)
+    data = registration(values)
+    reviewed = review_definitions(root, values)[0]
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    print(json.dumps(reviewed), flush=True)
+    print('Register and verify this source? Mode A will request proxy operation. [y/N] ',
+          file=sys.stderr, end='', flush=True)
+    try:
+        reply = input()
+    except EOFError:
+        reply = ''
+    if reply.strip().lower() not in ('y', 'yes'):
+        raise DefinitionError('source registration cancelled')
+    acquire(lock)
+    if definitions(read_private(catalog), identity) != values:
+        raise DefinitionError('source definition changed during confirmation')
+    current = review_definitions(root, values)[0]['previous']
+    if current != reviewed['previous']:
+        raise DefinitionError('source registration changed during confirmation')
+    if current != reviewed['digest']:
+        register(root, data, reviewed['digest'], current)
+
+
+def prepare_manual(settings, root, lock, identity, revision):
+    stage_settings = json.loads(Path(settings['stageSettings']).read_text())
+    manual = load_module('source_manual_refresh', settings['manual_refresh'])
+    stage = manual.module('source_stage', stage_settings['snapshot_tool'])
+    stage_settings.update(launcher=settings['launcher'], guard_service='clash-source-guard.service')
+    state = Path(stage_settings['state'])
+    mode = stage.read_record(state / 'state.json').get('mode')
+    if mode not in ('direct', 'proxy'):
+        raise DefinitionError('source download requires Mode A or B')
+    path = source_path(root, identity)
+    if revision is not None and digest(read_private(path / 'registry.json')) != revision:
+        raise DefinitionError('source revision changed')
+    refresh(dict(settings, _fetch_lock=lock, _expected_selection=selected(root)), path)
+    candidate = stage.snapshot_digest((path / 'current').resolve(strict=True))
+    select(root, path)
+    return manual, stage, stage_settings, candidate, mode
+
+
+def load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('settings')
@@ -576,6 +629,7 @@ def main():
     choose = sub.add_parser('use')
     choose.add_argument('id')
     choose.add_argument('--revision')
+    sub.add_parser('add', help='review, register, fetch and verify a source from the private catalog').add_argument('id')
     sub.add_parser('list')
     sub.add_parser('gui-select')
     revoke = sub.add_parser('revoke')
@@ -588,7 +642,7 @@ def main():
     state_root(root)
     review = review_module(settings) if args.action == 'diff' else None
     with (root / 'source.lock').open('a') as lock:
-        if args.action == 'diff':
+        if args.action in ('diff', 'add', 'use'):
             acquire(lock)
         else:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -621,8 +675,8 @@ def main():
                  'settled_digest': settled(path)}
                 for path in sorted((root / 'sources').iterdir()) if re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', path.name) and not path.is_symlink()]}))
             return
-        if args.action in ('use', 'gui-select'):
-            changed = use(settings, root, args.id, args.revision) if args.action == 'use' else gui_choice(settings, root)
+        if args.action == 'gui-select':
+            changed = gui_choice(settings, root)
             if changed and settings.get('systemctl'):
                 subprocess.run([settings['systemctl'], 'start', '--no-block', 'clash-source-refresh.service'], check=True, timeout=10)
             print('registered source selected; runtime validation remains required' if changed else 'source selection unchanged')
@@ -639,14 +693,23 @@ def main():
             refresh(settings, selected(root))
             print('source candidate prepared; runtime validation remains required')
             return
-        values = definitions(read_private(args.file), args.source_id)
-        if args.action == 'review':
-            reviews = review_definitions(root, values)
-            print(json.dumps(reviews[0] if len(reviews) == 1 else {'sources': reviews}))
+        if args.action in ('review', 'register'):
+            values = definitions(read_private(args.file), args.source_id)
+            if args.action == 'review':
+                reviews = review_definitions(root, values)
+                print(json.dumps(reviews[0] if len(reviews) == 1 else {'sources': reviews}))
+            else:
+                register(root, registration(values), args.digest, args.previous)
+                print('source registered; run clash-source refresh before clash-on')
             return
-        data = registration(values)
-        register(root, data, args.digest, args.previous)
-        print('source registered; run clash-source refresh before clash-on')
+        if args.action == 'add':
+            confirm_add(settings, root, lock, args.id)
+        manual, stage, stage_settings, candidate, mode = prepare_manual(settings, root, lock, args.id,
+            args.revision if args.action == 'use' else None)
+    result = manual.verify_selection(stage_settings, stage, candidate, mode, acquire)
+    print(json.dumps(dict(requested_source=args.id, **result)))
+    if result['result'] != 'accepted':
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

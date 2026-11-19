@@ -56,88 +56,32 @@ proxy_source: |-
 来源的 `"gui-profile":"REMOTE_PROFILE_UID"` 映射 GUI 本地 `profiles.yaml` 中的精确 UID。
 映射只授权选择来源，不导入 GUI 的 URL 或 YAML。
 
-### 登记来源
-
-运行 `sops edit system/secrets/proxy.yaml`，为每条订阅在 `sources` 中添加一个对象。
-ID 必须唯一，清单支持 1–256 条来源。
-
-重建并激活配置，更新 `/run/secrets/proxy_source` 后，再按 ID 审核并登记：
-
-1. 审核来源，记录返回的摘要：
-
-   ```sh
-   sudo clash-source review /run/secrets/proxy_source --id primary
-   ```
-
-2. 将摘要填入 `REVIEWED_DIGEST`，登记来源：
-
-   ```sh
-   sudo clash-source register /run/secrets/proxy_source --id primary --digest REVIEWED_DIGEST --previous none
-   ```
-
-3. 获取已登记来源的配置：
-
-   ```sh
-   sudo systemctl start clash-source-refresh.service
-   ```
-
-4. 请求代理模式：
-
-   ```sh
-   clash-on
-   ```
-
-不带 `--id` 的 `review FILE` 列出全部条目的摘要及上一登记版本，不输出端点或凭据。
-含多条来源的清单必须指定 `--id` 才能登记，批准一条不会授权其它条目。
-版本摘要只覆盖该条来源，新增或修改别的来源不会改变它。
-
-`review` 返回该 ID 的上一版本。
-更新已有登记时用它替换 `none`。
-旧版本或候选摘要不匹配则拒绝登记。
-更新只撤销该来源的下载指针和语义批准，保留 settled 审计基线。
-首次登记成为当前选择，其后登记只加入可选来源，不改变选择。
-旧单来源状态在下一次 broker 命令时迁移。
-
 ### 添加与切换来源
 
-新增 `secondary` 时，使用它自己的审核摘要登记一次。
-
-以下命令假定更新后的清单已经部署：
-
-先审核并登记：
+运行 `sops edit system/secrets/proxy.yaml`，在 `sources` 中追加一条配置并使用唯一 ID。清单支持 1–256 条。激活更新后的密钥，然后添加需要的来源：
 
 ```sh
-sudo clash-source review /run/secrets/proxy_source --id secondary
-sudo clash-source register /run/secrets/proxy_source --id secondary --digest REVIEWED_DIGEST --previous none
+sudo nixos-rebuild switch --flake .#lfour
+sudo clash-source add SOURCE_ID
 ```
 
-再查看已登记来源，并选择需要的来源：
+检查显示的 `digest` 和 `previous` 版本，确认要登记该条目后输入 `yes`。Broker 只登记这一条目，并复核确认期间清单条目和已登记版本是否变化。摘要覆盖规范化后的整条定义。命令只显示摘要及来源 ID，URL 和凭据仍保持私有。
 
-```sh
-sudo clash-source list
-sudo clash-source use secondary
-```
+`add` 通过非特权 worker 下载，选择下载完成的来源，并等待现有 verifier。处于 A 时，命令会通过受保护的启动事务请求代理。处于 B 时，沿用当前路由策略，无需另跑 `clash-on` 或 `clash-rules`。A 或 B 中的显式操作立即开始，自动更新仍要求 B 稳定 90 秒。处于 C 时，应先恢复 B 或显式进入 A 再下载。
 
-后续切换只需 `sudo clash-source use primary` 或 `sudo clash-source use secondary`，不必重新登记。
-从加密清单删除条目不会撤销已有登记，应使用下述显式 `revoke` 命令。
+终端结果包含 `requested_source`、`active_source`、`result` 和 `reason`。接受时显示 `accepted` 并退出零。拒绝、回退、回滚及验证超时退出非零。成功验证仍须经过正常的健康观察期。可用 `proxy-status` 查看活动来源和 `Dropped leaves` 数量。回退时，活动来源可能与请求的来源不同。
 
-用 `list` 查看请求的来源、登记版本和 settled 摘要。
-`use` 获取来源后才选择它并安排刷新，可加 `--revision REVIEWED_DIGEST` 拒绝已变化的登记。
-获取失败时保留原选择。
+用 `sudo clash-source use SOURCE_ID` 立即下载、选择并验证已登记来源。附加 `--revision REVIEWED_DIGEST` 可要求登记版本完全匹配。下载失败保留原选择。在 `proxy-only` 下候选必须匹配固定出口。要更换固定出口，先在 `rules` 中接受更新，再选择新出口。
 
-`proxy-status` 的 `Active source` 表示实际运行来源。`Dropped leaves` 显示当前快照导入时丢弃的节点数（无法解析，或未经来源白名单授权的自签节点）。
-在候选检查或使用旧快照回退期间，它可能与请求的来源不同。
-每个来源跨切换保留自己的已接受基线。
+底层命令 `review FILE --id SOURCE_ID` 和 `register FILE --id SOURCE_ID --digest REVIEWED_DIGEST --previous PREVIOUS_DIGEST` 仍可使用。首次登记使用 `none` 作为上一版本。不带 `--id` 的 review 可列出清单摘要，多条清单进行 register 时须指定 ID。更新登记会使该来源的旧下载及批准失效，保留已接受的审计基线。`sudo clash-source list` 可查看选择、登记版本及已接受摘要。
 
-删除不用的来源及其状态，执行 `sudo clash-source revoke secondary`。
-撤销当前来源前，先选另一个来源。
-需要立即停止正在运行的回退时，使用 `clash-off`。
+从 Sops 清单删除条目后，已登记副本仍然存在。先选择其他来源，再用 `sudo clash-source revoke SOURCE_ID` 撤销。用 `clash-off` 可立即停止正在运行的回退快照。
 
 `clash-source-select.path` 监听 GUI 的 `profiles.yaml`，切换到已映射 UID 会请求对应的登记来源。
 未知 profile 不改变选择。
 修改 GUI URL、YAML 或脚本不授予新权限。
 GUI 选择与实际来源不同时，检查 `journalctl -u clash-source-select -u clash-source-refresh`。
-A 中选择或获取不会请求 B，需要显式运行 `clash-on`。
+A 中从 GUI 选择来源会保留直连。GUI 选择后可用 `clash-on` 请求 B。
 
 `clash-source refresh` 只准备候选。
 system service 在代理意图有效时先检查候选，再决定是否替换受管核心。

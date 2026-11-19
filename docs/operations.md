@@ -56,94 +56,33 @@ Optional endpoint settings include up to four exact HTTPS `redirects` and a `use
 A source's `"gui-profile":"REMOTE_PROFILE_UID"` maps the exact UID from the GUI's local `profiles.yaml`.
 The mapping authorizes selection, without importing the GUI's URL or YAML.
 
-### Register a source
+### Add or switch a source
 
-Run `sops edit system/secrets/proxy.yaml` and add an object to `sources` for each subscription.
-IDs must be unique, and the catalog supports 1–256 entries.
-Rebuild and activate the configuration to update `/run/secrets/proxy_source`, then review and register the source by ID:
-
-1. Review the source and note the returned digest:
-
-   ```sh
-   sudo clash-source review /run/secrets/proxy_source --id primary
-   ```
-
-2. Replace `REVIEWED_DIGEST` and register the source:
-
-   ```sh
-   sudo clash-source register /run/secrets/proxy_source --id primary --digest REVIEWED_DIGEST --previous none
-   ```
-
-3. Fetch the registered configuration:
-
-   ```sh
-   sudo systemctl start clash-source-refresh.service
-   ```
-
-4. Request proxy mode:
-
-   ```sh
-   clash-on
-   ```
-
-`review FILE` without `--id` lists every entry’s digest and previous registered revision, without endpoints or credentials.
-A catalog containing multiple entries requires `--id` for registration.
-Approving one entry grants nothing to the others.
-The canonical revision covers that entry, so adding or editing another source does not change it.
-
-`review` returns the previous revision of that ID.
-Use it instead of `none` when updating an existing registration.
-A mismatched revision or candidate digest refuses registration.
-Updating one source invalidates only its download pointer and semantic approval, retaining its settled audit baseline.
-The first registration becomes selected.
-Later registrations remain available without changing the selection.
-Existing single-source state migrates on the next broker command.
-
-### Add and switch sources
-
-For a newly added `secondary`, review its own digest and register it once.
-
-These commands assume the updated catalog has already been deployed:
-
-Review and register it:
+Run `sops edit system/secrets/proxy.yaml` and add one entry to `sources`. Use a unique ID. The catalog supports 1–256 entries. Deploy it and add the requested source:
 
 ```sh
-sudo clash-source review /run/secrets/proxy_source --id secondary
-sudo clash-source register /run/secrets/proxy_source --id secondary --digest REVIEWED_DIGEST --previous none
+sudo nixos-rebuild switch --flake .#lfour
+sudo clash-source add SOURCE_ID
 ```
 
-Then inspect the registered sources and select one:
+Compare the reported `digest` and `previous` revision with the entry you intend to register, then type `yes` to confirm. The broker registers only that entry and checks that the reviewed definition and the previous revision are still current. The digest covers the canonical entry. The command prints digests and source IDs, while the URL and credentials stay private.
 
-```sh
-sudo clash-source list
-sudo clash-source use secondary
-```
+`add` downloads through the unprivileged worker, selects the downloaded source and waits for the existing verifier. A requests proxy operation through the protected startup transaction. In B the existing routing policy is used and no separate `clash-on` or `clash-rules` is needed. An explicit command starts immediately in A or B. The 90-second stability gate still applies to automatic updates. If C is active, recover B or explicitly choose A before downloading.
 
-Later switches use only `sudo clash-source use primary` or `sudo clash-source use secondary`.
-No re-registration is needed.
-Deleting an entry from the encrypted catalog does not revoke an existing registration.
-Use the explicit `revoke` command below.
+The terminal result gives `requested_source`, `active_source`, `result` and `reason`. An accepted import reports `accepted` and exits zero. Rejection, fallback, rollback and a verification timeout exit nonzero. Successful verification still requires the normal health observation period. Use `proxy-status` to see the active source and `Dropped leaves` count. If the import falls back, the active source can differ from the requested source.
 
-Use `list` to inspect the requested source, registered revisions and settled digests.
-`use` fetches a source before selecting it and scheduling refresh.
-`--revision REVIEWED_DIGEST` refuses a registration that has changed since review.
-Fetch failure leaves the previous selection in place.
+Use `sudo clash-source use SOURCE_ID` to fetch, select and verify an existing registration. Add `--revision REVIEWED_DIGEST` to require an exact registered revision. Fetch failure preserves the prior selection. In `proxy-only`, the configured exit still has to match. Accept changes to a pinned exit in `rules` before selecting the new exit.
 
-`proxy-status` shows the running source as `Active source`. `Dropped leaves` reports nodes discarded during import (unresolvable, or insecure without a whitelisted source).
-It can differ from the requested source while the candidate is being checked or an earlier snapshot is running as fallback.
-Each source keeps its own accepted baseline across switches.
+The lower-level `review FILE --id SOURCE_ID` and `register FILE --id SOURCE_ID --digest REVIEWED_DIGEST --previous PREVIOUS_DIGEST` commands remain available. Use `none` as the previous revision for a new entry. Review without `--id` lists the catalog digests, and registration requires an ID when more than one entry exists. Replacing a registration invalidates its previous download and approval and preserves its settled audit baseline. `sudo clash-source list` reports the selection, registered revisions and settled digests.
 
-To remove an unused source and its state, run `sudo clash-source revoke secondary`.
-Select another source before revoking the current one.
-To stop a running fallback immediately, use `clash-off`.
+Removing an entry from the Sops catalog leaves its registration intact. Select another source before running `sudo clash-source revoke SOURCE_ID`. Use `clash-off` to stop a running fallback immediately.
 
 The `clash-source-select.path` unit watches the GUI's `profiles.yaml`.
 Switching to a mapped UID requests the corresponding registered source.
 Unknown profiles leave the selection unchanged.
 Changing a GUI URL, YAML or script grants no additional authority.
 Inspect `journalctl -u clash-source-select -u clash-source-refresh` when the GUI selection and active source differ.
-In A, selection and fetching do not request B.
-Use `clash-on` deliberately.
+GUI selection in A leaves the mode unchanged. Use `clash-on` to request B after a GUI selection.
 
 `clash-source refresh` only prepares a candidate.
 The system service checks it before deciding whether to replace the managed core while proxy intent is active.

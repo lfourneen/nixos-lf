@@ -486,6 +486,9 @@ NFT_OFF
     load_complete() {
       local target="$1" transaction=/run/proxy-mode/reload.$$.nft rc=0
       local -a sources=("$STATIC_RULES")
+      ${lib.optionalString config.my.proxy.runtimeRouting ''
+      "$ROUTING" initialize "$target" || log "routing selection unavailable during $target policy load"
+      ''}
       # Keep the blocked policy until direct routing is restored. The static
       # nftables transaction cannot remove the host's policy-routing rules.
       if [ "$target" = direct ]; then
@@ -518,6 +521,22 @@ NFT_OFF
       else
         echo direct
       fi
+    }
+
+    # Report readiness after verifying A or C. Full B health can depend on
+    # listeners ordered after this unit.
+    initial_policy() {
+      lock_state
+      forget_snapshot
+      mode=$(safety_mode); reason=reload
+      if [ "$mode" = direct ]; then reason=""; fi
+      if ! load_complete "$mode"; then unlock_state; return 1; fi
+      publish_state
+      verified_version=$(read_version)
+      unlock_state
+      request_wake
+      pass_verified=1
+      changed=1
     }
 
     # Shared with the verifier: include actual unmarked IPv6 route selection,
@@ -555,7 +574,7 @@ NFT_OFF
       read -r proof_time _ < /proc/uptime
       proof_id=$($CAT /proc/sys/kernel/random/uuid)
       proof_epoch=$($CAT /run/proxy-mode/authorization-epoch 2>/dev/null || echo 0)
-      health_digest=$($CAT /run/proxy-mode/config-digest 2>/dev/null || true)
+      health_digest=$decision_digest
       health_at=$(${pkgs.coreutils}/bin/date +%s)
       health_gate=obs
       ${lib.optionalString config.my.proxy.runtimeRouting ''
@@ -637,6 +656,7 @@ NFT_OFF
       prev="$mode"
       intent=$(read_intent)
       decision_core=$(core_stamp)
+      decision_digest=""
       prearmed=0
 
       if ! static_matches; then
@@ -698,8 +718,15 @@ NFT_OFF
         tun_ok=1
         if [ "$intent" = proxy ] && ! $CORE_ROUTES routes-on; then tun_ok=0; fi
         ${lib.optionalString config.my.proxy.runtimeRouting ''
-        if [ "$intent" = proxy ] && ! "$ROUTING" enforce blocked; then tun_ok=0; fi
+        if [ "$intent" = proxy ]; then
+          # A staged snapshot can change the transport boundary while C is
+          # already active. Verify/reinstall it before any network probe.
+          transport_mode=blocked
+          if [ "$mode" = proxy ]; then transport_mode=proxy; fi
+          if ! "$ROUTING" enforce "$transport_mode"; then tun_ok=0; fi
+        fi
         ''}
+        decision_digest=$($CAT /run/proxy-mode/config-digest 2>/dev/null || true)
         unlock_state
         if [ "$REQUIRE_TUN" = "1" ] && ! tun_ready; then tun_ok=0; fi
 
@@ -773,6 +800,7 @@ NFT_OFF
       # Probes released the lock; foreign writers need not update our version.
       forget_snapshot
       if [ "$(read_version)" != "$decision_version" ] || [ "$(read_intent)" != "$intent" ] \
+         || { [ "$proof_renew" = 1 ] && [ "$($CAT /run/proxy-mode/config-digest 2>/dev/null || true)" != "$decision_digest" ]; } \
          || [ "$(core_stamp)" != "$decision_core" ]; then
         unlock_state
         changed=1; woken=1
@@ -888,6 +916,16 @@ NFT_OFF
         changed=0
       fi
       unlock_state
+      if [ "$want_reason" = stopping ]; then
+        # Queue a helper stop for direct intent without holding the policy lock.
+        (
+          umask 077
+          exec 8>>/run/proxy-mode/operator.lock
+          if $FLOCK -n 8 && [ "$(read_intent)" = direct ]; then
+            $SYSTEMCTL stop --no-block clash-verge.service
+          fi
+        ) || true
+      fi
       ${lib.optionalString config.my.proxy.controlledSources ''
       if [ "$ok" != 1 ] || [ "$mode" != proxy ]; then
         rm -f /run/proxy-mode/source-refresh-stable.json
@@ -936,7 +974,12 @@ NFT_OFF
     ready_sent=0
     while true; do
       woken=0
-      sync_pass
+      pass_verified=0
+      if [ "$ready_sent" = 0 ] && [ "$once" = 0 ] && [ -n "''${NOTIFY_SOCKET:-}" ]; then
+        initial_policy
+      else
+        sync_pass
+      fi
       pass_rc=$?
       [ "$once" = "1" ] && exit "$pass_rc"
       if [ "$pass_verified" = 1 ]; then
@@ -952,9 +995,9 @@ NFT_OFF
         mv -f /run/proxy-mode/heartbeat.json.$$ /run/proxy-mode/heartbeat.json
         unlock_state
         if [ -n "''${NOTIFY_SOCKET:-}" ]; then
-          if [ "$ready_sent" = 0 ]; then
-            ${pkgs.systemd}/bin/systemd-notify --ready --status="Policy verified: $mode"
+          if [ "$ready_sent" = 0 ] && ${pkgs.systemd}/bin/systemd-notify --ready --status="Policy verified: $mode"; then
             ready_sent=1
+            woken=1
           fi
           ${pkgs.systemd}/bin/systemd-notify WATCHDOG=1
         fi
@@ -999,6 +1042,10 @@ NFT_OFF
           mkdir -p /run/proxy-mode
           exec 8>/run/proxy-mode/operator.lock
           flock -x -w 30 8 || { echo 'Routing switch failed: another operation holds the control lock'; exit 1; }
+          if [ -n "''${LF_SOURCE_GENERATION:-}" ] && [ "$(cat /run/proxy-mode/status)" != direct ]; then
+            echo 'Prepared source startup requires Mode A' >&2
+            exit 1
+          fi
           transaction_epoch=""
           transaction_target="$2"
           transaction_step=initialize
@@ -1046,6 +1093,10 @@ NFT_OFF
             ${config.programs.clash-verge.package.stageSettings} ${config.programs.clash-verge.package}/bin/verge-mihomo
           flock -u 8
           systemctl start --no-block proxy-net-wake.service
+          if [ -n "''${LF_SOURCE_GENERATION:-}" ]; then
+            trap - ERR INT TERM
+            exit 0
+          fi
           transaction_step=health
           "$0" wait proxy "$2" "$transaction_epoch" >/dev/null 2>&1
           trap - ERR INT TERM
@@ -1066,6 +1117,10 @@ NFT_OFF
           mkdir -p /run/proxy-mode
           exec 8>/run/proxy-mode/operator.lock
           flock -x -w 30 8
+          if [ "$1" = on ] && [ -n "''${LF_SOURCE_GENERATION:-}" ] && [ "$(cat /run/proxy-mode/status)" != direct ]; then
+            echo 'Prepared source startup requires Mode A' >&2
+            exit 1
+          fi
           if [ "$1" = migrate-firewall ]; then
             exec ${modeScript} --migrate-legacy
           fi
@@ -1088,10 +1143,12 @@ NFT_OFF
             ${lib.optionalString config.my.proxy.controlledSources ''
             # Only an explicit start requests a fetch. The source activation
             # guard also requests proxy intent and must not enqueue an update.
-            (umask 077; : > /run/proxy-mode/source-refresh-pending)
+            if [ -z "''${LF_SOURCE_GENERATION:-}" ]; then
+              (umask 077; : > /run/proxy-mode/source-refresh-pending)
+            fi
             rm -f /run/proxy-mode/source-refresh-stable.json
             ''}
-            (umask 077; : > /run/proxy-mode/authorize-window)
+            (umask 077; printf '%s' "''${LF_SOURCE_GENERATION:-}" > /run/proxy-mode/authorize-window)
             flock -u 9
             ${lib.optionalString config.my.proxy.coreNetns ''
             # Rebuild the private topology after the old core has stopped. A

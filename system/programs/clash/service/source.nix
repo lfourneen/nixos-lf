@@ -17,6 +17,9 @@ let
     worker = ./source_worker.py;
     broker = ./source_broker.py;
     review = ./source_review.py;
+    manual_refresh = ./source_refresh.py;
+    launcher = "${config.programs.clash-verge.package}/bin/verge-mihomo";
+    catalog = config.sops.secrets.proxy_source.path or "/run/secrets/proxy_source";
     setpriv = "${pkgs.util-linux}/bin/setpriv";
     systemctl = "${pkgs.systemd}/bin/systemctl";
     desktop_uid = config.users.users.${config.my.machine.desktopUser}.uid;
