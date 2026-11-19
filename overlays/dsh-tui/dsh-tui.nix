@@ -2,18 +2,18 @@
 
 let
   pname = "dsh-tui";
-  version = "0.20.1";
+  version = "0.20.2";
   # Use the same native upstream host as environment.systemPackages.dsh
   # (currently supplied by the llm-agents input), including its dependencies.
   host = "${pkgs.dsh}/lib/node_modules/@deepseek-ai/dsh";
   releases = {
     x86_64-linux = {
       arch = "x64";
-      hash = "sha256-uVQMEL618ZQXfQ5G/zoz9j9909K+dOv7WA8qujZTIoM=";
+      hash = "sha256-uV2ZVAQqoIfy9cWoeBXyYWU8SyOM4h5fR0ScQbKFtQQ=";
     };
     aarch64-linux = {
       arch = "arm64";
-      hash = "sha256-h4WW1oHm/+gnNWqCXGeBDCv1S5RuZsGdRd2sm3toh7o=";
+      hash = "sha256-JMvu0p3a+1voEKc/rZNmK2Rw4u7rDlJGQRoROhOhhak=";
     };
   };
   release = releases.${pkgs.stdenv.hostPlatform.system};
@@ -56,8 +56,6 @@ let
         ln -s "$package" "$out/node_modules/@deepseek-ai/$(basename "$package")"
       done
       ln -s ${host} "$out/node_modules/@deepseek-ai/dsh"
-
-      node ${./patch-host-compat.mjs} "$out" ${host}
 
       node - "$out" ${host} ${version} <<'JS'
       const { createRequire } = require('node:module');
