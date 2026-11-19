@@ -17,7 +17,7 @@ import sys
 import tempfile
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 SNAPSHOT_TOOLS = {}
 
@@ -260,6 +260,36 @@ class Probe:
             if timer is not None:
                 timer.cancel()
             connection.close()
+
+    def leaf_candidates(self, url):
+        """Rank every lf-remote member by the core's concurrent delay test.
+
+        The group delay endpoint probes all members in parallel, the same path
+        the GUI uses to display latency. Only positive results are usable; the
+        lowest delays are tried first.
+        """
+        timeout = float(self.settings.get('leaf_delay_milliseconds', 2000))
+        maximum = float(self.settings.get('leaf_group_timeout_seconds', 6))
+        path = ('/group/lf-remote/delay?url=' + quote(url, safe='')
+                + '&timeout=' + str(int(timeout)))
+        value = self.api(path, maximum)
+        if not isinstance(value, dict):
+            return []
+        ranked = sorted((delay, name) for name, delay in value.items()
+                        if isinstance(name, str) and type(delay) is int and delay > 0)
+        return [name for _, name in ranked[:max(1, int(self.settings.get('leaf_attempts', 3)))]]
+
+    def select_leaf(self, name):
+        try:
+            result = subprocess.run([
+                self.settings['curl'], '-fsS', '--max-time', '1.5',
+                '--unix-socket', self.settings['socket'], '-X', 'PUT',
+                '-H', 'Content-Type: application/json', '--data-binary',
+                json.dumps({'name': name}), 'http://localhost/proxies/lf-remote'],
+                capture_output=True, text=True, timeout=self.remaining(2), check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0
 
     def timed(self, name, callback):
         start = self.clock()
@@ -542,6 +572,45 @@ class Probe:
             raise ProbeFailure('tun', 'WireGuard path proof failed')
         self.diagnostics['ip_tunnel_ok'] = True
 
+    def attempt_targets(self, log_path):
+        failures = []
+        for number, url in enumerate(self.settings["urls"]):
+            self.target_slots = len(self.settings['urls']) - number + int(self.settings.get('require_tun', False))
+            try:
+                self.timed(f"target_{number}", lambda: self.target(url, log_path))
+                return True
+            except ProbeFailure as error:
+                if error.layer in {"route", "config", "interrupted"}:
+                    raise
+                failures.append(error)
+        raise failures[-1]
+
+    def rotate_leaf(self, log_path):
+        """Try a measured fallback leaf when the current one cannot answer."""
+        url = (self.settings.get('urls') or [None])[0]
+        if not url:
+            return False
+        try:
+            candidates = self.leaf_candidates(url)
+        except ProbeFailure:
+            if self.clock() >= self.deadline:
+                raise
+            return False
+        if not candidates:
+            return False
+        for name in candidates:
+            if self.deadline - self.clock() <= 2:
+                return False
+            if not self.select_leaf(name):
+                continue
+            try:
+                self.attempt_targets(log_path)
+                return True
+            except ProbeFailure as error:
+                if error.layer in {'route', 'config', 'interrupted'} or self.clock() >= self.deadline:
+                    raise
+        return False
+
     def run(self, fast=False):
         self.routing = self.routing_binding()
         def listeners():
@@ -575,18 +644,11 @@ class Probe:
                                           stdout=stream, stderr=subprocess.DEVNULL)
             try:
                 time.sleep(min(0.15, self.remaining(0.15)))
-                failures = []
-                for number, url in enumerate(self.settings["urls"]):
-                    self.target_slots = len(self.settings['urls']) - number + int(self.settings.get('require_tun', False))
-                    try:
-                        self.timed(f"target_{number}", lambda: self.target(url, log_path))
-                        break
-                    except ProbeFailure as error:
-                        if error.layer in {"route", "config", "interrupted"}:
-                            raise
-                        failures.append(error)
-                else:
-                    raise failures[-1]
+                try:
+                    self.attempt_targets(log_path)
+                except ProbeFailure as failure:
+                    if failure.layer != 'obs' or not self.rotate_leaf(log_path):
+                        raise
                 self.timed('application_dns', self.application_dns)
                 self.timed("tun", lambda: self.tun_test(log_path))
                 self.timed('real_dns', self.real_dns)

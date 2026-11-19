@@ -102,6 +102,15 @@ in
           group = "root";
           mode = "0400";
         };
+
+        # Registered sources allowed to drop unlisted insecure leaves on
+        # import, one source id per line. Missing or invalid input stays strict.
+        "insecure_sources" = {
+          sopsFile = ../secrets/whitelist.yaml;
+          owner = "root";
+          group = "root";
+          mode = "0400";
+        };
       };
 
       templates."hermes.env" = {

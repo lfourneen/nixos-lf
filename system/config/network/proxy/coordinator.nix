@@ -167,6 +167,9 @@ let
     runtime = "/run/proxy-mode";
     budget_seconds = config.my.proxy.healthBudgetSeconds;
     request_timeout_seconds = config.my.proxy.healthRequestTimeoutSeconds;
+    leaf_delay_milliseconds = 2000;
+    leaf_group_timeout_seconds = 6;
+    leaf_attempts = 3;
     dns_timeout_seconds = config.my.proxy.healthDnsTimeoutSeconds;
     urls = config.my.proxy.nodeProbeUrls;
     mixed_port = port.mihomoMixed;

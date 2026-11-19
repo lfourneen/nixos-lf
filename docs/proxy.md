@@ -41,7 +41,7 @@ Members must be explicit or refer to registered providers.
 
 | Field | Accepted value |
 |---|---|
-| `url` | HTTPS URL |
+| `url` | Latency-test URL: HTTPS, or HTTP on its default port 80, without credentials or fragment |
 | `interval` | Integer, 1–86400 seconds |
 | `tolerance` | 0–60000 ms |
 | `timeout` | 100–60000 ms |
@@ -50,8 +50,11 @@ Members must be explicit or refer to registered providers.
 | `expected-status` | HTTP status expression |
 
 `load-balance`, dynamic filters, `rule-providers` and provider filters/overrides are unsupported.
-Supported nodes are SS, VMess, VLESS, Trojan, Hysteria2, TUIC, HTTP and SOCKS5.
+Supported nodes are SS, VMess, VLESS, Trojan, Hysteria2, TUIC, HTTP, SOCKS5 and AnyTLS.
 Remote HTTP/SOCKS plaintext authentication is refused.
+AnyTLS participates in Rule routing only and is not offered as a fixed egress; the single-leaf validator keeps its existing protocol list.
+Nodes that must query an ECH configuration stay out of the system `lf-remote` leaf and out of the fixed-egress candidates: the managed transport DNS travels through that leaf, so asking the leaf to resolve its own ECH loops back and fails with SERVFAIL.
+Such nodes remain in the subscription's groups and work as ordinary selections because a non-ECH leaf resolves their ECH. Inline `ech-opts.config` nodes are not affected.
 
 A private manifest records source ID, revision, response hashes, transformer, policy, rendered YAML, dropped-node count and geodata.
 The snapshot digest includes it.
@@ -68,6 +71,8 @@ Rejected or unchanged candidates preserve that core only while its snapshot auth
 An unhealthy or unauthorized runtime follows C recovery.
 Applying a changed candidate enters C before restarting the core and must pass startup checks again.
 Without a compatible fallback, C remains in effect.
+
+When the mixed HTTP probe fails, the health check concurrently delay-tests every `lf-remote` member through the core group-delay API (the same path the GUI uses to display latency), ranks the usable results, switches to the best leaf and retries. It refuses only when every member times out. Testing and retries stay inside the health budget; the audit and authorization are unchanged.
 
 `clash-off` revokes runtime authority while preserving the source's accepted baseline.
 With automatic refresh, the next `clash-on` prefers that baseline under the current managed policy and records `restored`.
@@ -261,6 +266,7 @@ The audit checks node server addresses, unauthorized `skip-cert-verify`, empty g
 Historical comparisons use the last settled YAML.
 Mutable provider contents retain the separate trust model described below.
 Named TLS exceptions in `my.proxy.insecureProxyExceptions` remain valid.
+Leaves that enable `skip-cert-verify` without a named exception are dropped only when their source is listed in the Sops-encrypted [system/secrets/whitelist.yaml](../../system/secrets/whitelist.yaml) (`insecure_sources`, one registered source ID per line), sharing the 20% bound with unresolvable nodes. Unlisted sources keep them and the audit or core guard refuses the candidate, so the default tolerance is zero. A missing or malformed whitelist authorizes no sanitizing.
 Intentional non-public node endpoints require `my.proxy.subscriptionAuditServerCidrs`.
 This audit exception grants no application access, and multicast endpoints remain refused.
 

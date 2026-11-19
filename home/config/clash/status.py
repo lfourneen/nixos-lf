@@ -161,6 +161,8 @@ def rows(state):
     yield 'Source provenance', trust.get('provenance', 'unknown')
     if trust.get('source_id'):
         yield 'Active source', trust['source_id']
+    if trust.get('dropped'):
+        yield 'Dropped leaves', f"{trust['dropped']} · unresolvable or unapproved insecure"
     yield 'Publisher signature', 'Not checked · verification is not implemented'
     fetch = state.get('source_fetch') or {}
     if fetch:

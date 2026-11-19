@@ -129,7 +129,7 @@ Use `list` to inspect the requested source, registered revisions and settled dig
 `--revision REVIEWED_DIGEST` refuses a registration that has changed since review.
 Fetch failure leaves the previous selection in place.
 
-`proxy-status` shows the running source as `Active source`.
+`proxy-status` shows the running source as `Active source`. `Dropped leaves` reports nodes discarded during import (unresolvable, or insecure without a whitelisted source).
 It can differ from the requested source while the candidate is being checked or an earlier snapshot is running as fallback.
 Each source keeps its own accepted baseline across switches.
 

@@ -88,20 +88,28 @@ def load(data):
     return json.loads(json.dumps(value, allow_nan=False))
 
 
-def endpoint(url):
+SCHEMES = {'https': 443}
+
+# A group test URL is only a latency target; the system's own probes decide
+# readiness. HTTP is accepted there on its default port because common
+# subscription templates use the plaintext generate_204 endpoint.
+TEST_SCHEMES = {'https': 443, 'http': 80}
+
+
+def endpoint(url, schemes=SCHEMES):
     if not isinstance(url, str) or any(ord(c) <= 32 or ord(c) >= 127 for c in url):
         raise Refused('url encoding')
     p = urlsplit(url)
-    if p.scheme != 'https' or not p.hostname or p.username or p.password or p.fragment:
+    if p.scheme not in schemes or not p.hostname or p.username or p.password or p.fragment:
         raise Refused('url scheme')
-    if p.port not in (None, 443):
+    if p.port not in (None, schemes[p.scheme]):
         raise Refused('url port')
     if '%' in p.netloc or '\\' in url:
         raise Refused('url authority')
     host = p.hostname.lower().rstrip('.')
     if host != p.hostname or '..' in host:
         raise Refused('url host')
-    return host, p.port or 443, p.path or '/', p.query
+    return host, p.port or schemes[p.scheme], p.path or '/', p.query
 
 
 class Connection(http.client.HTTPSConnection):
@@ -276,7 +284,8 @@ def egress_nodes(document, tunnel=None):
         visited.add(name)
         if name in nodes:
             node = nodes[name]
-            if node.get('type') in ('ss', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'http', 'socks5'):
+            if node.get('type') in ('ss', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'http', 'socks5') \
+                    and not ech_lookup(node):
                 result.append(node)
         elif name in groups:
             for child in groups[name]['proxies']:
@@ -298,6 +307,18 @@ def selected_egress(document):
     if targets.get('single-egress') is not True:
         return None
     return node_identity(document['proxies'][0])
+
+
+def ech_lookup(node):
+    """True when dialing the node needs a DNS lookup for its ECH configuration."""
+    options = node.get('ech-opts')
+    return isinstance(options, dict) and not options.get('config')
+
+
+def insecure_leaf(node):
+    """Match the audit's truthiness for skip-cert-verify."""
+    value = node.get('skip-cert-verify')
+    return value is True or (isinstance(value, str) and value.lower() in ('true', 'yes', '1', 'on'))
 
 
 def render(document, payloads, policy, forced_domains=(), probe_domains=(), remote_only_catchall=False, source=None,
@@ -350,7 +371,7 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
         if 'icon' in group and (not isinstance(group['icon'], str) or len(group['icon']) > 2048):
             raise Refused('group icon')
         if 'url' in group:
-            endpoint(group['url'])
+            endpoint(group['url'], TEST_SCHEMES)
         elif group['type'] != 'select':
             raise Refused('group test url')
         for key, low, high in (('interval', 1, 86400), ('tolerance', 0, 60000),
@@ -396,9 +417,14 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
             raise Refused('empty catchall')
     # The strict inlet has its own remote-only group; ordinary Rule routing is
     # preserved. Use all explicitly validated remote nodes, never DIRECT.
+    # The managed transport DNS travels through this leaf, so a node that must
+    # query its own ECH configuration cannot be the leaf: the lookup would loop
+    # back through the node it is trying to dial. Such nodes stay available in
+    # the subscription's own groups, where a non-ECH leaf resolves their ECH.
     if 'lf-remote' in names or any(g.get('name') == 'lf-remote' for g in groups):
         raise Refused('reserved group')
-    remote = [n['name'] for n in nodes if n.get('type') not in ('direct', 'compatible', 'reject', 'dns')]
+    remote = [n['name'] for n in nodes
+              if n.get('type') not in ('direct', 'compatible', 'reject', 'dns') and not ech_lookup(n)]
     if not remote:
         raise Refused('empty nodes')
     groups.append({'name': 'lf-remote', 'type': 'select', 'proxies': [catchall[1]] if proxy_only else remote})
@@ -453,14 +479,23 @@ def prune_groups(document, dropped):
             group['proxies'] = [ref for ref in group['proxies'] if ref not in empty]
 
 
-def pin_servers(config, resolver=socket.getaddrinfo):
+def pin_servers(config, resolver=socket.getaddrinfo, allowed_insecure=(), sanitize_insecure=False):
     document = load(config)
     nodes, dropped = [], []
+    allowed = set(allowed_insecure)
     for node in document['proxies']:
-        if node.get('type') not in ('ss', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'http', 'socks5'):
+        if node.get('type') not in ('ss', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'http', 'socks5', 'anytls'):
             raise Refused('unsupported node protocol')
         if node.get('plugin') or node.get('dialer-proxy') or node.get('interface-name') or node.get('routing-mark'):
             raise Refused('unsupported node transport')
+        # The managed core refuses unlisted skip-cert-verify leaves. Drop them
+        # only when root authorized this source for sanitizing; otherwise keep
+        # them so the audit and the core guard refuse the candidate. A named
+        # insecure-proxy-exception stays in either case.
+        if insecure_leaf(node) and node.get('name') not in allowed:
+            if sanitize_insecure:
+                dropped.append(node.get('name'))
+                continue
         server, port = node.get('server'), node.get('port')
         if not isinstance(server, str) or type(port) is not int or not 1 <= port <= 65535:
             raise Refused('node endpoint')
@@ -473,7 +508,7 @@ def pin_servers(config, resolver=socket.getaddrinfo):
             continue
         node['lf-source-server'] = server
         node['server'] = addresses[0]
-        if node.get('tls') or node.get('type') in ('trojan', 'hysteria2', 'tuic'):
+        if node.get('tls') or node.get('type') in ('trojan', 'hysteria2', 'tuic', 'anytls'):
             node.setdefault('servername', node.get('sni') or server)
             node.setdefault('sni', node.get('servername') or server)
         ws = node.get('ws-opts')
@@ -520,7 +555,12 @@ def prepare(request, download=None, resolver=socket.getaddrinfo):
     step('render', render, document, payloads, policy,
                     request.get('forced_domains', []), request.get('probe_domains', []),
                     request.get('remote_only_catchall', False), source)
-    pinned_config, dropped = step('pin-addresses', pin_servers, yaml.safe_dump(source).encode(), resolver)
+    targets = policy.get('lf-private-targets') if isinstance(policy, dict) else None
+    listed = targets.get('insecure-proxy-exceptions') if isinstance(targets, dict) else None
+    allowed_insecure = {value for value in listed if isinstance(value, str)} if isinstance(listed, list) else set()
+    pinned_config, dropped = step('pin-addresses', pin_servers, yaml.safe_dump(source).encode(),
+                                  resolver, allowed_insecure,
+                                  request.get('sanitize_insecure') is True)
     pinned = load(pinned_config)['proxies']
     retained = {node['name'] for node in pinned}
     removed = {node['name'] for node in source['proxies']} - retained

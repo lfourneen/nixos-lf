@@ -35,7 +35,7 @@ ID 和 GUI 映射必须唯一。
 
 | 字段 | 接受的值 |
 |---|---|
-| `url` | HTTPS 地址 |
+| `url` | 延迟测试地址：HTTPS 或默认端口 80 的 HTTP，不带凭据和片段 |
 | `interval` | 1–86400 秒的整数 |
 | `tolerance` | 0–60000 ms |
 | `timeout` | 100–60000 ms |
@@ -44,7 +44,10 @@ ID 和 GUI 映射必须唯一。
 | `expected-status` | HTTP 状态表达式 |
 
 不支持 `load-balance`、动态 filter、`rule-providers` 和 provider filter/override。
-节点支持 SS、VMess、VLESS、Trojan、Hysteria2、TUIC、HTTP 和 SOCKS5，拒绝远程 HTTP/SOCKS 明文认证。
+节点支持 SS、VMess、VLESS、Trojan、Hysteria2、TUIC、HTTP、SOCKS5 和 AnyTLS，拒绝远程 HTTP/SOCKS 明文认证。
+AnyTLS 只参与 Rule 路由，不列入固定出口候选（单叶子校验器仍只接受上表之外的既有协议）。
+需要查询 ECH 配置的节点不会进入系统内部 `lf-remote` 组，也不会成为固定出口候选：受管传输 DNS 经该组转发，让叶子查询自身 ECH 会形成循环并以 SERVFAIL 失败。
+这类节点仍保留在订阅分组中，可作为普通代理选择，其 ECH 查询由非 ECH 叶子完成；内联 `ech-opts.config` 的节点不受此限制。
 
 私有 manifest 记录来源 ID、版本、响应摘要、转换器、策略、生成的 YAML、丢弃节点数及 geodata。
 快照摘要包含这份 manifest。
@@ -62,6 +65,8 @@ ID 和 GUI 映射必须唯一。
 运行状态不健康或授权失效时，仍进入 C 恢复。
 应用变化的候选先进入 C，再重启核心，并须重新通过启动检查。
 没有兼容的回退快照时保持 C。
+
+健康探针发现 mixed HTTP 失败时，会调用核心的组延迟接口**并发测活 `lf-remote` 的全部成员**（与 GUI 显示延迟同一路径），按延迟排序选出可用叶子并切换后重试；只有全部成员都超时才按原逻辑拒绝。测活与重试受健康预算约束，审计与授权不变。
 
 `clash-off` 撤销运行授权，但保留该来源已接受的基线。
 自动刷新模式下，下次 `clash-on` 优先使用符合当前受管策略的基线，并记录 `restored`。
@@ -246,6 +251,7 @@ worker 在 `-t` 与快照提交之间离线运行，身份为无 capabilities �
 历史比较使用最近 settled 的 YAML。
 可变 provider 内容仍遵循下文的独立信任模型。
 `my.proxy.insecureProxyExceptions` 中的具名 TLS 例外保留。
+启用 `skip-cert-verify` 且未获具名例外的节点，只在来源列入 Sops 加密的 [system/secrets/whitelist.yaml](../../system/secrets/whitelist.yaml)（`insecure_sources`，每行一个已登记来源 ID）时被丢弃，并与解析失败节点共用 20% 上限；未列出的来源保留这些节点，由审计和核心守卫拒绝，默认容忍度为 0%。白名单缺失或格式错误时不做任何清洗。
 
 有意使用非公网节点端点时须声明 `my.proxy.subscriptionAuditServerCidrs`，该审计例外不授予应用访问权限，组播端点仍被拒绝。
 

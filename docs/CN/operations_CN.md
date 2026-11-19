@@ -125,7 +125,7 @@ sudo clash-source use secondary
 `use` 获取来源后才选择它并安排刷新，可加 `--revision REVIEWED_DIGEST` 拒绝已变化的登记。
 获取失败时保留原选择。
 
-`proxy-status` 的 `Active source` 表示实际运行来源。
+`proxy-status` 的 `Active source` 表示实际运行来源。`Dropped leaves` 显示当前快照导入时丢弃的节点数（无法解析，或未经来源白名单授权的自签节点）。
 在候选检查或使用旧快照回退期间，它可能与请求的来源不同。
 每个来源跨切换保留自己的已接受基线。
 

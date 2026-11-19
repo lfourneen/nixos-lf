@@ -98,9 +98,11 @@ def source_trust(root, boot):
         return {'provenance': 'unknown', 'upstream_signature': 'not-verified'}
     revision = value.get('revision', '')
     source_id = value.get('source_id', '')
+    dropped = value.get('dropped')
     return {'provenance': value['provenance'],
             'source_id': source_id if isinstance(source_id, str) and re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', source_id) else '',
             'revision': revision[:12] if isinstance(revision, str) and re.fullmatch('[0-9a-f]{64}', revision) else '',
+            'dropped': dropped if type(dropped) is int and 0 <= dropped <= 10000 else 0,
             'upstream_signature': 'not-verified'}
 
 

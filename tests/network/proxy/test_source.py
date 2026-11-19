@@ -244,7 +244,11 @@ class SourceTests(unittest.TestCase):
             out = w.load(w.render(dict(DOC, **{'proxy-groups': [group]}), {}, {}))
             self.assertEqual(out['proxy-groups'][0], group)
             self.assertEqual(audit.route(out, 'probe.example'), 'proxy')
-            for key, value in (('url', 'http://probe.example/204'), ('interval', True), ('tolerance', -1),
+            plain = dict(group, url='http://probe.example/204')
+            self.assertEqual(w.load(w.render(dict(DOC, **{'proxy-groups': [plain]}), {}, {}))['proxy-groups'][0], plain)
+            for key, value in (('url', 'http://probe.example:8080/204'),
+                               ('url', 'ftp://probe.example/204'),
+                               ('interval', True), ('tolerance', -1),
                                ('lazy', 'true'), ('unknown', 1), ('filter', '.*'), ('proxies', 'n')):
                 with self.assertRaises((w.Refused, ValueError)):
                     w.render(dict(DOC, **{'proxy-groups': [dict(group, **{key: value})]}), {}, {})
@@ -252,6 +256,49 @@ class SourceTests(unittest.TestCase):
             w.render(dict(DOC, **{'proxy-groups': [dict(group, type='load-balance')]}), {}, {})
         with self.assertRaises(w.Refused):
             w.render(dict(DOC, **{'rule-providers': {'remote': {'url': 'https://rules.example/'}}}), {}, {})
+
+    def test_anytls_nodes_pin_with_tls_identity(self):
+        node = {'name': 'a', 'type': 'anytls', 'server': 'any.example', 'port': 443, 'password': 'test-only'}
+        document = dict(DOC, proxies=[node],
+                        **{'proxy-groups': [{'name': 'P', 'type': 'select', 'proxies': ['a']}]})
+        pinned, dropped = w.pin_servers(json.dumps(document).encode(), public)
+        out = w.load(pinned)
+        self.assertEqual(dropped, 0)
+        self.assertEqual(out['proxies'][0]['server'], '1.1.1.1')
+        self.assertEqual(out['proxies'][0]['lf-source-server'], 'any.example')
+        self.assertEqual(out['proxies'][0]['servername'], 'any.example')
+        self.assertEqual(out['proxies'][0]['sni'], 'any.example')
+
+    def test_insecure_nodes_are_dropped_unless_explicitly_allowed(self):
+        insecure = dict(NODE, name='insecure', **{'skip-cert-verify': True})
+        allowed = dict(NODE, name='allowed', **{'skip-cert-verify': True})
+        document = dict(DOC, proxies=[NODE, insecure, allowed],
+                        **{'proxy-groups': [{'name': 'P', 'type': 'select',
+                                             'proxies': ['n', 'insecure', 'allowed']}]})
+        pinned, dropped = w.pin_servers(json.dumps(document).encode(), public, ['allowed'], True)
+        out = w.load(pinned)
+        self.assertEqual(dropped, 1)
+        self.assertEqual([node['name'] for node in out['proxies']], ['n', 'allowed'])
+        self.assertEqual(out['proxy-groups'][0]['proxies'], ['n', 'allowed'])
+        kept, dropped = w.pin_servers(json.dumps(document).encode(), public, ['allowed'], False)
+        self.assertEqual(dropped, 0)
+        self.assertEqual([node['name'] for node in w.load(kept)['proxies']], ['n', 'insecure', 'allowed'])
+
+    def test_ech_query_nodes_stay_out_of_the_system_leaf(self):
+        queried = dict(NODE, name='ech', **{'ech-opts': {'enable': True, 'query-server-name': 'cloudflare-ech.com'}})
+        inline = dict(NODE, name='inline', **{'ech-opts': {'enable': True, 'config': 'AEX+'}})
+        document = dict(DOC, proxies=[queried, NODE, inline],
+                        **{'proxy-groups': [{'name': 'P', 'type': 'select', 'proxies': ['ech', 'n', 'inline']}]})
+        out = w.load(w.render(document, {}, {}))
+        leaf = next(group for group in out['proxy-groups'] if group['name'] == 'lf-remote')
+        self.assertEqual(leaf['proxies'], ['n', 'inline'])
+        self.assertEqual([node['name'] for node in out['proxies']], ['ech', 'n', 'inline'])
+        saved = {}
+        w.render(document, {}, {'lf-private-targets': {'proxy-only': True}}, source=saved)
+        self.assertEqual([node['name'] for node in w.egress_nodes(saved)], ['n', 'inline'])
+        with self.assertRaises(w.Refused):
+            w.render(dict(DOC, proxies=[queried],
+                          **{'proxy-groups': [{'name': 'P', 'type': 'select', 'proxies': ['ech']}]}), {}, {})
 
     def test_prepare_reports_the_failing_pipeline_stage(self):
         request = {'registry': {'id': 'fixture', 'subscription': {'url': 'https://s.example/'}}, 'policy': {}}

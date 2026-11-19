@@ -2274,6 +2274,15 @@ class SubscriptionAndStatusTests(unittest.TestCase):
         self.assertIn('Certificate or subscription policy rejected',rendered)
         self.assertIn('rejected 16',rendered)
 
+    def test_status_reports_dropped_leaves_when_non_zero(self):
+        status = module('status')
+        value = {'ready': True, 'mode': 'proxy', 'target': 'proxy',
+                 'source_trust': {'provenance': 'controlled-fetch', 'dropped': 10}}
+        self.assertEqual(dict(status.rows(value))['Dropped leaves'],
+                         '10 · unresolvable or unapproved insecure')
+        value['source_trust']['dropped'] = 0
+        self.assertNotIn('Dropped leaves', dict(status.rows(value)))
+
     def test_status_separates_approved_update_changes_from_other_warnings(self):
         status = module('status')
         findings = {'verdict': 'warn', 'deny': {}, 'warn': {'node_identity': 45}, 'unknown': {}}

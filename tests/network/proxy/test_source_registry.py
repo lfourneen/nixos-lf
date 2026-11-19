@@ -17,6 +17,39 @@ worker = sys.argv.pop(1)
 
 
 class RegistryTests(unittest.TestCase):
+    def test_authorized_sources_parse_and_fail_closed(self):
+        directory = Path(tempfile.mkdtemp())
+        path = directory / 'sources'
+        path.write_text('one\nbad id\n\none\nTWO\n')
+        self.assertEqual(b.authorized_sources({'insecure_sources': str(path)}), {'one'})
+        self.assertEqual(b.authorized_sources({}), set())
+        self.assertEqual(b.authorized_sources({'insecure_sources': str(directory / 'missing')}), set())
+
+    def test_refresh_requests_sanitizing_only_for_authorized_sources(self):
+        self.register('one')
+        self.register('two')
+        source = self.root / 'sources/one'
+        policy = self.root / 'policy.json'
+        policy.write_text('{}')
+        whitelist = self.root / 'whitelist'
+        whitelist.write_text('one\n')
+        settings = dict(root=str(self.root), policy=str(policy), forced_domains=[], assets={},
+                        setpriv='/fixed/setpriv', python='/fixed/python', worker=worker, ca='/fixed/ca',
+                        insecure_sources=str(whitelist))
+        seen = []
+        def download(*args, **kwargs):
+            seen.append(json.loads(kwargs['input']))
+            kwargs['stdout'].write(json.dumps(dict(yaml='proxies: []\n', responses=[], dropped=0)).encode())
+            return SimpleNamespace(returncode=0)
+        with patch.object(b.subprocess, 'run', side_effect=download):
+            b.refresh(settings, source)
+            self.assertIs(seen[-1].get('sanitize_insecure'), True)
+            b.refresh(settings, self.root / 'sources/two')
+            self.assertIs(seen[-1].get('sanitize_insecure'), False)
+            whitelist.unlink()
+            b.refresh(settings, source)
+            self.assertIs(seen[-1].get('sanitize_insecure'), False)
+
     def test_network_wait_releases_publication_lock_and_rechecks_registration_and_selection(self):
         self.register('one')
         self.register('two')

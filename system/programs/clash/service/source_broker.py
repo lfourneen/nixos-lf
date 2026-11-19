@@ -317,6 +317,23 @@ def download_window(settings):
             acquire(lock)
 
 
+def authorized_sources(settings):
+    """Registered sources allowed to drop unlisted insecure leaves on import.
+
+    Missing, unreadable or invalid input authorizes nothing, so the import
+    stays strict rather than silently sanitizing.
+    """
+    path = settings.get('insecure_sources')
+    if not path:
+        return set()
+    try:
+        lines = Path(path).read_text().splitlines()
+    except OSError:
+        return set()
+    return {value for value in (line.strip() for line in lines)
+            if value and re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', value)}
+
+
 def refresh_generation(settings, root):
     raw = read_private(root / 'registry.json')
     registry = json.loads(raw)
@@ -327,7 +344,8 @@ def refresh_generation(settings, root):
                               resolver=settings.get('resolver'),
                               forced_domains=settings['forced_domains'],
                               probe_domains=settings.get('probe_domains', []),
-                              remote_only_catchall=settings.get('remote_only_catchall', False))).encode()
+                              remote_only_catchall=settings.get('remote_only_catchall', False),
+                              sanitize_insecure=registry['id'] in authorized_sources(settings))).encode()
     argv = [settings['setpriv'], '--reuid=clash-fetch', '--regid=clash-fetch', '--clear-groups',
             '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs',
             settings['python'], '-I', settings['worker']]

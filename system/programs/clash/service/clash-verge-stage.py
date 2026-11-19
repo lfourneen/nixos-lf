@@ -557,10 +557,13 @@ def publish_effective(runtime, state):
         return
     atomic_text(Path(state) / 'effective-config-sha256', hashlib.sha256(data).hexdigest() + '\n')
     source = read_record(Path(runtime) / 'effective/source-manifest.json')
+    # Schema 2 marks a locally re-rendered routing snapshot; it still comes from
+    # a registered controlled source, so it must not read as a legacy profile.
     atomic_record(Path(state) / 'source.json', dict(boot_id=boot_id(state),
-        provenance='controlled-fetch' if source.get('schema') == 1 else 'legacy-unverified',
+        provenance='controlled-fetch' if source.get('schema') in (1, 2) else 'legacy-unverified',
         source_id=source.get('source_id', ''),
         revision=source.get('revision', ''), response_count=len(source.get('responses', {})),
+        dropped=source.get('dropped') if type(source.get('dropped')) is int else 0,
         snapshot=snapshot_digest(Path(runtime) / 'effective'),
         upstream_signature='not-verified'))
     atomic_record(Path(state) / 'effective-config.json',

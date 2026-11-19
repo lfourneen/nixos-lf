@@ -26,6 +26,10 @@ class StateTests(unittest.TestCase):
         path = self.root / 'proxy-mode/source.json'
         path.write_text(json.dumps(record))
         self.assertEqual(state.source_trust(self.root, BOOT)['source_id'], 'secondary')
+        path.write_text(json.dumps(dict(record, dropped=3)))
+        self.assertEqual(state.source_trust(self.root, BOOT)['dropped'], 3)
+        path.write_text(json.dumps(dict(record, dropped='3')))
+        self.assertEqual(state.source_trust(self.root, BOOT)['dropped'], 0)
         path.write_text(json.dumps(dict(record, source_id='https://private.invalid/token')))
         self.assertEqual(state.source_trust(self.root, BOOT)['source_id'], '')
         self.assertNotIn('source_id', state.source_trust(self.root, 'other-boot'))

@@ -12,6 +12,7 @@ let
     forced_domains = p.tunProbeNames ++ map (url:
       builtins.head (builtins.match "https?://([^/:]+).*" url)) (p.nodeProbeUrls ++ [ p.delayTestUrl ]);
     probe_domains = p.probeDomains;
+    insecure_sources = "/run/secrets/insecure_sources";
     python = "${python}/bin/python3";
     worker = ./source_worker.py;
     broker = ./source_broker.py;

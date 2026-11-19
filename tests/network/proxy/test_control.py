@@ -19,6 +19,9 @@ health_source = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).r
 spec = importlib.util.spec_from_file_location('stage', source)
 stage = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(stage)
+spec = importlib.util.spec_from_file_location('health_probe', health_source)
+health_probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(health_probe)
 
 
 class SnapshotTests(unittest.TestCase):
@@ -633,6 +636,59 @@ else:
         self.assertEqual(self.record()['result'], 'refused')
         self.assertEqual(self.record()['reason'], 'blocked by audit')
 
+
+
+class HealthLeafTests(unittest.TestCase):
+    def probe(self, delays, **values):
+        class Fake(health_probe.Probe):
+            def __init__(self):
+                settings = dict(budget_seconds=30, urls=['https://probe.example/204'],
+                                leaf_attempts=3, leaf_delay_milliseconds=2000,
+                                leaf_group_timeout_seconds=6)
+                settings.update(values)
+                super().__init__(settings, clock=lambda: 0)
+                self.delays = delays
+                self.paths = []
+            def api(self, path, maximum=1.0):
+                self.paths.append((path, maximum))
+                return self.delays
+        return Fake()
+
+    def test_candidates_rank_all_positive_delays(self):
+        probe = self.probe({'dead': 0, 'slow': 300, 'fast': 40, 'bad': -1})
+        self.assertEqual(probe.leaf_candidates('https://probe.example/204'), ['fast', 'slow'])
+        path, maximum = probe.paths[0]
+        self.assertIn('/group/lf-remote/delay', path)
+        self.assertIn('timeout=2000', path)
+        self.assertEqual(maximum, 6)
+
+    def test_candidates_are_capped_and_empty_results_are_safe(self):
+        self.assertEqual(self.probe({'a': 10, 'b': 20, 'c': 30, 'd': 40})
+                         .leaf_candidates('https://probe.example/204'), ['a', 'b', 'c'])
+        self.assertEqual(self.probe({}).leaf_candidates('https://probe.example/204'), [])
+        self.assertEqual(self.probe([]).leaf_candidates('https://probe.example/204'), [])
+
+    def test_rotation_retries_the_next_measured_leaf_after_a_failure(self):
+        probe = self.probe({})
+        probe.leaf_candidates = lambda url: ['b', 'a']
+        attempts = []
+        def attempt(log_path):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise health_probe.ProbeFailure('obs', 'mixed HTTP request failed')
+            return True
+        probe.attempt_targets = attempt
+        selected = []
+        probe.select_leaf = lambda name: selected.append(name) or True
+        self.assertTrue(probe.rotate_leaf(None))
+        self.assertEqual(selected, ['b', 'a'])
+        self.assertEqual(len(attempts), 2)
+
+    def test_rotation_keeps_the_selection_without_a_live_leaf(self):
+        probe = self.probe({})
+        probe.leaf_candidates = lambda url: []
+        probe.select_leaf = lambda name: self.fail('must not select a dead leaf')
+        self.assertFalse(probe.rotate_leaf(None))
 
 
 if __name__ == '__main__':
