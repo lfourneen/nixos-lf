@@ -8,7 +8,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
@@ -96,27 +95,10 @@ def healthy_runtime(settings, stage):
 def source_binding(settings, stage):
     inputs, config = stage.source_input(settings)
     source = stage.source_directory(settings)
-    try:
-        approved = stage.approved_root(settings, source)
-        record = json.loads(stage.read_input(approved, 'settled.json', os.geteuid()))
-        if not isinstance(record, dict) or not isinstance(record.get('digest'), str):
-            raise stage.RefreshError('snapshot mismatch')
-        baseline_id = record['digest']
-    except FileNotFoundError:
-        baseline_id = None
-    baseline = None
-    if baseline_id is not None:
-        if not isinstance(baseline_id, str) or not re.fullmatch('[0-9a-f]{64}', baseline_id):
-            raise stage.RefreshError('snapshot mismatch')
-        baseline = approved / baseline_id
-        stage.snapshot_metadata(baseline)
-        if baseline.is_symlink() or stage.snapshot_digest(baseline) != baseline_id:
-            raise stage.RefreshError('snapshot mismatch')
-        manifest = json.loads(stage.read_input(baseline, 'source-manifest.json', os.geteuid()))
-        if not isinstance(manifest, dict) or manifest.get('source_id') != source.name:
-            raise stage.RefreshError('snapshot mismatch')
+    baseline, baseline_id, _ = stage.persistent_source(settings)
     identity = dict(source_id=source.name, generation=str(Path(config).parent),
-        candidate=stage.snapshot_digest(Path(config).parent), baseline=baseline_id,
+        candidate=stage.snapshot_digest(Path(config).parent), baseline=baseline_id or None,
+        audit_context=stage.audit_context(settings),
         revision=hashlib.sha256(stage.read_input(source, 'registry.json', os.geteuid())).hexdigest(),
         policy=hashlib.sha256(Path(settings['managed_policy']).read_bytes()).hexdigest(),
         validator_policy=hashlib.sha256(Path(os.environ.get(

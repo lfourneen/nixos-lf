@@ -130,6 +130,12 @@ def inspect_unlocked(settings):
                             stream.write((parsed.stdout + parsed.stderr)[-65536:])
                     phase = 'prepare-core'
                     issues.append('managed core rejected the profile; inspect the root-only preflight.log')
+                elif settings.get('source_root'):
+                    try:
+                        snapshot.enforce_audit(settings, snapshot.run_audit(settings, candidate, None))
+                    except snapshot.RefreshError as error:
+                        phase = 'prepare-audit'
+                        issues.append(str(error))
         except (OSError, ValueError, subprocess.SubprocessError):
             phase = 'prepare-core'
             issues.append('managed profile validation unavailable')

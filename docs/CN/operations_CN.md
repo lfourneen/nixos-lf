@@ -73,7 +73,9 @@ sudo clash-source add SOURCE_ID
 
 用 `sudo clash-source use SOURCE_ID` 立即下载、选择并验证已登记来源。附加 `--revision REVIEWED_DIGEST` 可要求登记版本完全匹配。下载失败保留原选择。在 `proxy-only` 下候选必须匹配固定出口。要更换固定出口，先在 `rules` 中接受更新，再选择新出口。
 
-底层命令 `review FILE --id SOURCE_ID` 和 `register FILE --id SOURCE_ID --digest REVIEWED_DIGEST --previous PREVIOUS_DIGEST` 仍可使用。首次登记使用 `none` 作为上一版本。不带 `--id` 的 review 可列出清单摘要，多条清单进行 register 时须指定 ID。更新登记会使该来源的旧下载及批准失效，保留已接受的审计基线。`sudo clash-source list` 可查看选择、登记版本及已接受摘要。
+底层命令 `review FILE --id SOURCE_ID` 和 `register FILE --id SOURCE_ID --digest REVIEWED_DIGEST --previous PREVIOUS_DIGEST` 仍可使用。首次登记使用 `none` 作为上一修订。不带 `--id` 的 review 可列出清单摘要，多条清单进行 register 时须指定 ID。
+
+更新登记会使该来源的旧下载及批准失效。已运行的核心保留原来源身份，已接受快照保留原修订供审计比较。重新启动或回滚须使用符合当前登记修订的快照。先下载并接受新修订，再离线启动。`sudo clash-source list` 可查看选择、登记修订及已接受摘要。
 
 从 Sops 清单删除条目后，已登记副本仍然存在。先选择其他来源，再用 `sudo clash-source revoke SOURCE_ID` 撤销。用 `clash-off` 可立即停止正在运行的回退快照。
 
@@ -477,6 +479,8 @@ Fake-IP 网络由 `fakeIpRange` 推导，避免单独修改消费者。
 旧 `proxyOnly` 仍用于不启用运行时切换的构建期策略。
 `proxyOnlyDnsUpstreams` 接受认证的字面地址 HTTPS 解析器，始终绑定远程组。
 已接受快照分别保存在 `approved/rules`、`approved/proxy-only`，包含本地重渲染所需的原始 Rule 数据和固定节点。
+探测参数变化时，运行时路由用经过摘要校验的原始订阅规则重新渲染，再按当前策略审计结果。
+旧格式快照的原始规则无法可靠恢复时，需要刷新已登记来源并导入新的下载代。
 
 需要不同访客信任级别时，应显式选择开发网桥，并只为其它访客授权必要的私网服务。
 宿主 socket 后端另需独立固定账户。

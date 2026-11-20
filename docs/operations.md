@@ -73,7 +73,9 @@ The terminal result gives `requested_source`, `active_source`, `result` and `rea
 
 Use `sudo clash-source use SOURCE_ID` to fetch, select and verify an existing registration. Add `--revision REVIEWED_DIGEST` to require an exact registered revision. Fetch failure preserves the prior selection. In `proxy-only`, the configured exit still has to match. Accept changes to a pinned exit in `rules` before selecting the new exit.
 
-The lower-level `review FILE --id SOURCE_ID` and `register FILE --id SOURCE_ID --digest REVIEWED_DIGEST --previous PREVIOUS_DIGEST` commands remain available. Use `none` as the previous revision for a new entry. Review without `--id` lists the catalog digests, and registration requires an ID when more than one entry exists. Replacing a registration invalidates its previous download and approval and preserves its settled audit baseline. `sudo clash-source list` reports the selection, registered revisions and settled digests.
+The lower-level `review FILE --id SOURCE_ID` and `register FILE --id SOURCE_ID --digest REVIEWED_DIGEST --previous PREVIOUS_DIGEST` commands remain available. Use `none` as the previous revision for a new entry. Review without `--id` lists the catalog digests, and registration requires an ID when more than one entry exists.
+
+Replacing a registration invalidates its previous download and approval. A running core keeps its original source identity. The settled snapshot retains its original revision for comparisons, while a new startup or rollback requires a snapshot from the current registration. Download and accept the new revision before relying on offline startup. `sudo clash-source list` reports the selection, registered revisions and settled digests.
 
 Removing an entry from the Sops catalog leaves its registration intact. Select another source before running `sudo clash-source revoke SOURCE_ID`. Use `clash-off` to stop a running fallback immediately.
 
@@ -509,6 +511,8 @@ It requires controlled sources, local DNSSEC, strict encrypted DNS, an isolated 
 The older `proxyOnly` option remains a build-time policy for configurations without runtime switching.
 `proxyOnlyDnsUpstreams` accepts authenticated literal-address HTTPS resolvers and always uses the remote group.
 Accepted source snapshots are kept independently under `approved/rules` and `approved/proxy-only`, including the original Rule data and pinned nodes needed for local re-rendering.
+When probe settings change, runtime routing re-renders from digest-verified original subscription rules and audits the result under the current policy.
+If a legacy snapshot's original rules cannot be recovered safely, refresh the registered source and import the new download.
 
 For core access to a local/internal service, [target authorization](proxy.md#domain-targets) separates local DIRECT CIDRs from remote node grants.
 An internal suffix only permits a locally resolved private answer.

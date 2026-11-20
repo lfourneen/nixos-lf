@@ -218,7 +218,14 @@ def audit(candidate, baseline=None, settings=None):
         protected = {domain.lower().rstrip('.'): route for domain, route in settings.get('protected_routes', {}).items()}
         # Include explicitly mentioned subdomains, so an override below a
         # user-listed sensitive suffix cannot be hidden by testing only its apex.
-        targets = set(sensitive) | set(protected)
+        uncertain = set()
+        for domain, expected in protected.items():
+            outcome = route(candidate, domain)
+            if outcome == 'unknown':
+                uncertain.add(domain)
+            elif outcome != expected:
+                deny['protected_route'] += 1
+        targets = set(sensitive)
         for document in (candidate, baseline or {}):
             for rule in document.get('rules') or []:
                 parts = rule.split(',') if isinstance(rule, str) else []
@@ -231,21 +238,19 @@ def audit(candidate, baseline=None, settings=None):
                     for domain in sensitive:
                         if keyword and keyword not in domain:
                             targets.add(keyword + '.' + domain)
-        uncertain = set()
         for domain in targets:
             after = route(candidate, domain)
             before = route(baseline, domain) if baseline is not None else None
             if after == 'unknown' or (baseline is not None and before == 'unknown'):
-                unknown['route_unknown'] += 1
                 uncertain.add(domain)
-            elif domain in protected and after != protected[domain]:
-                deny['protected_route'] += 1
             elif baseline is not None and before != after and (settings.get('strict_semantics') or before == 'direct'):
                 deny['sensitive_route'] += 1
         for domain in sensitive:
             if domain not in uncertain and (route(candidate, domain, suffix=True) == 'unknown' or (
                     baseline is not None and route(baseline, domain, suffix=True) == 'unknown')):
-                unknown['route_unknown'] += 1
+                uncertain.add(domain)
+        if uncertain:
+            unknown['route_unknown'] += len(uncertain)
         rules = candidate.get('rules') or []
         if not isinstance(rules, list) or not all(isinstance(v, str) for v in rules):
             raise InvalidYaml('yaml_structure')

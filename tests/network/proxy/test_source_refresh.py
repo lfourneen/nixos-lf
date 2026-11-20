@@ -333,7 +333,7 @@ class SourceRefreshTests(unittest.TestCase):
             return info
         def findings(settings, candidate, baseline):
             return audit.audit(audit.load(candidate / 'clash-verge.yaml'),
-                audit.load(baseline / 'clash-verge.yaml'), {'strict_semantics': True,
+                audit.load(baseline / 'clash-verge.yaml') if baseline else None, {'strict_semantics': True,
                     'protected_routes': {'account.example': 'proxy'}})
         for target, name, replacement in ((stage, 'read_input', owned_input),
                 (Path, 'lstat', owned_stat), (stage, 'run_audit', findings)):
@@ -620,6 +620,215 @@ class SourceRefreshTests(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 refresh.restart_source(self.settings, stage, self.validate)
             restart.assert_not_called()
+
+
+class SourceMigrationTests(unittest.TestCase):
+    def setUp(self):
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        self.root = Path(workspace.name)
+        self.state, self.runtime, self.data, self.store = (
+            self.root / name for name in ('state', 'runtime', 'data', 'store'))
+        self.source = self.store / 'sources/fixture'
+        self.source.mkdir(mode=0o700, parents=True)
+        for directory in (self.state, self.runtime, self.data):
+            directory.mkdir()
+        (self.data / 'cache.db').touch()
+        (self.store / 'selected').symlink_to(self.source)
+        self.boot = '00000000-1111-2222-3333-444444444444'
+        (self.state / 'boot-id').write_text(self.boot)
+        (self.state / 'intent').write_text('proxy')
+        self.broker = module('migration_broker', os.environ['SOURCE_BROKER'])
+        self.worker = module('migration_worker', os.environ['SOURCE_WORKER'])
+        self.audit = module('migration_audit', os.environ['SOURCE_AUDIT'])
+        self.policy = self.root / 'policy.json'
+        self.audit_settings = self.root / 'audit.json'
+        self.routing = self.state / 'routing.json'
+        self.stage_settings = self.root / 'stage.json'
+        self.settings = dict(snapshot_tool=stage.__file__, source_root=str(self.store), runtime=str(self.runtime),
+            state=str(self.state), data=str(self.data), core_gid=os.getgid(), managed_policy=str(self.policy),
+            routing_state=str(self.routing), refresh_policy='auto', audit_policy='enforce',
+            audit_settings=str(self.audit_settings), audit_python=sys.executable, audit_tool=self.audit.__file__)
+        self.source_settings = dict(root=str(self.store), policy=str(self.policy), worker=self.worker.__file__,
+            stageSettings=str(self.stage_settings), routing_state=str(self.routing), python=sys.executable,
+            setpriv='/fixture/setpriv', ca='/fixture/ca', assets={})
+        root_input = stage.read_input
+        write_private = stage.write_private
+        for target, name, replacement in (
+                (stage, 'source_directory', lambda *_: self.source),
+                (stage, 'read_input', lambda path, file, uid: root_input(path, file, os.getuid() if uid == 0 else uid)),
+                (stage, 'write_private', lambda path, data, gid, **options:
+                    write_private(path, data, os.getgid() if gid == 0 else gid, **options)),
+                (self.broker, 'read_private', lambda path, maximum=0: root_input(path.parent, path.name, os.getuid())),
+                (self.broker, 'state_root', lambda path: path.mkdir(mode=0o700, exist_ok=True))):
+            context = patch.object(target, name, replacement)
+            context.start()
+            self.addCleanup(context.stop)
+        self.document = dict(proxies=[dict(name='remote', type='http', server='1.1.1.1', port=443)],
+            **{'proxy-groups': [dict(name='Choice', type='select', proxies=['remote', 'DIRECT'])],
+               'rules': ['DOMAIN,www.baidu.com,DIRECT', 'MATCH,Choice']})
+        self.set_policy()
+        self.set_domains('www.baidu.com')
+        self.revision = self.register('first', 'none')
+
+    def register(self, path, previous):
+        data = self.broker.canonical(json.dumps({'id': 'fixture', 'subscription': {'url': 'https://fixture.example/' + path}}))
+        revision = self.broker.digest(data)
+        self.broker.register(self.store, data, revision, previous)
+        return revision
+
+    def set_policy(self, mode='rules', egress=None):
+        strict = mode == 'proxy-only'
+        self.policy.write_text(json.dumps({'lf-private-targets': {'proxy-only': strict, 'single-egress': strict}}))
+        self.routing.write_text(json.dumps(dict(boot_id=self.boot, routing_requested=mode, routing_epoch=1,
+            routing_policy_digest=stage.validator_policy_digest(self.settings), egress_epoch=1, egress_requested=egress)))
+
+    def set_domains(self, name, extra=()):
+        renderer = dict(forced_domains=['cp.cloudflare.com', name], probe_domains=[], remote_only_catchall=False)
+        self.source_settings.update(renderer)
+        self.settings['renderer_settings'] = renderer
+        self.stage_settings.write_text(json.dumps(self.settings))
+        self.audit_settings.write_text(json.dumps({'strict_semantics': True,
+            'protected_routes': {domain: 'proxy' for domain in [*renderer['forced_domains'], *extra]}}))
+
+    def download(self):
+        def request(*_, **parameters):
+            result = self.worker.prepare(json.loads(parameters['input']),
+                download=lambda *_: json.dumps(self.document).encode())
+            parameters['stdout'].write(json.dumps(result).encode())
+            return subprocess.CompletedProcess([], 0)
+        with patch.object(self.broker.subprocess, 'run', side_effect=request):
+            self.broker.refresh_generation(self.source_settings, self.source)
+
+    def cold(self):
+        for name in ('config-digest', 'authorized-config', 'profile-refresh-settled.json'):
+            (self.state / name).unlink(missing_ok=True)
+        (self.state / 'state.json').write_text('{"mode":"blocked"}')
+        (self.state / 'authorize-window').touch()
+
+    def launch(self):
+        stage.stage(self.settings, '/unused', lambda _: None)
+        return stage.verify(self.runtime / 'effective', self.state / 'config-digest', self.state / 'authorized-config')
+
+    def settle(self, healthy=True):
+        pending = stage.read_record(self.state / 'profile-refresh-verifying.json')
+        (self.state / 'state.json').write_text(json.dumps({'mode': 'proxy' if healthy else 'blocked'}))
+        (self.state / 'health.json').write_text(json.dumps(dict(
+            stage.routing_binding(self.settings), boot_id=self.boot, at=time.time(), ok=healthy, digest=pending['digest'])))
+        stage.verify_pending_refresh(self.settings, pending)
+
+    def seed(self):
+        self.download()
+        self.cold()
+        identity = self.launch()
+        self.settle()
+        return identity
+
+    def test_probe_migration_from_original_rules_is_idempotent(self):
+        old = self.seed()
+        before = self.audit.load(self.runtime / 'effective/clash-verge.yaml')
+        self.assertEqual(self.audit.route(before, 'connectivity-check.ubuntu.com'), 'unknown')
+        self.set_domains('connectivity-check.ubuntu.com')
+        self.cold()
+        self.broker.render_local(self.source_settings, self.source, 'rules', 'rules')
+        new = self.launch()
+        self.assertNotEqual(new, old)
+        after = self.audit.load(self.runtime / 'effective/clash-verge.yaml')
+        self.assertEqual(after['rules'][:4], ['IN-NAME,lf-strict,lf-remote', 'DOMAIN,cp.cloudflare.com,lf-remote',
+            'DOMAIN,connectivity-check.ubuntu.com,lf-remote', 'DOMAIN,www.baidu.com,DIRECT'])
+        self.assertEqual([self.audit.route(after, host) for host in
+            ('cp.cloudflare.com', 'connectivity-check.ubuntu.com', 'www.baidu.com')], ['proxy', 'proxy', 'direct'])
+        self.settle()
+        self.cold()
+        self.broker.render_local(self.source_settings, self.source, 'rules', 'rules')
+        self.assertEqual(self.launch(), new)
+        self.assertEqual(stage.read_record(self.state / 'profile-refresh.json')['result'], 'restored')
+        self.assertFalse((self.state / 'profile-refresh-verifying.json').exists())
+
+    def test_replaced_revision_is_comparison_only_in_rules_and_proxy_only(self):
+        old = self.seed()
+        self.cold()
+        self.set_policy('proxy-only')
+        egress = self.broker.render_local(self.source_settings, self.source, 'proxy-only', 'rules')
+        self.set_policy('proxy-only', egress)
+        strict = self.launch()
+        self.settle()
+        newer = self.register('second', self.revision)
+        self.assertEqual(stage.snapshot_digest(self.runtime / 'effective'), strict)
+        self.cold()
+        with self.assertRaises(ValueError):
+            self.broker.render_local(self.source_settings, self.source, 'proxy-only', 'proxy-only')
+        with self.assertRaises(stage.RefreshError):
+            self.launch()
+        self.set_policy()
+        self.set_domains('connectivity-check.ubuntu.com')
+        with self.assertRaises(OSError):
+            self.broker.render_local(self.source_settings, self.source, 'rules', 'proxy-only')
+        self.download()
+        self.broker.render_local(self.source_settings, self.source, 'rules', 'proxy-only')
+        _, manifest = stage.current_generation(self.source)
+        self.assertEqual(manifest['revision'], newer)
+        self.assertEqual(stage.persistent_source(self.settings)[1], old)
+        self.cold()
+        current = self.launch()
+        self.assertNotEqual(current, old)
+        self.settle()
+        self.cold()
+        self.set_policy('proxy-only')
+        egress = self.broker.render_local(self.source_settings, self.source, 'proxy-only', 'rules')
+        self.set_policy('proxy-only', egress)
+        self.launch()
+        self.settle()
+        manifest = stage.read_record(self.runtime / 'effective/source-manifest.json')
+        self.assertEqual(manifest['revision'], newer)
+
+    def test_incompatible_or_tampered_snapshot_cannot_rescue_unknown_candidate(self):
+        old = self.seed()
+        self.set_domains('connectivity-check.ubuntu.com', ('unproved.example',))
+        self.cold()
+        self.broker.render_local(self.source_settings, self.source, 'rules', 'rules')
+        with self.assertRaisesRegex(stage.RefreshError, 'audit indeterminate'):
+            self.launch()
+        self.assertFalse((self.state / 'authorized-config').exists())
+        self.assertEqual(stage.read_record(self.state / 'state.json')['mode'], 'blocked')
+        approved = self.source / 'approved/rules' / old
+        (approved / 'source-data.json').write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'accepted source was modified'):
+            self.broker.render_local(self.source_settings, self.source, 'rules', 'rules')
+
+    def test_legacy_render_refuses_an_unrecognized_prefix_without_publishing_source_data(self):
+        old = self.seed()
+        folder = self.source / 'approved/rules'
+        original = folder / old
+        (original / 'source-data.json').unlink()
+        manifest = stage.read_record(original / 'source-manifest.json')
+        manifest.pop('source_data')
+        (original / 'source-manifest.json').write_text(json.dumps(manifest))
+        legacy = stage.snapshot_digest(original)
+        original.rename(folder / legacy)
+        stage.atomic_record(folder / 'settled.json', dict(digest=legacy, snapshot_at=time.time()), mode=0o600)
+        (self.source / 'current').unlink()
+        self.set_domains('connectivity-check.ubuntu.com')
+        with self.assertRaisesRegex(ValueError, 'original Rule data is unavailable'):
+            self.broker.render_local(self.source_settings, self.source, 'rules', 'rules')
+        self.assertFalse((self.source / 'current').is_symlink())
+
+    def test_health_rollback_is_bound_to_registration_and_current_audit(self):
+        old = self.seed()
+        self.document['rules'].insert(0, 'DOMAIN,fixture.example,DIRECT')
+        self.download()
+        self.assertNotEqual(self.launch(), old)
+        self.settle(healthy=False)
+        self.assertEqual((self.state / 'authorized-config').read_text().strip(), old)
+        self.assertEqual(stage.read_record(self.state / 'profile-refresh.json')['result'], 'rolled_back')
+        stage.clear_refresh(self.state, self.runtime, settings=self.settings)
+        self.assertNotEqual(self.launch(), old)
+        self.register('revoked', self.revision)
+        self.settle(healthy=False)
+        self.assertEqual(stage.read_record(self.state / 'profile-refresh.json')['result'], 'refused')
+        self.assertNotEqual((self.state / 'authorized-config').read_text().strip(), old)
+        with self.assertRaises(stage.RefreshError):
+            self.launch()
 
 
 if __name__ == '__main__':

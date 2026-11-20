@@ -165,7 +165,7 @@ def begin(settings, target, egress_id=None, prepared=None):
         (state / 'routing-failure.json').unlink(missing_ok=True)
         if (state / 'intent').read_text().strip() != 'proxy':
             raise ValueError('proxy intent required')
-        stage.clear_refresh(state, settings['runtime'], keep_health_pin=True)
+        stage.clear_refresh(state, settings['runtime'], keep_health_pin=True, discard_commit=True)
         record = dict(current, routing_requested=target, routing_epoch=current['routing_epoch'] + 1,
             egress_requested=None if stale else egress_id or current['egress_requested'],
             egress_epoch=current['egress_epoch'] + int(stale or target == 'proxy-only'),
@@ -473,6 +473,14 @@ def main():
         if (record['routing_requested'] != sys.argv[3] or ready.get('ready') is not True
                 or len(sys.argv) == 5 and record.get('egress_requested') != sys.argv[4]):
             raise SystemExit(1)
+        stage = module(settings['stage_tool'], 'routing_stage')
+        stage_settings = read(settings['stage_settings'])
+        with stage.source_lock(stage_settings):
+            effective = Path(settings['runtime']) / 'effective'
+            authority = Path(settings['state']) / 'authorized-config'
+            stage.verify(effective, authority.with_name('config-digest'), authority)
+            if not stage.restart_eligible(stage_settings, effective.resolve()):
+                raise SystemExit(1)
         check(settings, 'proxy')
     else:
         raise ValueError('invalid fixed routing operation')

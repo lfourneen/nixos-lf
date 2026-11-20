@@ -52,8 +52,16 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   assert policy['tcp-concurrent'] is True
   assert policy['interface-name'] == '${c.my.proxy.coreTopology.peer}' == 'lf-host'
   sources = json.loads(Path('${c.my.proxy.sourceSettings}').read_text())
+  assert stage['renderer_settings'] == {
+      key: sources[key] for key in ('forced_domains', 'probe_domains', 'remote_only_catchall')
+  }
   assert 'connectivity-check.ubuntu.com' in sources['forced_domains']
   assert 'www.baidu.com' not in sources['forced_domains']
+  routing = json.loads(Path('${c.my.proxy.routingSettings}').read_text())
+  audit = json.loads((Path(routing['artifacts']['rules']) / 'audit.json').read_text())
+  assert audit['protected_routes']['cp.cloudflare.com'] == 'proxy'
+  assert audit['protected_routes']['connectivity-check.ubuntu.com'] == 'proxy'
+  assert 'www.baidu.com' not in audit['protected_routes']
   assert policy['lf-private-targets']['subscription-trust'] == 'fixed'
   assert policy['lf-private-targets']['strict-inlets'] == ['lf-strict']
   assert policy['listeners'][0]['port'] == ${toString c.my.machine.ports.mihomoStrict}

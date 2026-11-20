@@ -4,14 +4,18 @@ let
   p = config.my.proxy;
   python = pkgs.python3.withPackages (p: [ p.pyyaml p.dnspython ]);
 
-  settings = pkgs.writeText "clash-source-settings.json" (builtins.toJSON {
+  rendererSettings = {
+    forced_domains = p.tunProbeNames ++ map (url:
+      builtins.head (builtins.match "https?://([^/:]+).*" url)) (p.nodeProbeUrls ++ [ p.delayTestUrl ]);
+    probe_domains = p.probeDomains;
+    remote_only_catchall = p.remoteOnlyCatchAll;
+  };
+
+  settings = pkgs.writeText "clash-source-settings.json" (builtins.toJSON (rendererSettings // {
     root = "/var/lib/clash-source";
     inherit (config.programs.clash-verge.package) stageSettings;
     policy = p.activeManagedPolicy;
     routing_state = if p.runtimeRouting then "/run/proxy-mode/routing.json" else null;
-    forced_domains = p.tunProbeNames ++ map (url:
-      builtins.head (builtins.match "https?://([^/:]+).*" url)) (p.nodeProbeUrls ++ [ p.delayTestUrl ]);
-    probe_domains = p.probeDomains;
     insecure_sources = "/run/secrets/insecure_sources";
     python = "${python}/bin/python3";
     worker = ./source_worker.py;
@@ -26,12 +30,11 @@ let
     gui_index = "${config.users.users.${config.my.machine.desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev/profiles.yaml";
     ca = config.security.pki.caBundle;
     resolver = { address = "127.0.0.1"; port = config.my.machine.ports.socketGuestDns; };
-    remote_only_catchall = p.remoteOnlyCatchAll;
     assets = {
       "GeoIP.dat" = "${pkgs.v2ray-geoip}/share/v2ray/geoip.dat";
       "GeoSite.dat" = "${pkgs.v2ray-domain-list-community}/share/v2ray/geosite.dat";
     };
-  });
+  }));
 
   command = pkgs.writeShellScriptBin "clash-source" ''
     exec ${python}/bin/python3 -I ${./source_broker.py} ${settings} "$@"
@@ -39,7 +42,11 @@ let
 
 in
 {
-  config = lib.mkMerge [ { my.proxy.sourceSettings = settings; } (lib.mkIf p.controlledSources {
+  options.my.proxy.sourceRendererSettings = lib.mkOption { type = lib.types.attrs; internal = true; };
+  config = lib.mkMerge [ {
+    my.proxy.sourceSettings = settings;
+    my.proxy.sourceRendererSettings = rendererSettings;
+  } (lib.mkIf p.controlledSources {
     users.groups.clash-fetch = {};
     users.users.clash-fetch = {
       isSystemUser = true;

@@ -77,7 +77,7 @@ Without a compatible fallback, C remains in effect.
 When the mixed HTTP probe fails, the health check concurrently delay-tests every `lf-remote` member through the core group-delay API (the same path the GUI uses to display latency), ranks the usable results, switches to the best leaf and retries. It refuses only when every member times out. Testing and retries stay inside the health budget; the audit and authorization are unchanged.
 
 `clash-off` revokes runtime authority while preserving the source's accepted baseline.
-With automatic refresh, the next `clash-on` prefers that baseline under the current managed policy and records `restored`.
+With automatic refresh, the next `clash-on` prefers an accepted snapshot that matches the current source revision, managed policy and renderer settings. Reusing it records `restored`.
 It repeats parser, content-audit and digest checks, and fresh live health still gates B.
 The shared blocklist has a stable policy path, so a validated blocklist update does not invalidate the accepted subscription baseline.
 The startup update request stays pending during C. After verified B remains healthy for 90 seconds under the same boot, snapshot and policy, the background service consumes the request and starts fetching.
@@ -268,7 +268,10 @@ The audit checks node server addresses, unauthorized `skip-cert-verify`, empty g
 Historical comparisons use the last settled YAML.
 Mutable provider contents retain the separate trust model described below.
 Named TLS exceptions in `my.proxy.insecureProxyExceptions` remain valid.
-Leaves that enable `skip-cert-verify` without a named exception are dropped only when their source is listed in the Sops-encrypted [system/secrets/whitelist.yaml](../../system/secrets/whitelist.yaml) (`insecure_sources`, one registered source ID per line), sharing the 20% bound with unresolvable nodes. Unlisted sources keep them and the audit or core guard refuses the candidate, so the default tolerance is zero. A missing or malformed whitelist authorizes no sanitizing.
+Leaves that enable `skip-cert-verify` without a named exception are dropped only when their source is listed in the Sops-encrypted `insecure_sources` allowlist. Together with unresolvable nodes, the worker may drop up to one fifth of the nodes, rounded down with a minimum limit of one.
+Use one registered source ID per line. Blank lines and duplicate IDs are valid.
+A missing or unreadable file, invalid UTF-8 or any malformed ID disables sanitizing for every source.
+Without this permission, the worker retains those leaves for the audit and core guard. See [whitelist.yaml](../system/secrets/whitelist.yaml).
 Intentional non-public node endpoints require `my.proxy.subscriptionAuditServerCidrs`.
 This audit exception grants no application access, and multicast endpoints remain refused.
 
@@ -302,6 +305,7 @@ Infrastructure targets are not automatically added to this list.
 `my.proxy.subscriptionAuditProtectedRoutes` declares the expected `direct`, `proxy` or `reject` route for exact domains.
 Health and delay-test domains default to `proxy`.
 Declare subscription and update domains here with their intended routes.
+The candidate must prove each current protected route. Sensitive suffixes still require a comparison with the last settled baseline when one exists.
 Indeterminate rules or groups cannot establish compliance.
 
 `enforce` rejects deny results and unknown routing for sensitive domains or protected targets, using `blocked by audit` or `audit indeterminate`.
@@ -423,12 +427,12 @@ A single NAT guarantee requires independent target observations. IPv4 and IPv6 m
 A switch first installs C and revokes B authorization, stops the old core and relay flows, installs the selected immutable policy, and recreates the core namespace.
 Parser, content audit, listener, routing, DNS/TUN and full health checks must pass before B can return.
 The command waits for shared readiness and verification. A failed switch retains its requested mode and C; it never chooses A or rules automatically.
-Repeating an already ready selection preserves the core.
+Repeating an already ready selection preserves the core when its snapshot still matches the current source revision and policy.
 
 `clash-off` selects A and keeps the current routing selection. `clash-on` reuses that selection.
 A reboot resets the selection to rules; `bootMode` independently controls whether the boot requests A or proxy access.
 
-Proxy-only requires an accepted local source with pinned literal node addresses. A source's first import must complete its ordinary health acceptance in rules before offline strict startup is available.
+Proxy-only requires an accepted local source for the current registration revision with pinned literal node addresses. Complete health acceptance in rules before the first offline strict startup for a new revision.
 Node TLS identities remain intact. Neither switching nor strict startup needs a direct DNS lookup or a subscription download.
 Application and source-worker DNS use locally validated answers over remote encrypted transports; see [DNS](dns.md#mode-b-managed-mihomo-dns).
 LAN, multicast, time synchronization, Tailscale and inbound service replies are disabled in proxy-only. DHCP, NDP and necessary transport errors remain scoped exceptions.

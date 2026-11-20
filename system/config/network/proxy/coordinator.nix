@@ -1126,9 +1126,12 @@ NFT_OFF
             # consumes it, so a later profile edit needs another clash-on.
             ${modeScript} --request-proxy
             systemctl stop clash-verge.service
+            ${lib.optionalString config.programs.clash-verge.enable ''
+            ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/clash-verge-stage.py} clear-refresh \
+              ${config.programs.clash-verge.package.stageSettings} ${lib.optionalString config.my.proxy.controlledSources "--keep-health-pin"}
+            ''}
             exec 9>/run/proxy-mode/authorization.lock
             flock -x -w 30 9
-            ${pkgs.python3}/bin/python3 -c 'import importlib.util; s=importlib.util.spec_from_file_location("stage", "${../../../programs/clash/service/clash-verge-stage.py}"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.clear_refresh("/run/proxy-mode", "/run/clash-verge-rev", keep_health_pin=${if config.my.proxy.controlledSources then "True" else "False"})'
             # The helper runs with ProtectProc=invisible and cannot read
             # /proc/sys/kernel/random/boot_id. Publish the identity from this
             # unrestricted context before any launcher can stage a profile.

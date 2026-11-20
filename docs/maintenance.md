@@ -165,7 +165,8 @@ Keep candidate, source revision, settled baseline and root policy bindings intac
 Eligible node changes create a root-private five-minute `approval.json`, which the normal approval reader checks again during import.
 The record also binds audit and validator policies, and automatic approval never includes structural or unresolved findings.
 
-Startup restores an accepted source under the current managed policy and leaves an update request pending until verified B has remained healthy for 90 seconds.
+Startup and rollback check the snapshot's source revision, renderer settings and managed policy, then apply the current audit. Keep older revisions under their original labels for comparison.
+Startup leaves an update request pending until verified B has remained healthy for 90 seconds.
 Bind this stability interval to the boot, snapshot and policy, and reset it outside healthy B.
 The stable blocklist path must still resolve to build-validated immutable content. Static checks repeat on restore, and live health still gates B.
 Only explicit `on` and automatic attempts deferred during C create `source-refresh-pending`. The service consumes it before fetching, and explicit `off` clears it.

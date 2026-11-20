@@ -67,6 +67,7 @@ let
   stageSettings = pkgs.writeText "clash-stage-settings.json" (builtins.toJSON {
     gui_data = guiData;
     source_root = if config.my.proxy.controlledSources then "/var/lib/clash-source" else null;
+    renderer_settings = if config.my.proxy.controlledSources then config.my.proxy.sourceRendererSettings else null;
     desktop_uid = desktopUid;
     runtime = "/run/clash-verge-rev";
     state = "/run/proxy-mode";

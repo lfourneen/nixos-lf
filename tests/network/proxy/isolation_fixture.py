@@ -37,7 +37,8 @@ policy = {'lf-private-targets': {'prefixes': ['10.0.0.0/8', '192.168.0.0/16', '1
           'listeners': [{'name': 'lf-strict', 'type': 'mixed', 'listen': '127.0.0.1', 'port': 7898, 'udp': False}]}
 Path('/run/fixture-policy.json').write_text(json.dumps(policy))
 source = {'proxies': [{'name':'remote', 'type':'http', 'server':'1.0.0.1', 'port':18081}],
-          'proxy-groups':[{'name':'P', 'type':'select', 'proxies':['remote', 'DIRECT']}], 'rules':['MATCH,P']}
+          'proxy-groups':[{'name':'P', 'type':'select', 'proxies':['remote', 'DIRECT']}],
+          'rules':['DOMAIN,www.baidu.com,DIRECT', 'MATCH,P']}
 alternatives = {}
 for identity, kind, server in [('second', 'url-test', '8.8.8.8'), ('third', 'fallback', '9.9.9.9')]:
     alternatives['/' + identity] = {
@@ -56,10 +57,12 @@ context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(Path(s['tls'])/'trusted.pem', Path(s['tls'])/'trusted.key')
 origin.socket = context.wrap_socket(origin.socket, server_side=True)
 threading.Thread(target=origin.serve_forever, daemon=True).start()
-bs = dict(root='/var/lib/clash-source', policy='/run/fixture-policy.json', forced_domains=[], assets={},
+renderer = dict(forced_domains=['cp.cloudflare.com', 'www.baidu.com'], probe_domains=[], remote_only_catchall=False)
+bs = dict(root='/var/lib/clash-source', policy='/run/fixture-policy.json', assets={}, **renderer,
           python=s['python'], worker=s['worker'], setpriv=s['setpriv'], ca=s['tls']+'/ca.pem', stageSettings='/run/stage-settings.json',
           gui_index='/run/gui-profiles.yaml', desktop_uid=0)
 Path('/run/broker-settings.json').write_text(json.dumps(bs))
+source_broker = module('fixture_broker', s['broker'])
 registry = Path('/run/source-definition.json')
 registry.write_text(json.dumps({'id':'fixture', 'subscription':{'url':'https://privacy-fixture.invalid/sub'}, 'providers':{}}))
 registry.chmod(0o600)
@@ -80,6 +83,19 @@ def broker(*args, okay=True):
             module('broker_debug', s['broker']).refresh(bs, Path(bs['root'], 'selected').resolve())
     assert (result.returncode == 0) == okay, (result.returncode, result.stdout, result.stderr)
     return result.stdout
+
+def select_registered(identity, revision=None, okay=True):
+    root = Path(bs['root'])
+    with (root / 'source.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            source_broker.use(bs, root, identity, revision)
+        except (OSError, ValueError):
+            if okay:
+                raise
+        else:
+            assert okay, 'source selection unexpectedly succeeded'
+
 review = json.loads(broker('review', str(registry)))
 broker('register', str(registry), '--digest', '0'*64, '--previous', 'none', okay=False)
 broker('register', str(registry), '--digest', review['digest'], '--previous', 'none')
@@ -106,6 +122,7 @@ data = Path('/run/source-test-data'); data.mkdir(); (data/'proxies').mkdir(); (d
 gui = Path('/tmp/forged-gui'); gui.mkdir(); (gui/'clash-verge.yaml').write_text('mode: direct\n')
 st = dict(runtime=str(runtime), state=str(state), core_gid=982, refresh_policy='auto',
           source_root='/var/lib/clash-source', gui_data=str(gui), desktop_uid=1000, data=str(data),
+          snapshot_tool=s['stage'], renderer_settings=renderer,
           audit_policy='enforce', audit_python=s['python'], audit_tool=s['audit'],
           audit_settings='/run/audit-settings.json', setpriv=s['setpriv'], managed_policy='/run/fixture-policy.json')
 Path('/run/audit-settings.json').write_text(json.dumps({'strict_semantics':True, 'subscription_trust':'fixed'}))
@@ -120,6 +137,45 @@ assert (runtime/'effective/source-manifest.json').is_file()
 baseline = (state/'authorized-config').read_text().strip()
 # Exercise persistence explicitly; full health settling is in control/refresh VMs.
 stage.remember_settled(runtime, state, baseline, time.time(), st)
+renderer['forced_domains'] = ['cp.cloudflare.com', 'connectivity-check.ubuntu.com']
+bs.update(renderer)
+Path('/run/broker-settings.json').write_text(json.dumps(bs))
+Path(st['audit_settings']).write_text(json.dumps({'strict_semantics': True, 'subscription_trust': 'fixed',
+    'protected_routes': {domain: 'proxy' for domain in renderer['forced_domains']}}))
+for name in ('authorized-config', 'config-digest', 'profile-refresh-settled.json'):
+    (state / name).unlink()
+source_store = Path(bs['root'], 'selected').resolve()
+source_broker.render_local(bs, source_store, 'rules', 'rules')
+(state / 'authorize-window').touch()
+stage.stage(st, str(gui/'clash-verge.yaml'), validate)
+pending = stage.read_record(state / 'profile-refresh-verifying.json')
+assert pending['digest'] != baseline and not pending['audit']['unknown']
+baseline = pending['digest']
+controller = Path('/run/clash-verge-rev/core/mihomo.sock')
+controller.parent.mkdir(parents=True)
+process = subprocess.Popen([s['core'], '-d', str(data), '-f', str(runtime / 'effective/clash-verge.yaml')],
+    env={**os.environ, 'LF_MANAGED_PROXY_POLICY': bs['policy']}, stdout=subprocess.DEVNULL)
+try:
+    deadline = time.monotonic() + 10
+    while not controller.exists():
+        assert process.poll() is None and time.monotonic() < deadline
+        time.sleep(.05)
+    rules = json.loads(command('curl', '--unix-socket', str(controller), '-fsS', 'http://localhost/rules').stdout)['rules']
+    assert [(rule['payload'], rule['proxy']) for rule in rules[1:4]] == [
+        ('cp.cloudflare.com', 'lf-remote'), ('connectivity-check.ubuntu.com', 'lf-remote'), ('www.baidu.com', 'DIRECT')]
+    (state / 'state.json').write_text('{"mode":"proxy"}')
+    (state / 'health.json').write_text(json.dumps(dict(boot_id=stage.boot_id(state), digest=baseline, ok=True, at=time.time())))
+    stage.verify_pending_refresh(st, pending)
+    assert stage.read_record(state / 'profile-refresh.json')['result'] == 'accepted'
+finally:
+    process.terminate()
+    process.wait(timeout=10)
+(state / 'authorize-window').touch()
+stage.stage(st, str(gui/'clash-verge.yaml'), validate)
+assert (state / 'authorized-config').read_text().strip() == baseline
+assert stage.read_record(state / 'profile-refresh.json')['result'] == 'restored'
+Path(st['audit_settings']).write_text(json.dumps({'strict_semantics': True, 'subscription_trust': 'fixed'}))
+
 with Path('/var/lib/clash-source/source.lock').open('a') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
     waiting = subprocess.Popen([s['python'], s['broker'], '/run/broker-settings.json', 'refresh'],
@@ -157,9 +213,8 @@ for identity in ('second', 'third'):
     reviewed = json.loads(broker('review', str(registry), '--id', identity))
     assert reviewed['previous'] == 'none'
     broker('register', str(registry), '--id', identity, '--digest', reviewed['digest'], '--previous', 'none')
-    broker('use', identity, '--revision', '0'*64, okay=False)
-    broker('use', identity, '--revision', reviewed['digest'])
-    broker('refresh')
+    select_registered(identity, '0' * 64, okay=False)
+    select_registered(identity, reviewed['digest'])
     stage.stage(st, str(gui/'clash-verge.yaml'), validate)
     actual = json.loads((runtime/'effective/source-manifest.json').read_text())
     assert actual['source_id'] == identity and actual['revision'] == reviewed['digest']
@@ -173,7 +228,8 @@ assert Path('/var/lib/clash-source/selected').resolve().name == 'third'
 Path('/run/gui-profiles.yaml').write_text('current: uid-second\nitems: [{uid: uid-second, url: https://evil.invalid/}]')
 broker('gui-select')
 assert Path('/var/lib/clash-source/selected').resolve().name == 'second'
-broker('use', 'fixture')
+select_registered('fixture')
+(state / 'authorize-window').touch()
 stage.stage(st, str(gui/'clash-verge.yaml'), validate)
 assert (state/'authorized-config').read_text().strip() == baseline
 stage.remember_settled(runtime, state, baseline, time.time(), st)
@@ -181,18 +237,18 @@ alternatives['/rejected'] = dict(source, hosts={'undeclared.example': '1.1.1.1'}
 registry.write_text(json.dumps({'id':'rejected', 'subscription':{'url':'https://privacy-fixture.invalid/rejected'}}))
 rejected_review = json.loads(broker('review', str(registry)))
 broker('register', str(registry), '--digest', rejected_review['digest'], '--previous', 'none')
-broker('use', 'rejected')
+select_registered('rejected')
 stage.stage(st, str(gui/'clash-verge.yaml'), validate)
 assert (state/'authorized-config').read_text().strip() == baseline
 assert json.loads((state/'profile-refresh.json').read_text())['result'] == 'fallback'
 assert json.loads((runtime/'effective/source-manifest.json').read_text())['source_id'] == 'fixture'
-broker('use', 'fixture')
-broker('use', '../fixture', okay=False)
-broker('use', 'missing', okay=False)
+select_registered('fixture')
+select_registered('../fixture', okay=False)
+select_registered('missing', okay=False)
 registry.write_text(json.dumps({'id':'bad', 'subscription':{'url':'https://1.1.1.1/sub'}}))
 bad = json.loads(broker('review', str(registry)))
 broker('register', str(registry), '--digest', bad['digest'], '--previous', 'none')
-broker('use', 'bad', okay=False)
+select_registered('bad', okay=False)
 assert Path('/var/lib/clash-source/selected').resolve().name == 'fixture'
 for identity in ('second', 'third', 'bad', 'rejected'):
     broker('revoke', identity)
@@ -203,12 +259,12 @@ stage.stage(st, str(gui/'clash-verge.yaml'), validate)
 assert (state/'authorized-config').read_text().strip() == baseline
 rejection = json.loads((state/'profile-refresh.json').read_text())
 assert rejection['audit']['deny']['node_identity']
-broker('approve', '--digest', rejection['digest'], '--baseline', '0'*64, '--categories', 'node_identity', okay=False)
-broker('approve', '--digest', rejection['digest'], '--baseline', baseline, '--categories', 'node_identity')
+st['audit_auto_approve'] = ['node_identity']
 stage.stage(st, str(gui/'clash-verge.yaml'), validate)
 assert (state/'authorized-config').read_text().strip() != baseline
+approved = stage.read_record(state / 'profile-refresh.json')
+assert approved['last_auto_approval']['categories'] == {'node_identity': 1} and approved['previous_digest'] == baseline
 assert not Path('/var/lib/clash-source/selected/approval.json').exists()
-broker('approve', '--digest', rejection['digest'], '--baseline', baseline, '--categories', 'node_identity', okay=False)
 # A fresh runtime must recover the last settled baseline, not trust the newest
 # downloaded or merely staged generation after a reboot.
 shutil.rmtree(runtime); runtime.mkdir()

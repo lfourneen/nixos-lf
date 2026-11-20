@@ -5,6 +5,8 @@ pkgs.runCommand "controlled-source-checks" {
 } ''
   export PYTHONDONTWRITEBYTECODE=1
   export SOURCE_AUDIT=${../../../system/programs/clash/service/subscription_audit.py}
+  export SOURCE_BROKER=${../../../system/programs/clash/service/source_broker.py}
+  export SOURCE_WORKER=${../../../system/programs/clash/service/source_worker.py}
   python3 ${./test_source.py} ${../../../system/programs/clash/service/source_worker.py}
   python3 ${./test_source_registry.py} ${../../../system/programs/clash/service/source_broker.py} ${../../../system/programs/clash/service/source_worker.py}
   python3 ${./test_source_review.py} ${../../../system/programs/clash/service/source_review.py} ${../../../system/programs/clash/service/source_broker.py}

@@ -78,12 +78,17 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(b.read_private(self.root / 'sources/source-one/registry.json'), previous)
 
     def test_authorized_sources_parse_and_fail_closed(self):
-        directory = Path(tempfile.mkdtemp())
-        path = directory / 'sources'
-        path.write_text('one\nbad id\n\none\nTWO\n')
-        self.assertEqual(b.authorized_sources({'insecure_sources': str(path)}), {'one'})
+        path = self.root / 'allowlist'
+        settings = {'insecure_sources': str(path)}
+        for data, expected in ((b'one\n\ntwo\none\n', {'one', 'two'}),
+                               (b'one\nbad id\n', set()), (b'one\nTWO\n', set()),
+                               (b'one\n\xff\n', set()), (b'\n', set())):
+            with self.subTest(data=data):
+                path.write_bytes(data)
+                self.assertEqual(b.authorized_sources(settings), expected)
+        path.unlink()
+        self.assertEqual(b.authorized_sources(settings), set())
         self.assertEqual(b.authorized_sources({}), set())
-        self.assertEqual(b.authorized_sources({'insecure_sources': str(directory / 'missing')}), set())
 
     def test_refresh_requests_sanitizing_only_for_authorized_sources(self):
         self.register('one')
@@ -92,23 +97,39 @@ class RegistryTests(unittest.TestCase):
         policy = self.root / 'policy.json'
         policy.write_text('{}')
         whitelist = self.root / 'whitelist'
-        whitelist.write_text('one\n')
         settings = dict(root=str(self.root), policy=str(policy), forced_domains=[], assets={},
                         setpriv='/fixed/setpriv', python='/fixed/python', worker=worker, ca='/fixed/ca',
                         insecure_sources=str(whitelist))
-        seen = []
+        w = b.load_module('worker_fixture', worker)
+        audit = b.load_module('audit_fixture', os.environ['SOURCE_AUDIT'])
+        good = dict(name='good', type='http', server='1.1.1.1', port=443)
+        bad = dict(good, name='rejected', **{'skip-cert-verify': True})
+        named = dict(bad, name='named')
+        document = dict(proxies=[good, bad, named], rules=['MATCH,good'])
+        exceptions = {'insecure-proxy-exceptions': ['named']}
+        policy.write_text(json.dumps({'lf-private-targets': exceptions}))
         def download(*args, **kwargs):
-            seen.append(json.loads(kwargs['input']))
-            kwargs['stdout'].write(json.dumps(dict(yaml='proxies: []\n', responses=[], dropped=0)).encode())
+            request = json.loads(kwargs['input'])
+            result = w.prepare(request, download=lambda *_: json.dumps(document).encode())
+            kwargs['stdout'].write(json.dumps(result).encode())
             return SimpleNamespace(returncode=0)
         with patch.object(b.subprocess, 'run', side_effect=download):
-            b.refresh(settings, source)
-            self.assertIs(seen[-1].get('sanitize_insecure'), True)
-            b.refresh(settings, self.root / 'sources/two')
-            self.assertIs(seen[-1].get('sanitize_insecure'), False)
-            whitelist.unlink()
-            b.refresh(settings, source)
-            self.assertIs(seen[-1].get('sanitize_insecure'), False)
+            for content, selected, dropped in (
+                    (b'one\none\n', source, 1), (b'one\n', self.root / 'sources/two', 0),
+                    (b'one\nbad id\n', source, 0), (b'one\n\xff', source, 0), (None, source, 0)):
+                with self.subTest(content=content, selected=selected.name):
+                    if content is None:
+                        whitelist.unlink()
+                    else:
+                        whitelist.write_bytes(content)
+                    b.refresh(settings, selected)
+                    generation = selected / 'current'
+                    result = json.loads((generation / 'source-manifest.json').read_text())
+                    config = audit.load(generation / 'clash-verge.yaml')
+                    findings = audit.audit(config, settings={'insecure_exceptions': ['named']})
+                    self.assertEqual(result['dropped'], dropped)
+                    self.assertIn('named', {node['name'] for node in config['proxies']})
+                    self.assertEqual(findings['deny'], {} if dropped else {'certificate': 1})
 
     def test_network_wait_releases_publication_lock_and_rechecks_registration_and_selection(self):
         self.register('one')

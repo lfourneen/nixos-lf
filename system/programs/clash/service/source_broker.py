@@ -330,11 +330,16 @@ def authorized_sources(settings):
     if not path:
         return set()
     try:
-        lines = Path(path).read_text().splitlines()
-    except OSError:
+        lines = Path(path).read_text(encoding='utf-8').split('\n')
+    except (OSError, UnicodeError):
         return set()
-    return {value for value in (line.strip() for line in lines)
-            if value and re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', value)}
+    values = {line.strip() for line in lines} - {''}
+    return values if all(re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', value) for value in values) else set()
+
+
+def renderer_settings(settings):
+    return dict(forced_domains=settings['forced_domains'], probe_domains=settings.get('probe_domains', []),
+                remote_only_catchall=settings.get('remote_only_catchall', False))
 
 
 def refresh_generation(settings, root):
@@ -345,10 +350,8 @@ def refresh_generation(settings, root):
     request = json.dumps(dict(registry=registry, policy=json.loads(policy_bytes),
                               egress_id=json.loads(routing).get('egress_requested') if routing else None,
                               resolver=settings.get('resolver'),
-                              forced_domains=settings['forced_domains'],
-                              probe_domains=settings.get('probe_domains', []),
-                              remote_only_catchall=settings.get('remote_only_catchall', False),
-                              sanitize_insecure=registry['id'] in authorized_sources(settings))).encode()
+                              sanitize_insecure=registry['id'] in authorized_sources(settings),
+                              **renderer_settings(settings))).encode()
     argv = [settings['setpriv'], '--reuid=clash-fetch', '--regid=clash-fetch', '--clear-groups',
             '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs',
             settings['python'], '-I', settings['worker']]
@@ -388,9 +391,7 @@ def refresh_generation(settings, root):
                     egress_id=result.get('egress_id'),
                     responses=result['responses'], worker=digest(Path(settings['worker']).read_bytes()),
                     policy=digest(policy_bytes),
-                    renderer_settings=digest(json.dumps({'forced_domains': settings['forced_domains'],
-                        'probe_domains': settings.get('probe_domains', []),
-                        'remote_only_catchall': settings.get('remote_only_catchall', False)}, sort_keys=True).encode()),
+                    renderer_settings=digest(json.dumps(renderer_settings(settings), sort_keys=True).encode()),
                     yaml=digest(config), dropped=dropped, assets={})
     generations = root / 'generations'
     generations.mkdir(mode=0o700, exist_ok=True)
@@ -443,6 +444,8 @@ def local_source(settings, root, target):
     worker = importlib.util.module_from_spec(worker_spec)
     worker_spec.loader.exec_module(worker)
     registry = read_private(root / 'registry.json')
+    source_id = json.loads(registry)['id']
+    revision = digest(registry)
     candidates = []
     for folder in (root / 'approved', root / 'approved/rules', root / 'approved/proxy-only'):
         try:
@@ -453,59 +456,68 @@ def local_source(settings, root, target):
         if not isinstance(identity, str) or not re.fullmatch('[a-f0-9]{64}', identity):
             raise ValueError('invalid accepted source identity')
         source = folder / identity
+        stage.snapshot_metadata(source)
         if source.is_symlink() or stage.snapshot_digest(source) != identity:
             raise ValueError('accepted source was modified')
         manifest = json.loads(read_private(source / 'source-manifest.json'))
-        if manifest.get('source_id') != json.loads(registry)['id']:
+        if manifest.get('source_id') != source_id:
             raise ValueError('accepted source identity differs')
+        if manifest.get('revision') != revision:
+            continue
         candidates.append((record['snapshot_at'], source, manifest))
-    if candidates:
-        _, source, old_manifest = max(candidates, key=lambda value: value[0])
-    elif target == 'rules':
-        source = (root / 'current').resolve(strict=True)
-        if source.parent != root / 'generations':
-            raise ValueError('invalid source generation')
-        old_manifest = json.loads(read_private(source / 'source-manifest.json'))
-        if old_manifest.get('revision') != digest(registry):
-            raise ValueError('source revision revoked')
-    else:
+    chosen = max(candidates, key=lambda item: ('source_data' in item[2], item[0]), default=None)
+    if target == 'rules' and (chosen is None or 'source_data' not in chosen[2]):
+        try:
+            directory, manifest = stage.current_generation(root)
+        except (OSError, ValueError):
+            if chosen is None:
+                raise
+        else:
+            if chosen is None or 'source_data' in manifest:
+                chosen = (0, directory, manifest)
+    if chosen is None:
         raise ValueError('proxy-only requires an accepted pinned local source')
-    if (source / 'source-data.json').exists():
+    _, source, old_manifest = chosen
+    if 'source_data' in old_manifest or (source / 'source-data.json').exists():
         source_data = read_private(source / 'source-data.json', 32 * 1024 * 1024)
         if old_manifest.get('source_data') != digest(source_data):
             raise ValueError('source content baseline differs')
         base = json.loads(source_data)
     else:
-        # Older accepted snapshots retain their Rule list and already pinned nodes.
+        # Recover original rules only when the injected prefix is unambiguous.
         document = worker.load(read_private(source / 'clash-verge.yaml', 32 * 1024 * 1024))
-        if document.get('lf-private-targets', {}).get('proxy-only'):
+        render = renderer_settings(settings)
+        if (document.get('lf-private-targets', {}).get('proxy-only') or render['remote_only_catchall']
+                or old_manifest.get('renderer_settings') != digest(json.dumps(render, sort_keys=True).encode())):
             raise ValueError('original Rule data is unavailable')
         base = {key: document[key] for key in ('proxies', 'proxy-groups', 'rules', 'hosts') if key in document}
         base['proxy-groups'] = [group for group in base['proxy-groups'] if group.get('name') != 'lf-remote']
         prefix = ['IN-NAME,lf-strict,lf-remote'] + ['DOMAIN,' + name + ',lf-remote' for name in settings['forced_domains']]
-        if base['rules'][:len(prefix)] == prefix:
-            base['rules'] = base['rules'][len(prefix):]
+        rules = base['rules']
+        if rules[:len(prefix)] != prefix or len(rules) <= len(prefix):
+            raise ValueError('unrecognized managed rule prefix')
+        target = rules[-1].split(',')[-1]
+        if rules[len(prefix)] in {'DOMAIN-SUFFIX,' + name + ',' + target for name in render['probe_domains']}:
+            raise ValueError('ambiguous probe rule prefix')
+        base['rules'] = rules[len(prefix):]
         source_data = json.dumps(base, sort_keys=True, ensure_ascii=False).encode()
     if not base.get('proxies') or any(not worker.public_address(node.get('server', '')) for node in base['proxies']):
         raise ValueError('source requires pinned public endpoints')
-    return worker, base, source_data, source, old_manifest, registry
+    return worker, base, source_data, source, old_manifest
 
 
 def render_local(settings, root, target, previous):
     """Render a fixed policy from accepted local nodes without network access."""
-    worker, base, source_data, source, old_manifest, registry = local_source(settings, root, target)
+    worker, base, source_data, source, old_manifest = local_source(settings, root, target)
     policy = Path(settings['policy']).read_bytes()
     routing = json.loads(Path(settings['routing_state']).read_text()) if settings.get('routing_state') else {}
-    config = worker.render(base, {}, json.loads(policy), settings['forced_domains'],
-                           settings.get('probe_domains', []), settings.get('remote_only_catchall', False),
+    config = worker.render(base, {}, json.loads(policy), **renderer_settings(settings),
                            egress_id=routing.get('egress_requested'))
     egress_id = worker.selected_egress(worker.load(config))
-    manifest = dict(old_manifest, schema=2, revision=digest(registry), policy=digest(policy),
+    manifest = dict(old_manifest, schema=2, policy=digest(policy),
                     egress_id=egress_id,
                     yaml=digest(config), source_data=digest(source_data), worker=digest(Path(settings['worker']).read_bytes()),
-                    renderer_settings=digest(json.dumps({'forced_domains': settings['forced_domains'],
-                        'probe_domains': settings.get('probe_domains', []),
-                        'remote_only_catchall': settings.get('remote_only_catchall', False)}, sort_keys=True).encode()),
+                    renderer_settings=digest(json.dumps(renderer_settings(settings), sort_keys=True).encode()),
                     routing=target, local_routing=True, assets={})
     generations = root / 'generations'
     generations.mkdir(mode=0o700, exist_ok=True)
@@ -515,12 +527,19 @@ def render_local(settings, root, target, previous):
         atomic(candidate / 'source-data.json', source_data)
         for name in settings['assets']:
             data = read_private(source / name, 256 * 1024 * 1024)
+            if old_manifest.get('assets', {}).get(name) != digest(data):
+                raise ValueError('source asset mismatch')
             atomic(candidate / name, data)
             manifest['assets'][name] = digest(data)
         atomic(candidate / 'source-manifest.json', json.dumps(manifest, sort_keys=True).encode())
         identity = digest(json.dumps(manifest, sort_keys=True).encode())
         destination = generations / identity
-        if not destination.exists():
+        if destination.exists():
+            if destination.is_symlink() or any(
+                    read_private(destination / path.name, 256 * 1024 * 1024) != path.read_bytes()
+                    for path in candidate.iterdir()):
+                raise ValueError('local source generation mismatch')
+        else:
             candidate.rename(destination)
         temporary = root / '.current'
         temporary.unlink(missing_ok=True)

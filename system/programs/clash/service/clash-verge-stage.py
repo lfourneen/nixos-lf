@@ -585,14 +585,14 @@ def pinned(state, digest):
     return False
 
 
-def clear_refresh(state, runtime=None, keep_health_pin=False):
+def clear_refresh(state, runtime=None, keep_health_pin=False, settings=None, discard_commit=False):
     state = Path(state)
     commit = state / 'profile-refresh-commit.json'
     if commit.exists():
-        if (state / 'intent').read_text().strip() == 'proxy':
+        if not discard_commit and (state / 'intent').read_text().strip() == 'proxy':
             if runtime is None:
                 raise ValueError('snapshot recovery is required before reset')
-            complete_commit(Path(runtime), state)
+            complete_commit(Path(runtime), state, settings)
         else:
             commit.unlink()
     (state / 'profile-refresh-restart.json').unlink(missing_ok=True)
@@ -683,23 +683,34 @@ def remember_settled(runtime, state, value, snapshot_at, settings=None):
                 shutil.rmtree(old)
 
 
-def source_baseline(settings, runtime, gid):
+def persistent_source(settings):
     root = approved_root(settings)
-    record = read_record(root / 'settled.json')
-    value = record.get('digest')
-    if value is None:
+    try:
+        record = json.loads(read_input(root, 'settled.json', os.geteuid()))
+    except FileNotFoundError:
         return None, '', 0
+    if not isinstance(record, dict):
+        raise ValueError('invalid persistent snapshot identity')
+    value = record.get('digest')
     if not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value):
         raise ValueError('invalid persistent snapshot identity')
     source = root / value
+    snapshot_metadata(source)
     if source.is_symlink() or snapshot_digest(source) != value:
         raise ValueError('persistent snapshot mismatch')
     manifest = read_record(source / 'source-manifest.json')
-    registry = json.loads(read_input(source_directory(settings), 'registry.json', 0))
+    registry = json.loads(read_input(source_directory(settings), 'registry.json', os.geteuid()))
     if manifest.get('source_id') != registry['id']:
         raise ValueError('persistent source identity')
     routing = routing_binding(settings)
     if routing.get('egress_requested') and manifest.get('egress_id') != routing['egress_requested']:
+        return None, '', 0
+    return source, value, record.get('snapshot_at', 0)
+
+
+def source_baseline(settings, runtime, gid):
+    source, value, stamp = persistent_source(settings)
+    if source is None:
         return None, '', 0
     destination = runtime / 'snapshots' / value
     private_dir(destination, gid)
@@ -711,22 +722,20 @@ def source_baseline(settings, runtime, gid):
         (destination / 'cache.db').symlink_to(Path(settings['data']) / 'cache.db')
     if snapshot_digest(destination) != value:
         raise ValueError('restored snapshot mismatch')
-    return destination, value, record['snapshot_at']
+    return destination, value, stamp
 
 
-def restore_persistent(settings, runtime, state, gid):
-    # Off revokes runtime authority but preserves snapshots. Recover only from
-    # the selected source's settled baseline, even if an effective link remains.
-    # Partial authority still goes through verification and must fail closed.
-    if not settings.get('source_root') or (state / 'authorized-config').exists() \
-            or (state / 'config-digest').exists():
-        return
-    destination, value, stamp = source_baseline(settings, runtime, gid)
-    if destination is None:
-        return
-    switch_snapshot(runtime, state, destination, value)
+def restore_persistent(settings, runtime, state, gid, validate):
+    """Restore a settled source only after proof under the current policy."""
+    directory, value, stamp = source_baseline(settings, runtime, gid)
+    if directory is None or not restart_eligible(settings, directory):
+        return '', 0
+    validate(directory)
+    if snapshot_digest(directory) != value:
+        raise RefreshError('snapshot mismatch')
+    switch_snapshot(runtime, state, directory, value)
     remember_settled(runtime, state, value, stamp)
-
+    return value, stamp
 
 
 def settled_snapshot(runtime, state, current):
@@ -759,7 +768,7 @@ def settled_snapshot(runtime, state, current):
     return directory, record['digest'], record['snapshot_at']
 
 
-def complete_commit(runtime, state):
+def complete_commit(runtime, state, settings=None):
     """Replay an intent journal after interruption between atomic replacements."""
     path = state / 'profile-refresh-commit.json'
     if not path.exists():
@@ -782,6 +791,15 @@ def complete_commit(runtime, state):
         if any(record.get(key) != selected.get(key) for key in
                keys):
             raise ValueError('snapshot transaction belongs to another routing epoch')
+    if settings and settings.get('source_root'):
+        if commit['kind'] == 'import':
+            compatible = source_snapshot_current(settings, directory, selected=True) and (
+                record.get('audit_context') == audit_context(settings))
+        else:
+            compatible = restart_eligible(settings, directory)
+        if not compatible:
+            path.unlink()
+            return False
     switch_snapshot(runtime, state, directory, commit['target'])
     pending = state / 'profile-refresh-verifying.json'
     if commit['kind'] == 'import':
@@ -798,13 +816,15 @@ def complete_commit(runtime, state):
                       dict(boot_id=boot_id(state), digest=commit['target']), mode=0o600)
         pending.unlink(missing_ok=True)
     path.unlink()
+    return True
 
 
-def commit_snapshot(runtime, state, target, record, kind='import'):
+def commit_snapshot(runtime, state, target, record, kind='import', settings=None):
     checked_snapshot(runtime, target)
     atomic_record(state / 'profile-refresh-commit.json',
                   dict(boot_id=boot_id(state), kind=kind, target=target, record=record, at=time.time()), mode=0o600)
-    complete_commit(runtime, state)
+    if complete_commit(runtime, state, settings) is False:
+        raise RefreshError('snapshot mismatch')
 
 
 @contextmanager
@@ -824,22 +844,33 @@ def source_lock(settings, blocking=True):
         yield True
 
 
-def source_input(settings):
-    root = source_directory(settings)
+def matches_registration(root, manifest):
+    registry = read_input(root, 'registry.json', os.geteuid())
+    return (manifest.get('source_id') == json.loads(registry)['id']
+            and manifest.get('revision') == hashlib.sha256(registry).hexdigest())
+
+
+def current_generation(root):
     directory = (root / 'current').resolve(strict=True)
     if directory.parent != root / 'generations' or not re.fullmatch('[0-9a-f]{64}', directory.name):
         raise ValueError('unregistered source generation')
     info = directory.stat()
-    if info.st_uid != 0 or info.st_mode & 0o077:
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
         raise ValueError('source generation permissions')
-    registry = read_input(root, 'registry.json', 0)
-    manifest = json.loads(read_input(directory, 'source-manifest.json', 0))
-    if (manifest.get('revision') != hashlib.sha256(registry).hexdigest() or
-            manifest.get('source_id') != json.loads(registry)['id']):
+    raw = read_input(directory, 'source-manifest.json', os.geteuid())
+    manifest = json.loads(raw)
+    if not matches_registration(root, manifest):
         raise ValueError('source revision revoked')
-    routing = routing_binding(settings)
-    if routing.get('egress_requested') and manifest.get('egress_id') != routing['egress_requested']:
-        raise ValueError('source egress differs from selected leaf')
+    if (hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest() != directory.name
+            or hashlib.sha256(read_input(directory, 'clash-verge.yaml', os.geteuid())).hexdigest() != manifest.get('yaml')):
+        raise RefreshError('snapshot mismatch')
+    return directory, manifest
+
+
+def source_input(settings):
+    directory, manifest = current_generation(source_directory(settings))
+    if not matches_source_policy(settings, directory, manifest):
+        raise RefreshError('snapshot mismatch')
     return dict(settings, gui_data=str(directory), desktop_uid=0), str(directory / 'clash-verge.yaml')
 
 
@@ -876,6 +907,50 @@ def accepted_policy(settings, directory, manifest):
     return manifest.get('policy') == hashlib.sha256(rebound).hexdigest()
 
 
+def matches_source_policy(settings, directory, manifest):
+    renderer = settings.get('renderer_settings')
+    if renderer is not None and manifest.get('renderer_settings') != hashlib.sha256(
+            json.dumps(renderer, sort_keys=True).encode()).hexdigest():
+        return False
+    routing = routing_binding(settings)
+    return ((not routing or manifest.get('routing', routing['routing_requested']) == routing['routing_requested'])
+            and (not routing.get('egress_requested') or manifest.get('egress_id') == routing['egress_requested'])
+            and accepted_policy(settings, directory, manifest))
+
+
+def source_snapshot_current(settings, directory, selected=False):
+    try:
+        manifest = json.loads(read_input(directory, 'source-manifest.json', os.geteuid()))
+        if not selected and (Path(settings['source_root']) / 'sources').exists():
+            root = source_directory(settings, manifest.get('source_id'))
+        else:
+            root = source_directory(settings)
+        return matches_registration(root, manifest) and matches_source_policy(settings, directory, manifest)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
+def audit_context(settings):
+    mode = settings.get('audit_policy', 'off')
+    path = settings.get('audit_settings')
+    if mode == 'off':
+        return [mode]
+    return [mode, settings.get('audit_tool'), hashlib.sha256(Path(path).read_bytes()).hexdigest() if path else None]
+
+
+def restart_eligible(settings, directory):
+    """Check an already authorized snapshot against its own registration and today's policy."""
+    if not settings.get('source_root'):
+        return True
+    try:
+        if not source_snapshot_current(settings, directory):
+            return False
+        enforce_audit(settings, run_audit(settings, directory, None))
+        return True
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
 def startup_input(settings):
     """Prefer an intact accepted source under the current managed policy."""
     source = source_directory(settings)
@@ -892,17 +967,17 @@ def startup_input(settings):
     if directory.is_symlink() or snapshot_digest(directory) != value:
         raise RefreshError('snapshot mismatch')
     manifest = json.loads(read_input(directory, 'source-manifest.json', 0))
-    registry = json.loads(read_input(source, 'registry.json', 0))
-    if manifest.get('source_id') != registry['id']:
+    if manifest.get('source_id') != json.loads(read_input(source, 'registry.json', 0))['id']:
         raise RefreshError('snapshot mismatch')
-    if not accepted_policy(settings, directory, manifest):
-        return source_input(settings)  # A root policy change still needs a current import.
+    if not matches_registration(source, manifest) or not matches_source_policy(settings, directory, manifest):
+        return source_input(settings)
     if settings.get('routing_state'):
-        current = read_record((source / 'current').resolve() / 'source-manifest.json')
-        routing = routing_binding(settings)
-        if routing.get('egress_requested') and manifest.get('egress_id') != routing['egress_requested']:
-            return source_input(settings)
-        if current.get('local_routing') and current.get('source_data') != manifest.get('source_data'):
+        try:
+            current_dir, current = current_generation(source)
+        except (OSError, ValueError):
+            current = {}
+        if (current.get('local_routing') and current.get('source_data') != manifest.get('source_data')
+                and matches_source_policy(settings, current_dir, current)):
             return source_input(settings)
     return dict(settings, gui_data=str(directory), desktop_uid=0, _accepted_startup=True), str(directory / 'clash-verge.yaml')
 
@@ -913,9 +988,9 @@ def copy_candidate_inputs(settings, candidate_config, candidate, gid):
     if settings.get('source_root'):
         write_private(candidate / 'source-manifest.json',
                       read_input(settings['gui_data'], 'source-manifest.json', settings['desktop_uid']), gid)
-        if (Path(settings['gui_data']) / 'source-data.json').exists():
+        manifest = read_record(Path(settings['gui_data']) / 'source-manifest.json')
+        if 'source_data' in manifest or (Path(settings['gui_data']) / 'source-data.json').exists():
             data = read_input(settings['gui_data'], 'source-data.json', settings['desktop_uid'])
-            manifest = read_record(Path(settings['gui_data']) / 'source-manifest.json')
             if manifest.get('source_data') != hashlib.sha256(data).hexdigest():
                 raise ValueError('source content baseline mismatch')
             write_private(candidate / 'source-data.json', data, gid)
@@ -927,6 +1002,12 @@ def copy_candidate_inputs(settings, candidate_config, candidate, gid):
         if matches:
             write_private(candidate / target,
                           read_input(settings['gui_data'], matches[0], settings['desktop_uid']), gid)
+    if settings.get('source_root'):
+        for name, expected in manifest.get('assets', {}).items():
+            if name not in ASSETS or hashlib.sha256(read_input(candidate, name, 0)).hexdigest() != expected:
+                raise ValueError('source asset mismatch')
+        if 'assets' in manifest and any((candidate / name).exists() and name not in manifest['assets'] for name in ASSETS):
+            raise ValueError('unregistered source asset')
 
 
 def enforce_audit(settings, findings):
@@ -977,8 +1058,7 @@ def stage_locked(settings, config, validate):
         fcntl.flock(lock, fcntl.LOCK_EX)
         if (state / 'intent').read_text().strip() != 'proxy':
             raise ValueError('start Clash with clash-on; proxy intent is required')
-        complete_commit(runtime, state)
-        restore_persistent(settings, runtime, state, gid)
+        complete_commit(runtime, state, settings)
         window = state / 'authorize-window'
         authorized = False
         prepared = ''
@@ -991,13 +1071,13 @@ def stage_locked(settings, config, validate):
             pass
         window.unlink(missing_ok=True)
         if authorized:
-            clear_refresh(state, runtime, keep_health_pin=bool(settings.get('source_root')))
+            clear_refresh(state, runtime, keep_health_pin=bool(settings.get('source_root')), settings=settings)
 
         previous, previous_digest, previous_at = None, '', 0
         # Never fall back to an unverified/tampered snapshot. Explicit grants
         # can repair an absent authority, just as in strict mode before auto.
         if not authorized or (auth.exists() and digest.exists()):
-            if effective.exists() or auth.exists() or digest.exists():
+            if auth.exists() or digest.exists() or (effective.exists() and not settings.get('source_root')):
                 previous_digest = verify(effective, digest, auth)
                 previous = effective.resolve()
                 previous_at = read_record(state / 'profile-refresh.json').get('snapshot_at') or previous.stat().st_mtime
@@ -1007,6 +1087,7 @@ def stage_locked(settings, config, validate):
         validated = False
         restarting = False
         findings = None
+        audit_policy = None
         used_approval = False
         phase = 'input unreadable'
         try:
@@ -1014,7 +1095,7 @@ def stage_locked(settings, config, validate):
                 if prepared:
                     settings, config = prepared_source(settings, prepared)
                 else:
-                    settings, config = (startup_input(settings) if authorized and policy == 'auto'
+                    settings, config = (startup_input(settings) if (authorized or previous is None) and policy == 'auto'
                                         else source_input(settings))
             # Keep a fingerprint even when UTF-8/controller normalization fails.
             relative = Path(os.path.abspath(config)).relative_to(settings['gui_data'])
@@ -1022,7 +1103,7 @@ def stage_locked(settings, config, validate):
             candidate_digest = hashlib.sha256(raw).hexdigest()
             if not authorized and policy == 'auto' and previous is not None \
                     and read_record(state / 'profile-refresh-pin.json').get('digest') == candidate_digest \
-                    and pinned(state, candidate_digest):
+                    and pinned(state, candidate_digest) and restart_eligible(settings, previous):
                 provider_cache(effective, settings['data'])
                 publish_effective(runtime, state)
                 return
@@ -1033,7 +1114,7 @@ def stage_locked(settings, config, validate):
                 if candidate_config == (effective / 'clash-verge.yaml').read_bytes() and (
                         not settings.get('source_root') or
                         read_input(settings['gui_data'], 'source-manifest.json', 0) ==
-                        (effective / 'source-manifest.json').read_bytes()):
+                        (effective / 'source-manifest.json').read_bytes()) and restart_eligible(settings, previous):
                     restarting = True
                     provider_cache(effective, settings['data'])
                     validate(effective)
@@ -1056,10 +1137,10 @@ def stage_locked(settings, config, validate):
             candidate_digest = snapshot_digest(candidate)
             if prepared and pinned(state, candidate_digest) and read_record(state / 'profile-refresh-pin.json').get('health') is True:
                 raise RefreshError('recent health failure')
-            if not authorized and policy == 'auto' and pinned(state, candidate_digest) and not (
+            if not authorized and policy == 'auto' and previous is not None and pinned(state, candidate_digest) and not (
                     settings.get('source_root') and ((source_directory(settings) / 'approval.json').exists() or
                     (settings.get('audit_auto_approve') and read_record(state / 'profile-refresh.json').get('reason')
-                     in ('blocked by audit', 'audit indeterminate')))):
+                     in ('blocked by audit', 'audit indeterminate')))) and restart_eligible(settings, previous):
                 # Preserve rolled_back and the original sanitized rejection on
                 # GUI/helper restarts; do not extend the pin's TTL.
                 verify(effective, digest, auth)
@@ -1076,21 +1157,28 @@ def stage_locked(settings, config, validate):
                 raise RefreshError('snapshot mismatch')
             baseline, baseline_digest = settled, settled_digest
             if settings.get('source_root'):
-                baseline, baseline_digest, _ = source_baseline(settings, runtime, gid)
+                baseline, baseline_digest, baseline_at = source_baseline(settings, runtime, gid)
+                audit_policy = audit_context(settings)
             findings = run_audit(settings, candidate, baseline)
             auto_approve_semantics(settings, findings, candidate_digest, baseline_digest)
             findings, used_approval = apply_semantic_approval(settings, findings, candidate_digest, baseline_digest)
             enforce_audit(settings, findings)
+            if settings.get('source_root') and audit_policy != audit_context(settings):
+                raise RefreshError('snapshot mismatch')
             if snapshot_digest(candidate) != candidate_digest:
                 raise RefreshError('snapshot mismatch')
             if settings.get('_accepted_startup') and candidate_digest == baseline_digest:
                 # Static policy and audit are repeated. Live health still gates
                 # B, but an already accepted snapshot needs no new probation.
                 switch_snapshot(runtime, state, baseline, baseline_digest)
+                remember_settled(runtime, state, baseline_digest, baseline_at)
                 audit(state, 'restored', policy, baseline_digest, baseline_digest,
-                      snapshot_at=read_record(approved_root(settings) / 'settled.json')['snapshot_at'],
-                      findings=findings)
+                      snapshot_at=baseline_at, findings=findings)
                 return
+            if settings.get('source_root') and settled is None and baseline is not None \
+                    and source_snapshot_current(settings, baseline, selected=True):
+                remember_settled(runtime, state, baseline_digest, baseline_at)
+                settled, settled_digest, settled_at = baseline, baseline_digest, baseline_at
             validated = True
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             reason = ('validation timeout' if isinstance(error, subprocess.TimeoutExpired) else
@@ -1101,11 +1189,19 @@ def stage_locked(settings, config, validate):
                     audit(state, 'refused', policy, candidate_digest, previous_digest,
                           reason, previous_at, findings)
                 raise
-            if previous is None:
+            if previous is not None and restart_eligible(settings, previous):
+                verify(effective, digest, auth)
+                provider_cache(effective, settings['data'])
+            elif settings.get('source_root') and not settings.get('_accepted_startup'):
+                try:
+                    previous_digest, previous_at = restore_persistent(settings, runtime, state, gid, validate)
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    previous_digest = ''
+            else:
+                previous_digest = ''
+            if not previous_digest:
                 audit(state, 'refused', policy, candidate_digest, reason=reason)
                 raise RefreshError(reason) from None
-            verify(effective, digest, auth)
-            provider_cache(effective, settings['data'])
             if candidate_digest:
                 pin_candidate(state, candidate_digest)
             audit(state, 'fallback', policy, candidate_digest, previous_digest, reason, previous_at,
@@ -1135,7 +1231,9 @@ def stage_locked(settings, config, validate):
                                previous=str(settled) if settled else None,
                                previous_snapshot_at=settled_at, monotonic_seconds=time.monotonic())
             transaction.update(routing_binding(settings))
-            commit_snapshot(runtime, state, candidate_digest, transaction)
+            if settings.get('source_root'):
+                transaction['audit_context'] = audit_policy
+            commit_snapshot(runtime, state, candidate_digest, transaction, settings=settings)
             if used_approval:
                 (source_directory(settings) / 'approval.json').unlink(missing_ok=True)
             prune_snapshots(snapshots, {destination, settled})
@@ -1157,7 +1255,7 @@ def verify_refresh(settings, restart=None):
                 return
             with (state / 'authorization.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                complete_commit(runtime, state)
+                complete_commit(runtime, state, settings)
                 recovery = state / 'profile-refresh-restart.json'
                 record = read_record(pending_path)
                 if recovery.exists():
@@ -1167,7 +1265,7 @@ def verify_refresh(settings, restart=None):
                 if record and time.monotonic() - record['monotonic_seconds'] < 60 and not early_health_failure(settings, record):
                     return
                 if (state / 'intent').read_text().strip() != 'proxy':
-                    clear_refresh(state, runtime)
+                    clear_refresh(state, runtime, settings=settings)
                     return
                 if not record:
                     # The authority restore committed, but a previous restart was
@@ -1223,6 +1321,13 @@ def verify_pending_refresh(settings, record):
     healthy = healthy and all(health.get(key) == value for key, value in binding.items())
     previous = Path(record['previous']) if record.get('previous') else None
     if healthy:
+        if settings.get('source_root') and (
+                not source_snapshot_current(settings, (runtime / 'effective').resolve())
+                or record.get('audit_context') != audit_context(settings)):
+            audit(state, 'refused', record['policy'], current, reason='snapshot mismatch',
+                  snapshot_at=record['snapshot_at'])
+            pending_path.unlink()
+            return
         remember_settled(runtime, state, current, record['snapshot_at'], settings)
         audit(state, 'accepted', record['policy'], current, record['previous_digest'],
               snapshot_at=record['snapshot_at'], findings=record.get('audit'))
@@ -1250,7 +1355,12 @@ def verify_pending_refresh(settings, record):
     authority = previous / 'settled-authorization'
     verify(previous, authority, authority)
     transaction = dict(record, rollback_reason=reason)
-    commit_snapshot(runtime, state, record['previous_digest'], transaction, kind='rollback')
+    try:
+        commit_snapshot(runtime, state, record['previous_digest'], transaction, kind='rollback', settings=settings)
+    except RefreshError:
+        audit(state, 'refused', record['policy'], current, reason=reason,
+              snapshot_at=record['snapshot_at'])
+        pending_path.unlink()
 
 
 def service_request(settings, method, endpoint, payload=None, timeout=15):
@@ -1348,9 +1458,11 @@ def main():
         verify_refresh(settings)
         return
     if sys.argv[1] == 'clear-refresh':
-        with (Path(settings['state']) / 'authorization.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            clear_refresh(settings['state'], settings['runtime'])
+        with source_lock(settings):
+            with (Path(settings['state']) / 'authorization.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                clear_refresh(settings['state'], settings['runtime'], keep_health_pin='--keep-health-pin' in sys.argv[3:],
+                              settings=settings)
         return
     real, config = sys.argv[3:]
     # The helper's fixed readiness deadline is fifteen seconds. Reserve time

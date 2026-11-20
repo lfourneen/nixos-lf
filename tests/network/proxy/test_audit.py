@@ -147,6 +147,18 @@ class AuditTests(unittest.TestCase):
         result = self.check(candidate, protected_routes={'probe.example': 'proxy'})
         self.assertEqual(result['deny'].get('protected_route'), 1)
 
+    def test_added_probe_requires_proof_only_from_candidate(self):
+        baseline = document(rules=['GEOIP,CN,DIRECT', 'MATCH,Proxy'])
+        candidate = document(rules=['DOMAIN,probe.example,Proxy', *baseline['rules']])
+        self.assertEqual(audit.route(baseline, 'probe.example'), 'unknown')
+        self.assertEqual(audit.route(candidate, 'probe.example'), 'proxy')
+        settings = {'protected_routes': {'probe.example': 'proxy'}}
+        result = self.check(candidate, baseline, **settings)
+        self.assertEqual((result['deny'], result['unknown']), ({}, {}))
+        self.assertEqual(self.check(baseline, candidate, **settings)['unknown'], {'route_unknown': 1})
+        self.assertEqual(self.check(candidate, baseline, sensitive_domains=['example'], **settings)['unknown'],
+                         {'route_unknown': 2})
+
     def test_exact_name_shadow_does_not_prove_the_whole_suffix_safe(self):
         baseline = document(rules=['DOMAIN-SUFFIX,sensitive.example,DIRECT', 'MATCH,Proxy'])
         candidate = document(rules=['DOMAIN,payments.sensitive.example,DIRECT',

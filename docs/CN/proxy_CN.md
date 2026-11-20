@@ -71,7 +71,7 @@ AnyTLS 只参与 Rule 路由，不列入固定出口候选（单叶子校验器�
 健康探针发现 mixed HTTP 失败时，会调用核心的组延迟接口**并发测活 `lf-remote` 的全部成员**（与 GUI 显示延迟同一路径），按延迟排序选出可用叶子并切换后重试；只有全部成员都超时才按原逻辑拒绝。测活与重试受健康预算约束，审计与授权不变。
 
 `clash-off` 撤销运行授权，但保留该来源已接受的基线。
-自动刷新模式下，下次 `clash-on` 优先使用符合当前受管策略的基线，并记录 `restored`。
+自动刷新模式下，下次 `clash-on` 优先使用符合当前来源修订、受管策略及渲染参数的已接受快照。复用该快照时记录 `restored`。
 恢复时仍重复解析、内容审计和摘要检查，进入 B 仍需新鲜的实际健康证明。
 共享黑名单使用稳定的策略路径，已校验的名单更新不会使已接受订阅基线失效。
 启动更新请求在 C 中保持待处理。经验证的 B 在同一次启动、快照和策略下持续健康 90 秒后，后台服务消费请求并开始下载。
@@ -253,7 +253,10 @@ worker 在 `-t` 与快照提交之间离线运行，身份为无 capabilities �
 历史比较使用最近 settled 的 YAML。
 可变 provider 内容仍遵循下文的独立信任模型。
 `my.proxy.insecureProxyExceptions` 中的具名 TLS 例外保留。
-启用 `skip-cert-verify` 且未获具名例外的节点，只在来源列入 Sops 加密的 [system/secrets/whitelist.yaml](../../system/secrets/whitelist.yaml)（`insecure_sources`，每行一个已登记来源 ID）时被丢弃，并与解析失败节点共用 20% 上限；未列出的来源保留这些节点，由审计和核心守卫拒绝，默认容忍度为 0%。白名单缺失或格式错误时不做任何清洗。
+启用 `skip-cert-verify` 且未获具名例外的节点，只在来源列入 Sops 加密的 `insecure_sources` 清单时被丢弃。这类节点和解析失败的节点共用总数五分之一的上限，向下取整，且上限至少为一个。
+每行写一个已登记的来源 ID，允许空行和重复 ID。
+文件缺失、无法读取、UTF-8 无效或任一 ID 格式错误时，所有来源的清洗授权均失效。
+清洗未获授权时，worker 保留相应节点，交由审计和核心守卫判定。见 [whitelist.yaml](../../system/secrets/whitelist.yaml)。
 
 有意使用非公网节点端点时须声明 `my.proxy.subscriptionAuditServerCidrs`，该审计例外不授予应用访问权限，组播端点仍被拒绝。
 
@@ -285,6 +288,7 @@ my.proxy.subscriptionAuditAllowedHosts = {
 `my.proxy.subscriptionAuditProtectedRoutes` 为精确域名声明预期的 `direct`、`proxy` 或 `reject` 路由。
 健康和延迟探测域名默认为 `proxy`。
 订阅和更新域名须在此声明各自预期路由。
+当前每个受保护精确域的路由由候选独立证明。已有 settled 基线时，仍用它比较敏感订阅后缀的路由变化。
 无法确定的规则或代理组不能证明候选符合要求。
 
 `enforce` 阻断 deny，以及敏感域或受保护目标路由无法确定的候选，原因分别为 `blocked by audit` 或 `audit indeterminate`。
@@ -397,13 +401,13 @@ Off/on 及返回 rules 保留本次启动的严格出口选择，重启清除它
 切换先安装 C 并撤销 B 授权，停止旧核心和 relay 流，安装选定的不可变策略，再重建核心命名空间。
 Parser、内容审计、监听身份、路由、DNS/TUN 和完整健康检查通过后才能返回 B。
 命令等待共用就绪与验证条件。失败保留所请求的子模式和 C，不自动选择 A 或 rules。
-重复选择已经就绪的模式不会重启核心。
+重复选择已经就绪的模式时，如果运行快照仍符合当前来源修订和策略，就保留现有核心。
 
 `clash-off` 选择 A 并保留本次启动的路由选择，`clash-on` 复用该选择。
 重启后选择恢复 rules，开机请求 A 还是代理访问仍由独立的 `bootMode` 控制。
 
-Proxy-only 要求已有节点地址固定为字面 IP 的本地已接受来源。
-每个来源首次导入须先在 rules 完成正常健康接受，之后才能离线启动严格模式。
+Proxy-only 要求当前来源修订已有本地接受快照，且节点地址固定为字面 IP。
+新修订先在 rules 完成健康接受，再离线启动严格模式。
 节点 TLS 身份继续校验，切换及严格启动不需要直连 DNS 或订阅下载。
 应用和来源 worker 的 DNS 都通过远程加密传输获得本地验证结果，见 [DNS](dns_CN.md#b受管-mihomo-dns)。
 Proxy-only 禁用 LAN、组播、时间同步、Tailscale 和入站服务回复，仅保留限定的 DHCP、NDP 和必要传输错误。

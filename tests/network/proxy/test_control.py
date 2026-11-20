@@ -549,8 +549,9 @@ class SnapshotTests(unittest.TestCase):
         for name in ('authorized-config', 'config-digest'):
             (self.state / name).unlink()
         self.settings['source_root'] = str(self.root)
-        with patch.object(stage, 'source_baseline', return_value=(baseline, old, time.time())) as restore:
-            stage.restore_persistent(self.settings, self.runtime, self.state, os.getgid())
+        with patch.object(stage, 'source_baseline', return_value=(baseline, old, time.time())) as restore, \
+                patch.object(stage, 'restart_eligible', return_value=True):
+            stage.restore_persistent(self.settings, self.runtime, self.state, os.getgid(), lambda _: None)
         restore.assert_called_once()
         self.assertEqual(self.verify(), old)
         self.assertEqual((self.runtime / 'effective').resolve(), baseline)
@@ -561,10 +562,9 @@ class SnapshotTests(unittest.TestCase):
         for missing in ('authorized-config', 'config-digest'):
             original = (self.state / missing).read_bytes()
             (self.state / missing).unlink()
-            with patch.object(stage, 'source_baseline', side_effect=AssertionError('partial authority restored')):
-                stage.restore_persistent(self.settings, self.runtime, self.state, os.getgid())
-            with self.assertRaises((ValueError, OSError)):
-                self.verify()
+            with patch.object(stage, 'source_baseline', side_effect=AssertionError('partial authority restored')), \
+                    self.assertRaises((ValueError, OSError)):
+                stage.stage(self.settings, str(self.config), lambda _: None)
             (self.state / missing).write_bytes(original)
             (self.state / missing).chmod(0o600)
 
