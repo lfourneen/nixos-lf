@@ -306,10 +306,12 @@ Upstream sources and snapshot metadata are recorded in the module header and [lo
 
 ## Wi-Fi, split DNS and MagicDNS
 
-Wi-Fi DNS edits save only the six DNS properties in root-private `/var/lib/netsec-dns-profiles/`.
-`sudo proxy-dns-profile plan <UUID>` reports backup/restoration readiness.
-`restore <UUID>` restores those fields without reconnecting.
-Restoration refuses intervening manual edits.
+Wi-Fi DNS edits save the six original DNS properties in root-private `/var/lib/netsec-dns-profiles/`.
+The dispatcher publishes and syncs a complete backup before the first profile edit.
+Run `sudo proxy-dns-profile plan <UUID>` to see the backup path, its status and whether it can be restored.
+`sudo proxy-dns-profile restore <UUID>` restores those fields without reconnecting and refuses to overwrite intervening manual edits.
+If the plan reports `backup_status: invalid`, keep the file for inspection and verify the original fields against a known-good NetworkManager backup.
+The dispatcher and restore command refuse profile edits while that backup is invalid.
 Approving a backed-up profile for split DNS restores its original DNS values.
 Credentials, routes and identity fields are outside the backup.
 

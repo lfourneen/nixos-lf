@@ -12,6 +12,11 @@ import sys
 PROPERTIES = ("ipv4.ignore-auto-dns", "ipv6.ignore-auto-dns", "ipv4.dns", "ipv6.dns",
               "ipv4.dns-search", "ipv6.dns-search")
 MANAGED = ["yes", "yes", "", "", "", ""]
+MAX_BACKUP_BYTES = 32768
+
+
+class InvalidBackup(ValueError):
+    pass
 
 
 def record_path(settings, uuid):
@@ -25,22 +30,50 @@ def record_path(settings, uuid):
     return directory / (uuid + '.json')
 
 
+def valid_original(values):
+    return (isinstance(values, list) and len(values) == len(PROPERTIES)
+            and all(isinstance(v, str) and len(v) <= 4096 and not any(c in v for c in '\r\n\0')
+                    for v in values))
+
+
 def load_record(path):
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                raise InvalidBackup('unsafe DNS backup file')
+            data = stream.read(MAX_BACKUP_BYTES + 1)
     except FileNotFoundError:
         return None
-    with os.fdopen(fd) as stream:
-        info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077 or info.st_size > 32768:
-            raise ValueError('unsafe DNS backup file')
-        value = json.load(stream)
-    if set(value) != {'original', 'managed'} or value['managed'] != MANAGED or \
-            not isinstance(value['original'], list) or len(value['original']) != len(PROPERTIES) or \
-            not all(isinstance(v, str) and len(v) <= 4096 and not any(c in v for c in '\r\n\0')
-                    for v in value['original']):
-        raise ValueError('invalid DNS backup')
+    except OSError:
+        raise InvalidBackup('unreadable DNS backup file') from None
+    if len(data) > MAX_BACKUP_BYTES:
+        raise InvalidBackup('DNS backup file exceeds size limit')
+    try:
+        value = json.loads(data.decode('utf-8'))
+    except (ValueError, RecursionError):
+        raise InvalidBackup('malformed DNS backup JSON') from None
+    if (not isinstance(value, dict) or set(value) != {'original', 'managed'} or value['managed'] != MANAGED
+            or not valid_original(value['original'])):
+        raise InvalidBackup('invalid DNS backup fields')
     return value
+
+
+def save_record(path, temporary, original):
+    payload = json.dumps({'original': original, 'managed': MANAGED})
+    if not valid_original(original) or len(payload) > MAX_BACKUP_BYTES:
+        raise ValueError('invalid DNS properties for backup')
+    temporary.unlink(missing_ok=True)
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path, follow_symlinks=False)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def snapshot(command, settings, uuid):
@@ -61,15 +94,25 @@ def modify(command, settings, uuid, values):
     command(args)
 
 
-def profile(settings, uuid, action, command):
+def profile(settings, uuid, action, command, *, missing_ok=False):
     path = record_path(settings, uuid)
     # Dispatcher and operator restoration share one lock and the same whitelist.
     with (path.parent / 'lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            record = load_record(path)
+        except InvalidBackup as error:
+            if action == 'plan':
+                return {'backup': True, 'backup_status': 'invalid', 'backup_path': str(path),
+                        'managed': None, 'restorable': False, 'fields': list(PROPERTIES),
+                        'error': str(error)}
+            raise InvalidBackup(f'{error}: {path}. Review with proxy-dns-profile plan {uuid}') from None
+        if record is None and missing_ok:
+            return
         current = snapshot(command, settings, uuid)
-        record = load_record(path)
         if action == 'plan':
-            return {'backup': record is not None, 'managed': current == MANAGED,
+            return {'backup': record is not None, 'backup_status': 'valid' if record else 'missing',
+                    'backup_path': str(path), 'managed': current == MANAGED,
                     'restorable': bool(record and current in (MANAGED, record['original'])),
                     'fields': list(PROPERTIES)}
         if action == 'restore':
@@ -84,17 +127,17 @@ def profile(settings, uuid, action, command):
             return
         if record and current != record['original']:
             raise ValueError('DNS properties changed manually; review with proxy-dns-profile plan')
+        temporary = path.with_name(f'.{path.name}.new')
         if record is None:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(fd, 'w') as stream:
-                json.dump({'original': current, 'managed': MANAGED}, stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            save_record(path, temporary, current)
+        else:
+            temporary.unlink(missing_ok=True)
+        # An earlier process may have published the backup before syncing the directory.
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
         modify(command, settings, uuid, MANAGED)
 
 
@@ -118,8 +161,7 @@ def apply(settings, interface, action, uuid, run=subprocess.run):
     exempt = uuid in settings["exceptions"]
     if 'state' in settings:
         if exempt:
-            if load_record(record_path(settings, uuid)):
-                profile(settings, uuid, 'restore', command)
+            profile(settings, uuid, 'restore', command, missing_ok=True)
         else:
             profile(settings, uuid, 'apply', command)
     routing_domains = ["~."]

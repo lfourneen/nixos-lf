@@ -291,9 +291,12 @@ GUI 配置在解析时继承它们，控制 API 不能替换。
 
 ## Wi-Fi、split DNS 与 MagicDNS
 
-Wi-Fi DNS 改写仅将六个 DNS 属性备份到 root 私有的 `/var/lib/netsec-dns-profiles/`。
-`sudo proxy-dns-profile plan <UUID>` 查看备份及可恢复状态，`restore <UUID>` 恢复这些字段且不重连。
-恢复拒绝覆盖期间的人工修改。
+Wi-Fi DNS 改写将原有的六个 DNS 属性备份到 root 私有的 `/var/lib/netsec-dns-profiles/`。
+Dispatcher 在首次改写 profile 前发布完整备份并同步所在目录。
+运行 `sudo proxy-dns-profile plan <UUID>` 可查询备份路径、状态及是否可恢复。
+`sudo proxy-dns-profile restore <UUID>` 恢复这些字段且不重连，并拒绝覆盖期间的人工修改。
+如果计划显示 `backup_status: invalid`，保留该文件以供检查，并从已确认有效的 NetworkManager 备份核对原始字段。
+备份无效期间，dispatcher 和恢复命令都拒绝改写 profile。
 批准已有备份的 profile 使用 split DNS 时会恢复其原始 DNS 值。
 备份不包含凭据、路由和身份字段。
 

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import socket
 import shlex
+import stat
 import struct
 import threading
 import time
@@ -2043,6 +2044,96 @@ class RecoveryAndDiagnosticsTests(unittest.TestCase):
             record = json.loads(nm_dns.record_path(settings, uuid).read_text())
             self.assertEqual(set(record), {'original', 'managed'})
             self.assertNotIn('password', json.dumps(record))
+
+    def test_dns_backup_survives_interruption_at_each_publication_step(self):
+        uuid = '00000000-0000-0000-0000-000000000007'
+        original = ['no', 'no', '', '', '', '']
+        for phase in ('created', 'partial write', 'published', 'before modify'):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                settings = {'state': directory, 'nmcli': 'nmcli'}
+                path = nm_dns.record_path(settings, uuid)
+                temporary = path.with_name(f'.{path.name}.new')
+                open_stream, link = os.fdopen, os.link
+
+                def interrupt_stream(fd, mode='r', *args, **kwargs):
+                    if mode == 'w' and phase in ('created', 'partial write'):
+                        if phase == 'partial write':
+                            os.write(fd, b'{"original":')
+                        os._exit(75)
+                    return open_stream(fd, mode, *args, **kwargs)
+
+                def interrupt_link(*args, **kwargs):
+                    link(*args, **kwargs)
+                    if phase == 'published':
+                        os._exit(75)
+
+                def interrupt_modify(argv):
+                    if '-g' in argv:
+                        return '\n'.join(original)
+                    os._exit(75 if phase == 'before modify' else 1)
+
+                child = os.fork()
+                if child == 0:
+                    try:
+                        with patch.object(nm_dns.os, 'fdopen', side_effect=interrupt_stream), \
+                                patch.object(nm_dns.os, 'link', side_effect=interrupt_link):
+                            nm_dns.profile(settings, uuid, 'apply', interrupt_modify)
+                    finally:
+                        os._exit(1)
+                _, status = os.waitpid(child, 0)
+                self.assertEqual(os.waitstatus_to_exitcode(status), 75)
+                before = nm_dns.load_record(path)
+                if phase in ('created', 'partial write'):
+                    self.assertIsNone(before)
+                else:
+                    self.assertEqual(before['original'], original)
+                if phase != 'before modify':
+                    self.assertEqual(temporary.stat().st_mode & 0o777, 0o600)
+
+                values = list(original)
+                synced = False
+                fsync = os.fsync
+                def sync(fd):
+                    nonlocal synced
+                    fsync(fd)
+                    if stat.S_ISDIR(os.fstat(fd).st_mode):
+                        synced = True
+
+                def command(argv):
+                    if '-g' in argv:
+                        return '\n'.join(values)
+                    self.assertTrue(synced, 'the backup directory must be synced before profile changes')
+                    self.assertEqual(nm_dns.load_record(path)['original'], original)
+                    offset = argv.index(uuid) + 1
+                    values[:] = argv[offset + 1::2]
+                    return ''
+                with patch.object(nm_dns.os, 'fsync', side_effect=sync):
+                    nm_dns.profile(settings, uuid, 'apply', command)
+                self.assertEqual(values, nm_dns.MANAGED)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                self.assertFalse(temporary.exists())
+                nm_dns.profile(settings, uuid, 'restore', command)
+                self.assertEqual(values, original)
+
+    def test_dns_backup_diagnoses_invalid_records_without_changing_them_or_the_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = {'state': directory, 'nmcli': 'nmcli'}
+            uuid = '00000000-0000-0000-0000-000000000007'
+            path = nm_dns.record_path(settings, uuid)
+            for content in (b'', b'{"original":', b'\xff', b'[]', b'{"original":[],"managed":[]}'):
+                with self.subTest(content=content):
+                    path.write_bytes(content)
+                    path.chmod(0o600)
+                    def unexpected(_):
+                        self.fail('an invalid backup must be diagnosed before using NetworkManager')
+                    plan = nm_dns.profile(settings, uuid, 'plan', unexpected)
+                    self.assertEqual(plan['backup_status'], 'invalid')
+                    self.assertFalse(plan['restorable'])
+                    self.assertEqual(plan['backup_path'], str(path))
+                    for action in ('apply', 'restore'):
+                        with self.assertRaisesRegex(nm_dns.InvalidBackup, 'proxy-dns-profile plan'):
+                            nm_dns.profile(settings, uuid, action, unexpected)
+                    self.assertEqual(path.read_bytes(), content)
 
     def test_tun_candidates_tolerate_dns_failure_but_not_policy_failure(self):
         probe = health.Probe({'budget_seconds':12, 'require_tun': True,
