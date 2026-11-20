@@ -60,6 +60,7 @@ threading.Thread(target=origin.serve_forever, daemon=True).start()
 renderer = dict(forced_domains=['cp.cloudflare.com', 'www.baidu.com'], probe_domains=[], remote_only_catchall=False)
 bs = dict(root='/var/lib/clash-source', policy='/run/fixture-policy.json', assets={}, **renderer,
           python=s['python'], worker=s['worker'], setpriv=s['setpriv'], ca=s['tls']+'/ca.pem', stageSettings='/run/stage-settings.json',
+          manual_refresh=s['manualRefresh'], launcher=s['launcher'],
           gui_index='/run/gui-profiles.yaml', desktop_uid=0)
 Path('/run/broker-settings.json').write_text(json.dumps(bs))
 source_broker = module('fixture_broker', s['broker'])
@@ -89,7 +90,7 @@ def select_registered(identity, revision=None, okay=True):
     with (root / 'source.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            source_broker.use(bs, root, identity, revision)
+            source_broker.prepare_manual(bs, root, lock, identity, revision)
         except (OSError, ValueError):
             if okay:
                 raise
@@ -222,12 +223,23 @@ for identity in ('second', 'third'):
     assert finding['audit']['verdict'] == 'pass', finding
     stage.remember_settled(runtime, state, (state/'authorized-config').read_text().strip(), time.time(), st)
     print('TLS register/refresh/parser/audit pass and explicit baseline persisted:', identity, flush=True)
+gui_request = state / 'source-gui-request.json'
+selection = Path(bs['root'], 'selected')
 Path('/run/gui-profiles.yaml').write_text('current: forged\nitems: [{url: https://evil.invalid/}]')
 broker('gui-select')
-assert Path('/var/lib/clash-source/selected').resolve().name == 'third'
+assert not gui_request.exists() and selection.resolve().name == 'third'
 Path('/run/gui-profiles.yaml').write_text('current: uid-second\nitems: [{uid: uid-second, url: https://evil.invalid/}]')
 broker('gui-select')
-assert Path('/var/lib/clash-source/selected').resolve().name == 'second'
+assert stage.read_record(gui_request)['source'] == 'second' and selection.resolve().name == 'third'
+# Mode A can drain the GUI download queue without the live proxy supervisor.
+previous_intent = (state / 'intent').read_text()
+previous_mode = (state / 'state.json').read_text()
+(state / 'intent').write_text('direct')
+(state / 'state.json').write_text('{"mode":"direct"}')
+broker('automatic')
+(state / 'intent').write_text(previous_intent)
+(state / 'state.json').write_text(previous_mode)
+assert not gui_request.exists() and selection.resolve().name == 'second'
 select_registered('fixture')
 (state / 'authorize-window').touch()
 stage.stage(st, str(gui/'clash-verge.yaml'), validate)

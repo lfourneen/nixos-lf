@@ -8,6 +8,9 @@ let
     setpriv = "${pkgs.util-linux}/bin/setpriv";
     worker = ../../../system/programs/clash/service/source_worker.py;
     broker = ../../../system/programs/clash/service/source_broker.py;
+    manualRefresh = ../../../system/programs/clash/service/source_refresh.py;
+    # The fixture drives staging and verification itself.
+    launcher = "${pkgs.coreutils}/bin/false";
     audit = ../../../system/programs/clash/service/subscription_audit.py;
     stage = ../../../system/programs/clash/service/clash-verge-stage.py;
     network = ../../../home/programs/firefox/network.py;

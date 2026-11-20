@@ -26,10 +26,10 @@
       "recipe": "aeca5c0793629f3936f980896ce2a6e01502005160e05e895879061891f3d86d"
     },
     "firefox": {
-      "version": "160.0",
-      "source": "9209a62de1ee83fe05750b77a439dc89280ebf738b5257d84af1a1faf2f4bbf505558feac126e71033c8de1a48265717c0341af4e855134e59d1b4b5b9dd820f",
+      "version": "160.0.1",
+      "source": "e7a272b85aef9610b9e83d7b934ae1ac041a4bb2eec449e6671336f98c0986d5cf93e57efc23371f3665b0e7fa1bc9ff7448e9dabdc0d96aca0589fdaecea370",
       "dependencies": null,
-      "recipe": "9822a6b6729452741776310a7ff8cff7c512587e4ffd08d817a41e09a3c5db06"
+      "recipe": "74b94641d963dac50dff0c2b7b791a8703573590cdf2618f56477dd7fcaa949a"
     },
     "gost": {
       "version": "3.3.2",
