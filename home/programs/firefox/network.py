@@ -15,10 +15,20 @@ import signal
 import socket
 
 
-async def copy(reader, writer):
+async def copy(reader, writer, allowed=lambda: True):
     while data := await reader.read(65536):
+        if not allowed():
+            return
         writer.write(data)
         await writer.drain()
+
+
+async def close_clients(server, active):
+    server.close()
+    clients = tuple(active)
+    for task in clients:
+        task.cancel()
+    await asyncio.gather(*clients, return_exceptions=True)
 
 
 async def bridge(reader, writer, connect, allowed=lambda: True):
@@ -66,10 +76,15 @@ def peer_identity(writer, uid, table=Path('/proc/net/tcp'), *, table_text=None, 
     return False
 
 
-async def host(settings):
-    spec = importlib.util.spec_from_file_location('network_state', settings['stateModule'])
+def state_module(path):
+    spec = importlib.util.spec_from_file_location('network_state', path)
     state = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(state)
+    return state
+
+
+async def host(settings):
+    state = state_module(settings['stateModule'])
     active = set()
     observer = None
     if settings.get('observer'):
@@ -133,16 +148,25 @@ async def host(settings):
                 task.cancel()
 
 
-async def portal(args):
+async def portal(args, settings):
     # A literal, explicitly selected portal address is the sole remote target.
     ip = ipaddress.ip_address(args.address)
     if ip.is_multicast or ip.is_unspecified or str(ip) in ('169.254.169.254', '100.100.100.200', 'fd00:ec2::254'):
         raise ValueError('unsafe portal address')
+    state = state_module(settings['stateModule'])
+    grant = (args.boot_id, args.policy_version)
+
+    def allowed():
+        return state.portal_authority(maximum=settings['maxAge'],
+                                      verification_maximum=settings['verificationMaxAge']) == grant
+
+    if not allowed():
+        raise ValueError('portal authorization is unavailable')
     active = set()
     async def client(reader, writer):
         task = asyncio.current_task()
         remote = None
-        if len(active) >= 32:
+        if len(active) >= 32 or not allowed():
             writer.transport.abort()
             return
         active.add(task)
@@ -158,8 +182,12 @@ async def portal(args):
                 raise ValueError('portal target')
             if parsed.username or parsed.password or parsed.scheme not in ('http', 'https'):
                 raise ValueError('portal scheme')
+            if not allowed():
+                return
             port = parsed.port or (443 if parsed.scheme == 'https' else 80)
             upstream, remote = await asyncio.wait_for(asyncio.open_connection(args.address, port), 3)
+            if not allowed():
+                return
             if method == 'CONNECT':
                 writer.write(b'HTTP/1.1 200 Connection Established\r\n\r\n')
                 await writer.drain()
@@ -169,7 +197,8 @@ async def portal(args):
                     path += '?' + parsed.query
                 remote.write((method + ' ' + path + ' ' + version).encode() + b'\r\n' + b'\r\n'.join(lines[1:]))
                 await remote.drain()
-            tasks = [asyncio.create_task(copy(reader, remote)), asyncio.create_task(copy(upstream, writer))]
+            tasks = [asyncio.create_task(copy(reader, remote, allowed)),
+                     asyncio.create_task(copy(upstream, writer, allowed))]
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 for t in done:
@@ -187,7 +216,11 @@ async def portal(args):
                     stream.transport.abort()
     server = await asyncio.start_unix_server(client, args.socket, limit=16384)
     async with server:
-        await server.serve_forever()
+        try:
+            while allowed():
+                await asyncio.sleep(0.1)
+        finally:
+            await close_clients(server, active)
 
 
 async def browser(args):
@@ -203,19 +236,19 @@ async def browser(args):
         finally:
             active.discard(task)
     server = await asyncio.start_server(client, '127.0.0.1', args.port, limit=65536)
-    process = await asyncio.create_subprocess_exec(*args.command)
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, lambda: process.terminate() if process.returncode is None else None)
-    try:
-        async with server:
+    process = None
+    async with server:
+        try:
+            process = await asyncio.create_subprocess_exec(*args.command)
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(sig, lambda: process.terminate() if process.returncode is None else None)
             return await process.wait()
-    finally:
-        if process.returncode is None:
-            process.terminate()
-            await process.wait()
-        for task in tuple(active):
-            task.cancel()
+        finally:
+            await close_clients(server, active)
+            if process is not None and process.returncode is None:
+                process.terminate()
+                await process.wait()
 
 
 def main():
@@ -224,15 +257,18 @@ def main():
     p = sub.add_parser('host')
     p.add_argument('settings')
     p = sub.add_parser('portal')
+    p.add_argument('settings')
     p.add_argument('--socket', required=True)
     p.add_argument('--address', required=True)
+    p.add_argument('--boot-id', required=True)
+    p.add_argument('--policy-version', type=int, required=True)
     p = sub.add_parser('browser')
     p.add_argument('--socket', required=True)
     p.add_argument('--port', required=True, type=int)
     p.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.mode == 'portal':
-        asyncio.run(portal(args))
+        asyncio.run(portal(args, json.loads(Path(args.settings).read_text())))
         return 0
     if args.mode == 'host':
         asyncio.run(host(json.loads(Path(args.settings).read_text())))

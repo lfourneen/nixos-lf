@@ -1,12 +1,16 @@
 """Exercise the production namespace/portal policy with a real Wayland Firefox."""
 from contextlib import contextmanager
+import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
 import os
 from pathlib import Path
 import socket
+from socketserver import BaseRequestHandler, UnixStreamServer
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -19,6 +23,110 @@ def module(name, path):
 
 manifest = json.loads(Path("/etc/firefox-sandbox-test.json").read_text())
 settings = json.loads(Path(manifest["settings"]).read_text())
+
+
+def publish(mode, variant=None):
+    root = Path('/run')
+    policy = root / 'proxy-mode'
+    policy.mkdir(exist_ok=True)
+    boot = '01234567-89ab-cdef-0123-456789abcdef'
+    (policy / 'boot-id').write_text(boot)
+    previous = policy / 'state.json'
+    version = (json.loads(previous.read_text())['policy_version'] if previous.exists() else 0) + 1
+    phase = 'proxy' if mode in ('rules', 'proxy-only') else 'direct' if mode == 'auto' else mode
+    if mode == 'auto':
+        (policy / 'intent').unlink(missing_ok=True)
+    else:
+        (policy / 'intent').write_text('direct' if phase == 'direct' else 'proxy')
+    now = time.clock_gettime(time.CLOCK_BOOTTIME)
+    common = dict(policy_version=version, mode=phase, monotonic_seconds=now)
+    state = dict(common)
+    records = {'proxy-mode/heartbeat.json': dict(common, monotonic_seconds=now - 1000 if variant == 'stale' else now),
+               'netsec/state.json': dict(result='ok', version=version, boot_id=boot, monotonic_seconds=now),
+               'dns-upstream/state.json': dict(common, mode='proxy' if phase == 'proxy' else 'offline'),
+               'dns-policy/state.json': dict(common, status='applied'),
+               'gost-relay/state.json': common}
+    if phase == 'proxy':
+        path = Path(manifest['routingPolicies'][mode])
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        active = policy / 'routing-active'
+        active.mkdir(exist_ok=True)
+        (active / 'policy.json').unlink(missing_ok=True)
+        (active / 'policy.json').symlink_to(path)
+        routing = dict(routing_requested=mode, routing_applied=mode, routing_epoch=version,
+                       routing_policy_digest=digest, routing_phase='ready',
+                       egress_epoch=version, egress_requested='c' * 64 if mode == 'proxy-only' else None)
+        state.update(routing, routing_schema=1, authorization_lease_seconds=60)
+        records['proxy-mode/routing.json'] = dict(routing, schema=1, boot_id=boot)
+        records['proxy-mode/authorization.json'] = dict(routing, boot_id=boot, policy_version=version, until=now + 60)
+        expected = json.loads(Path(settings['healthSettings'][mode]).read_text())['expected']
+        assert expected['managed-policy'] == digest
+        records['firefox-controller.json'] = dict(expected, mode='rule',
+            **{'managed-policy': '0' * 64 if variant == 'wrong' else digest})
+    records['proxy-mode/state.json'] = state
+    for path, content in records.items():
+        destination = root / path
+        destination.parent.mkdir(exist_ok=True)
+        pending = destination.with_suffix('.new')
+        pending.write_text(json.dumps(content))
+        pending.replace(destination)
+
+
+def serve():
+    class Controller(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_GET(self):
+            if self.path != '/configs':
+                self.send_error(404)
+                return
+            body = Path('/run/firefox-controller.json').read_bytes()
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    class Origin(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != '/hello':
+                self.send_error(404)
+                return
+            body = b'<html><title>Portal fixture</title><p>Portal fixture</p></html>'
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Content-Type', 'text/html')
+            self.end_headers()
+            self.wfile.write(body)
+            Path('/run/firefox-portal-visited').touch()
+
+    class StrictEndpoint(BaseRequestHandler):
+        def handle(self):
+            pass
+
+    desktop = json.loads(Path(settings['healthSettings']['rules']).read_text())
+    for name, handler in ((desktop['socket'], Controller), (settings['proxySocket'], StrictEndpoint)):
+        path = Path(name)
+        path.parent.mkdir(exist_ok=True)
+        server = UnixStreamServer(name, handler)
+        os.chmod(path, 0o600)
+        os.chown(path, manifest['uid'], 0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    ThreadingHTTPServer(('127.0.0.1', 80), Origin).serve_forever()
+
+
+if sys.argv[1:] == ['serve']:
+    serve()
+    raise SystemExit(0)
+if sys.argv[1:2] == ['publish']:
+    publish(*sys.argv[2:])
+    raise SystemExit(0)
+if sys.argv[1:2] == ['remote-name']:
+    if sys.argv[2] == 'identity':
+        settings = json.loads(Path(manifest['identitySettings']).read_text())
+    print(module("sandbox", settings["sandboxModule"]).remote_name(settings))
+    raise SystemExit(0)
+
 sandbox = module("sandbox", settings["sandboxModule"])
 guard = module("guard", manifest["guard"])
 assert settings['requireProxy'] is False

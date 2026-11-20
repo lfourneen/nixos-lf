@@ -237,7 +237,7 @@ Firefox 在打包层加入不可变 policy、AutoConfig、字体、preflight 和
 浏览器检查分为三类：
 
 - `browser-privacy` 检查软件包中的策略、启动器和偏好锁定。
-- `browser-sandbox-vm` 检查真实 Wayland 浏览器、系统 CA、文件与设备访问、音频、文档门户和 profile 复用。
+- `browser-sandbox-vm` 检查真实 Wayland 浏览器、系统 CA、文件与设备访问、音频和文档门户。它也使用测试路由状态检查两个安装入口、窗口复用和门户撤权后的清理。
 - `browser-ech-vm` 与 `browser-ech-uniform-vm` 检查 HTTP 代理和透明路径、HTTPS 记录、ECH 重试及证书拒绝。
 
 更新沙箱依赖或内核时，需要检查 bubblewrap、xdg-dbus-proxy、Landlock、seccomp 和门户身份识别。

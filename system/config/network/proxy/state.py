@@ -53,9 +53,35 @@ def boot_identity(root=Path('/run')):
             value = stream.read(80).strip()
         if re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value):
             return value
-    except OSError:
+    except (OSError, ValueError):
         pass
     return ''
+
+
+def portal_authority(root=Path('/run'), maximum=120, verification_maximum=420):
+    """Return one verified explicit A grant without depending on public DNS."""
+    root = Path(root)
+    now = time.clock_gettime(time.CLOCK_BOOTTIME)
+    boot = boot_identity(root)
+    directory = root / 'proxy-mode'
+    policy = read(directory / 'state.json')
+    heartbeat = read(directory / 'heartbeat.json')
+    verification = read(root / 'netsec/state.json')
+    version = policy.get('policy_version', policy.get('version'))
+    if (not boot or type(version) is not int or version < 1 or policy.get('mode') != 'direct'
+            or heartbeat.get('mode') != 'direct' or heartbeat.get('policy_version') != version
+            or not fresh(heartbeat.get('monotonic_seconds'), now, maximum)
+            or verification.get('boot_id') != boot or verification.get('version') != version
+            or verification.get('result') not in ('ok', 'degraded')
+            or not fresh(verification.get('monotonic_seconds'), now, verification_maximum)
+            or (root / 'netsec/failed').exists()):
+        return None
+    try:
+        if (directory / 'intent').read_text().strip() == 'direct':
+            return boot, version
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 def clean_audit(value):

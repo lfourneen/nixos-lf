@@ -13,9 +13,10 @@ Existing Flatpak profiles are not imported or deleted.
 The launcher runs [guard.py](../home/programs/firefox/guard.py) before opening the managed profile.
 In B, it requires matching, fresh mode, DNS, relay and verification state, then checks listener identity and the live controller policy.
 Root services validate private configuration snapshots and publish the result for the browser.
+With runtime routing, the launcher selects the fast check for the applied `rules` or `proxy-only` policy. It uses the desktop controller socket.
 
 C, unknown state and `unenforced` refuse startup.
-A second state read catches mode changes during preflight.
+The final state read must agree on the policy generation and the routing and exit epochs. Opening a link in an existing instance uses the same checks.
 Once Firefox is running, the relay and firewall enforce subsequent changes.
 
 The launcher checks fonts under strict privacy and starts the browser in the outer sandbox described below.
@@ -24,7 +25,7 @@ Namespace PIDs in stale profile locks do not identify desktop processes.
 Desktop/MIME entries use it.
 Former Zen/Chrome entry IDs redirect to Firefox.
 Policy changes require a full browser restart.
-`firefox --check` inspects prerequisites without creating the profile or opening a window.
+`firefox --check` and `firefox-identity --check` inspect prerequisites without creating a profile or opening a window.
 
 ## Outer sandbox
 
@@ -105,7 +106,8 @@ Other unconfined processes under the desktop UID remain trusted.
 Daily and identity profiles lock HTTPS-only and phishing, malware and download protection.
 Certificate-warning bypass is disabled.
 Safe Browsing can disclose query or download metadata, as described by [Mozilla](https://support.mozilla.org/en-US/kb/how-does-phishing-and-malware-protection-work).
-The portal entry provides a separate session for sites that need HTTP login.
+Use `clash-off` to explicitly select A before opening a portal session. The launcher checks the applied firewall policy, so the selected literal address is available while public DNS is offline.
+The relay binds to that direct authorization and closes existing connections when it ends. The launcher then exits the browser and removes the temporary profile, cache and downloads.
 
 Separate profiles keep cookies and account state apart.
 They do not make a logged-in account anonymous.

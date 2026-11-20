@@ -15,9 +15,23 @@ import ipaddress
 from urllib.parse import urlsplit
 
 
-def verify_core(settings):
+def verify_core(settings, readiness):
+    profiles = settings["healthSettings"]
+    if "default" in profiles:
+        path = profiles["default"]
+    else:
+        mode = readiness.get("routing_applied")
+        epoch = readiness.get("routing_epoch")
+        if (mode not in profiles or readiness.get("routing_requested") != mode
+                or readiness.get("routing_consistent") is not True
+                or readiness.get("routing_phase") != "ready" or type(epoch) is not int or epoch < 1):
+            raise ValueError("current routing policy is not verified")
+        path = profiles[mode]
+        expected = json.loads(Path(path).read_text())["expected"]["managed-policy"]
+        if expected != readiness.get("routing_policy_digest"):
+            raise ValueError("current routing policy digest differs from the browser configuration")
     result = subprocess.run(
-        [sys.executable, "-I", settings["healthModule"], settings["healthSettings"], "--fast"],
+        [sys.executable, "-I", settings["healthModule"], path, "--fast"],
         capture_output=True, text=True, timeout=9, check=False)
     try:
         verdict = json.loads(result.stdout)
@@ -104,25 +118,29 @@ def outer_sandbox(settings):
 def prepare(settings, binary, values=(), check=None, check_core=None, check_fonts=None,
             check_only=False):
     values = arguments(values)
-    if check is None:
+    portal = settings.get("portalOnly")
+    if check is None or portal:
         spec = importlib.util.spec_from_file_location("netsec_state", settings["stateModule"])
         state = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(state)
+    if check is None and not portal:
         check = state.readiness
-    kwargs = dict(target="proxy", maximum=settings["maxAge"],
-                  verification_maximum=settings["verificationMaxAge"])
-    verdict = check(**kwargs)
-    mode = verdict.get("mode", "unknown")
-    if settings.get("requireProxy") and mode != "proxy":
-        raise ValueError("this browser requires healthy proxy Mode B")
-    if settings.get("portalOnly") and mode != "direct":
-        raise ValueError("the portal browser is available only in explicit Mode A")
-    if mode not in {"direct", "proxy"}:
-        raise ValueError("network policy is " + mode + "; use clash-on/clash-off")
-    if mode == "proxy" and not verdict.get("ready"):
-        raise ValueError("proxy is not ready: " + "; ".join(verdict["reasons"]))
-    if mode == "proxy":
-        (verify_core if check_core is None else check_core)(settings)
+    freshness = dict(maximum=settings["maxAge"], verification_maximum=settings["verificationMaxAge"])
+    if portal:
+        grant = state.portal_authority(**freshness)
+        if grant is None:
+            raise ValueError("the portal browser is available only in verified explicit Mode A")
+    else:
+        verdict = check(target="proxy", **freshness)
+        mode = verdict.get("mode", "unknown")
+        if settings.get("requireProxy") and mode != "proxy":
+            raise ValueError("this browser requires healthy proxy Mode B")
+        if mode not in {"direct", "proxy"}:
+            raise ValueError("network policy is " + mode + "; use clash-on/clash-off")
+        if mode == "proxy":
+            if not verdict.get("ready"):
+                raise ValueError("proxy is not ready: " + "; ".join(verdict["reasons"]))
+            (verify_core if check_core is None else check_core)(settings, verdict)
     (verify_fonts if check_fonts is None else check_fonts)(settings)
     # A sandbox's profile lock contains a namespace PID, not a desktop PID.
     # Its host supervisor records package identity outside the exposed mounts.
@@ -130,11 +148,17 @@ def prepare(settings, binary, values=(), check=None, check_core=None, check_font
         outer_sandbox(settings).check_generation(settings, binary)
     else:
         verify_running_generation(settings["profile"], binary)
-    current = check(**kwargs)
-    if (current.get("mode") != mode
-            or current.get("policy_version") != verdict.get("policy_version")
-            or (mode == "proxy" and not current.get("ready"))):
-        raise ValueError("network state changed during browser launch; retry")
+    if portal:
+        if state.portal_authority(**freshness) != grant:
+            raise ValueError("portal authorization changed during browser launch")
+        settings["portalAuthority"] = grant
+    else:
+        current = check(target="proxy", **freshness)
+        if (current.get("mode") != mode or current.get("policy_version") != verdict.get("policy_version")
+                or mode == "proxy" and (not current.get("ready") or any(
+                    current.get(key) != verdict.get(key) for key in (
+                        "routing_applied", "routing_epoch", "routing_policy_digest", "egress_requested", "egress_epoch")))):
+            raise ValueError("network state changed during browser launch; retry")
     if check_only:
         return []
     profile = Path(settings["profile"])
@@ -158,15 +182,16 @@ def main():
                 raise ValueError('portal requires a plain HTTP(S) address on port 80/443')
             address = str(ipaddress.ip_address(target.hostname))
             temporary = tempfile.TemporaryDirectory(prefix='firefox-portal-', dir=settings['runtime'])
-            settings = dict(settings, profile=temporary.name + '/profile', cache=temporary.name + '/cache',
+            settings = dict(settings, launchSettings=sys.argv[1],
+                            profile=temporary.name + '/profile', cache=temporary.name + '/cache',
                             downloads=temporary.name + '/downloads', lifetime=900, portalAddress=address)
-        command = prepare(settings, sys.argv[2], () if check_only else sys.argv[3:],
-                          check_only=check_only)
-        if check_only:
-            outer_sandbox(settings).prerequisites(settings)
-            print("Firefox fonts, network and outer sandbox prerequisites verified")
-            return 0
         try:
+            command = prepare(settings, sys.argv[2], () if check_only else sys.argv[3:],
+                              check_only=check_only)
+            if check_only:
+                outer_sandbox(settings).prerequisites(settings)
+                print("Firefox fonts, network and outer sandbox prerequisites verified")
+                return 0
             return outer_sandbox(settings).run(settings, sys.argv[2], command)
         finally:
             if temporary:

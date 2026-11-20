@@ -232,8 +232,10 @@ def session(settings):
                 command += ["--ro-bind-try", path, path]
             if settings.get('portalOnly'):
                 path = instance / 'portal.sock'
+                boot, version = settings['portalAuthority']
                 portal_proxy = subprocess.Popen([settings['python'], '-I', settings['networkModule'], 'portal',
-                    '--socket', str(path), '--address', settings['portalAddress']],
+                    settings['launchSettings'], '--socket', str(path), '--address', settings['portalAddress'],
+                    '--boot-id', boot, '--policy-version', str(version)],
                     env={'PATH': settings['path']}, stdin=subprocess.DEVNULL)
                 deadline = time.monotonic() + 5
                 while not path.exists():
@@ -255,10 +257,10 @@ def session(settings):
                 command += ["--ro-bind", str(pulse), str(pulse)]
             for name, value in desktop_environment(settings, wayland).items():
                 command += ["--setenv", name, value]
-            yield command, instance, portal, proxy
+            yield command, instance, portal, proxy, portal_proxy
         finally:
             control.close()
-            if portal_proxy is not None:
+            if portal_proxy is not None and portal_proxy.poll() is None:
                 portal_proxy.terminate()
                 portal_proxy.wait(timeout=5)
             proxy.terminate()
@@ -290,7 +292,7 @@ def run(settings, binary, command):
 
 
 def run_locked(settings, binary, command, launch_lock):
-    with session(settings) as (prefix, instance, portal, proxy):
+    with session(settings) as (prefix, instance, portal, proxy, portal_proxy):
         # The metadata names a host PID in the browser's namespaces. Publish it
         # before the browser can ask the portal to translate any selected file.
         read_info, write_info = os.pipe()
@@ -330,6 +332,8 @@ def run_locked(settings, binary, command, launch_lock):
                         raise ValueError('temporary browser session expired')
                     if proxy.poll() is not None:
                         raise ValueError("filtered desktop bus exited")
+                    if portal_proxy is not None and portal_proxy.poll() is not None:
+                        raise ValueError("portal authorization ended")
         finally:
             for fd in (read_info, write_info, read_gate, write_gate):
                 if fd is not None:

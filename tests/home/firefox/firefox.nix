@@ -5,15 +5,18 @@ let
   compatHome = compatConfig.home-manager.users.${compatConfig.my.machine.desktopUser};
   firefox = home.programs.firefox.finalPackage;
 
+  isolated = pkgs.lib.genAttrs [ "identity" "portal" ] (name:
+    let launcher = pkgs.lib.findFirst (pkg: pkgs.lib.getName pkg == "firefox-${name}")
+      (throw "Missing firefox-${name} launcher") home.home.packages;
+    in launcher.netsec);
   manifest = pkgs.writeText "firefox-test.json" (builtins.toJSON {
     package = firefox;
-    isolatedBrowsers = pkgs.lib.genAttrs [ "identity" "portal" ] (name:
-      let launcher = pkgs.lib.findFirst (pkg: pkgs.lib.getName pkg == "firefox-${name}")
-        (throw "Missing firefox-${name} launcher") home.home.packages;
-      in launcher.netsec.package);
+    isolatedBrowsers = pkgs.lib.mapAttrs (_: browser: browser.package) isolated;
+    isolatedSettings = pkgs.lib.mapAttrs (_: browser: browser.settings) isolated;
     driver = ./firefox_driver.py;
     inherit (firefox.netsec) settings prefs;
     rootHealthSettings = config.my.proxy.healthSettings;
+    routingHealthSettings = config.my.proxy.routingHealthSettings;
     desktopHealthSettings = config.my.proxy.desktopHealthSettings;
     desktopUid = config.users.users.${config.my.machine.desktopUser}.uid;
     compatPrefs = compatHome.programs.firefox.finalPackage.netsec.prefs;
@@ -39,6 +42,7 @@ pkgs.runCommand "firefox-privacy-checks" {
   export FIREFOX_GUARD=${../../../home/programs/firefox/guard.py}
   export FIREFOX_SANDBOX=${../../../home/programs/firefox/sandbox.py}
   export FIREFOX_HEALTH=${../../../system/config/network/proxy/health.py}
+  export FIREFOX_STATE=${../../../system/config/network/proxy/state.py}
   export XDG_CACHE_HOME="$TMPDIR/firefox-cache"
   mkdir -p "$XDG_CACHE_HOME"
   python3 ${./test_firefox.py}

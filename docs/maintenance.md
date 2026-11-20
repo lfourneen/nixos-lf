@@ -247,7 +247,7 @@ Check the final launcher and desktop/MIME entries, policy locks, DoH/proxy value
 Browser checks cover three areas:
 
 - `browser-privacy` checks the packaged policies, launcher and preference locks.
-- `browser-sandbox-vm` checks a real Wayland browser, system CA trust, file and device access, audio, document portals and profile reuse.
+- `browser-sandbox-vm` checks a real Wayland browser, system CA trust, file and device access, audio and document portals. It also exercises both installed launchers under fixture routing states, window reuse and cleanup after revoking portal access.
 - `browser-ech-vm` and `browser-ech-uniform-vm` check HTTP proxy and transparent paths, HTTPS records, ECH retries and certificate rejection.
 
 For sandbox dependency or kernel updates, review bubblewrap, xdg-dbus-proxy, Landlock, seccomp and portal identity handling.

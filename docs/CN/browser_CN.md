@@ -13,9 +13,10 @@ Firefox 是原生 Nix 包。
 启动器先运行 [guard.py](../../home/programs/firefox/guard.py)，再打开受管 profile。
 B 模式要求模式、DNS、relay 和验证状态新鲜且代次一致，随后核对监听身份及实时控制策略。
 私有配置快照由 root 服务验证，浏览器读取其发布的结果。
+启用运行时路由时，启动器按已生效的 `rules` 或 `proxy-only` 策略选择快检配置，并使用桌面控制 socket。
 
 C、未知状态和 `unenforced` 拒绝启动。
-预检结束前再次读取状态，以识别期间的模式切换。
+预检结束时再次核对策略代次、路由 epoch 和出口 epoch。向已有浏览器实例打开链接时同样执行这些检查。
 浏览器运行后的变化由 relay 和防火墙执行。
 
 启动器在严格隐私下检查字体，然后在下述外层沙箱中运行浏览器。
@@ -23,7 +24,7 @@ C、未知状态和 `unenforced` 拒绝启动。
 陈旧 profile 锁中的命名空间 PID 不作为桌面进程身份。
 桌面/MIME 入口均使用它，原 Zen/Chrome ID 转向 Firefox。
 策略更新后需完整重启浏览器。
-`firefox --check` 仅检查前提，不创建 profile 或开窗口。
+`firefox --check` 和 `firefox-identity --check` 仅检查前提，不创建 profile 或开窗口。
 
 ## 外层沙箱
 
@@ -102,7 +103,8 @@ GUI 选组和 Global 模式不能放宽这些规则。
 
 日常和身份 profile 锁定 HTTPS-only，以及反钓鱼、恶意软件和下载保护，禁止绕过证书警告。
 Safe Browsing 可能披露查询或下载元信息，详见 [Mozilla 说明](https://support.mozilla.org/en-US/kb/how-does-phishing-and-malware-protection-work)。
-需要 HTTP 登录的门户使用独立的临时入口。
+用 `clash-off` 显式选择 A 后，可启动临时门户会话。启动器核对已生效的防火墙策略，公网 DNS 离线时也可访问选定的字面 IP。
+Relay 绑定这一次直连授权，在授权结束时断开已有连接。启动器随后关闭浏览器并清理临时 profile、缓存和下载。
 
 独立 profile 将 Cookie 和账号状态分开，但不会让已登录账号匿名。
 WebRTC、HTTP/3 和浏览器 DoH 均关闭，代理域名解析遵循共享的 [DNS 与目标策略](dns_CN.md)。

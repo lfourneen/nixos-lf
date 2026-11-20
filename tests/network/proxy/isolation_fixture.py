@@ -338,7 +338,15 @@ finally:
 portal_origin=ThreadingHTTPServer(('1.0.0.1',80),Direct)
 threading.Thread(target=portal_origin.serve_forever, daemon=True).start()
 portal_socket='/run/fixture-portal.sock'
-portal_proxy=subprocess.Popen([s['python'],s['network'],'portal','--socket',portal_socket,'--address','1.0.0.1'])
+boot = stage.boot_id(state)
+Path('/run/portal-readiness.py').write_text(
+    f"from pathlib import Path\ndef portal_authority(**kwargs):\n"
+    f" return ({boot!r}, 1) if Path('/run/fixture-mode').read_text() == 'direct' else None\n")
+Path('/run/portal-settings.json').write_text(json.dumps(
+    dict(stateModule='/run/portal-readiness.py', maxAge=10, verificationMaxAge=10)))
+Path('/run/fixture-mode').write_text('direct')
+portal_proxy=subprocess.Popen([s['python'],s['network'],'portal','/run/portal-settings.json',
+    '--socket',portal_socket,'--address','1.0.0.1','--boot-id',boot,'--policy-version','1'])
 try:
     deadline=time.monotonic()+5
     while not Path(portal_socket).exists():
@@ -350,6 +358,17 @@ try:
     assert command(*portal_client,'http://1.0.0.1/marker').stdout == 'direct'
     assert subprocess.run(portal_client+['http://1.1.1.1/forbidden'],capture_output=True).returncode
     assert subprocess.run(portal_client+['http://1.0.0.1:18082/forbidden'],capture_output=True).returncode
-    print('Separate portal namespace transport accepted only its selected address and ports',flush=True)
+    with socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(3)
+        client.connect(portal_socket)
+        client.sendall(b'CONNECT 1.0.0.1:80 HTTP/1.1\r\n\r\n')
+        assert client.recv(4096).startswith(b'HTTP/1.1 200 ')
+        Path('/run/fixture-mode').write_text('blocked')
+        assert client.recv(1) == b''
+    assert portal_proxy.wait(timeout=3) == 0
+    assert subprocess.run(portal_client+['http://1.0.0.1/marker'],capture_output=True).returncode
+    print('Separate portal namespace transport constrained targets and revoked active and new streams',flush=True)
 finally:
-    portal_proxy.terminate(); portal_proxy.wait(timeout=5)
+    if portal_proxy.poll() is None:
+        portal_proxy.terminate()
+        portal_proxy.wait(timeout=5)

@@ -27,13 +27,17 @@ settings = json.loads(Path(manifest["settings"]).read_text())
 # Browser preflight must not inherit the root-only controller/snapshot inputs.
 # Keep its live policy and passive listener checks identical to the supervisor's.
 assert settings["healthSettings"] == manifest["desktopHealthSettings"]
-desktop_health = json.loads(Path(settings["healthSettings"]).read_text())
 root_health = json.loads(Path(manifest["rootHealthSettings"]).read_text())
-assert set(desktop_health) == {"budget_seconds", "listener_check", "expected", "socket"}
-assert desktop_health["socket"] == (
-    f'/run/user/{manifest["desktopUid"]}/clash-verge-rev/verge-mihomo.sock')
-for key in ("expected", "listener_check", "budget_seconds"):
-    assert desktop_health[key] == root_health[key], key
+assert set(settings["healthSettings"]) == {"rules", "proxy-only"}
+for mode, path in settings["healthSettings"].items():
+    desktop_health = json.loads(Path(path).read_text())
+    mode_health = json.loads(Path(manifest["routingHealthSettings"][mode]).read_text())
+    assert set(desktop_health) == {"budget_seconds", "listener_check", "expected", "socket"}
+    assert desktop_health["socket"] == f'/run/user/{manifest["desktopUid"]}/clash-verge-rev/verge-mihomo.sock'
+    for key in ("expected", "listener_check", "budget_seconds"):
+        assert desktop_health[key] == mode_health[key], (mode, key)
+for path in manifest["isolatedSettings"].values():
+    assert json.loads(Path(path).read_text())["healthSettings"] == settings["healthSettings"]
 assert root_health["socket"] == "/run/clash-verge-rev/core/mihomo.sock"
 assert root_health["snapshot_required"] is True
 assert root_health["digest_file"] == "/run/proxy-mode/config-digest"

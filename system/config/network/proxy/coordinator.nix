@@ -156,7 +156,7 @@ let
     snapshot_required = config.programs.clash-verge.enable;
     digest_file = "/run/proxy-mode/config-digest";
     authorization_file = "/run/proxy-mode/authorized-config";
-    listener_check = listenerCheck;
+    listener_check = config.my.proxy.listenerCheck;
     runtime = "/run/proxy-mode";
     budget_seconds = config.my.proxy.healthBudgetSeconds;
     request_timeout_seconds = config.my.proxy.healthRequestTimeoutSeconds;
@@ -220,6 +220,9 @@ let
   healthSettings = pkgs.writeText "proxy-health.json" (builtins.toJSON healthConfig);
   activeHealthSettings = if config.my.proxy.runtimeRouting then "/run/proxy-mode/routing-active/health.json"
     else toString healthSettings;
+  routingExpected = mode: healthConfig.expected // {
+    managed-policy = builtins.hashString "sha256" (builtins.toJSON config.my.proxy.routingPolicyValues.${mode});
+  };
   routingHealthSettings = lib.genAttrs [ "rules" "proxy-only" ] (mode:
     pkgs.writeText "routing-${mode}-health.json" (builtins.toJSON (healthConfig // {
       routing_state = "/run/proxy-mode/routing.json";
@@ -229,18 +232,19 @@ let
       ip_tunnel = if mode == "proxy-only" then config.my.proxy.ipTunnelSettings else null;
       tun_route_classes = if mode == "proxy-only"
         then lib.mapAttrs (_: _: "proxy") healthConfig.tun_route_classes else healthConfig.tun_route_classes;
-      expected = healthConfig.expected // {
-        managed-policy = builtins.hashString "sha256" (builtins.toJSON config.my.proxy.routingPolicyValues.${mode});
-      };
+      expected = routingExpected mode;
     })));
 
   # Desktop consumers require the root supervisor's fresh readiness verdict,
   # then check live API invariants through their own forwarder. Snapshot files
   # and the internal controller remain private; only the supervisor verifies them.
-  desktopHealthSettings = pkgs.writeText "proxy-desktop-health.json" (builtins.toJSON {
-    inherit (healthConfig) budget_seconds listener_check expected;
-    socket = frontSock;
-  });
+  desktopHealthSettings = lib.genAttrs
+    (if config.my.proxy.runtimeRouting then [ "rules" "proxy-only" ] else [ "default" ]) (mode:
+      pkgs.writeText "proxy-desktop-${mode}-health.json" (builtins.toJSON {
+        inherit (healthConfig) budget_seconds listener_check;
+        expected = if mode == "default" then healthConfig.expected else routingExpected mode;
+        socket = frontSock;
+      }));
 
   # Single source of truth for "Clash is on": ../dns/upstream.nix calls the same script, so
   # the criterion cannot drift between the two supervisors.
@@ -1274,7 +1278,7 @@ in
   options.my.proxy.requestVerify = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.healthSettings = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.activeHealthSettings = lib.mkOption { type = lib.types.str; internal = true; };
-  options.my.proxy.desktopHealthSettings = lib.mkOption { type = lib.types.path; internal = true; };
+  options.my.proxy.desktopHealthSettings = lib.mkOption { type = lib.types.attrsOf lib.types.path; internal = true; };
   options.my.proxy.listenerCheck = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.listenerSettings = lib.mkOption { type = lib.types.path; internal = true; };
   options.my.proxy.tunCheck = lib.mkOption { type = lib.types.path; internal = true; };

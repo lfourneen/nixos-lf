@@ -9,6 +9,7 @@ from socketserver import UnixStreamServer
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -99,11 +100,11 @@ class LaunchTests(unittest.TestCase):
         good = lambda **_: dict(mode="proxy", ready=True, policy_version=8)
         core = mock.Mock()
         command = self.prepare(good, core)
-        core.assert_called_once_with(self.settings)
+        core.assert_called_once_with(self.settings, good())
         self.assertEqual(command, ["/current/bin/.firefox-unchecked", "--profile", str(self.profile)])
         self.assertEqual(self.profile.stat().st_mode & 0o777, 0o700)
         with self.assertRaisesRegex(ValueError, "core is old"):
-            self.prepare(good, lambda _: (_ for _ in ()).throw(ValueError("core is old")))
+            self.prepare(good, mock.Mock(side_effect=ValueError("core is old")))
 
     def test_live_core_preflight_uses_desktop_socket_and_preserves_rejection(self):
         # Exercise the actual subprocess/API path rather than mocking verify_core.
@@ -113,7 +114,7 @@ class LaunchTests(unittest.TestCase):
         listener_check = directory / "listeners"
         listener_check.write_text(f"#!{sys.executable}\nraise SystemExit(0)\n")
         listener_check.chmod(0o700)
-        config = {"mode": "rule", "managed-policy": "expected", "mixed-port": 7897}
+        config = {"mode": "rule", "mixed-port": 7897}
 
         class Controller(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -136,25 +137,43 @@ class LaunchTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(worker.join)
         self.addCleanup(server.shutdown)
-        health_settings = directory / "desktop-health.json"
-        health_settings.write_text(json.dumps({
-            "socket": str(socket_path), "listener_check": str(listener_check),
-            "budget_seconds": 4, "expected": {"managed-policy": "expected", "mixed-port": 7897},
-        }))
+        profiles = {}
+        for mode, digest in (("rules", "a" * 64), ("proxy-only", "b" * 64)):
+            profile = directory / (mode + ".json")
+            profile.write_text(json.dumps({
+                "socket": str(socket_path), "listener_check": str(listener_check), "budget_seconds": 4,
+                "expected": {"managed-policy": digest, "mixed-port": 7897},
+            }))
+            profiles[mode] = str(profile)
         self.settings.update(
             healthModule=(os.environ.get("FIREFOX_HEALTH") or str(Path(__file__).resolve().parents[3]
                 / "system/config/network/proxy/health.py")),
-            healthSettings=str(health_settings))
-        good = lambda **_: dict(mode="proxy", ready=True, policy_version=8)
-        self.assertEqual(self.prepare(good, check_only=True), [])
+            healthSettings=profiles)
+        routing = dict(mode="proxy", ready=True, policy_version=8, routing_consistent=True,
+                       routing_phase="ready", routing_epoch=7)
+        for mode, digest in (("rules", "a" * 64), ("proxy-only", "b" * 64)):
+            with self.subTest(mode=mode):
+                routing.update(routing_requested=mode, routing_applied=mode, routing_policy_digest=digest)
+                config["managed-policy"] = digest
+                self.assertEqual(self.prepare(lambda **_: routing, check_only=True), [])
         self.assertFalse(self.profile.exists())
-        config["managed-policy"] = "wrong-policy"
+        good = lambda **_: routing
+        config["managed-policy"] = "a" * 64
         with self.assertRaisesRegex(ValueError, "managed-policy differs"):
             self.prepare(good, check_only=True)
-        config["managed-policy"] = "expected"
+        routing["routing_policy_digest"] = "a" * 64
+        with self.assertRaisesRegex(ValueError, "routing policy digest differs"):
+            self.prepare(good, check_only=True)
+        routing["routing_policy_digest"] = "b" * 64
+        config["managed-policy"] = "b" * 64
+        listener_check.write_text(f"#!{sys.executable}\nraise SystemExit(1)\n")
+        with self.assertRaisesRegex(ValueError, "listener identity mismatch"):
+            self.prepare(good, check_only=True)
+        listener_check.write_text(f"#!{sys.executable}\nraise SystemExit(0)\n")
         config["mode"] = "direct"
         with self.assertRaisesRegex(ValueError, "core mode is direct"):
             self.prepare(good, check_only=True)
+        health_settings = Path(profiles["proxy-only"])
         health_settings.write_text(health_settings.read_text().replace("gui.sock", "absent.sock"))
         with self.assertRaisesRegex(ValueError, "controller reply unavailable"):
             self.prepare(good, check_only=True)
@@ -171,13 +190,14 @@ class LaunchTests(unittest.TestCase):
                 self.prepare(lambda **_: dict(mode=mode, ready=False))
 
     def test_transition_or_generation_change_cannot_authorize_launch(self):
-        start = dict(mode="proxy", ready=True, policy_version=7)
+        start = dict(mode="proxy", ready=True, policy_version=7, routing_epoch=4, egress_epoch=2)
         for end in (dict(mode="proxy", ready=True, policy_version=8),
                     dict(mode="blocked", ready=False, policy_version=8),
-                    dict(mode="proxy", ready=False, policy_version=7)):
+                    dict(mode="proxy", ready=False, policy_version=7),
+                    dict(start, routing_epoch=5), dict(start, egress_epoch=3)):
             rounds = iter([start, end])
             with self.assertRaisesRegex(ValueError, "state changed"):
-                self.prepare(lambda **_: next(rounds), lambda _: None)
+                self.prepare(lambda **_: next(rounds), mock.Mock())
         self.assertFalse(self.profile.exists())
 
     def test_cli_cannot_replace_profile_enable_debugging_or_inject_options(self):
@@ -209,15 +229,45 @@ class LaunchTests(unittest.TestCase):
 
 
 class StrictBrowserTests(unittest.TestCase):
-    def test_portal_requires_direct_mode_and_daily_profile_is_not_reused(self):
+    def test_portal_checks_explicit_verified_direct_without_dns_and_binds_one_grant(self):
         with tempfile.TemporaryDirectory() as directory:
-            settings = {'portalOnly':True, 'strictPrivacy':False, 'profile':directory,
-                        'maxAge':10, 'verificationMaxAge':10}
-            for mode in ('proxy', 'blocked', 'unknown'):
-                with self.assertRaises(ValueError):
-                    guard.prepare(settings, '/unused', check=lambda **_: {'mode':mode}, check_only=True)
-            self.assertEqual(guard.prepare(settings, '/unused',
-                check=lambda **_: {'mode':'direct'}, check_only=True), [])
+            root = Path(directory)
+            mode_path, netsec = root / 'proxy-mode', root / 'netsec'
+            mode_path.mkdir()
+            netsec.mkdir()
+            original = os.environ.get('FIREFOX_STATE') or str(Path(__file__).resolve().parents[3]
+                / 'system/config/network/proxy/state.py')
+            state_file = root / 'state.py'
+            state_file.write_text(f"from functools import partial\nfrom runpy import run_path\n"
+                f"portal_authority = partial(run_path({original!r})['portal_authority'], root={directory!r})\n")
+            profile = root / 'temporary-profile'
+            settings = dict(portalOnly=True, strictPrivacy=False, profile=str(profile),
+                            maxAge=10, verificationMaxAge=10, stateModule=str(state_file))
+            boot = '00000000-1111-2222-3333-444444444444'
+            (mode_path / 'boot-id').write_text(boot)
+            def publish(mode, version=5, age=0):
+                stamp = time.clock_gettime(time.CLOCK_BOOTTIME) - age
+                common = dict(mode=mode, policy_version=version, monotonic_seconds=stamp)
+                for file in ('state.json', 'heartbeat.json'):
+                    (mode_path / file).write_text(json.dumps(common))
+                (netsec / 'state.json').write_text(json.dumps(dict(result='ok', version=version,
+                    boot_id=boot, monotonic_seconds=stamp)))
+            intent = mode_path / 'intent'
+            publish('direct')
+            for mode, requested, age in [('direct', None, 0), ('direct', 'auto', 0),
+                    ('proxy', 'proxy', 0), ('blocked', 'direct', 0), ('direct', 'direct', 15)]:
+                with self.subTest(mode=mode, requested=requested, age=age):
+                    if requested:
+                        intent.write_text(requested)
+                    publish(mode, age=age)
+                    with self.assertRaisesRegex(ValueError, 'verified explicit Mode A'):
+                        guard.prepare(settings, '/unused', check_only=True)
+                    self.assertFalse(profile.exists())
+            publish('direct')
+            self.assertEqual(guard.prepare(settings, '/unused', check_only=True), [])
+            self.assertEqual(settings['portalAuthority'], (boot, 5))
+            with self.assertRaisesRegex(ValueError, 'authorization changed'):
+                guard.prepare(settings, '/unused', check_fonts=lambda _: publish('direct', version=6))
 
     def test_follow_system_guard_still_checks_current_proxy_health(self):
         # Existing readiness/race tests cover the shared contract. Strict mode

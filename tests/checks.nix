@@ -271,9 +271,22 @@ let
         }).config;
       };
 
-      browser-sandbox-vm = import ./home/firefox/firefox-sandbox-vm.nix {
+      browser-sandbox-vm = let
+        fixtureConfig = (self.nixosConfigurations.lfour.extendModules {
+          modules = [ ({ lib, ... }: {
+            my.proxy.transparentApplications = lib.mkForce false;
+            my.proxy.listenerCheck = lib.mkForce "${pkgs.coreutils}/bin/true";
+          }) ];
+        }).config;
+        home = fixtureConfig.home-manager.users.${desktopUser};
+        launcher = name: pkgs.lib.findFirst (pkg: pkgs.lib.getName pkg == "firefox-${name}")
+          (throw "Missing firefox-${name} launcher") home.home.packages;
+      in import ./home/firefox/firefox-sandbox-vm.nix {
         inherit pkgs;
-        firefox = compatibilityBrowser;
+        firefox = home.programs.firefox.finalPackage;
+        identity = launcher "identity";
+        portal = launcher "portal";
+        inherit (fixtureConfig.my.proxy) routingPolicies;
         desktopIdentity = self.nixosConfigurations.lfour.config.programs.clash-verge.package.desktopIdentity;
       };
 
