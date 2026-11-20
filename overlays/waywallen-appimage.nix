@@ -2,10 +2,10 @@
 
 let
   pname = "waywallen";
-  version = "0.6.0";
+  version = "0.6.1";
   src = pkgs.fetchurl {
     url = "https://github.com/waywallen/waywallen/releases/download/v${version}/waywallen-${version}-x86_64.AppImage";
-    hash = "sha256-0X4ZxnGrGWJpnqrfNIM9x1UVqL3G+nQoZJjgJVqzUf0=";
+    hash = "sha256-3RxYx+rN7hKR/DrZsOC82GTWtf6xxQZbirFzeNF25i0=";
   };
 
   # Single extraction, reused for the runtime AppDir plus the desktop entry,
@@ -17,8 +17,7 @@ pkgs.appimageTools.wrapAppImage {
   inherit pname version;
   src = appDir;
 
-  # The AppImage omits the GPU/display stack (it must match the running driver);
-  # listed explicitly rather than relying on appimageTools' FHS multiPkgs.
+  # Supply the system GPU/display libraries and the plugin browser runtime.
   extraPkgs = pkgs: with pkgs; [
     wayland
     libdrm
@@ -37,7 +36,14 @@ pkgs.appimageTools.wrapAppImage {
     freetype
     harfbuzz
     zlib
+    webkitgtk_4_1
+    glib-networking
   ];
+
+  # The plugin browser loads WebKitGTK dynamically and uses GIO for HTTPS.
+  profile = ''
+    export GIO_EXTRA_MODULES="${pkgs.glib-networking}/lib/gio/modules''${GIO_EXTRA_MODULES:+:$GIO_EXTRA_MODULES}"
+  '';
 
   # AppRun execs `usr/bin/waywallen`, matching the wrapper name, so Exec works
   # unchanged.

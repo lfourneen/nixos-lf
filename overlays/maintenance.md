@@ -8,10 +8,11 @@ follow their supplying input in [flake.lock](../flake.lock).
 
 | Entry | Customization / maintenance |
 | --- | --- |
-| [default.nix](default.nix) | Niri SHM screencast diff fetched with a fixed hash; checks disabled in this override. Compare upstream integration and exercise screencasting before retiring the diff |
+| [default.nix](default.nix) | The locked Niri 26.04 uses a fixed-hash SHM screencast backport with package checks disabled. Retire the override once the selected source includes the SHM merge and screencasting has been verified. [Niri #1791](https://github.com/niri-wm/niri/pull/1791) |
 | [dsh-desktop-appimage.nix](dsh-desktop-appimage.nix) | ASAR menu changes, bundled pnpm git-install behavior, unpack/executable preservation and Landlock launcher. Review exact JS anchors, bundled pnpm, sharp WASM and executable assets on each AppImage bump |
 | [dsh-tui.nix](dsh-tui/dsh-tui.nix) | Prebuilt release extraction, native DSH dependency links, persistent plugin profile and FHS launcher. Check the pkg asset layout, the host version range the TUI supports, actual host exports/TUI loading, shared Cordis instance and plugin persistence; see [packaging and plugin guide](dsh-tui/README.md) |
 | [bilibili-appimage.nix](bilibili-appimage.nix) | Desktop command replacement and Wayland launcher; verify changed desktop layout and sandbox flags |
+| [waywallen-appimage.nix](waywallen-appimage.nix) | The AppImage includes the plugin browser helper. The wrapper supplies WebKitGTK 4.1 and GIO TLS. Check the helper's availability and display recall with a missing saved wallpaper before retiring the startup fallback |
 | [wemeet-cursor-hook.nix](wemeet-cursor-hook.nix) | Pinned external cursor-hook library, built from source; verify preload/cursor behavior with compositor updates |
 | [openidea-appimage.nix](openidea/openidea-appimage.nix) | Tauri AppImage extraction and wrapper, WebKit sandbox helpers, GIO/XCURSOR environment fixes, and a launch-time repair for managed tools whose Nix loader was garbage-collected. Check the asset layout, desktop entry and icons, the repair-tools test and managed tool startup on each bump |
 
