@@ -179,7 +179,7 @@
       "pins": [],
       "flake": {
         "input": "hermes-agent",
-        "rev": "ae2a81ccc00e9b7c06301523e5bb09608397149c"
+        "rev": "caafe5389ae585ef77387a962aee05b1bcf17029"
       }
     },
     {
@@ -690,5 +690,5 @@
       "network_ref": "browser-isolation"
     }
   ],
-  "lock_graph_sha256": "512da269e1f50361a28f04a27d985a0da066df80eada2d3ee7d2d8ecdb7bd7e0"
+  "lock_graph_sha256": "b2b83d911fb936c0a28d7163c1a79f84041fbc3936f61c37da85c43c920bf878"
 }

@@ -2,7 +2,12 @@
   description = "NixOS Configuration";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    nixpkgs = {
+      type = "github";
+      owner = "NixOS";
+      repo = "nixpkgs";
+      ref = "nixos-26.05";
+    };
 
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -17,7 +22,10 @@
     };
 
     home-manager = {
-      url = "github:nix-community/home-manager/release-26.05";
+      type = "github";
+      owner = "nix-community";
+      repo = "home-manager";
+      ref = "release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -35,7 +43,12 @@
 
     nix-flatpak.url = "github:gmodena/nix-flatpak";
 
-    hermes-agent.url = "github:NousResearch/hermes-agent/v0.23.2";
+    hermes-agent = {
+      type = "github";
+      owner = "NousResearch";
+      repo = "hermes-agent";
+      ref = "v0.23.3";
+    };
 
     llm-agents.url = "github:numtide/llm-agents.nix";
   };

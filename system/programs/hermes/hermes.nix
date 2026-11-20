@@ -5,23 +5,17 @@ let
   userPreferredLang = "Chinese";
   userRole = "Advanced NixOS User";
 
-  # The pinned release lives in the flake input ref (flake.nix, tag vX.Y.Z);
-  # read it back from there so the package version cannot drift from the tag.
-  # Upstream ships `version = "0.0.0"` in pyproject.toml and its Nix build never
-  # learns the git tag, so without this override the install stamp — and thus
-  # `hermes --version` — reports v0.0.0.
+  # Stamp the pinned release because upstream's pyproject.toml uses version 0.0.0.
   hermesVersion =
     let
-      m = builtins.match ".*hermes-agent/v([0-9]+\\.[0-9]+\\.[0-9]+).*"
-        (lib.findFirst
-          (l: builtins.match ".*hermes-agent/v[0-9].*" l != null)
-          ""
-          (lib.splitString "\n" (builtins.readFile ../../../flake.nix)));
+      input = (import ../../../flake.nix).inputs.hermes-agent;
+      tag = input.ref or (lib.last (lib.splitString "/" (input.url or "")));
+      version = builtins.match "v([0-9]+\\.[0-9]+\\.[0-9]+).*" tag;
     in
-    if m == null then
-      throw "hermes.nix: cannot parse hermes-agent version from flake.nix (expected a '.../hermes-agent/vX.Y.Z' input URL)"
+    if version == null then
+      throw "hermes.nix: expected a vX.Y.Z release tag in the hermes-agent flake input"
     else
-      builtins.head m;
+      builtins.head version;
 
   # Seed for memories/USER.md; installed only if absent.
   hermesUserProfile = ''
