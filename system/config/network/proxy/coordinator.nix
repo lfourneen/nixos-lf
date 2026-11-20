@@ -321,7 +321,7 @@ let
     # restricted /proc view. A missing identity must not be silently invented.
     ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/clash-verge-stage.py} initialize-boot /run/proxy-mode || exit 1
     lock_state() { $FLOCK -x -w 10 9 || exit 1; }
-    unlock_state() { $FLOCK -u 9; }
+    unlock_state() { forget_snapshot; $FLOCK -u 9; }
     read_intent() { $CAT "$INTENT" 2>/dev/null || echo auto; }
     read_version() { $CAT "$VERSION" 2>/dev/null || echo 0; }
     core_stamp() { $CAT /sys/fs/cgroup/system.slice/clash-verge.service/cgroup.procs 2>/dev/null || true; }
@@ -433,10 +433,19 @@ let
     # Live-policy snapshot: taken at most once per pass and reused until an
     # apply invalidates it. The same dump decides both "already correct" and the
     # post-condition, so a stable pass no longer dumps the ruleset twice.
-    SNAPSHOT=/run/proxy-mode/check.$$.json
+    source ${../firewall/rules-snapshot.sh}
+    SNAPSHOT=""
     snapshot_ok=0
-    take_snapshot() { $NFT -j list ruleset > "$SNAPSHOT" && snapshot_ok=1; }
-    forget_snapshot() { snapshot_ok=0; rm -f "$SNAPSHOT"; }
+    take_snapshot() {
+      new_rules_snapshot /run/proxy-mode check || return 1
+      if $NFT -j list ruleset > "$SNAPSHOT"; then
+        snapshot_ok=1
+      else
+        forget_snapshot
+        return 1
+      fi
+    }
+    forget_snapshot() { snapshot_ok=0; remove_rules_snapshot; }
     matches() {
       case "$1" in proxy|blocked|direct) ;; *) return 1 ;; esac
       [ "$snapshot_ok" = 1 ] || take_snapshot
@@ -448,7 +457,7 @@ let
       [ "$snapshot_ok" = 1 ] || return 1
       "$RULE_CHECK" compare-static "$EXPECTED/direct.json" "$SNAPSHOT"
     }
-    trap 'rm -f "$SNAPSHOT"' EXIT
+    trap remove_rules_snapshot EXIT
 
     # A silent teardown failure leaves the user offline with Clash closed, so every
     # step is checked: absent tables are fine, a failed delete or flush is not.

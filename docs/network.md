@@ -279,6 +279,8 @@ A failed first full load retains that baseline.
 Static drift triggers a complete repair into A for direct intent or C for proxy intent, followed by health evaluation.
 A failed repair reports `unenforced`.
 
+The coordinator and verifier capture full nftables rulesets in root-only runtime directories and remove the snapshots after comparison. Desktop diagnostics read the published mode, verification result and counter summaries.
+
 Stopping `nftables.service` leaves the rules installed.
 Restart or reload reconciles them.
 Avoid `nft flush ruleset`, which also destroys core-owned tables.

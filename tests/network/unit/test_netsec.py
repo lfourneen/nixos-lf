@@ -1966,12 +1966,14 @@ if sync_pass; then exit 1; fi
             check = directory / "check"
             check.write_text('#!/bin/sh\ncmp -s "$2" "$3"\n')
             check.chmod(0o700)
-            helpers = "\n".join(line.strip() for line in SOURCE.splitlines()
-                                if line.strip().startswith(("take_snapshot()", "forget_snapshot()")))
+            forget = next(line.strip() for line in SOURCE.splitlines() if line.strip().startswith("forget_snapshot()"))
+            take = shell_function("take_snapshot").replace("/run/proxy-mode", str(directory))
+            snapshot_helper = ROOT / "system/config/network/firewall/rules-snapshot.sh"
             script = f'''export READS={str(directory / 'reads')!r} LIVE={str(directory / 'live')!r}
-NFT={str(nft)!r}; RULE_CHECK={str(check)!r}; EXPECTED={str(directory)!r}; SNAPSHOT={str(directory / 'snapshot')!r}
+NFT={str(nft)!r}; RULE_CHECK={str(check)!r}; EXPECTED={str(directory)!r}; SNAPSHOT=""
+source {str(snapshot_helper)!r}
 snapshot_ok=0
-''' + helpers + "\n" + shell_function("matches") + '''
+''' + "\n".join((forget, take, shell_function("matches"))) + '''
 matches proxy || exit 1
 echo drifted > "$LIVE"
 forget_snapshot

@@ -32,7 +32,8 @@ in
       EXPECTED=${config.my.proxy.expectedRules}
       IS_CLASH_ON=${config.my.proxy.isClashOn}
       RESULT=/run/netsec/result
-      snapshot=/run/netsec/rules.$$.json
+      source ${./rules-snapshot.sh}
+      SNAPSHOT=""
       completed=0
       degraded=0
       version=0
@@ -67,7 +68,7 @@ in
       on_exit() {
         rc=$?
         trap - EXIT
-        rm -f "$snapshot"
+        remove_rules_snapshot
         if [ "$completed" != 1 ]; then
           if [ -e "/proc/$$/fd/9" ]; then flock -x -w 10 9 || true; fi
           if [ "$version" != 0 ] && ! still_current; then exit 0; fi
@@ -86,13 +87,14 @@ in
       version=$(printf '%s' "$state" | jq -er '.policy_version // .version')
       mode=$(printf '%s' "$state" | jq -er '.mode')
       case "$mode" in proxy|blocked|direct) ;; *) fail "invalid enforcement mode: $mode" ;; esac
-      $NFT -j list ruleset > "$snapshot" || fail 'cannot read kernel nftables state'
-      chmod 600 "$snapshot"
-      "$RULE_CHECK" compare "$EXPECTED/$mode.json" "$snapshot" \
+      new_rules_snapshot /run/netsec rules || fail 'cannot create private ruleset snapshot'
+      $NFT -j list ruleset > "$SNAPSHOT" || fail 'cannot read kernel nftables state'
+      "$RULE_CHECK" compare "$EXPECTED/$mode.json" "$SNAPSHOT" \
         || fail "ordered rules/hook/policy differ from this generation ($mode)"
       ${lib.optionalString config.my.proxy.runtimeRouting ''
       ${config.my.proxy.routingCommand} check "$mode" || fail 'routing outer-transport boundary differs'
       ''}
+      remove_rules_snapshot
       flock -u 9
 
       # Ignore a liveness result collected across a newer commit; the mode-change

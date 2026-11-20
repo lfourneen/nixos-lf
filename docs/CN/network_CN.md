@@ -268,6 +268,8 @@ C 仍保留 loopback IPC、本地 DNS、root/核心恢复和链路维护流量�
 静态漂移触发完整修复：直连意图回到 A，代理意图先回 C，再检查健康。
 失败报告 `unenforced`。
 
+协调器和验证器在仅 root 可进入的运行目录中抓取完整 nftables 规则集，并在比对后删除快照。桌面诊断读取公开的模式、验证结果和计数摘要。
+
 停止 `nftables.service` 保留规则。
 restart/reload 用于协调恢复。
 避免 `nft flush ruleset`，它会同时破坏核心自己的表。
