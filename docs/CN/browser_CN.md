@@ -218,3 +218,15 @@ AutoConfig `lockPref` 覆盖 enterprise policy 无法锁定的命名空间，对
 
 Gecko 内容进程沙箱与外层策略约束不同层次：外层策略限制原生父进程及其后代，隐私偏好约束浏览器行为，两者都不改变前述路由和解析器的信任边界。
 软件包升级与检查见[维护手册](maintenance_CN.md)，解析行为见 [DNS](dns_CN.md)。
+
+### 为指定网站使用 Windows User-Agent
+
+如果网站需要日常 Firefox 报告为 Windows 上的 Firefox，在 Home Manager 中添加以下设置，应用配置后重启浏览器。
+
+```nix
+my.firefox.windowsUserAgentDomains = [ "example.org" ];
+```
+
+逐个填写完整主机名，所需的子域名也要单独列出。Firefox 会在 HTTP `User-Agent` 请求头以及 JavaScript 的 `navigator.userAgent`、`navigator.platform`、`navigator.oscpu` 和 `navigator.appVersion` 中报告 Windows。浏览器版本随软件包更新。
+
+列表默认为空。每个列入的主机名都会使用 Resist Fingerprinting（RFP）例外，Canvas、时区等信号的 RFP 防护也会放宽。网站仍可能通过其他信号推断操作系统。将列表设回 `[ ]` 并应用配置即可移除例外。

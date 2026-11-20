@@ -41,4 +41,15 @@
       cross-origin Referer stays fully suppressed.
     '';
   };
+
+  options.my.firefox.windowsUserAgentDomains = lib.mkOption {
+    type = lib.types.listOf (lib.types.strMatching
+      "([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?");
+    default = [ ];
+    description = ''
+      Exact hostnames where daily Firefox presents a Windows Firefox user
+      agent and navigator platform. These hosts are exempt from Firefox's
+      Resist Fingerprinting protections.
+    '';
+  };
 }

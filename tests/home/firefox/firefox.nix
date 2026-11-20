@@ -1,15 +1,16 @@
-{ pkgs, config, compatConfig }:
+{ pkgs, config, compatConfig, windowsConfig }:
 
 let
-  home = config.home-manager.users.${config.my.machine.desktopUser};
   compatHome = compatConfig.home-manager.users.${compatConfig.my.machine.desktopUser};
-  firefox = home.programs.firefox.finalPackage;
 
-  isolated = pkgs.lib.genAttrs [ "identity" "portal" ] (name:
-    let launcher = pkgs.lib.findFirst (pkg: pkgs.lib.getName pkg == "firefox-${name}")
-      (throw "Missing firefox-${name} launcher") home.home.packages;
-    in launcher.netsec);
-  manifest = pkgs.writeText "firefox-test.json" (builtins.toJSON {
+  manifest = config: let
+    home = config.home-manager.users.${config.my.machine.desktopUser};
+    firefox = home.programs.firefox.finalPackage;
+    isolated = pkgs.lib.genAttrs [ "identity" "portal" ] (name:
+      let launcher = pkgs.lib.findFirst (pkg: pkgs.lib.getName pkg == "firefox-${name}")
+        (throw "Missing firefox-${name} launcher") home.home.packages;
+      in launcher.netsec);
+  in pkgs.writeText "firefox-test.json" (builtins.toJSON {
     package = firefox;
     isolatedBrowsers = pkgs.lib.mapAttrs (_: browser: browser.package) isolated;
     isolatedSettings = pkgs.lib.mapAttrs (_: browser: browser.settings) isolated;
@@ -22,7 +23,11 @@ let
     compatPrefs = compatHome.programs.firefox.finalPackage.netsec.prefs;
     policies = home.programs.firefox.policies;
     relayPort = if home.my.firefox.dailyRequireProxy then 18080 else config.my.machine.ports.gostHttp;
-    tlsDirectory = import ./tls-fixture.nix { inherit pkgs; };
+    windowsUserAgentDomains = home.my.firefox.windowsUserAgentDomains;
+    tlsDirectory = import ./tls-fixture.nix {
+      inherit pkgs;
+      extraDnsNames = home.my.firefox.windowsUserAgentDomains;
+    };
     certutil = "${pkgs.nssTools}/bin/certutil";
     desktop = home.xdg.dataFile."applications/firefox.desktop".source;
 
@@ -46,6 +51,7 @@ pkgs.runCommand "firefox-privacy-checks" {
   export XDG_CACHE_HOME="$TMPDIR/firefox-cache"
   mkdir -p "$XDG_CACHE_HOME"
   python3 ${./test_firefox.py}
-  mkdir -p "$out"
-  python3 ${./test_firefox_runtime.py} ${manifest} "$out"
+  mkdir -p "$out/windows-ua"
+  python3 ${./test_firefox_runtime.py} ${manifest config} "$out"
+  python3 ${./test_firefox_runtime.py} ${manifest windowsConfig} "$out/windows-ua"
 ''

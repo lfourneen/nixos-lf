@@ -24,6 +24,7 @@ manifest = json.loads(Path(sys.argv[1]).read_text())
 output = Path(sys.argv[2])
 package = Path(manifest["package"])
 settings = json.loads(Path(manifest["settings"]).read_text())
+windows_domains = manifest["windowsUserAgentDomains"]
 # Browser preflight must not inherit the root-only controller/snapshot inputs.
 # Keep its live policy and passive listener checks identical to the supervisor's.
 assert settings["healthSettings"] == manifest["desktopHealthSettings"]
@@ -68,6 +69,9 @@ for name, expected in {
     isolated = Path(manifest["isolatedBrowsers"][name])
     document = json.loads((isolated / "lib/firefox/distribution/policies.json").read_text())
     assert document["policies"]["ExtensionSettings"] == expected, name
+    autoconfig = (isolated / "lib/firefox/mozilla.cfg").read_text()
+    assert "general.useragent.override" not in autoconfig, name
+    assert "privacy.resistFingerprinting.exemptedDomains" not in autoconfig, name
 assert not any((p if isinstance(p, str) else p.get("appId")) in
                {"app.zen_browser.zen", "com.google.Chrome"} for p in manifest["flatpaks"])
 for desktop in [manifest["desktop"], *manifest["aliases"]]:
@@ -106,12 +110,15 @@ const ctx=c.getContext('2d');ctx.fillStyle='rgb(17,83,149)';ctx.fillRect(0,0,64,
 const data=ctx.getImageData(0,0,64,64).data, expected=[17,83,149,255];
 window.result=JSON.stringify({changed:data.reduce((n,b,i)=>n+(b!==expected[i%4]),0),
  timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,
+ userAgent:navigator.userAgent, platform:navigator.platform,
+ oscpu:navigator.oscpu, appVersion:navigator.appVersion,
  webRTC:typeof RTCPeerConnection,
  webgl:!!document.createElement('canvas').getContext('webgl'),
  webgpu:!!navigator.gpu, language:navigator.language, cpu:navigator.hardwareConcurrency});
 </script>"""
 requests = []
 referers = {}
+user_agents = {}
 
 
 class Origin(BaseHTTPRequestHandler):
@@ -119,6 +126,7 @@ class Origin(BaseHTTPRequestHandler):
         url = "https://" + self.headers["Host"] + self.path
         requests.append(url)
         referers[url] = self.headers.get("Referer")
+        user_agents[url] = self.headers.get("User-Agent")
         body = PAGE.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -138,7 +146,7 @@ threading.Thread(target=origin.serve_forever, daemon=True).start()
 
 class Proxy(BaseHTTPRequestHandler):
     def do_CONNECT(self):
-        if self.path not in ('privacy-fixture.invalid:443', 'media.example.invalid:443'):
+        if self.path not in fixture_targets:
             self.send_error(502)
             return
         with socket.create_connection(origin.server_address, timeout=5) as peer:
@@ -166,6 +174,7 @@ spec.loader.exec_module(driver)
 Marionette = driver.Marionette
 
 
+fixture_targets = {name + ":443" for name in ["privacy-fixture.invalid", "media.example.invalid", *windows_domains]}
 server = ThreadingHTTPServer(("127.0.0.1", manifest["relayPort"]), Proxy)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 record = dict(package=str(package), headless=True, echHandshakeTested=False)
@@ -231,11 +240,29 @@ return prefs;
             assert record["web"]["webRTC"] == "undefined"
             assert not record["web"]["webgl"] and not record["web"]["webgpu"]
             assert "https://privacy-fixture.invalid/" in requests, requests
+            assert record["web"]["userAgent"] == user_agents["https://privacy-fixture.invalid/"]
+            assert "Linux" in record["web"]["userAgent"] and record["web"]["platform"] == "Linux x86_64"
             media = "https://media.example.invalid/pixel.png"
             assert media in referers, referers
             expect = "https://privacy-fixture.invalid/" \
                 if manifest["prefs"]["network.http.referer.XOriginPolicy"] == 0 else None
             assert referers[media] == expect, referers
+            if windows_domains:
+                for domain in windows_domains:
+                    url = f"https://{domain}/ua"
+                    client.call("WebDriver:Navigate", {"url": url})
+                    actual = client.execute("return JSON.parse(window.result);")
+                    assert actual["userAgent"] == user_agents[url] == expected["general.useragent.override"]
+                    assert actual["platform"] == "Win32"
+                    assert actual["oscpu"] == "Windows NT 10.0; Win64; x64"
+                    assert actual["appVersion"] == "5.0 (Windows)"
+                    record["windowsUa"] = actual
+                url = "https://privacy-fixture.invalid/return"
+                client.call("WebDriver:Navigate", {"url": url})
+                actual = client.execute("return JSON.parse(window.result);")
+                assert actual["userAgent"] == user_agents[url] == record["web"]["userAgent"]
+                assert actual["platform"] == "Linux x86_64"
+                assert actual["changed"] > 0
             assert not any(url.startswith('PLAINTEXT:') for url in requests), requests
             # The daily profile upgrades HTTP; portal access has its own entry.
             client.call("WebDriver:Navigate", {"url": "http://privacy-fixture.invalid/"})

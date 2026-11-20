@@ -27,7 +27,7 @@ let
     </fontconfig>
   '';
 
-  prefs = {
+  sharedPrefs = {
     # DNS / ECH
     # Keep blocklists, split DNS, MagicDNS and portal recovery on the system path.
     "network.trr.mode" = 5;
@@ -158,6 +158,17 @@ let
     "browser.region.network.url" = "";
   };
 
+  windowsDomains = config.my.firefox.windowsUserAgentDomains;
+  firefoxVersion = "${lib.versions.major pkgs.firefox.version}.0";
+  windowsPlatform = "Windows NT 10.0; Win64; x64";
+  prefs = sharedPrefs // lib.optionalAttrs (windowsDomains != [ ]) {
+    "privacy.resistFingerprinting.exemptedDomains" = lib.concatStringsSep "," (map lib.toLower windowsDomains);
+    "general.useragent.override" = "Mozilla/5.0 (${windowsPlatform}; rv:${firefoxVersion}) Gecko/20100101 Firefox/${firefoxVersion}";
+    "general.platform.override" = "Win32";
+    "general.oscpu.override" = windowsPlatform;
+    "general.appversion.override" = "5.0 (Windows)";
+  };
+
   # Nixpkgs' native AutoConfig can lock RFP and other preferences outside the
   # enterprise Preferences allow-list. These apply to every profile of this package.
   lockedPrefs = lib.concatStringsSep "\n" (lib.mapAttrsToList
@@ -276,7 +287,7 @@ let
       ephemeral = portal;
     }));
 
-    isolatedPrefs = prefs // lib.optionalAttrs portal {
+    isolatedPrefs = sharedPrefs // lib.optionalAttrs portal {
       "dom.security.https_only_mode" = false;
       "dom.security.https_only_mode_pbm" = false;
     };

@@ -235,3 +235,15 @@ Privacy preferences constrain browser behavior.
 Neither changes the routing or resolver trust boundaries above.
 Package integration and upgrade checks are covered in [Patch maintenance](maintenance.md).
 Resolver behavior is covered in [DNS](dns.md).
+
+### Windows User-Agent for selected sites
+
+Set the following in Home Manager if a site needs daily Firefox to identify itself as Firefox on Windows. Apply the configuration and restart the browser.
+
+```nix
+my.firefox.windowsUserAgentDomains = [ "example.org" ];
+```
+
+List each exact hostname, including any subdomains you need. Firefox reports Windows in the HTTP `User-Agent` header and JavaScript's `navigator.userAgent`, `navigator.platform`, `navigator.oscpu` and `navigator.appVersion`. The browser version follows the packaged Firefox version.
+
+The list is empty by default. Each listed hostname uses a Resist Fingerprinting (RFP) exception, which also relaxes RFP protections for signals such as canvas and time zone. Sites can still infer the operating system from other signals. Set the list back to `[ ]` and apply the configuration to remove the exceptions.

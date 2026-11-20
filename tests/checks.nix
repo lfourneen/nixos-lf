@@ -269,6 +269,12 @@ let
             };
           }) ];
         }).config;
+        windowsConfig = (self.nixosConfigurations.lfour.extendModules {
+          modules = [ ({ lib, ... }: {
+            my.proxy.transparentApplications = lib.mkForce false;
+            home-manager.users.${desktopUser}.my.firefox.windowsUserAgentDomains = [ "windows-ua.invalid" ];
+          }) ];
+        }).config;
       };
 
       browser-sandbox-vm = let
