@@ -31,7 +31,8 @@ class Refused(ValueError):
 FAILURE_REASONS = frozenset(('dns lookup failed', 'certificate rejected', 'tls failed',
     'connection timeout', 'connection refused', 'connection reset', 'network unreachable',
     'http rejected', 'encoding unsupported', 'redirect refused', 'destination refused',
-    'response limit', 'yaml invalid', 'configuration unsupported', 'node resolution failed', 'worker failure'))
+    'response limit', 'yaml invalid', 'configuration unsupported', 'node resolution failed',
+    'selected egress unavailable', 'worker failure'))
 
 
 def failure_reason(error, phase):
@@ -49,7 +50,7 @@ def failure_reason(error, phase):
     if isinstance(error, Refused):
         reason = {'redirect': 'redirect refused', 'redirect count': 'redirect refused',
                   'destination': 'destination refused', 'response size': 'response limit',
-                  'deadline': 'connection timeout'}.get(str(error))
+                  'deadline': 'connection timeout', 'selected egress unavailable': 'selected egress unavailable'}.get(str(error))
         if reason:
             return reason
     return {'parse': 'yaml invalid', 'render': 'configuration unsupported',
@@ -421,13 +422,19 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
     # query its own ECH configuration cannot be the leaf: the lookup would loop
     # back through the node it is trying to dial. Such nodes stay available in
     # the subscription's own groups, where a non-ECH leaf resolves their ECH.
-    if 'lf-remote' in names or any(g.get('name') == 'lf-remote' for g in groups):
+    reserved = {'lf-remote', 'lf-dns'}
+    if (reserved & names or any(g['name'] in reserved or 'lf-dns' in g['proxies'] for g in groups)
+            or any(isinstance(rule, str) and 'lf-dns' in rule.split(',') for rule in rules)):
         raise Refused('reserved group')
     remote = [n['name'] for n in nodes
               if n.get('type') not in ('direct', 'compatible', 'reject', 'dns') and not ech_lookup(n)]
     if not remote:
         raise Refused('empty nodes')
     groups.append({'name': 'lf-remote', 'type': 'select', 'proxies': [catchall[1]] if proxy_only else remote})
+    transport = policy.get('lf-dns-transport') or {}
+    if not proxy_only and any(url.endswith('#lf-dns') for url in transport.get('dns', {}).get('nameserver', [])):
+        groups.append({'name': 'lf-dns', 'type': 'select', 'hidden': True,
+                       'proxies': remote[1:3] + remote[:1]})
     # Split-routing and IP-quality checks must not see a direct connection when
     # the subscription sends GEOIP,CN traffic DIRECT. Prepend the registered
     # probe suffixes with the same group the subscription's catch-all selects;

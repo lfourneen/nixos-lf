@@ -76,10 +76,14 @@ let
 
 in
 {
-  options.my.proxy.sourceRendererSettings = lib.mkOption { type = lib.types.attrs; internal = true; };
+  options.my.proxy = {
+    sourceRendererSettings = lib.mkOption { type = lib.types.attrs; internal = true; };
+    sourceCommand = lib.mkOption { type = lib.types.path; internal = true; };
+  };
   config = lib.mkMerge [ {
     my.proxy.sourceSettings = settings;
     my.proxy.sourceRendererSettings = rendererSettings;
+    my.proxy.sourceCommand = "${command}/bin/clash-source";
   } (lib.mkIf p.controlledSources {
     users.groups.clash-fetch = {};
     users.users.clash-fetch = {

@@ -90,7 +90,8 @@ in
         enhanced-mode = "normal";
         use-hosts = false;
         use-system-hosts = false;
-        nameserver = map (url: url + lib.optionalString p.controlledSources "#lf-remote")
+        nameserver = map (url: url + lib.optionalString p.controlledSources
+          (if p.proxyOnly then "#lf-remote" else "#lf-dns"))
           encryptedDns.nameserver;
 
         # The validator needs raw DNSSEC material and a domestic resolver's
@@ -199,7 +200,10 @@ in
       # ECH's outer SNI is a cover name in both Rule and uniform proxy modes.
       # Fake-IP mappings and explicit proxy targets already supply the domain.
       "sniffer.enable" = false;
-    } // lib.optionalAttrs p.controlledSources { "geodata-mode" = true; }
+    } // lib.optionalAttrs p.controlledSources {
+      "geodata-mode" = true;
+      "profile.store-selected" = true;
+    }
       // lib.optionalAttrs p.coreNetns { "interface-name" = p.coreTopology.peer; }
       // lib.optionalAttrs p.runtimeRouting { "profile.store-fake-ip" = true; }
       // lib.mapAttrs' (key: value: lib.nameValuePair "dns.${key}" value) p.managedDns

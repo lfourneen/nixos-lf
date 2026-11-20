@@ -712,7 +712,7 @@ pkgs.testers.runNixOSTest {
     # A commit and a second request during liveness checks must leave a rerun,
     # rather than being swallowed by an already-running oneshot service.
     machine.succeed("systemctl stop unbound.service; touch /run/netsec/requests/request.first")
-    machine.wait_until_succeeds("find /run/netsec -maxdepth 1 -name 'rules.*.json' | grep -q .")
+    machine.wait_until_succeeds("pid=$(systemctl show -p MainPID --value nftables-verify.service); test \"$pid\" -gt 0 && pgrep -x -P \"$pid\" sleep", timeout=20)
     machine.succeed("touch /run/netsec/requests/request.second; /etc/netsec-mode-script --reload; systemctl start unbound.service")
     machine.wait_until_succeeds("test -z \"$(ls -A /run/netsec/requests)\"", timeout=90)
     machine.succeed("test $(jq -r .version /run/netsec/state.json) = $(jq -r .version /run/proxy-mode/state.json)")

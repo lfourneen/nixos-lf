@@ -113,8 +113,21 @@ worker 失败区分 `fetch`、`parse`、`render`、`pin-addresses`。
 按授权过滤不安全的 TLS 节点后，解析失败的节点和使用回环 IP 字面量的占位节点，最多丢弃 `max(1, remaining_node_count // 5)` 个。
 DNS 答案含非公网地址，或节点使用其他非公网 IP 字面量时，拒绝候选。
 下载、解析和审计失败保留有效的运行回退，没有回退则保持 C。
-若 C 阻止来源恢复，须主动选 A 获取已登记来源，再请求 B。
-DNS 不自动降级。
+
+### 恢复已登记来源
+
+启用运行时路由时，可先在 C 中重试 `clash-on`。若已接受快照无法恢复 B，可运行以下命令显式刷新所选来源。
+
+```sh
+sudo proxy-control recover
+```
+
+该命令要求处于 C 且保留代理意图。协调器验证 A 的防火墙策略后，下载进程获取已登记来源并验证 TLS 证书。
+窗口内普通应用可直连，公网 DNS 使用认证 DoT。监督器使用 75 秒的恢复截止时间。
+下载候选在 C 中按请求的路由策略暂存。进入 B 仍须通过常规内容审计和健康检查。
+下载失败或中断时关闭直连窗口，并保留已接受基线。
+在 `proxy-only` 下，下载内容仍需包含所选固定出口。如需采用来源中的其他出口，参见下文的出口选择流程。
+未启用运行时路由的配置可在 A 中按手动来源流程恢复。
 
 ### 只读查看订阅变化
 
@@ -153,15 +166,17 @@ clash-diff
 ## 模式切换
 
 使用 Nushell 的 `clash-on`、`clash-off`，它们记录特权意图，管理 GUI/helper 并等待一致状态。
+启用运行时路由时，从 A 以 `rules` 启动的 `clash-on` 在核心启动后最多等待 30 秒。当前事务已有成功探测时，可再等待最多 10 秒，以应用 B 并确认相关服务就绪。
 关闭 GUI 保留代理意图和受管核心运行。停止受管代理访问使用 `clash-off`。
 
 本机使用 `clash-rules`、`clash-proxy-only` 一键选择路由子模式并请求 B。
 命令在终端返回包含模式的成功结果，或以非零状态返回失败阶段及可用原因。
+从 C 重试、以保留的 `proxy-only` 选择启动、显式切换路由或恢复来源时，核心启动后最多等待 90 秒确认代理就绪。
 它们不启动 GUI、不发送桌面通知，也不自动运行 `proxy-status`。
-需要整体预览时单独运行已有 `proxy-status`；其人类可读输出仅在 B 显示请求/实际路由、事务 epoch、核心实际模式、采样 TCP 叶节点身份及 DNS/UDP/ICMP 覆盖。
+B 和 C 中，`proxy-status` 显示请求的路由及上次生效的路由、事务 epoch，以及观测到的核心模式、TCP 叶节点和 DNS、UDP、ICMP 覆盖。
 底层命令为 `sudo proxy-control routing rules`、`sudo proxy-control routing proxy-only`。
 `clash-off` 保留本次启动的选择，`clash-on` 复用它，重启恢复 rules。
-Proxy-only 需要已接受的固定节点来源；准备或完整健康检查失败时保持 C 及请求的选择。
+Proxy-only 需要已接受的固定节点来源。若准备或完整健康检查失败，C 继续保护应用，重试时沿用请求的选择。
 
 用 `clash-egress` 列出已接受来源的出口 ID，用 `clash-egress APPROVED_NODE_ID` 选择其中一个并请求严格 B。
 将 `APPROVED_NODE_ID` 替换为列表中的完整 ID。底层入口为 `sudo proxy-control egress list` 和 `sudo proxy-control egress APPROVED_NODE_ID`。
@@ -177,11 +192,11 @@ A 中仅启动 `clash-verge` 不会授权核心。
 
 | 命令 | 用途 |
 |---|---|
-| `proxy-control preflight` | 检查配置和资源，不改变网络意图 |
+| `sudo proxy-control preflight` | 检查受控来源的配置和资源，不改变网络意图 |
 | `proxy-policy` | 查看当前网络权限和策略 |
 | `proxy-control status auto --check` | 检查请求的模式是否就绪 |
 | `proxy-control status proxy` | 查看代理状态 |
-| `proxy-control wait proxy` | 等待代理就绪 |
+| `proxy-control wait proxy` | 最多等待 30 秒，检查代理是否就绪 |
 | `proxy-control status direct` | 查看直连状态 |
 | `firefox --check` | 检查浏览器启动条件，不开窗口 |
 
@@ -190,7 +205,7 @@ A 中仅启动 `clash-verge` 不会授权核心。
 
 | 工具 | 输出 |
 |---|---|
-| `proxy-status` | 模式、DNS、就绪、刷新原因、审计计数和上次自动批准 |
+| `proxy-status` | 模式、DNS、就绪、探针失败层、刷新结果和审计计数 |
 | `clash-diff` | 比较候选与所选来源已接受基线的差异 |
 | `proxy-status --plain` | 适合日志的纯文本 |
 | `proxy-status --json` | 结构化状态 |

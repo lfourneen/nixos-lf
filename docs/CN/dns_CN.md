@@ -159,14 +159,16 @@ HTTP-only（`tunMode=false`）采用 redir-host。
 这些监听传递完整 DNSSEC 材料，不使用 hosts 替换、fake-IP 合成或普通解析器缓存。
 
 `rules` 中应用传输保留国内分流：`geosite:cn` 经 360 DoH 直连解析，其余使用 Cloudflare/Google DoH。
-启用受控来源时，这些海外查询绑定到 `lf-remote` 组，经远程代理传输。
+启用受控来源时，海外查询使用独立的 `lf-dns` 选择组，成员来自授权的 `lf-remote`，最多三个叶子。
+应用和 DNS 分别选叶子。`profile.store-selected` 在核心重启后恢复仍符合组成员资格的选择。
+受管解析器的健康检查失败时，监督器可尝试其他 DNS 叶子。
 未启用受控来源的配置保留 `respect-rules` 选路。
-节点引导保留独立的加密 proxy-server 解析器和字面地址引导解析器。
-普通应用域名不会送到该引导路径。
+核心命名空间内 1056 端口的独立引导验证器只负责节点和解析器引导。应用域名及公网拨号目标校验由应用验证器处理。
 国内 DoH 端点来自 `my.machine.mihomoDomesticValidatingDnsUpstreams`，必须回传完整 DNSSEC 材料；默认的 360 端点满足，非验证路径的 AliDNS 不满足。
 海外冷查询可能需要多次远程交换以完成验证，国内查询则保持国内往返。
 A 的 `my.machine.dotEndpoints` 列表与 B 的两类角色相互独立。
 Mihomo 保持 TLS 证书校验，上游故障不授予明文回退。
+DNS 叶子的运营方可观察 DoH 端点和时序。认证的 DoH 解析器收到海外查询，并看到 DNS 叶子的出口地址。
 
 运行时 `proxy-only` 保留两个本地验证器及独立预算，但两类查询均通过认证的字面地址 DoH 端点，绑定到与应用相同的固定远程叶节点。
 配置 [WireGuard 出口](proxy_CN.md#包含真实-ping-的-wireguard-出口)后，系统 DNS 也使用应用验证器的真实地址网关，因此域名 ping 可以通过原生 ICMP 到达目标。
@@ -175,6 +177,7 @@ Mihomo 保持 TLS 证书校验，上游故障不授予明文回退。
 节点或验证器不可用时保持 C。
 
 宿主的来源下载与受限 socket 后端仍需要真实地址。
+宿主过滤解析器可见订阅与 provider 的主机名、用于固定端点的节点域名，以及受限 socket 后端的查询。
 启用运行时切换时，其 1056 dnsmasq 转交固定的 loopback 网关 1059。
 代理意图为 proxy-only 时，网关经 root 所有的 Unix socket 进入核心命名空间的应用验证器，不回退宿主 DoT。
 Rules 和 A 使用宿主 Unbound 1055。

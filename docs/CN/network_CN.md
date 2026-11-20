@@ -98,13 +98,13 @@ localhost 兼容和 GUI 通道使用[独立 Unix relay](proxy_CN.md#组件与身
 
 | 模式 | 进入条件 | 应用出站 | 默认 DNS 上游 |
 |---|---|---|---|
-| A / `direct` | 默认直连策略下冷启动，或显式 `clash-off` | 直连 | 本地验证的 Unbound DoT，必要时有界明文恢复 |
+| A / `direct` | 默认直连策略下冷启动、显式 `clash-off` 或显式来源恢复 | 直连 | 本地验证的 Unbound DoT，必要时有界明文恢复 |
 | B / `proxy` | 代理意图、已授权核心、所需 TUN 选路和健康证明均成立 | 代理、明确例外或丢弃 | 受管 fake-IP，配置 WireGuard 出口时返回已验证真实地址 |
 | C / `blocked` | 已请求代理但未就绪、崩溃或不健康 | 除恢复与链路基础设施外阻断 | Unbound。外部 DoT 被切断，符合缓存条件的答案继续返回 |
 
 `proxy-mode` 遵循 root 写入的单次开机意图。
-`clash-on` 后关闭 GUI、停止核心或崩溃均保持 C。
-需要 A 时使用 `clash-off`。
+关闭 GUI 会保留代理意图。保留代理意图时，核心停止或崩溃会使宿主进入 C。
+使用 `clash-off` 可请求 A。也可打开临时 A 窗口来[恢复已登记来源](operations_CN.md#恢复已登记来源)。
 只启动 GUI 无法授权 A → B。
 可选 `my.proxy.bootMode="proxy"` 在物理网络启动前安装 C，等待 B。
 默认是 `"direct"`。
@@ -125,18 +125,20 @@ HTTP 路由证明使用核心日志，或请求仍在进行时采集的连接表
 日志最多等待 2.5 秒，仍受共享截止约束。
 模块默认共享截止为 12 秒；本机设为 18 秒以容纳冷 DNSSEC 查询。
 明确的配置、路由或 TUN 失败立即阻断。
-观测不可用和 DNS 失败需连续三轮，间隔至少两秒。
+观测、DNS、叶子或应用解析器失败需连续三轮，间隔至少两秒。叶子恢复和系统解析器诊断仅在失败时运行，共用健康预算。
 每次 fake-IP 查询和 TUN DNS 自检使用 `my.proxy.healthDnsTimeoutSeconds`，默认每次尝试 3 秒，在共享截止内重试一次。
 
 `data_plane_ok`、`route_ok`、`dns_ok` 和 `tun_ok` 分别报告诊断结果，`null` 表示未证明或不在本次检查范围内。
-这些字段不授权 B，也不续租，只有完整的 `ok=true` 结论才可以。
+只有完整的 `ok=true` 结论可授权 B 或续租。
 
 `health.json.scope` 声明本次调用的检查范围，只有 `ok=true` 才证明这些检查完成。
 `scope.requests` 列出本轮请求路径，`--fast` 时为空。WireGuard 出口的完整证明包含真实地址 DNS，以及原生 IPv4 和 IPv6 echo。
 `scope.udp_data_plane="not-probed"` 明确 UDP 边界：核对监听身份，但不持续证明 UDP 可达性和 association 回程。
 单独的 UDP 故障因此可能让 B 与 TCP 健康结果保持正常。运行时 proxy-only 在所选适配器不支持 UDP 时报告 `unsupported`，IPv6 目标能力仍取决于节点。
 
-Mode B 另有 `rules` 和 `proxy-only` 路由选择。`clash-rules`、`clash-proxy-only` 经 C 选择目标并等待已验证的 B，`proxy-status` 仅在 B 显示生效路由。Off/on 保留本次启动的选择，重启恢复 rules。见[路由策略](proxy_CN.md#路由策略)。
+B 有 `rules` 和 `proxy-only` 两种路由选择。`clash-rules`、`clash-proxy-only` 经 C 选择目标并等待已验证的 B。
+`proxy-status` 在 B 和 C 中显示路由选择及事务状态。
+Off/on 保留本次启动的选择，重启恢复 rules。见[路由策略](proxy_CN.md#路由策略)。
 
 ### B 授权时效
 

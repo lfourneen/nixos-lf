@@ -167,14 +167,16 @@ Each validator forwards over TCP loopback to a private Mihomo transport listener
 These listeners carry raw DNSSEC material without hosts substitution, fake-IP synthesis or reuse of ordinary resolver cache entries.
 
 In `rules`, application transport keeps a domestic split: `geosite:cn` uses 360 DoH over a direct connection, and other names use Cloudflare/Google DoH.
-With controlled sources, the foreign queries bind to the `lf-remote` group and travel through a remote proxy.
+With controlled sources, foreign queries use `lf-dns`, a separate selector with up to three authorized members of `lf-remote`.
+The application and DNS selectors pick independently, and `profile.store-selected` keeps their eligible choices across core restarts.
+If the managed resolver fails its health check, the supervisor can try another DNS leaf.
 Configurations without controlled sources retain `respect-rules` selection.
-Node bootstrap retains its independent encrypted proxy-server and literal-address bootstrap resolvers.
-Ordinary application names are not sent to that bootstrap path.
+The separate bootstrap validator on port 1056 inside the core namespace handles node and resolver bootstrap only. The application validator handles application names and public dial target checks.
 The domestic DoH endpoints come from `my.machine.mihomoDomesticValidatingDnsUpstreams` and must return complete DNSSEC material; the default 360 endpoints do, while the non-validating AliDNS path does not.
 Cold foreign lookups can require several remote exchanges for validation, while domestic lookups stay on a domestic round trip.
 Mode A's `my.machine.dotEndpoints` list is independent of both B roles.
 TLS certificate checks remain enabled in Mihomo, and upstream failure grants no plaintext fallback.
+The DNS leaf operator can observe the DoH endpoint and timing. The authenticated DoH resolver receives the foreign queries and sees the DNS leaf's exit address.
 
 Runtime `proxy-only` keeps both local validators and their independent budgets, but sends both roles through authenticated literal-address DoH endpoints bound to the same fixed remote leaf as application traffic.
 With the [WireGuard exit](proxy.md#wireguard-exit-with-real-ping), system DNS also uses the application validator's real-address gateway so hostname pings can reach the destination over native ICMP.
@@ -183,6 +185,7 @@ The core starts from accepted, pinned node addresses, preserving TLS server name
 An unavailable node or validator keeps C active.
 
 Host-side source downloads and restricted socket backends still need real addresses.
+The host's filtering resolver sees subscription and provider hostnames, node hostnames resolved to pin endpoint addresses, and queries from restricted socket backends.
 With runtime routing, their port 1056 dnsmasq forwards to a fixed loopback gateway on 1059.
 For proxy-only intent, the gateway crosses a root-owned Unix socket to the application validator in the core namespace; it never falls back to host DoT.
 Rules and A use host Unbound 1055.

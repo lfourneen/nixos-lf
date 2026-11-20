@@ -6,6 +6,7 @@ let
   entries = builtins.filter (p: builtins.elem (p.name or "") [ "firefox-identity" "firefox-portal" ]) h.home.packages;
   command = builtins.head (builtins.filter (p: (p.pname or (p.name or "")) == "clash-source") c.environment.systemPackages);
   diagnosticCommands = builtins.filter (p: builtins.elem (p.pname or (p.name or "")) [ "clash-diff" ]) c.environment.systemPackages;
+  applicationProbe = c.systemd.services.proxy-application-dns-probe.serviceConfig;
 
 in
 assert c.my.proxy.controlledSources && c.my.proxy.strictBrowser;
@@ -29,6 +30,9 @@ assert c.systemd.paths.clash-source-download.pathConfig.PathExists == "/run/prox
 assert c.systemd.paths.clash-source-apply.pathConfig.PathExists == "/run/proxy-mode/source-apply.json";
 assert c.systemd.services.clash-source-guard.serviceConfig.CapabilityBoundingSet == [ "CAP_NET_ADMIN" ];
 assert c.systemd.services.clash-source-guard.serviceConfig.NoNewPrivileges;
+assert applicationProbe.User == c.my.machine.desktopUser;
+assert applicationProbe.Slice == "untrusted.slice" && applicationProbe.IPAddressDeny == "any";
+assert applicationProbe.NoNewPrivileges && applicationProbe.CapabilityBoundingSet == "";
 assert builtins.length diagnosticCommands == 1;
 assert !(builtins.any (p: (p.pname or (p.name or "")) == "clash-apply") c.environment.systemPackages);
 assert !(pkgs.lib.hasInfix "clash-apply" h.programs.nushell.extraConfig);
@@ -54,6 +58,7 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   '') entries}
   policy = json.loads(Path('${if c.my.proxy.runtimeRouting then c.my.proxy.routingPolicies.rules else c.my.proxy.activeManagedPolicy}').read_text())
   assert policy['tcp-concurrent'] is True
+  assert policy['profile.store-selected'] is True
   assert policy['interface-name'] == '${c.my.proxy.coreTopology.peer}' == 'lf-host'
   sources = json.loads(Path('${c.my.proxy.sourceSettings}').read_text())
   assert stage['renderer_settings'] == {
@@ -71,9 +76,15 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   assert policy['listeners'][0]['port'] == ${toString c.my.machine.ports.mihomoStrict}
   transport = policy['lf-dns-transport']['dns']
   domestic = ${builtins.toJSON (map (ip: "https://${ip}/dns-query#DIRECT") c.my.machine.mihomoDomesticValidatingDnsUpstreams)}
-  assert transport['nameserver'] == ['https://1.1.1.1/dns-query#lf-remote', 'https://8.8.8.8/dns-query#lf-remote']
+  assert transport['nameserver'] == ['https://1.1.1.1/dns-query#lf-dns', 'https://8.8.8.8/dns-query#lf-dns']
   assert transport['nameserver-policy'] == {'geosite:cn': domestic}
   assert transport['proxy-server-nameserver'] == ['https://223.5.5.5/dns-query']
+  assert policy['dns.proxy-server-nameserver'] == ['tcp://127.0.0.1:${toString c.my.machine.ports.socketGuestDns}#DIRECT']
+  strict = json.loads(Path('${c.my.proxy.routingPolicies.proxy-only}').read_text())
+  assert strict['lf-private-targets']['single-egress'] is True
+  for role in ('nameserver', 'proxy-server-nameserver'):
+      assert strict['lf-dns-transport']['dns'][role] == [
+          'https://1.1.1.1/dns-query#lf-remote', 'https://8.8.8.8/dns-query#lf-remote']
   for role, path in ${builtins.toJSON (pkgs.lib.mapAttrs (_: path: toString path) c.my.proxy.coreValidatorConfigs)}.items():
       validator = Path(path).read_text()
       fields = dict(line.strip().split(': ', 1) for line in validator.splitlines() if ': ' in line)

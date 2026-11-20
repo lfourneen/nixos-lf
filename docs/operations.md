@@ -113,9 +113,22 @@ Worker failures identify `fetch`, `parse`, `render` or `pin-addresses`.
 After authorized TLS filtering, the worker may drop unresolved nodes and literal loopback placeholders up to `max(1, remaining_node_count // 5)`.
 DNS answers containing non-public addresses and other non-public literal endpoints refuse the candidate.
 Fetch/parse/audit failure preserves a valid runtime fallback.
-No fallback leaves C.
-If C prevents source recovery, deliberately select A, fetch the registered source, then request B.
-DNS does not downgrade automatically.
+C stays active if no valid fallback remains.
+
+### Recover a registered source
+
+With runtime routing enabled, first retry `clash-on` from C. If the accepted snapshot cannot restore B, use this command to refresh the selected source.
+
+```sh
+sudo proxy-control recover
+```
+
+This command requires C with proxy intent. The coordinator verifies the direct firewall policy before the worker fetches the registered source with TLS certificate validation.
+Ordinary applications have direct access during this window. Public DNS uses authenticated DoT, and the supervisor tracks a 75-second recovery deadline.
+The command returns to C before staging the downloaded candidate under the requested routing policy. B requires the normal content audit and health checks.
+Download failure or interruption closes the direct window and retains the accepted baseline.
+For `proxy-only`, the download must still contain the selected fixed exit. To adopt a different exit from the source, follow the exit selection workflow below.
+On installations without runtime routing, use the manual source workflow from A.
 
 ### Inspect subscription changes
 
@@ -155,15 +168,17 @@ This command does not create a recovery generation or alter DNS fallback policy.
 
 Use the Nushell commands `clash-on` and `clash-off`.
 They record privileged intent, manage the GUI/helper lifecycle and wait for coherent state.
+With runtime routing, `clash-on` waits up to 30 seconds after core startup when starting from A with `rules` selected. A successful probe for its current transaction allows up to 10 more seconds to commit B and confirm readiness across its dependent services.
 Closing the GUI leaves proxy intent and the managed core active. Use `clash-off` to stop managed proxy access.
 
 On this host, `clash-rules` and `clash-proxy-only` select a routing submode and request B in one command.
 They return a terminal success message naming the mode, or a nonzero result with the failed stage and available reason.
+Restarting from C, starting with the retained `proxy-only` selection, switching routing explicitly, or recovering a registered source allows up to 90 seconds to confirm readiness after core startup.
 They do not launch the GUI, send desktop notifications or run `proxy-status`.
-Use the existing `proxy-status` overview separately: only in B does its human display include requested/applied routing, transaction epoch, actual core mode, sampled TCP leaf identity and DNS/UDP/ICMP coverage.
+In B and C, `proxy-status` shows requested and last applied routing, the transaction epoch, and the observed core mode, TCP leaf and DNS, UDP and ICMP coverage.
 The underlying commands are `sudo proxy-control routing rules` and `sudo proxy-control routing proxy-only`.
 `clash-off` retains the choice for this boot; `clash-on` reuses it, and reboot defaults to rules.
-Proxy-only requires an accepted pinned source; failed preparation or full health verification retains C and the requested selection.
+Proxy-only requires an accepted pinned source. If preparation or full health verification fails, C protects applications while the requested selection remains available for retry.
 
 Use `clash-egress` to list accepted-source exit IDs and `clash-egress APPROVED_NODE_ID` to select one and request strict B.
 Replace `APPROVED_NODE_ID` with a complete listed ID. The root equivalents are `sudo proxy-control egress list` and `sudo proxy-control egress APPROVED_NODE_ID`.
@@ -181,11 +196,11 @@ Starting only `clash-verge` in A does not authorize a core.
 
 | Command | Purpose |
 |---|---|
-| `proxy-control preflight` | Check configuration and assets without changing intent |
+| `sudo proxy-control preflight` | Check controlled-source configuration and assets without changing intent |
 | `proxy-policy` | Show network permissions and policy |
 | `proxy-control status auto --check` | Check readiness for the requested mode |
 | `proxy-control status proxy` | Show proxy status |
-| `proxy-control wait proxy` | Wait for proxy readiness |
+| `proxy-control wait proxy` | Wait up to 30 seconds for proxy readiness |
 | `proxy-control status direct` | Show direct-access status |
 | `firefox --check` | Check browser prerequisites without opening a window |
 
@@ -194,7 +209,7 @@ Starting only `clash-verge` in A does not authorize a core.
 
 | Tool | Output |
 |---|---|
-| `proxy-status` | Mode, DNS, readiness, refresh reason, audit counts and last automatic approval |
+| `proxy-status` | Mode, DNS, readiness, failed probe layer, refresh result and audit counts |
 | `clash-diff` | Candidate changes against the selected source's accepted baseline |
 | `proxy-status --plain` | Plain text suitable for logs |
 | `proxy-status --json` | Structured status |

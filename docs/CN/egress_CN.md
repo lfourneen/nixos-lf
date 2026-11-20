@@ -54,7 +54,7 @@ C 还保留[网络架构](network_CN.md)说明的窄核心恢复与自检路径�
 普通应用不能借 loopback 代理监听逃出 C。
 
 启用 `localDnssec=true` 时，私有验证器只能查询核心命名空间中的 loopback 传输监听，没有外部 DNS 传输权限。
-Mihomo 将应用查询发往 Cloudflare/Google DoH，在本机受控来源配置下经 `lf-remote` 传输，并保留独立的加密节点引导。
+Rules 模式下，海外应用查询通过独立的 `lf-dns` 选择组发往认证的 Cloudflare 或 Google DoH。运行时 `proxy-only` 通过固定叶子传输应用和引导 DoH。
 C 中继续保留核心原有的恢复传输。
 `unboundDotInProxy` 控制宿主 Unbound 例外，不关闭这些私有验证器。
 

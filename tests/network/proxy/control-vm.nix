@@ -157,6 +157,10 @@ pkgs.testers.runNixOSTest {
     my.proxy.proxyOnly = uniformProxy;
     my.proxy.blockedDomains = [ "ads.fixture.example" "blocked.fixture.test" "metrics.home.arpa" ];
     my.proxy.blockedDomainExceptions = [ "ok.blocked.fixture.test" ];
+    my.proxy.dnsBlocklistFile = lib.mkIf routing (lib.mkForce
+      (pkgs.writeText "routing-fixture-blocklist.txt" "ads.fixture.example\n"));
+    services.dnsmasq.settings.conf-dir = lib.mkIf routing (lib.mkForce
+      "${pkgs.writeTextDir "blocklist.conf" "address=/ads.fixture.example/\n"}");
 
     my.proxy.remoteTargetGrants = lib.optionals targetPolicy [{
       proxy = "Fixture"; cidr = "127.0.0.1/32";
@@ -636,7 +640,7 @@ pkgs.testers.runNixOSTest {
     ''}
     with subtest("${if guiControls then "GUI controls and root routing ownership" else "root routing transactions, exact outer transports and proxied real DNS"}"):
         try:
-            print(machine.succeed("python3 -u /etc/netsec-routing.py check", timeout=600))
+            print(machine.succeed("python3 -u /etc/netsec-routing.py check", timeout=900))
         except Exception:
             print(machine.execute("cat /run/proxy-mode/state.json /run/proxy-mode/routing.json /run/proxy-mode/health.json /run/proxy-mode/routing-firewall.json 2>/dev/null || true; journalctl -u proxy-mode -u clash-verge -u proxy-real-dns -u clash-real-dns --no-pager -n 70; nft -j list table inet lf_routing"))
             raise

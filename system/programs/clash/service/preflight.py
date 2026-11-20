@@ -1,6 +1,7 @@
 """Read-only preparation check and credential-free subscription summary."""
-import importlib.util
+import errno
 import grp
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -147,16 +148,37 @@ def inspect_unlocked(settings):
 
 
 def inspect(settings):
+    root = settings.get('source_root')
+    if root and os.geteuid() != 0:
+        return {'ready': False, 'phase': 'prepare-source-access',
+                'issues': ['Controlled source preflight requires root'],
+                'next_action': 'Run with sudo proxy-control preflight.'}
     spec = importlib.util.spec_from_file_location('snapshot_lock', settings['snapshot_tool'])
     snapshot = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(snapshot)
     try:
         with snapshot.source_lock(settings):
+            if root:
+                try:
+                    directory = snapshot.source_directory(settings)
+                except (FileNotFoundError, ValueError):
+                    return {'ready': False, 'phase': 'prepare-profile',
+                            'issues': ['Controlled source selection is invalid'],
+                            'next_action': 'Check the registered source selection.'}
+                try:
+                    (directory / 'registry.json').stat()
+                except FileNotFoundError:
+                    return {'ready': False, 'phase': 'prepare-source-registration',
+                            'issues': ['Controlled source has not been registered'],
+                            'next_action': 'Register and refresh the controlled source.'}
             return inspect_unlocked(settings)
-    except OSError:
-        return {'ready': False, 'phase': 'prepare-profile',
-                'issues': ['Controlled source has not been registered'],
-                'next_action': 'sudo clash-source review/register, then refresh'}
+    except OSError as error:
+        issue = {errno.ENOENT: 'Controlled source state directory is missing',
+                 errno.EACCES: 'Controlled source state is not readable',
+                 errno.EPERM: 'Controlled source state is not readable'}.get(
+                     error.errno, 'Controlled source state is unavailable')
+        return {'ready': False, 'phase': 'prepare-source-access', 'issues': [issue],
+                'next_action': 'Check the controlled source state directory and rerun sudo proxy-control preflight.'}
 
 
 def publish(result, settings):

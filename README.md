@@ -118,6 +118,7 @@ Keep `stateVersion` unchanged unless you have reviewed and migrated the affected
 | `clash-rules` | Select subscription rules and request healthy B |
 | `clash-proxy-only` | Select strict proxy routing and request healthy B |
 | `clash-egress [ID]` | List accepted exit candidates or select one through a protected switch |
+| `sudo proxy-control recover` | Refresh the selected source when the accepted snapshot cannot restore B. Applications have direct access during a temporary download window |
 | `proxy-status` | Show mode, DNS and readiness |
 | `clash-diff` | Inspect source changes without changing network mode |
 | `firefox-identity` | Open the separate browser profile through the strict proxy inlet |
@@ -129,7 +130,7 @@ Clash Verge is the upstream GUI for node selection and monitoring. The system di
 Use the system commands to select `rules` or `proxy-only`. Both keep Mihomo in `mode: rule`.
 With `clash-on`, controlled subscriptions prefer their accepted snapshot. Startup fetching waits until B is healthy.
 Registered subscriptions also refresh every 30 minutes, with routine node rotation approved automatically.
-Successful updates stay silent; failures appear in desktop notifications and `proxy-status`.
+Successful updates stay silent. Failures appear in desktop notifications and `proxy-status`.
 See [operations and recovery](docs/operations.md) for source management, diagnostics and offline recovery.
 
 ## Hermes and secrets

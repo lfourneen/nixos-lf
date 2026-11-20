@@ -57,7 +57,7 @@ C additionally keeps the bounded recovery/self-test paths in [Network architectu
 Ordinary clients cannot escape C through loopback proxy listeners.
 
 With `localDnssec=true`, private validators query only loopback transport listeners inside the core namespace and have no external DNS transport permission.
-Mihomo sends application queries to Cloudflare/Google DoH, through `lf-remote` on this controlled-source host, and keeps encrypted node bootstrap separate.
+For foreign application queries, rules mode uses authenticated Cloudflare or Google DoH through the separate `lf-dns` selector. Runtime `proxy-only` carries both application and bootstrap DoH through its fixed leaf.
 The core's existing recovery transport remains available in C.
 `unboundDotInProxy` controls the host Unbound exception and does not disable these private validators.
 

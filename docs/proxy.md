@@ -55,8 +55,8 @@ Members must be explicit or refer to registered providers.
 Supported nodes are SS, VMess, VLESS, Trojan, Hysteria2, TUIC, HTTP, SOCKS5 and AnyTLS.
 Remote HTTP/SOCKS plaintext authentication is refused.
 AnyTLS participates in Rule routing only and is not offered as a fixed egress; the single-leaf validator keeps its existing protocol list.
-Nodes that must query an ECH configuration stay out of the system `lf-remote` leaf and out of the fixed-egress candidates: the managed transport DNS travels through that leaf, so asking the leaf to resolve its own ECH loops back and fails with SERVFAIL.
-Such nodes remain in the subscription's groups and work as ordinary selections because a non-ECH leaf resolves their ECH. Inline `ech-opts.config` nodes are not affected.
+Nodes that need a DNS lookup for their ECH configuration are excluded from `lf-remote`, the managed DNS group `lf-dns`, and the fixed-egress candidates. This avoids circular resolution when a DNS transport leaf dials.
+They remain eligible in subscription groups where another leaf can carry the encrypted lookup. Nodes with an inline `ech-opts.config` are eligible for the managed groups.
 
 A private manifest records source ID, revision, response hashes, transformer, policy, rendered YAML, dropped-node count and geodata.
 The snapshot digest includes it.
@@ -74,8 +74,11 @@ An unhealthy or unauthorized runtime follows C recovery.
 Applying a changed candidate enters C before restarting the core and must pass startup checks again.
 The coordinator checks the transport firewall against the staged digest before a health round. In `proxy-only`, this installs the candidate's pinned endpoint tuples while the application lease is revoked.
 Without a compatible fallback, C remains in effect.
+An interrupted routing transaction preserves proxy intent and puts unfinished routing back into a verifiable state. Retry with `clash-on`.
 
-When the mixed HTTP probe fails, the health check concurrently delay-tests every `lf-remote` member through the core group-delay API (the same path the GUI uses to display latency), ranks the usable results, switches to the best leaf and retries. It refuses only when every member times out. Testing and retries stay inside the health budget; the audit and authorization are unchanged.
+When mixed HTTP fails, the health check can test the managed resolver. In rules mode it can switch the `lf-dns` selector to another approved leaf if resolution fails.
+If DNS works and the application leaf still fails, it tries other authorized `lf-remote` members. Delay results can prioritize candidates. When the delay interface returns no usable measurements, it tries members in group order within the health budget.
+A replacement still has to pass a real mixed HTTP request with route proof, then the remaining health checks. Fault diagnostics can also probe the system resolver under an unprivileged desktop UID during B.
 
 `clash-off` revokes runtime authority while preserving the source's accepted baseline.
 With automatic refresh, the next `clash-on` prefers an accepted snapshot that matches the current source revision, managed policy and renderer settings. Reusing it records `restored`.
@@ -86,6 +89,7 @@ In B it starts the downloader after 90 continuous seconds of verified health for
 A mapped GUI request uses the same download gate. In A the download runs directly and prepares the source for the next proxy startup.
 In B a successful download queues its exact candidate for application. If another import or rollback is in progress, the apply service retries with that candidate after rechecking the selection, registration and digest.
 Foreground core startup can finish while the background request is waiting or downloading. `clash-off` cancels queued downloads and applications.
+With runtime routing, an explicit recovery command can fetch the registered source through a temporary A window when its accepted snapshot cannot restore B. See [recover a registered source](operations.md#recover-a-registered-source).
 A first import without an accepted baseline uses the available candidate and the ordinary health observation window.
 Stopping and restarting does not waive structural checks.
 
@@ -357,7 +361,8 @@ New controller write endpoints require an explicit policy decision when upgradin
 
 `my.proxy.subscriptionTrust="source"` accepts proxy providers as trusted, mutable sources.
 `"fixed"` refuses providers so inline node contents belong to the authorized YAML snapshot.
-`proxy-control preflight` reports inline-node and provider counts, source hosts and requested certificate exceptions without subscription URLs or credentials.
+Preflight reports inline-node and provider counts, source hosts and requested certificate exceptions without subscription URLs or credentials.
+For controlled sources, run `sudo proxy-control preflight` to read the root-owned source state.
 
 The global merge script filters inline nodes with `skip-cert-verify` enabled and removes their group references.
 Exact names in `my.proxy.insecureProxyExceptions` are kept.
@@ -397,7 +402,7 @@ clash-proxy-only
 
 Both commands request proxy access, including from A or C. The terminal reports success with the selected mode, or failure with its cause.
 They do not open the GUI, send desktop notifications or print the network overview.
-Use `proxy-status` for the overview; B includes the requested/applied routing mode, transaction epoch, actual core mode and protocol coverage.
+In B and C, `proxy-status` shows the routing selection, transaction epoch, observed core mode and protocol coverage.
 The root interfaces are `sudo proxy-control routing rules` and `sudo proxy-control routing proxy-only`.
 Both routing submodes render core `mode: rule`.
 That core setting tells Mihomo to evaluate the rendered rule list; it does not select `rules` versus `proxy-only`.

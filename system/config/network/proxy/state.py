@@ -30,12 +30,12 @@ def fresh(stamp, now, maximum):
 REFRESH_RESULTS = ('accepted', 'fallback', 'rolled_back', 'refused', 'verifying', 'restored')
 REFRESH_REASONS = ('configuration invalid', 'input unreadable', 'validation timeout',
                    'snapshot mismatch', 'blocked by audit', 'audit indeterminate',
-                   'operator authorization required', 'recent health failure', 'unknown', 'node', 'tun', 'dns', 'obs')
+                   'operator authorization required', 'recent health failure', 'unknown', 'node', 'tun', 'dns', 'obs', 'application')
 FETCH_REASONS = frozenset(('dns lookup failed', 'certificate rejected', 'tls failed',
     'connection timeout', 'connection refused', 'connection reset', 'network unreachable',
     'http rejected', 'encoding unsupported', 'redirect refused', 'destination refused',
     'response limit', 'yaml invalid', 'configuration unsupported', 'node resolution failed', 'worker failure',
-    'network protection active', 'waiting for healthy proxy', 'waiting for stable proxy'))
+    'selected egress unavailable', 'network protection active', 'waiting for healthy proxy', 'waiting for stable proxy'))
 AUDIT_CATEGORIES = frozenset((
     'yaml_structure', 'private_server', 'certificate', 'empty_nodes', 'group_reference',
     'hosts_override', 'provider_change', 'rule_provider_change', 'sensitive_route',

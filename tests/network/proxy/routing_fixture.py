@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 from pathlib import Path
+import signal
 import socket
 import subprocess
 import sys
@@ -43,6 +44,97 @@ def route(target):
     assert current['ready'] and current['mode'] == 'proxy', current
     assert current['routing_requested'] == current['routing_applied'] == target, current
     return current
+
+
+def interrupt_waiting_switch(runtime):
+    epoch = status()['routing_epoch']
+    run('ip', 'netns', 'exec', 'outside', 'nft', '-f', '-', input='''
+table inet routing_interrupt {
+ chain input { type filter hook input priority -300; policy accept;
+  ip daddr 1.1.1.1 tcp dport 18080 drop
+ }
+}
+''')
+    try:
+        with subprocess.Popen(['proxy-control', 'routing', 'rules'], text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True) as switch:
+            def waiting_for_health():
+                assert switch.poll() is None, switch.communicate()
+                record = json.loads((runtime / 'routing.json').read_text())
+                if (record['routing_epoch'] <= epoch or record['routing_requested'] != 'rules'
+                        or record['routing_phase'] != 'verifying'):
+                    return False
+                children = Path(f'/proc/{switch.pid}/task/{switch.pid}/children').read_text().split()
+                for child in children:
+                    try:
+                        if Path(f'/proc/{child}/comm').read_text().strip() == 'sleep':
+                            return True
+                    except FileNotFoundError:
+                        continue
+                return False
+
+            try:
+                wait(waiting_for_health, timeout=60)
+                interrupted_at = time.time()
+                switch.send_signal(signal.SIGINT)
+                stdout, stderr = switch.communicate(timeout=20)
+                assert switch.returncode == 130 and '(health' in stdout, (switch.returncode, stdout, stderr)
+            finally:
+                if switch.poll() is None:
+                    switch.terminate()
+                    try:
+                        switch.communicate(timeout=8)
+                    except subprocess.TimeoutExpired:
+                        switch.kill()
+                        switch.communicate()
+        recovered = json.loads((runtime / 'routing.json').read_text())
+        assert recovered['routing_phase'] == 'verifying', recovered
+        assert (runtime / 'intent').read_text().strip() == 'proxy'
+        enforcement = json.loads((runtime / 'state.json').read_text())
+        assert enforcement['mode'] == 'blocked', enforcement
+        run('systemctl', 'start', 'nftables-verify.service', timeout=30)
+
+        def verified_blocked():
+            verified = json.loads(Path('/run/netsec/state.json').read_text())
+            current = json.loads((runtime / 'state.json').read_text())
+            return (verified['result'], verified['detail'], verified['version']) == ('ok', 'blocked', current['version'])
+
+        wait(verified_blocked, timeout=10)
+        request('domestic.fixture.example', allowed=False)
+    finally:
+        run('ip', 'netns', 'exec', 'outside', 'nft', 'delete', 'table', 'inet', 'routing_interrupt')
+    run('proxy-control', 'on', timeout=130)
+    ready = status()
+    assert ready['ready'] and ready['routing_applied'] == 'rules', ready
+    journal = run('journalctl', '-u', 'proxy-mode.service', '--since', f'@{interrupted_at:.6f}', '--no-pager').stdout
+    assert 'transaction-or-enforcement-unavailable' not in journal, journal
+
+
+def recover_source(runtime):
+    digest = (runtime / 'config-digest').read_text()
+    run('systemctl', 'stop', 'clash-verge.service')
+    wait(lambda: status()['mode'] == 'blocked', timeout=20)
+    requests = Path('/run/managed-source-requests')
+    count = len(requests.read_text().splitlines())
+    unavailable = Path('/run/managed-source-unavailable')
+    unavailable.touch()
+    try:
+        failure = run('proxy-control', 'recover', required=False, timeout=90)
+        assert failure.returncode and '(recovery-download' in failure.stdout, failure
+        assert len(requests.read_text().splitlines()) > count
+        assert status()['mode'] == 'blocked'
+        assert (runtime / 'intent').read_text().strip() == 'proxy'
+        assert (runtime / 'config-digest').read_text() == digest
+    finally:
+        unavailable.unlink()
+    change = Path('/run/managed-source-change')
+    change.touch()
+    try:
+        run('proxy-control', 'recover', timeout=100)
+        assert (runtime / 'config-digest').read_text() != digest
+        assert status()['ready'] and status()['routing_applied'] == 'rules'
+    finally:
+        change.unlink()
 
 
 def old_peer():
@@ -253,9 +345,13 @@ table inet routing_wire {
     last = status()
     assert last['routing_applied'] == last['routing_requested']
     route('proxy-only')
+    interrupt_waiting_switch(runtime)
+    recover_source(runtime)
+    route('proxy-only')
     run('python3', '/etc/netsec-assurance.py', 'lease', timeout=150)
     wait(lambda: status()['ready'])
-    print('Routing: bidirectional switches, idempotence, off/on memory, corruption failure, concurrent selection and kernel expiry passed', flush=True)
+    print('Routing: bidirectional switches, idempotence, off/on memory, corruption failure, concurrency, '
+          'interrupted wait recovery and kernel expiry passed', flush=True)
 
 
 if __name__ == '__main__':

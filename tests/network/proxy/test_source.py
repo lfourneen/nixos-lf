@@ -34,6 +34,21 @@ class Response:
 
 
 class SourceTests(unittest.TestCase):
+    def test_foreign_dns_selector_is_independent_and_uses_only_authorized_leaves(self):
+        document = json.loads(json.dumps(DOC))
+        document['proxies'].extend([dict(NODE, name=name) for name in ('b', 'c', 'd')])
+        policy = {'lf-dns-transport': {'dns': {'nameserver': ['https://1.1.1.1/dns-query#lf-dns']}},
+                  'profile.store-selected': True}
+        result = w.load(w.render(document, {}, policy))
+        groups = {group['name']: group for group in result['proxy-groups']}
+        self.assertEqual(groups['lf-remote']['proxies'], ['n', 'b', 'c', 'd'])
+        self.assertEqual(groups['lf-dns'], {'name': 'lf-dns', 'type': 'select', 'hidden': True,
+                                            'proxies': ['b', 'c', 'n']})
+        self.assertTrue(result['profile']['store-selected'])
+        document['proxy-groups'][0]['proxies'].append('lf-dns')
+        with self.assertRaisesRegex(w.Refused, 'reserved group'):
+            w.render(document, {}, policy)
+
     def test_single_egress_flattens_dynamic_groups_and_rejects_lost_identity(self):
         original = json.loads(json.dumps(DOC))
         original['proxies'].append(dict(original['proxies'][0], name='other', server='8.8.8.8'))

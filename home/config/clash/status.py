@@ -13,7 +13,8 @@ DNS = {'dot': 'Unbound · authenticated DoT', 'proxy': 'Mihomo · managed DNS', 
        'bootstrap-plaintext': 'Plaintext recovery · bootstrap', 'portal-plaintext': 'Plaintext recovery · portal',
        'degraded-plaintext': 'Plaintext recovery · encrypted upstream unavailable', 'degraded-dot-only': 'Encrypted upstream unavailable',
        'resolver-error': 'Resolver identity check failed', 'split-error': 'Split DNS configuration error'}
-REASONS = {'node': 'Proxy request failed', 'dns': 'Probe name resolution failed', 'tun': 'Transparent path check failed',
+REASONS = {'node': 'Authorized proxy leaves failed the HTTP probe', 'dns': 'Managed DNS check failed',
+           'application': 'System DNS probe failed for an application user', 'tun': 'Transparent path check failed',
            'no-tun': 'TUN device or routes unavailable', 'core-gone': 'Proxy core is not running', 'config': 'Core configuration or listener identity mismatch',
            'route': 'Probe did not use the authorized proxy path', 'obs': 'Connection observation unavailable', 'direct-mode': 'Core is in Direct mode',
            'request': 'Waiting for proxy startup', 'reload': 'Reloading policy', 'stopping': 'Stopping services',
@@ -21,6 +22,8 @@ REASONS = {'node': 'Proxy request failed', 'dns': 'Probe name resolution failed'
            'policy-repair': 'Repairing policy', 'policy-repair-failed': 'Policy repair failed',
            'policy-repair-backoff': 'Waiting to retry policy repair', 'interrupted': 'Probe cancelled by supervisor'}
 PHASES = {'prepare-policy': 'Certificate or subscription policy rejected', 'prepare-profile': 'Desktop profile missing or invalid',
+          'prepare-source-access': 'Controlled source state unavailable',
+          'prepare-source-registration': 'Controlled source registration required',
           'prepare-assets': 'Required assets missing', 'prepare-core': 'Core configuration validation failed', 'prepared': 'Configuration checks passed'}
 APPROVAL_CATEGORIES = frozenset(('node_identity', 'node_authentication', 'node_transport', 'sensitive_route'))
 
@@ -108,8 +111,7 @@ def refresh_text(value):
     policy, result = value['policy'], value['result']
     if policy == 'strict' and result == 'refused' and value['reason'] == 'operator authorization required':
         return 'strict · refused · run clash-on'
-    reason = {'node': 'node health failed', 'tun': 'tun health failed', 'dns': 'dns health failed',
-              'obs': 'probe observation failed'}.get(value['reason'], value['reason'])
+    reason = REASONS.get(value['reason'], value['reason'])
     if result == 'accepted':
         return f"{policy} · accepted {stamp(value['at'])} · snapshot from {stamp(value['snapshot_at'])}"
     if result == 'restored':
@@ -197,7 +199,7 @@ def rows(state):
         age_days = subscription.get('age_days')
         yield 'Subscription health', ('stale · last successful activity ' + str(age_days) + 'd ago'
                                       if age_days is not None else 'stale · no accepted update observed')
-    if mode == 'proxy' and state.get('routing_schema'):
+    if mode in ('proxy', 'blocked') and state.get('routing_schema'):
         yield 'Routing requested', state.get('routing_requested', 'unknown')
         yield 'Routing applied', state.get('routing_applied') or 'Pending'
         yield 'Routing transaction', str(state.get('routing_phase', 'unknown')) + ' · epoch ' + str(state.get('routing_epoch', '?'))
@@ -256,7 +258,8 @@ def rows(state):
         value = 'Passed' if health.get('ok') else REASONS.get(health.get('reason'), 'Incomplete')
         yield 'Last proxy probe', value + f" · duration {health.get('duration_ms', '?')} ms"
         fields = [('data_plane_ok', 'Mixed HTTP'), ('route_ok', 'Route'),
-                  ('dns_ok', 'DNS'), ('tun_ok', 'TUN')]
+                  ('dns_ok', 'TUN DNS'), ('managed_dns_ok', 'Managed DNS'),
+                  ('application_dns_ok', 'System DNS'), ('tun_ok', 'TUN')]
         if any(key in health for key, _ in fields):
             yield 'Probe layers', ' · '.join(label + ': ' +
                 ('Passed' if health.get(key) is True else 'Failed' if health.get(key) is False else 'Not proven')
@@ -279,12 +282,14 @@ def rows(state):
                           'enforcement alarm active': 'Enforcement alarm clearance', 'rules not verified for this generation': 'Current policy verification',
                           'rules verification stale': 'Fresh rule verification', 'plaintext window expired': 'A valid plaintext recovery lease'}
             yield 'Waiting for', translated.get(reason, clean(reason))
-        yield 'Diagnostics', 'proxy-control preflight; proxy-inspect'
+        yield 'Diagnostics', 'sudo proxy-control preflight · proxy-inspect'
         if mode == 'blocked':
+            if state.get('routing_schema'):
+                yield 'Recovery', 'Retry clash-on. To refresh in a temporary direct window, run sudo proxy-control recover.'
             yield 'Helper logs', 'sudo journalctl -b -u clash-verge.service -n 60'
             yield 'Core logs', 'sudo tail -n 60 /var/lib/clash-verge-service/logs/service_latest.log'
     if preflight and not preflight.get('ready'):
-        yield 'Preparation action', 'Check controlled source registration (or legacy GUI profile), then run proxy-control preflight; parser details: sudo cat /run/proxy-mode/preflight.log'
+        yield 'Preparation action', 'Run sudo proxy-control preflight for the preparation result.'
 
 
 def render(state, columns=88, color=False, plain=False):

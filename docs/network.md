@@ -98,13 +98,13 @@ Localhost compatibility and the GUI channel use [separate Unix relays](proxy.md#
 
 | Mode | Entry | Application egress | Default DNS upstream |
 |---|---|---|---|
-| A / `direct` | Cold boot with direct boot policy, or explicit `clash-off` | Direct access | Validating Unbound DoT, with bounded plaintext recovery |
+| A / `direct` | Direct boot policy, explicit `clash-off`, or explicit source recovery | Direct access | Validating Unbound DoT, with bounded plaintext recovery |
 | B / `proxy` | Proxy intent, authorized core, required TUN routes and health proof | Proxy, explicit exceptions, or drop | Managed fake-IP or validated real addresses with the WireGuard exit |
 | C / `blocked` | Proxy requested but not ready, crashed or unhealthy | Blocked except recovery and link infrastructure | Unbound. External DoT is cut, eligible cached answers are served |
 
 `proxy-mode` follows root-written, boot-scoped intent.
-Closing the GUI or stopping/crashing the core after `clash-on` keeps C.
-Use `clash-off` to request A.
+Closing the GUI leaves proxy intent in place. A core stop or crash with proxy intent puts the host in C.
+Use `clash-off` to request A, or open a temporary A window to [recover a registered source](operations.md#recover-a-registered-source).
 Starting a GUI alone cannot authorize A → B.
 `my.proxy.bootMode="proxy"` installs C before physical networking and waits for B.
 The default is `"direct"`.
@@ -128,11 +128,11 @@ The recorded leaf must match the current policy graph. Mixed HTTP requires a rem
 Log delivery may take up to 2.5 seconds within the shared deadline.
 The module default shared deadline is 12 seconds; this host sets 18 seconds to fit cold DNSSEC lookups.
 Definite configuration, route or TUN failures block immediately.
-Unavailable observations and DNS failures use three consecutive rounds, at least two seconds apart.
+The coordinator gives observation, DNS, leaf and application-resolver failures three consecutive rounds, at least two seconds apart. Leaf recovery and system resolver diagnostics use the same health budget and run only on failure.
 Each fake-IP lookup and TUN DNS self-test uses `my.proxy.healthDnsTimeoutSeconds`, default 3 seconds per attempt, with one retry within the shared deadline.
 
-`data_plane_ok`, `route_ok`, `dns_ok` and `tun_ok` report separate diagnostic results; `null` means unproven or outside the probe's scope.
-They cannot authorize B or renew its lease. Only the complete `ok=true` verdict can do so.
+`data_plane_ok`, `route_ok`, `dns_ok` and `tun_ok` report per-layer results. `null` means unproven or outside the probe's scope.
+Only the complete `ok=true` verdict authorizes B or renews its lease.
 
 `health.json.scope` declares the invocation's coverage.
 Only `ok=true` confirms successful completion.
@@ -140,7 +140,9 @@ Only `ok=true` confirms successful completion.
 `scope.udp_data_plane="not-probed"` makes the UDP boundary explicit: listener identity is checked, while UDP reachability and association return traffic are not continuously proven.
 A UDP-only failure can therefore leave B and its TCP verdict healthy. In runtime proxy-only, the selected adapter reports `unsupported` when it lacks UDP; IPv6 target support remains node-dependent.
 
-Mode B has independent `rules` and `proxy-only` routing selections. `clash-rules` and `clash-proxy-only` select a target through C and wait for verified B; `proxy-status` shows the applied routing only in B. Off/on retains the choice within this boot; reboot restores rules. See [routing policy](proxy.md#routing-policy).
+Mode B has independent `rules` and `proxy-only` routing selections. `clash-rules` and `clash-proxy-only` select a target through C and wait for verified B.
+`proxy-status` shows the routing selection and transaction state in B and C.
+Off/on retains the choice within this boot. Reboot restores rules. See [routing policy](proxy.md#routing-policy).
 
 ### B authorization lifetime
 

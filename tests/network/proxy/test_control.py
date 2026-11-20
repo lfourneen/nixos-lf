@@ -1,5 +1,6 @@
 """Authorization/permission regressions using real files, without root or VM."""
 
+import errno
 import importlib.util
 import fcntl
 import json
@@ -11,17 +12,59 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 source = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else (
     Path(__file__).resolve().parents[3] / 'system/programs/clash/service/clash-verge-stage.py')
 health_source = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).resolve().parents[3] / 'system/config/network/proxy/health.py'
+preflight_source = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else source.with_name('preflight.py')
 spec = importlib.util.spec_from_file_location('stage', source)
 stage = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(stage)
 spec = importlib.util.spec_from_file_location('health_probe', health_source)
 health_probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(health_probe)
+spec = importlib.util.spec_from_file_location('preflight', preflight_source)
+preflight = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(preflight)
+
+
+class ControlledPreflightTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name) / 'source'
+        self.settings = {'source_root': str(self.root), 'snapshot_tool': str(source)}
+
+    def test_non_root_receives_sudo_instruction_before_accessing_private_state(self):
+        with patch.object(preflight.os, 'geteuid', return_value=1000):
+            result = preflight.inspect({'source_root': str(self.root)})
+        self.assertFalse(result['ready'])
+        self.assertEqual(result['phase'], 'prepare-source-access')
+        self.assertIn('sudo proxy-control preflight', result['next_action'])
+        self.assertNotIn('Controlled source has not been registered', result['issues'])
+
+    def test_root_can_distinguish_missing_directory_permissions_and_registration(self):
+        with patch.object(preflight.os, 'geteuid', return_value=0):
+            missing = preflight.inspect(self.settings)
+            self.root.mkdir(mode=0o700)
+            with patch.object(Path, 'open', side_effect=PermissionError(errno.EACCES, 'denied')):
+                unreadable = preflight.inspect(self.settings)
+            unregistered = preflight.inspect(self.settings)
+        for result in (missing, unreadable, unregistered):
+            self.assertFalse(result['ready'])
+        self.assertEqual(missing['issues'], ['Controlled source state directory is missing'])
+        self.assertEqual(unreadable['issues'], ['Controlled source state is not readable'])
+        self.assertEqual(unregistered['issues'], ['Controlled source has not been registered'])
+
+    def test_registered_source_uses_existing_root_checks(self):
+        self.root.mkdir(mode=0o700)
+        (self.root / 'registry.json').write_text('{}')
+        expected = {'ready': True, 'phase': 'prepared'}
+        with patch.object(preflight.os, 'geteuid', return_value=0), \
+                patch.object(preflight, 'inspect_unlocked', return_value=expected) as inspect:
+            self.assertEqual(preflight.inspect(self.settings), expected)
+        inspect.assert_called_once_with(self.settings)
 
 
 class SnapshotTests(unittest.TestCase):
@@ -656,56 +699,119 @@ else:
 
 
 class HealthLeafTests(unittest.TestCase):
-    def probe(self, delays, **values):
-        class Fake(health_probe.Probe):
-            def __init__(self):
-                settings = dict(budget_seconds=30, urls=['https://probe.example/204'],
-                                leaf_attempts=3, leaf_delay_milliseconds=2000,
-                                leaf_group_timeout_seconds=6)
-                settings.update(values)
-                super().__init__(settings, clock=lambda: 0)
-                self.delays = delays
-                self.paths = []
-            def api(self, path, maximum=1.0):
-                self.paths.append((path, maximum))
-                return self.delays
-        return Fake()
+    url = 'https://probe.example/204'
+    host = 'probe.example'
 
-    def test_candidates_rank_all_positive_delays(self):
-        probe = self.probe({'dead': 0, 'slow': 300, 'fast': 40, 'bad': -1})
-        self.assertEqual(probe.leaf_candidates('https://probe.example/204'), ['fast', 'slow'])
-        path, maximum = probe.paths[0]
+    def probe(self, delays=None, **values):
+        settings = dict(budget_seconds=30, urls=[self.url], dns_port=5353, dns_leaf_group=True)
+        probe = health_probe.Probe(settings | values, clock=lambda: 0)
+        graph = {'proxies': {
+            'lf-remote': {'type': 'Selector', 'all': ['a', 'b', 'c', 'd', 'e'], 'now': 'b'},
+            'lf-dns': {'type': 'Selector', 'all': ['b', 'a', 'c'], 'now': 'b'},
+        }}
+        probe.api = Mock(side_effect=[graph, delays])
+        return probe
+
+    def test_candidates_rank_positive_delays_and_keep_unmeasured_authorized_members(self):
+        probe = self.probe({'b': 1, 'foreign': 2, 'c': 30, 'd': 0, 'e': 20})
+        self.assertEqual(probe.leaf_candidates(self.url), ['e', 'c', 'd', 'a'])
+        path, maximum = probe.api.call_args.args
         self.assertIn('/group/lf-remote/delay', path)
-        self.assertIn('timeout=2000', path)
-        self.assertEqual(maximum, 6)
+        self.assertIn('timeout=1200', path)
+        self.assertEqual(maximum, 1.8)
 
-    def test_candidates_are_capped_and_empty_results_are_safe(self):
-        self.assertEqual(self.probe({'a': 10, 'b': 20, 'c': 30, 'd': 40})
-                         .leaf_candidates('https://probe.example/204'), ['a', 'b', 'c'])
-        self.assertEqual(self.probe({}).leaf_candidates('https://probe.example/204'), [])
-        self.assertEqual(self.probe([]).leaf_candidates('https://probe.example/204'), [])
+    def test_empty_and_unavailable_group_delay_use_authorized_order_after_current_leaf(self):
+        for delays in ({}, [], health_probe.ProbeFailure('obs', 'controller reply unavailable or invalid')):
+            with self.subTest(delays=delays):
+                probe = self.probe(delays)
+                self.assertEqual(probe.leaf_candidates(self.url), ['c', 'd', 'e', 'a'])
 
-    def test_rotation_retries_the_next_measured_leaf_after_a_failure(self):
+    def test_rotation_requires_real_mixed_request_and_continues_to_unmeasured_members(self):
+        probe = self.probe({'e': 20})
+        mixed_failure = health_probe.ProbeFailure('obs', 'mixed HTTP request failed')
+        probe.target = Mock(side_effect=[mixed_failure, mixed_failure, None])
+        probe.select_leaf = Mock(return_value=True)
+        self.assertTrue(probe.rotate_leaf(None, self.url))
+        self.assertEqual([call.args[0] for call in probe.select_leaf.call_args_list], ['e', 'c', 'd'])
+        self.assertEqual([call.args for call in probe.target.call_args_list], [(self.url, None)] * 3)
+
+    def test_fixed_egress_never_tries_a_different_leaf(self):
         probe = self.probe({})
-        probe.leaf_candidates = lambda url: ['b', 'a']
-        attempts = []
-        def attempt(log_path):
-            attempts.append(1)
-            if len(attempts) == 1:
-                raise health_probe.ProbeFailure('obs', 'mixed HTTP request failed')
-            return True
-        probe.attempt_targets = attempt
-        selected = []
-        probe.select_leaf = lambda name: selected.append(name) or True
-        self.assertTrue(probe.rotate_leaf(None))
-        self.assertEqual(selected, ['b', 'a'])
-        self.assertEqual(len(attempts), 2)
+        probe.routing = {'routing_requested': 'proxy-only', 'egress_requested': 'a' * 64}
+        probe.select_leaf = Mock()
+        self.assertFalse(probe.rotate_leaf(None, self.url))
+        probe.select_leaf.assert_not_called()
+        probe.api.assert_not_called()
 
-    def test_rotation_keeps_the_selection_without_a_live_leaf(self):
+    def test_node_failure_reports_when_all_authorized_leaves_fail_mixed_request(self):
         probe = self.probe({})
-        probe.leaf_candidates = lambda url: []
-        probe.select_leaf = lambda name: self.fail('must not select a dead leaf')
-        self.assertFalse(probe.rotate_leaf(None))
+        mixed_failure = health_probe.ProbeFailure('obs', 'mixed HTTP request failed')
+        probe.attempt_targets = Mock(side_effect=mixed_failure)
+        probe.target = Mock(side_effect=mixed_failure)
+        probe.select_leaf = Mock(return_value=True)
+        probe.dns_answer = Mock(return_value=True)
+        probe.application_path = Mock()
+        with self.assertRaises(health_probe.ProbeFailure) as failure:
+            probe.data_paths(None)
+        self.assertEqual(failure.exception.layer, 'node')
+        self.assertEqual(health_probe.failure_stage(failure.exception.detail), 'leaf-unavailable')
+        self.assertEqual([call.args[0] for call in probe.select_leaf.call_args_list], ['c', 'd', 'e', 'a'])
+        probe.application_path.assert_called_once_with()
+
+    def test_dns_failure_rotates_only_the_managed_dns_selector_and_retries_the_current_application_leaf(self):
+        probe = self.probe({})
+        probe.attempt_targets = Mock(side_effect=health_probe.ProbeFailure('obs', 'mixed HTTP request failed'))
+        probe.target = Mock()
+        probe.select_leaf = Mock(return_value=True)
+        probe.dns_answer = Mock(side_effect=[False, True])
+        probe.application_path = Mock()
+        probe.application_dns = Mock()
+        probe.tun_test = Mock()
+        probe.data_paths(None)
+        probe.select_leaf.assert_called_once_with('a', 'lf-dns')
+        probe.target.assert_called_once_with(self.url, None, maximum=2.5)
+        self.assertTrue(probe.diagnostics['dns_leaf_rotated'])
+        self.assertTrue(probe.diagnostics['managed_dns_ok'])
+
+    def test_managed_dns_failure_is_distinct_from_node_failure(self):
+        probe = self.probe({})
+        probe.attempt_targets = Mock(side_effect=health_probe.ProbeFailure('obs', 'mixed HTTP request failed'))
+        probe.select_leaf = Mock(return_value=True)
+        probe.dns_answer = Mock(return_value=False)
+        probe.rotate_leaf = Mock()
+        with self.assertRaises(health_probe.ProbeFailure) as failure:
+            probe.data_paths(None)
+        self.assertEqual(failure.exception.layer, 'dns')
+        self.assertEqual(health_probe.failure_stage(failure.exception.detail), 'validator-dns')
+        self.assertFalse(probe.diagnostics['managed_dns_ok'])
+        probe.rotate_leaf.assert_not_called()
+
+    def test_application_lookup_runs_through_system_stub_in_b_and_reports_failure_separately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            argv = ['systemctl', 'start', 'proxy-application-dns-probe.service']
+            probe = self.probe(runtime=directory, application_dns_check=argv)
+            status = Path(directory) / 'status'
+            with patch.object(health_probe.subprocess, 'run', return_value=Mock(returncode=1)) as run:
+                status.write_text('blocked')
+                probe.application_path()
+                run.assert_not_called()
+                status.write_text('proxy')
+                with self.assertRaises(health_probe.ProbeFailure) as failure:
+                    probe.application_path()
+        self.assertEqual(failure.exception.layer, 'application')
+        self.assertEqual(health_probe.failure_stage(failure.exception.detail), 'application-dns')
+        run.assert_called_once_with(argv, capture_output=True, timeout=3.5, check=False)
+
+    def test_healthy_round_avoids_recovery_queries(self):
+        probe = self.probe()
+        probe.attempt_targets = Mock()
+        probe.application_dns = Mock()
+        probe.tun_test = Mock()
+        probe.real_dns = Mock()
+        probe.dns_answer = Mock()
+        probe.data_paths(None)
+        probe.dns_answer.assert_not_called()
+        probe.api.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-"""Bounded, cancellable Mihomo health probe. Never changes the core configuration."""
+"""Bounded Mihomo health checks and recovery within managed proxy groups."""
 
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
@@ -26,6 +26,9 @@ def failure_stage(detail):
     """Persist the failed step without addresses, node names or curl output."""
     for prefix, stage in (
         ('mixed HTTP request failed', 'mixed-request'),
+        ('authorized leaves did not answer', 'leaf-unavailable'),
+        ('managed validator did not resolve', 'validator-dns'),
+        ('system resolver did not answer', 'application-dns'),
         ('no exact-source-port route log', 'mixed-route-log'),
         ('mixed route proof unavailable', 'mixed-route-proof'),
         ('fake-IP TCP probe failed', 'tun-request'),
@@ -261,31 +264,40 @@ class Probe:
                 timer.cancel()
             connection.close()
 
-    def leaf_candidates(self, url):
-        """Rank every lf-remote member by the core's concurrent delay test.
-
-        The group delay endpoint probes all members in parallel, the same path
-        the GUI uses to display latency. Only positive results are usable; the
-        lowest delays are tried first.
-        """
-        timeout = float(self.settings.get('leaf_delay_milliseconds', 2000))
-        maximum = float(self.settings.get('leaf_group_timeout_seconds', 6))
-        path = ('/group/lf-remote/delay?url=' + quote(url, safe='')
-                + '&timeout=' + str(int(timeout)))
-        value = self.api(path, maximum)
-        if not isinstance(value, dict):
+    def alternate_leaves(self, group):
+        if self.routing.get('egress_requested'):
             return []
-        ranked = sorted((delay, name) for name, delay in value.items()
-                        if isinstance(name, str) and type(delay) is int and delay > 0)
-        return [name for _, name in ranked[:max(1, int(self.settings.get('leaf_attempts', 3)))]]
+        record = self.api('/proxies').get('proxies', {}).get(group, {})
+        members, current = record.get('all'), record.get('now')
+        if (record.get('type') != 'Selector' or not isinstance(members, list)
+                or not all(isinstance(name, str) for name in members) or current not in members):
+            return []
+        index = members.index(current)
+        return list(dict.fromkeys(members[index + 1:] + members[:index]))
 
-    def select_leaf(self, name):
+    def leaf_candidates(self, url):
+        members = self.alternate_leaves('lf-remote')
+        if not members or self.deadline - self.clock() < 4:
+            return members
+        path = '/group/lf-remote/delay?url=' + quote(url, safe='') + '&timeout=1200'
+        try:
+            delays = self.api(path, 1.8)
+        except ProbeFailure as error:
+            if error.layer != 'obs':
+                raise
+            return members
+        if not isinstance(delays, dict):
+            return members
+        return sorted(members, key=lambda name: delays[name] if type(delays.get(name)) is int
+                      and delays[name] > 0 else float('inf'))
+
+    def select_leaf(self, name, group='lf-remote'):
         try:
             result = subprocess.run([
                 self.settings['curl'], '-fsS', '--max-time', '1.5',
                 '--unix-socket', self.settings['socket'], '-X', 'PUT',
                 '-H', 'Content-Type: application/json', '--data-binary',
-                json.dumps({'name': name}), 'http://localhost/proxies/lf-remote'],
+                json.dumps({'name': name}), 'http://localhost/proxies/' + group],
                 capture_output=True, text=True, timeout=self.remaining(2), check=False)
         except (OSError, subprocess.TimeoutExpired):
             return False
@@ -480,13 +492,13 @@ class Probe:
         self.timed('tun_route', lambda: self.prove_route(log_path, name, fields[1], fields[2], records, 'TUN',
                          self.settings.get('tun_route_classes', {}).get(name, 'proxy')))
 
-    def target(self, url, log_path):
+    def target(self, url, log_path, maximum=None):
         parsed = urlsplit(url)
         host = parsed.hostname
         if not host:
             raise ProbeFailure("config", "invalid health target URL")
         # Fresh source ports disambiguate the log from other local applications.
-        timeout = self.remaining(min(self.settings["request_timeout_seconds"],
+        timeout = self.remaining(min(maximum or self.settings["request_timeout_seconds"],
                                      self.remaining(30) / self.target_slots))
         if self.diagnostics['data_plane_ok'] is None:
             self.diagnostics['data_plane_ok'] = False
@@ -575,6 +587,7 @@ class Probe:
     def attempt_targets(self, log_path):
         failures = []
         for number, url in enumerate(self.settings["urls"]):
+            self.last_target = url
             self.target_slots = len(self.settings['urls']) - number + int(self.settings.get('require_tun', False))
             try:
                 self.timed(f"target_{number}", lambda: self.target(url, log_path))
@@ -585,31 +598,123 @@ class Probe:
                 failures.append(error)
         raise failures[-1]
 
-    def rotate_leaf(self, log_path):
-        """Try a measured fallback leaf when the current one cannot answer."""
-        url = (self.settings.get('urls') or [None])[0]
-        if not url:
-            return False
-        try:
-            candidates = self.leaf_candidates(url)
-        except ProbeFailure:
-            if self.clock() >= self.deadline:
-                raise
-            return False
-        if not candidates:
-            return False
-        for name in candidates:
-            if self.deadline - self.clock() <= 2:
-                return False
+    def rotate_leaf(self, log_path, url):
+        """Start after the current leaf so unmeasured members get a turn across rounds."""
+        urls = list(dict.fromkeys([url, *self.settings['urls']]))
+        for name in self.leaf_candidates(url):
+            remaining = self.deadline - self.clock()
+            if remaining <= 2:
+                break
             if not self.select_leaf(name):
                 continue
-            try:
-                self.attempt_targets(log_path)
-                return True
-            except ProbeFailure as error:
-                if error.layer in {'route', 'config', 'interrupted'} or self.clock() >= self.deadline:
-                    raise
+            limit = min(self.deadline - 1, self.clock() + 2.5)
+            self.target_slots = 1
+            for target in urls:
+                remaining = limit - self.clock()
+                if remaining <= 0.5:
+                    break
+                try:
+                    self.target(target, log_path, maximum=remaining)
+                    return True
+                except ProbeFailure as error:
+                    if failure_stage(error.detail) != 'mixed-request':
+                        raise
         return False
+
+    def dns_answer(self, name, address, port):
+        output = self.command([self.settings['dig'], '+time=2', '+tries=1', '+short',
+                               '@' + address, '-p', str(port), name, 'A'], 2.2)
+        for line in output.splitlines():
+            try:
+                if ipaddress.ip_address(line).version == 4:
+                    return True
+            except ValueError:
+                continue
+        return False
+
+    def recover_dns(self, name):
+        self.diagnostics['managed_dns_ok'] = False
+        def works():
+            return self.dns_answer(name, '127.0.0.1', self.settings['dns_port'])
+        ready = works()
+        if not ready and self.settings.get('dns_leaf_group'):
+            for leaf in self.alternate_leaves('lf-dns'):
+                if self.deadline - self.clock() < 2:
+                    break
+                ready = self.select_leaf(leaf, 'lf-dns') and works()
+                if ready:
+                    self.diagnostics['dns_leaf_rotated'] = True
+                    break
+        if not ready:
+            raise ProbeFailure('dns', 'managed validator did not resolve the probe name')
+        self.diagnostics['managed_dns_ok'] = True
+        self.fake_ip_failures.clear()
+
+    def application_path(self):
+        argv = self.settings.get('application_dns_check')
+        status = Path(self.settings['runtime']) / 'status'
+        if not argv or self.deadline - self.clock() < 3.5:
+            return
+        try:
+            if status.read_text().strip() != 'proxy':
+                return
+            try:
+                result = subprocess.run(argv, capture_output=True, timeout=self.remaining(3.5), check=False)
+                answered = result.returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                answered = False
+            if status.read_text().strip() != 'proxy':
+                return
+        except OSError:
+            return
+        self.diagnostics['application_dns_ok'] = answered
+        if not answered:
+            raise ProbeFailure('application', 'system resolver did not answer the probe name')
+
+    def data_paths(self, log_path):
+        recovered = False
+        try:
+            self.attempt_targets(log_path)
+        except ProbeFailure as error:
+            url = getattr(self, 'last_target', self.settings['urls'][0])
+            name = urlsplit(url).hostname
+            if failure_stage(error.detail) != 'mixed-request' or not name or self.deadline - self.clock() < 2:
+                raise
+            self.timed('validator_dns', lambda: self.recover_dns(name))
+            recovered = True
+            # A DNS recovery can make the current leaf usable again.
+            if self.diagnostics.get('dns_leaf_rotated'):
+                try:
+                    self.target_slots = 1
+                    self.target(url, log_path, maximum=2.5)
+                except ProbeFailure as retry_error:
+                    if failure_stage(retry_error.detail) != 'mixed-request':
+                        raise
+                else:
+                    error = None
+            if error and not self.timed('leaf_recovery', lambda: self.rotate_leaf(log_path, url)):
+                self.timed('application_path', self.application_path)
+                raise ProbeFailure('node', 'authorized leaves did not answer the mixed request') from None
+        def transparent_paths():
+            self.timed('application_dns', self.application_dns)
+            self.timed('tun', lambda: self.tun_test(log_path))
+            self.timed('real_dns', self.real_dns)
+        try:
+            transparent_paths()
+        except ProbeFailure as error:
+            if error.layer not in ('dns', 'obs'):
+                raise
+            name = self.tun_name or next(iter(self.fake_ip_failures), self.settings.get('tun_probe_name'))
+            if error.layer == 'dns' and name and self.settings.get('dns_leaf_group') \
+                    and self.deadline - self.clock() >= 4:
+                self.timed('validator_dns', lambda: self.recover_dns(name))
+                transparent_paths()
+                recovered = True
+            else:
+                self.timed('application_path', self.application_path)
+                raise
+        if recovered:
+            self.timed('application_path', self.application_path)
 
     def run(self, fast=False):
         self.routing = self.routing_binding()
@@ -644,14 +749,7 @@ class Probe:
                                           stdout=stream, stderr=subprocess.DEVNULL)
             try:
                 time.sleep(min(0.15, self.remaining(0.15)))
-                try:
-                    self.attempt_targets(log_path)
-                except ProbeFailure as failure:
-                    if failure.layer != 'obs' or not self.rotate_leaf(log_path):
-                        raise
-                self.timed('application_dns', self.application_dns)
-                self.timed("tun", lambda: self.tun_test(log_path))
-                self.timed('real_dns', self.real_dns)
+                self.data_paths(log_path)
                 self.diagnostics['config_ok'] = False
                 final = check_config(self.api("/configs"), self.settings)
                 if final != fingerprint:
@@ -695,7 +793,7 @@ def main():
                   duration_ms=round((time.monotonic() - probe.start) * 1000), layers=probe.timings)
     if os.geteuid() == 0 and not fast and result.get('reason') != 'interrupted':
         classification = result.get('reason')
-        if classification not in ('node', 'tun', 'dns', 'config', 'route', 'obs', 'direct-mode', 'no-tun', 'core-gone'):
+        if classification not in ('node', 'application', 'tun', 'dns', 'config', 'route', 'obs', 'direct-mode', 'no-tun', 'core-gone'):
             classification = 'obs'
         if not result['ok']:
             print('proxy health warning: ' + classification, file=sys.stderr)

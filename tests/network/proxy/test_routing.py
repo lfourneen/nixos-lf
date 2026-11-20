@@ -136,6 +136,20 @@ class RoutingTests(unittest.TestCase):
         self.assertIn('1.1.1.1 . tcp . 443', calls[1])
         verify.assert_called_with(effective, self.state / 'config-digest', self.state / 'authorized-config', fast=True)
 
+    def test_corrupt_candidate_cannot_stall_blocked_transport_enforcement(self):
+        record = routing.binding(self.settings)
+        routing.activate(self.settings, 'proxy-only')
+        routing.atomic(self.state / 'routing.json', dict(record, routing_requested='proxy-only',
+            routing_policy_digest=routing.sha(Path(self.settings['policies']['proxy-only']).read_bytes())))
+        self.settings.update(topology={'core4': '10.255.253.2', 'core6': 'fd46:6c66:636f::2'},
+            interface='clash0', uplinks=['uplink'], guest_interfaces=[], guests=[], dhcp_uid=101)
+        with patch.object(routing, 'endpoints', side_effect=ValueError('invalid snapshot')):
+            blocked = routing.firewall(self.settings, 'blocked')
+            self.assertNotIn('elements =', blocked)
+            self.assertIn('counter drop', blocked)
+            with self.assertRaisesRegex(ValueError, 'invalid snapshot'):
+                routing.firewall(self.settings, 'proxy')
+
     def test_unknown_stale_digest_and_foreign_policy_paths_never_become_rules(self):
         original = json.loads((self.state / 'routing.json').read_text())
         for change in (dict(routing_requested='global'), dict(routing_epoch=0), dict(boot_id='old'),
@@ -237,6 +251,42 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(routing.binding(self.settings)['routing_requested'], 'proxy-only')
         self.assertEqual((self.state / 'intent').read_text(), 'proxy')
         enforce.assert_called_once_with(self.settings, 'blocked')
+
+    def test_interrupted_preparation_removes_partial_authority_and_restores_verifying_phase(self):
+        record = dict(routing.binding(self.settings), routing_phase='preparing')
+        routing.atomic(self.state / 'routing.json', record)
+        routing.activate(self.settings, 'proxy-only')
+        (self.state / 'intent').write_text('proxy')
+        for name in ('authorized-config', 'config-digest', 'health.json'):
+            (self.state / name).write_text('partial')
+
+        routing.recover(self.settings)
+
+        self.assertEqual(routing.binding(self.settings), dict(record, routing_phase='verifying'))
+        self.assertEqual((self.state / 'intent').read_text(), 'proxy')
+        for name in ('authorized-config', 'config-digest', 'health.json'):
+            self.assertFalse((self.state / name).exists())
+
+    def test_recovery_reopens_older_failed_records_with_existing_authority(self):
+        record = dict(routing.binding(self.settings), routing_phase='failed')
+        routing.atomic(self.state / 'routing.json', record)
+        authority = self.state / 'authorized-config'
+        authority.write_text('validated')
+
+        routing.recover(self.settings)
+
+        self.assertEqual(routing.binding(self.settings), dict(record, routing_phase='verifying'))
+        self.assertEqual(authority.read_text(), 'validated')
+
+    def test_recovery_never_adopts_a_changed_policy(self):
+        record = dict(routing.binding(self.settings), routing_phase='failed')
+        routing.atomic(self.state / 'routing.json', record)
+        Path(self.settings['policies']['rules']).write_text('{}')
+
+        with self.assertRaises(routing.StalePolicy):
+            routing.recover(self.settings)
+
+        self.assertEqual(routing.read(self.state / 'routing.json'), record)
 
     def test_status_redacts_bad_records_and_marks_applied_policy_mismatch(self):
         record = routing.binding(self.settings)

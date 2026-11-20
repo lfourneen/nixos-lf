@@ -48,8 +48,8 @@ ID 和 GUI 映射必须唯一。
 不支持 `load-balance`、动态 filter、`rule-providers` 和 provider filter/override。
 节点支持 SS、VMess、VLESS、Trojan、Hysteria2、TUIC、HTTP、SOCKS5 和 AnyTLS，拒绝远程 HTTP/SOCKS 明文认证。
 AnyTLS 只参与 Rule 路由，不列入固定出口候选（单叶子校验器仍只接受上表之外的既有协议）。
-需要查询 ECH 配置的节点不会进入系统内部 `lf-remote` 组，也不会成为固定出口候选：受管传输 DNS 经该组转发，让叶子查询自身 ECH 会形成循环并以 SERVFAIL 失败。
-这类节点仍保留在订阅分组中，可作为普通代理选择，其 ECH 查询由非 ECH 叶子完成；内联 `ech-opts.config` 的节点不受此限制。
+需要通过 DNS 查询 ECH 配置的节点排除在 `lf-remote`、受管 DNS 组 `lf-dns` 和固定出口候选之外，避免 DNS 传输叶子拨号时发生循环解析。
+这些节点仍可在订阅分组中使用，由其他叶子传输加密查询。内联 `ech-opts.config` 的节点仍可进入受管组。
 
 私有 manifest 记录来源 ID、版本、响应摘要、转换器、策略、生成的 YAML、丢弃节点数及 geodata。
 快照摘要包含这份 manifest。
@@ -68,8 +68,11 @@ AnyTLS 只参与 Rule 路由，不列入固定出口候选（单叶子校验器�
 应用变化的候选先进入 C，再重启核心，并须重新通过启动检查。
 健康探测前，协调器按已暂存快照的摘要检查传输防火墙。在 `proxy-only` 下，这会装入候选的固定端点，同时保持应用授权租约撤销。
 没有兼容的回退快照时保持 C。
+路由事务中断时保留代理意图，并将未完成的路由恢复到可验证状态。可使用 `clash-on` 重试。
 
-健康探针发现 mixed HTTP 失败时，会调用核心的组延迟接口**并发测活 `lf-remote` 的全部成员**（与 GUI 显示延迟同一路径），按延迟排序选出可用叶子并切换后重试；只有全部成员都超时才按原逻辑拒绝。测活与重试受健康预算约束，审计与授权不变。
+Mixed HTTP 请求失败时，健康检查可进一步检查受管解析器。若解析失败，rules 模式可将 `lf-dns` 切换到另一个已授权叶子。
+若 DNS 可用而应用叶子仍不可用，则尝试 `lf-remote` 中的其他授权成员。延迟结果可用于确定试用顺序。延迟接口未返回可用结果时，在健康预算内按组成员顺序尝试。
+替换叶子须通过真实 mixed HTTP 请求及路由证明，再完成其余健康检查。B 中的故障诊断也可使用非特权桌面 UID 查询系统解析器。
 
 `clash-off` 撤销运行授权，但保留该来源已接受的基线。
 自动刷新模式下，下次 `clash-on` 优先使用符合当前来源修订、受管策略及渲染参数的已接受快照。复用该快照时记录 `restored`。
@@ -80,6 +83,7 @@ B 在同一次启动、快照、策略和路由选择下持续健康 90 秒后�
 已映射的 GUI 请求遵循同一下载条件。A 中直接下载，供下次代理启动使用。
 B 中下载成功会按候选摘要排队应用。如果导入或回滚正在进行，应用服务会等待，重新核对选择、登记修订和摘要后再处理同一候选。
 等待和下载期间，前台核心可继续启动。`clash-off` 会取消队列中的下载和应用请求。
+启用运行时路由时，若已接受快照无法恢复 B，可显式使用临时 A 窗口获取已登记来源。见[恢复已登记来源](operations_CN.md#恢复已登记来源)。
 尚无已接受基线的首次导入使用已有候选，并经过正常健康观察期。
 停止再启动不会豁免结构检查。
 
@@ -336,7 +340,8 @@ split DNS、原生 MagicDNS 和字面 IP 边界见 [DNS](dns_CN.md)。
 
 `my.proxy.subscriptionTrust="source"` 将 proxy provider 视为可信的可更新来源。
 `"fixed"` 禁止 provider，使内联节点内容纳入授权 YAML 快照。
-`proxy-control preflight` 显示内联节点数、provider 数、来源主机和申请的证书例外数量，不输出订阅 URL 或凭据。
+预检显示内联节点数、provider 数、来源主机和申请的证书例外数量，不输出订阅 URL 或凭据。
+启用受控来源时，使用 `sudo proxy-control preflight` 读取 root 所有的来源状态。
 
 全局 merge 脚本过滤内联节点中启用 `skip-cert-verify` 的节点，并移除分组中的对应引用。
 `my.proxy.insecureProxyExceptions` 点名的节点保留。
@@ -371,7 +376,7 @@ clash-proxy-only
 
 两条命令都请求代理访问，在 A 或 C 中也可使用。终端仅返回成功及目标模式，或失败及原因。
 它们不打开 GUI、不发送桌面通知，也不自动显示网络概览。
-概览使用 `proxy-status`；B 中显示请求/生效路由、事务 epoch、核心实际模式和协议覆盖范围。
+B 和 C 中，`proxy-status` 显示路由选择、事务 epoch、观测到的核心模式和协议覆盖范围。
 底层入口为 `sudo proxy-control routing rules` 和 `sudo proxy-control routing proxy-only`。
 两个路由子模式渲染的核心设置均为 `mode: rule`。
 这个核心设置让 Mihomo 解释渲染后的规则列表，并不选择 `rules` 或 `proxy-only`。

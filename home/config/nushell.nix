@@ -253,8 +253,10 @@ in
       if $core != 0 {
         print $"(ansi red_bold)Proxy preparation or startup failed. See the status below.(ansi reset)"
         proxy-status
-        ${if osConfig.my.proxy.controlledSources then ''
-        print "Check root source registration and run sudo systemctl start clash-source-refresh.service before retrying."
+        ${if osConfig.my.proxy.runtimeRouting then ''
+        print "Use sudo proxy-control preflight to check the source. In Mode C, sudo proxy-control recover refreshes it during a temporary direct window."
+        '' else if osConfig.my.proxy.controlledSources then ''
+        print "Use sudo proxy-control preflight to check the source and registration."
         '' else ''
         job spawn { ^clash-verge }
         print $"Run (ansi yellow_bold)clash-on(ansi reset) again after the GUI has written its profile."
@@ -264,12 +266,16 @@ in
       # Always pass through the current launcher: it preserves a current GUI
       # and replaces an older package's singleton before the GUI requests a core.
       job spawn { ^clash-verge }
+      ${if osConfig.my.proxy.runtimeRouting then ''
+      print $"(ansi green_bold)Mode B ready ✓(ansi reset)"
+      '' else ''
       print $"(ansi yellow)Waiting for A -> C -> B...(ansi reset)"
       if (proxy-control wait proxy | complete).exit_code == 0 {
         print $"(ansi green_bold)Mode B ready ✓(ansi reset)"
       } else {
         proxy-status
       }
+      ''}
     }
 
     def clash-routing [mode: string] {

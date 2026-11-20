@@ -69,9 +69,9 @@ let
         }) ];
       }).config.programs.clash-verge.package;
 
-      managedClashPackage = (self.nixosConfigurations.lfour.extendModules {
+      managedClashPackageFor = runtimeRouting: (self.nixosConfigurations.lfour.extendModules {
         modules = [ ({ lib, ... }: {
-          my.proxy.runtimeRouting = lib.mkForce false;
+          my.proxy.runtimeRouting = lib.mkForce runtimeRouting;
           my.proxy.nodeProbeUrls = lib.mkForce [ "http://node.fixture.example:8080/" ];
           my.proxy.tunProbeName = lib.mkForce "tun.fixture.example";
           my.proxy.tunProbeNames = lib.mkForce [ "tun.fixture.example" "cp.cloudflare.com" ];
@@ -417,7 +417,7 @@ let
 
       proxy-managed-netns-vm = import ./network/proxy/control-vm.nix {
         inherit pkgs;
-        clashPackage = managedClashPackage;
+        clashPackage = managedClashPackageFor false;
         managedSources = true;
       };
 
@@ -431,7 +431,7 @@ let
 
       proxy-routing-vm = import ./network/proxy/control-vm.nix {
         inherit pkgs;
-        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        clashPackage = managedClashPackageFor true;
         managedSources = true;
         assurance = true;
         routing = true;
@@ -492,7 +492,8 @@ let
       } ''
         export PYTHONDONTWRITEBYTECODE=1
         export LF_TEST_YQ=${pkgs.yq-go}/bin/yq
-        python3 ${./network/proxy/test_control.py} ${../system/programs/clash/service/clash-verge-stage.py} ${../system/config/network/proxy/health.py}
+        python3 ${./network/proxy/test_control.py} ${../system/programs/clash/service/clash-verge-stage.py} \
+          ${../system/config/network/proxy/health.py} ${../system/programs/clash/service/preflight.py}
         python3 ${./network/proxy/test_authorization.py} ${../system/config/network/proxy/authorization.py}
         python3 ${./network/proxy/test_desktop.py} ${./network/proxy/desktop.py}
         touch "$out"

@@ -197,11 +197,23 @@ def begin(settings, target, egress_id=None, prepared=None):
         atomic(state / 'routing.json', dict(record, routing_phase='verifying'))
 
 
-def phase(settings, value):
+def recover(settings):
     state = Path(settings['state'])
-    with (state / 'lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        atomic(state / 'routing.json', dict(binding(settings), routing_phase=value))
+    with (state / 'authorization.lock').open('a') as authorization, (state / 'lock').open('a') as policy:
+        fcntl.flock(authorization, fcntl.LOCK_EX)
+        fcntl.flock(policy, fcntl.LOCK_EX)
+        record, stale = selection(settings)
+        target = record['routing_requested']
+        if stale:
+            if record['routing_policy_digest'] != sha(Path(settings['policies'][target]).read_bytes()):
+                raise StalePolicy('routing policy changed; run clash-rules to recover')
+            activate(settings, target)
+        if record['routing_phase'] == 'preparing':
+            for name in ('authorize-window', 'authorized-config', 'config-digest', 'effective-config-sha256',
+                         'effective-config.json', 'health.json'):
+                (state / name).unlink(missing_ok=True)
+        if record['routing_phase'] in ('preparing', 'failed'):
+            atomic(state / 'routing.json', dict(record, routing_phase='verifying'))
 
 
 def applied(settings):
@@ -289,7 +301,13 @@ def firewall(settings, mode):
     strict = record is None or record['routing_requested'] == 'proxy-only'
     if not strict:
         return result + '}\n'
-    nodes = endpoints(settings, record) if record is not None else []
+    nodes = []
+    if record is not None and record['routing_phase'] != 'preparing':
+        try:
+            nodes = endpoints(settings, record)
+        except (OSError, ValueError, KeyError, TypeError):
+            if mode != 'blocked':
+                raise
     t, dev = settings['topology'], json.dumps(settings['interface'])
     uplinks = '{ ' + ', '.join(map(json.dumps, settings['uplinks'])) + ' }'
     guests = '{ ' + ', '.join(map(json.dumps, settings['guest_interfaces'])) + ' }'
@@ -457,8 +475,8 @@ def main():
                 ensure_ascii=True))
     elif command == 'stop-ip-tunnel' and len(sys.argv) == 3:
         stop_ip_tunnel(settings)
-    elif command == 'failed':
-        phase(settings, 'failed')
+    elif command == 'recover' and len(sys.argv) == 3:
+        recover(settings)
     elif command == 'applied':
         applied(settings)
     elif command in ('enforce', 'check') and len(sys.argv) == 4 and sys.argv[3] in ('direct', 'proxy', 'blocked'):

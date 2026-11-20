@@ -254,7 +254,7 @@ class RefreshError(ValueError):
 
 REASONS = {'configuration invalid', 'input unreadable', 'validation timeout',
            'snapshot mismatch', 'blocked by audit', 'audit indeterminate',
-           'operator authorization required', 'recent health failure', 'unknown', 'node', 'tun', 'dns', 'obs'}
+           'operator authorization required', 'recent health failure', 'unknown', 'node', 'tun', 'dns', 'obs', 'application'}
 PIN_TTL = 3600
 HISTORY = 20
 AUTO_APPROVAL_CATEGORIES = frozenset(('node_identity', 'node_authentication', 'node_transport'))
@@ -1337,7 +1337,7 @@ def verify_pending_refresh(settings, record):
         return
     reason = mode.get('reason', '').split(':')[0] or health.get('reason')
     reason = ('tun' if reason in ('tun', 'no-tun', 'core-gone', 'config') else
-              reason if reason in ('dns', 'obs') else 'node')
+              reason if reason in ('dns', 'obs', 'application') else 'node')
     pin_candidate(state, current, health=True)
     if previous is None:
         # No history exists on first import: C continues to protect the

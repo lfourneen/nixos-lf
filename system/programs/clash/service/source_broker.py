@@ -295,6 +295,7 @@ def refresh(settings, root, *, downloaded=None):
         publish_fetch(settings, 'failed', 'worker', 'worker failure')
         raise
     publish_fetch(settings, 'downloaded', at=at)
+    return generation
 
 
 @contextmanager
@@ -494,7 +495,7 @@ def local_source(settings, root, target):
                 or old_manifest.get('renderer_settings') != digest(json.dumps(render, sort_keys=True).encode())):
             raise ValueError('original Rule data is unavailable')
         base = {key: document[key] for key in ('proxies', 'proxy-groups', 'rules', 'hosts') if key in document}
-        base['proxy-groups'] = [group for group in base['proxy-groups'] if group.get('name') != 'lf-remote']
+        base['proxy-groups'] = [group for group in base['proxy-groups'] if group.get('name') not in ('lf-remote', 'lf-dns')]
         prefix = ['IN-NAME,lf-strict,lf-remote'] + ['DOMAIN,' + name + ',lf-remote' for name in settings['forced_domains']]
         rules = base['rules']
         if rules[:len(prefix)] != prefix or len(rules) <= len(prefix):
@@ -557,7 +558,8 @@ def render_local(settings, root, target, previous):
 FETCH_REASONS = frozenset(('dns lookup failed', 'certificate rejected', 'tls failed',
     'connection timeout', 'connection refused', 'connection reset', 'network unreachable',
     'http rejected', 'encoding unsupported', 'redirect refused', 'destination refused',
-    'response limit', 'yaml invalid', 'configuration unsupported', 'node resolution failed', 'worker failure'))
+    'response limit', 'yaml invalid', 'configuration unsupported', 'node resolution failed',
+    'selected egress unavailable', 'worker failure'))
 
 
 class SourceFailure(ValueError):
@@ -760,7 +762,7 @@ def main():
         if action == 'register':
             p.add_argument('--digest', required=True)
             p.add_argument('--previous', required=True, help='current digest, or none for first registration')
-    sub.add_parser('refresh')
+    sub.add_parser('refresh').add_argument('--generation', action='store_true')
     automatic = sub.add_parser('automatic')
     automatic.add_argument('--request', action='store_true')
     sub.add_parser('diff', help='read-only comparison of local source snapshots')
@@ -826,8 +828,12 @@ def main():
             return
         if args.action == 'refresh':
             settings['_fetch_lock'] = lock
-            refresh(settings, selected(root))
-            print('source candidate prepared; runtime validation remains required')
+            generation = refresh(settings, selected(root))
+            if args.generation:
+                _, stage, _ = refresh_context(settings)
+                print(stage.snapshot_digest(generation))
+            else:
+                print('source candidate prepared; runtime validation remains required')
             return
         if args.action == 'automatic':
             automatic_refresh(settings, root, lock, requested=args.request)

@@ -473,7 +473,8 @@ class HealthTests(unittest.TestCase):
                 if outage == 'mixed':
                     self.assertFalse(result['data_plane_ok'])
                     self.assertIsNone(result['dns_ok'])
-                    self.assertEqual(result['failure_stage'], 'mixed-request')
+                    self.assertEqual(result['reason'], 'node')
+                    self.assertEqual(result['failure_stage'], 'leaf-unavailable')
                 if outage == 'route':
                     self.assertEqual(result['reason'], 'route')
                     self.assertFalse(result['route_ok'])
@@ -1773,11 +1774,13 @@ sync_pass
             self.run_shell(script, directory)
 
     def test_internal_proxy_intent_guard_never_enqueues_an_update(self):
-        branch = re.search(r'^      --request-proxy\|--request-direct\)\n(.*?)^        ;;', SOURCE, re.M | re.S)
+        branch = re.search(r'^      --request-proxy\|--request-direct[^\n]*\)\n(.*?)^        ;;', SOURCE, re.M | re.S)
         self.assertIsNotNone(branch)
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             body = branch.group(1).replace('/run/proxy-mode', str(directory)).replace("''${", "${")
+            body = re.sub(r"\$\{lib\.optionalString config\.my\.proxy\.runtimeRouting ''\n.*?^\s*''\}",
+                          '', body, flags=re.M | re.S)
             script = self.setup_shell(directory) + f'''
 set -e
 INTENT={str(directory / 'intent')!r}
@@ -2330,7 +2333,7 @@ class SubscriptionAndStatusTests(unittest.TestCase):
                 self.assertIn('Network status',rendered)
             self.assertNotIn('╭',status.render(value,plain=True))
 
-    def test_routing_overview_is_shown_only_in_mode_b(self):
+    def test_routing_overview_is_shown_in_proxy_and_protected_modes(self):
         status = module('status')
         value = dict(routing_schema=1, routing_requested='proxy-only', routing_applied='rules',
                      routing_phase='verifying', routing_epoch=3, core_mode='rule',
@@ -2338,9 +2341,9 @@ class SubscriptionAndStatusTests(unittest.TestCase):
                      capabilities=dict(dns='pending', udp='not-probed', icmp='blocked'))
         for mode in ('direct', 'blocked', 'unknown', 'proxy'):
             rows = dict(status.rows(value | dict(mode=mode)))
-            self.assertEqual('Routing requested' in rows, mode == 'proxy')
-            self.assertEqual('Routing applied' in rows, mode == 'proxy')
-            if mode == 'proxy':
+            self.assertEqual('Routing requested' in rows, mode in ('proxy', 'blocked'))
+            self.assertEqual('Routing applied' in rows, mode in ('proxy', 'blocked'))
+            if mode in ('proxy', 'blocked'):
                 self.assertEqual(rows['Routing requested'], 'proxy-only')
                 self.assertEqual(rows['Routing applied'], 'rules')
                 self.assertIn('UDP: not-probed', rows['Protocol coverage'])
