@@ -1,4 +1,12 @@
-# nixos-lf · Personal NixOS workstation configuration
+<p align="center">
+  <a href="https://nixos.org">
+    <img src="assets/nixos-logomark-default-gradient-minimal.svg" width="140" alt="NixOS logo">
+  </a>
+</p>
+
+<h1 align="center">nixos-lf</h1>
+
+<p align="center">Personal NixOS workstation configuration</p>
 
 English | [简体中文](README_CN.md)
 
@@ -161,6 +169,7 @@ Secret names and service ownership are declared in [sops.nix](system/programs/so
 | [maintenance/](maintenance) | Repository-wide update inventory and review commands |
 | [scripts/](scripts) | Configuration copy tools and blocklist refresh utility |
 | [tests/](tests) | Package, policy and isolated VM checks |
+| [assets/](assets) | README logo and its attribution |
 | [docs/](docs/README.md) | Architecture, configuration, operations and maintenance |
 
 Run `python3 scripts/check-maintenance.py` to validate the update inventory.

@@ -1,4 +1,12 @@
-# nixos-lf · 个人 NixOS 系统配置
+<p align="center">
+  <a href="https://nixos.org">
+    <img src="assets/nixos-logomark-default-gradient-minimal.svg" width="140" alt="NixOS logo">
+  </a>
+</p>
+
+<h1 align="center">nixos-lf</h1>
+
+<p align="center">个人 NixOS 系统配置</p>
 
 [English](README.md) | 简体中文
 
@@ -159,6 +167,7 @@ sudo SOPS_AGE_KEY_FILE=/persist/secrets/age/system.key \
 | [maintenance/](maintenance) | 全仓库更新台账和核查命令 |
 | [scripts/](scripts) | 配置复制工具和黑名单刷新脚本 |
 | [tests/](tests) | 软件包、策略和隔离 VM 检查 |
+| [assets/](assets) | README 图标和署名 |
 | [docs/](docs/CN/README_CN.md) | 架构、配置、日常操作和维护手册 |
 
 运行 `python3 scripts/check-maintenance.py` 校验更新台账。
