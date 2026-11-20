@@ -23,6 +23,7 @@ def module(name, path):
 
 manifest = json.loads(Path("/etc/firefox-sandbox-test.json").read_text())
 settings = json.loads(Path(manifest["settings"]).read_text())
+identity_settings = json.loads(Path(manifest["identitySettings"]).read_text())
 
 
 def publish(mode, variant=None):
@@ -92,10 +93,11 @@ def serve():
             if self.path != '/hello':
                 self.send_error(404)
                 return
-            body = b'<html><title>Portal fixture</title><p>Portal fixture</p></html>'
+            body = b'Portal download fixture\n'
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
-            self.send_header('Content-Type', 'text/html')
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Disposition', 'attachment; filename="portal-fixture.txt"')
             self.end_headers()
             self.wfile.write(body)
             Path('/run/firefox-portal-visited').touch()
@@ -123,7 +125,7 @@ if sys.argv[1:2] == ['publish']:
     raise SystemExit(0)
 if sys.argv[1:2] == ['remote-name']:
     if sys.argv[2] == 'identity':
-        settings = json.loads(Path(manifest['identitySettings']).read_text())
+        settings = identity_settings
     print(module("sandbox", settings["sandboxModule"]).remote_name(settings))
     raise SystemExit(0)
 
@@ -132,10 +134,11 @@ guard = module("guard", manifest["guard"])
 assert settings['requireProxy'] is False
 # The production daily configuration passes A preflight with the strict Unix
 # endpoint absent; the subsequent real Wayland launch exercises its mounts.
-assert not Path(settings['proxySocket']).exists()
-assert guard.prepare(settings, manifest['package'] + '/bin/.firefox-unchecked',
+without_relay = dict(settings, proxySocket="/run/fixture-absent.sock")
+assert not Path(without_relay['proxySocket']).exists()
+assert guard.prepare(without_relay, manifest['package'] + '/bin/.firefox-unchecked',
     check=lambda **_: {'mode': 'direct', 'ready': False, 'policy_version': 1}, check_only=True) == []
-sandbox.prerequisites(settings)
+sandbox.prerequisites(without_relay)
 try:
     guard.prepare(dict(settings, requireProxy=True), manifest['package'] + '/bin/.firefox-unchecked',
         check=lambda **_: {'mode': 'direct', 'ready': False, 'policy_version': 1}, check_only=True)
@@ -154,8 +157,11 @@ driver = module("driver", manifest["driver"])
 tls = module("tls", manifest["tlsModule"]).start(manifest["tlsDirectory"])
 private = Path.home() / "private"
 private.mkdir(exist_ok=True)
-(private / "selected.txt").write_text("chosen through the portal")
 (private / "secret.txt").write_text("must remain private")
+identity_downloads = Path(identity_settings["downloads"])
+identity_downloads.mkdir(parents=True, exist_ok=True)
+(identity_downloads / "old-download.txt").write_text("existing identity download")
+(identity_downloads / "other-download.txt").write_text("ungranted identity download")
 host_socket = socket.socket(socket.AF_UNIX)
 host_socket.bind("\0firefox-host-secret")
 host_socket.listen()
@@ -205,6 +211,18 @@ assert result.returncode, result.stdout
 assert 'AccessDenied' in result.stderr or 'ServiceUnknown' in result.stderr, result.stderr
 assert subprocess.run([m['pactl'], 'info'], capture_output=True).returncode == 0
 (home / 'Downloads/allowed.txt').write_text('download')
+masked = home / 'Downloads/identity'
+assert list(masked.iterdir()) == []
+for operation in (lambda: (masked / 'old-download.txt').write_text('overwrite'),
+                  lambda: masked.rename(masked.with_name('moved-identity'))):
+    try:
+        operation()
+    except OSError as error:
+        assert error.errno in (errno.EROFS, errno.EBUSY, errno.EACCES, errno.EPERM), error
+    else:
+        raise AssertionError('the daily browser could modify the identity mount')
+(home / 'Downloads/identity-link').symlink_to(masked / 'old-download.txt')
+assert not (home / 'Downloads/identity-link').exists()
 (home / 'Downloads/secret-link').symlink_to(home / 'private/secret.txt')
 assert not (home / 'Downloads/secret-link').exists()
 (home / '.cache/allowed.txt').write_text('cache')
@@ -273,7 +291,30 @@ picker.open(result => done({result, path: picker.file && picker.file.path}));
     contents = client.call("WebDriver:ExecuteAsyncScript", {"script":
         "const done = arguments[arguments.length - 1]; IOUtils.readUTF8(" +
         json.dumps(result["path"]) + ").then(done);", "args": [], "newSandbox": True})["value"]
-    assert contents == "chosen through the portal"
+    assert contents == "existing identity download"
+    assert client.call("WebDriver:ExecuteAsyncScript", {"script": """
+const done = arguments[arguments.length - 1];
+Promise.all(arguments[0].map(path => IOUtils.exists(path))).then(done);
+""", "args": [[str(identity_downloads / name) for name in ("old-download.txt", "other-download.txt")]],
+        "newSandbox": True})["value"] == [False, False]
+    identity_probe = """
+from pathlib import Path
+import sys
+downloads, daily_file, daily_grant = map(Path, sys.argv[1:])
+assert (downloads / "old-download.txt").read_text() == "existing identity download"
+assert (downloads / "other-download.txt").read_text() == "ungranted identity download"
+assert not daily_file.exists()
+assert not daily_grant.exists()
+(downloads / "new-download.txt").write_text("new identity download")
+"""
+    identity_binary = manifest["identityPackage"] + "/bin/.firefox-unchecked"
+    assert sandbox.run(identity_settings, identity_binary,
+        [manifest["python"], "-I", "-c", identity_probe, str(identity_downloads),
+         str(Path(settings["downloads"]) / "allowed.txt"), result["path"]]) == 0
+    assert (identity_downloads / "old-download.txt").read_text() == "existing identity download"
+    assert (identity_downloads / "new-download.txt").read_text() == "new identity download"
+    assert Path(settings["downloads"], "allowed.txt").read_text() == "download"
+    print("Daily and identity downloads, legacy data and per-application portal grant verified", flush=True)
     assert sandbox.check_generation(settings, binary)
     try:
         sandbox.check_generation(settings, "/other-generation/bin/.firefox-unchecked")

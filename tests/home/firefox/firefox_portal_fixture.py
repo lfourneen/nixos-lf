@@ -13,7 +13,7 @@ XML = """<node><interface name='org.freedesktop.impl.portal.FileChooser'>
 def method(connection, sender, path, interface, name, parameters, invocation):
     values = parameters.unpack()
     (Path.home() / "portal-request.json").write_text(json.dumps(values))
-    result = {"uris": GLib.Variant("as", [(Path.home() / "private/selected.txt").as_uri()])}
+    result = {"uris": GLib.Variant("as", [(Path.home() / "Downloads/identity/old-download.txt").as_uri()])}
     invocation.return_value(GLib.Variant("(ua{sv})", (0, result)))
 
 

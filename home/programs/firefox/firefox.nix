@@ -7,6 +7,8 @@ let
   compat = config.my.firefox.videoSiteCompat;
   transparent = config.my.firefox.networkPath == "transparent";
   profile = "${config.programs.firefox.configPath}/lfour";
+  dailyDownloads = "${config.home.homeDirectory}/Downloads";
+  identityDownloads = "${dailyDownloads}/identity";
 
   scope = pkgs.runCommandCC "firefox-scope" { buildInputs = [ pkgs.libseccomp ]; } ''
     mkdir -p "$out/bin"
@@ -128,7 +130,6 @@ let
     "browser.formfill.enable" = false;
     "browser.sessionstore.privacy_level" = 2;
     "widget.use-xdg-desktop-portal.file-picker" = 1;
-    "browser.download.dir" = "${config.home.homeDirectory}/Downloads";
     "browser.download.folderList" = 2;
 
     # Suggestions / promotions
@@ -161,7 +162,9 @@ let
   windowsDomains = config.my.firefox.windowsUserAgentDomains;
   firefoxVersion = "${lib.versions.major pkgs.firefox.version}.0";
   windowsPlatform = "Windows NT 10.0; Win64; x64";
-  prefs = sharedPrefs // lib.optionalAttrs (windowsDomains != [ ]) {
+  prefs = sharedPrefs // {
+    "browser.download.dir" = dailyDownloads;
+  } // lib.optionalAttrs (windowsDomains != [ ]) {
     "privacy.resistFingerprinting.exemptedDomains" = lib.concatStringsSep "," (map lib.toLower windowsDomains);
     "general.useragent.override" = "Mozilla/5.0 (${windowsPlatform}; rv:${firefoxVersion}) Gecko/20100101 Firefox/${firefoxVersion}";
     "general.platform.override" = "Win32";
@@ -269,25 +272,30 @@ let
     user = config.home.username;
     runtime = "/run/user/${toString osConfig.users.users.${config.home.username}.uid}";
     cache = "${config.xdg.cacheHome}/firefox-managed";
-    downloads = "${config.home.homeDirectory}/Downloads";
+    downloads = dailyDownloads;
     path = lib.makeBinPath [ pkgs.coreutils ];
   };
 
-  settings = pkgs.writeText "firefox-launch.json" (builtins.toJSON settingsData);
+  settings = pkgs.writeText "firefox-launch.json" (builtins.toJSON (settingsData // {
+    hiddenDownloads = identityDownloads;
+  }));
 
   # Separate browser packages have their own policies and profile data.
   isolatedBrowser = name: portal: let
+    downloads = if portal then dailyDownloads else identityDownloads;
     isolatedSettings = pkgs.writeText "firefox-${name}.json" (builtins.toJSON (settingsData // {
+      inherit downloads;
       profile = "${config.programs.firefox.configPath}/${name}";
       cache = "${config.xdg.cacheHome}/firefox-${name}";
-      downloads = "${config.home.homeDirectory}/Downloads/${name}";
       appId = "org.nixos.ManagedFirefox.${name}";
       requireProxy = !portal;
       portalOnly = portal;
       ephemeral = portal;
     }));
 
-    isolatedPrefs = sharedPrefs // lib.optionalAttrs portal {
+    isolatedPrefs = sharedPrefs // {
+      "browser.download.dir" = downloads;
+    } // lib.optionalAttrs portal {
       "dom.security.https_only_mode" = false;
       "dom.security.https_only_mode_pbm" = false;
     };

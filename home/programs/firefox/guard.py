@@ -184,7 +184,7 @@ def main():
             temporary = tempfile.TemporaryDirectory(prefix='firefox-portal-', dir=settings['runtime'])
             settings = dict(settings, launchSettings=sys.argv[1],
                             profile=temporary.name + '/profile', cache=temporary.name + '/cache',
-                            downloads=temporary.name + '/downloads', lifetime=900, portalAddress=address)
+                            downloadsSource=temporary.name + '/downloads', lifetime=900, portalAddress=address)
         try:
             command = prepare(settings, sys.argv[2], () if check_only else sys.argv[3:],
                               check_only=check_only)

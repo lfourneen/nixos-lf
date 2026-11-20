@@ -38,7 +38,7 @@ The Nix wrapper and small [scope helper](../home/programs/firefox/scope.c) suppl
 
 | Resource | Browser access |
 |---|---|
-| Persistent files | Read/write managed profile, `~/.cache/firefox-managed` and `~/Downloads`. Other personal files require a file-chooser grant |
+| Persistent files | Read/write access to the entry's managed profile, cache and download directory. Other personal files require a file-chooser grant |
 | Runtime and trust | Read-only Nix store, selected resolver/CA files and graphics driver. No host root filesystem or general home/runtime-directory mount |
 | Display and audio | Named Wayland socket, optional Pulse socket and DRM render nodes. Configured NVIDIA access also exposes matching primary nodes and rendering interfaces. No X11 socket, input devices, camera or NVIDIA modeset interface |
 | Session bus | Filtered proxy: file chooser, read-only settings, request/session close, scheme-support query and remoting for this exact profile |
@@ -68,6 +68,13 @@ The bus proxy identifies the browser to desktop portals as `org.nixos.ManagedFir
 The browser sees only its own document grants.
 Selecting a file grants access to that document, rather than its whole parent directory.
 Writable browser directories must not be symbolic links.
+
+### Download directories
+
+Daily Firefox downloads to `~/Downloads`. It sees an empty, read-only mount at `~/Downloads/identity`.
+Identity Firefox reads and writes the real `~/Downloads/identity` directory. Existing identity downloads stay at their original paths and can be opened from identity Firefox or the desktop file manager.
+To open an identity download in daily Firefox, select that file through the desktop file chooser. The grant belongs to the requesting browser identity.
+The portal browser maps `~/Downloads` to temporary storage that is removed with its session.
 
 ### Existing windows and restarts
 

@@ -9,6 +9,7 @@ let
   manifest = pkgs.writeText "firefox-sandbox-test.json" (builtins.toJSON {
     package = firefox;
     identitySettings = identity.netsec.settings;
+    identityPackage = identity.netsec.package;
     inherit routingPolicies;
     uid = desktop.uid;
     inherit (firefox.netsec) settings;
@@ -47,6 +48,8 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("user@${toString desktop.uid}.service")
     try:
         machine.wait_until_succeeds("test -S ${runtime}/wayland-0 && test -S ${runtime}/pulse/native", timeout=40)
+        machine.succeed("systemctl start firefox-mode-fixture")
+        machine.wait_until_succeeds("test -S ${runtime}/clash-verge-rev/verge-mihomo.sock && test -S /run/clash-strict/proxy.sock")
         machine.succeed("runuser -u ${desktop.name} -- env HOME=${pkgs.lib.escapeShellArg desktop.home} XDG_RUNTIME_DIR=${runtime} WAYLAND_DISPLAY=wayland-0 DBUS_SESSION_BUS_ADDRESS=unix:path=${runtime}/bus ${python}/bin/python3 /etc/firefox-sandbox-test.py > /tmp/firefox-sandbox.log 2>&1", timeout=180)
     except Exception:
         print(machine.execute("tail -n 70 /tmp/firefox-sandbox.log; journalctl _UID=${toString desktop.uid} --no-pager -n 50"))
@@ -62,8 +65,6 @@ pkgs.testers.runNixOSTest {
         machine.succeed("${python}/bin/python3 /etc/firefox-sandbox-test.py publish " + state)
 
     with subtest("production Firefox launchers bind to the ready B routing policy"):
-        machine.succeed("systemctl start firefox-mode-fixture")
-        machine.wait_until_succeeds("test -S ${runtime}/clash-verge-rev/verge-mihomo.sock && test -S /run/clash-strict/proxy.sock")
         daily = "${firefox}/bin/firefox"
         identity = "${identity}/bin/firefox-identity"
         portal = "${portal}/bin/firefox-portal http://127.0.0.1/hello"
@@ -111,8 +112,10 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemd-run --no-block --collect --unit=fixture-portal " + desktop(portal))
         machine.wait_until_succeeds("test -f /run/firefox-portal-visited", timeout=30)
         machine.succeed("test $(find ${runtime} -maxdepth 1 -name 'firefox-portal-*' | wc -l) = 1")
+        machine.wait_until_succeeds("grep -Fx 'Portal download fixture' ${runtime}/firefox-portal-*/downloads/portal-fixture.txt", timeout=30)
         machine.succeed("rm /run/proxy-mode/intent")
         machine.wait_until_succeeds("test $(find ${runtime} -maxdepth 1 -name 'firefox-portal-*' | wc -l) = 0", timeout=15)
+        machine.succeed("test ! -e ${pkgs.lib.escapeShellArg "${desktop.home}/Downloads/portal-fixture.txt"}")
         machine.fail(desktop(portal))
         machine.succeed(desktop(daily + " --check"))
   '';

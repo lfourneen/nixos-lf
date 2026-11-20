@@ -37,8 +37,14 @@ for mode, path in settings["healthSettings"].items():
     assert desktop_health["socket"] == f'/run/user/{manifest["desktopUid"]}/clash-verge-rev/verge-mihomo.sock'
     for key in ("expected", "listener_check", "budget_seconds"):
         assert desktop_health[key] == mode_health[key], (mode, key)
-for path in manifest["isolatedSettings"].values():
-    assert json.loads(Path(path).read_text())["healthSettings"] == settings["healthSettings"]
+isolated_settings = {name: json.loads(Path(path).read_text()) for name, path in manifest["isolatedSettings"].items()}
+for isolated in isolated_settings.values():
+    assert isolated["healthSettings"] == settings["healthSettings"]
+assert settings["hiddenDownloads"] == isolated_settings["identity"]["downloads"]
+assert Path(isolated_settings["identity"]["downloads"]).parent == Path(settings["downloads"])
+assert isolated_settings["portal"]["downloads"] == settings["downloads"]
+assert all("hiddenDownloads" not in isolated for isolated in isolated_settings.values())
+assert manifest["prefs"]["browser.download.dir"] == settings["downloads"]
 assert root_health["socket"] == "/run/clash-verge-rev/core/mihomo.sock"
 assert root_health["snapshot_required"] is True
 assert root_health["digest_file"] == "/run/proxy-mode/config-digest"
@@ -70,6 +76,7 @@ for name, expected in {
     document = json.loads((isolated / "lib/firefox/distribution/policies.json").read_text())
     assert document["policies"]["ExtensionSettings"] == expected, name
     autoconfig = (isolated / "lib/firefox/mozilla.cfg").read_text()
+    assert f'lockPref("browser.download.dir", {json.dumps(isolated_settings[name]["downloads"])});' in autoconfig
     assert "general.useragent.override" not in autoconfig, name
     assert "privacy.resistFingerprinting.exemptedDomains" not in autoconfig, name
 assert not any((p if isinstance(p, str) else p.get("appId")) in

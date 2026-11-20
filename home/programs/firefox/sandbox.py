@@ -180,8 +180,13 @@ def session(settings):
         documents = runtime / "doc/by-app" / settings.get("appId", APP_ID)
         if not documents.is_dir():
             raise ValueError("the per-application document portal is unavailable")
-        for name in ("profile", "cache", "downloads"):
-            path = Path(settings[name])
+        downloads = settings.get("downloadsSource", settings["downloads"])
+        hidden_downloads = settings.get("hiddenDownloads")
+        directories = [settings["profile"], settings["cache"], downloads]
+        if hidden_downloads:
+            directories.append(hidden_downloads)
+        for directory in directories:
+            path = Path(directory)
             path.mkdir(mode=0o700, parents=True, exist_ok=True)
             if path.is_symlink() or path.resolve() != path:
                 raise ValueError("browser writable directories must be real paths: " + str(path))
@@ -218,7 +223,7 @@ def session(settings):
                 "--dir", settings["home"], "--chdir", settings["home"],
                 "--bind", settings["profile"], settings["profile"],
                 "--bind", settings["cache"], settings["home"] + "/.cache",
-                "--bind", settings["downloads"], settings["downloads"],
+                "--bind", downloads, settings["downloads"],
                 "--bind", str(documents), str(runtime / "doc"),
                 "--bind", str(proxy_dir / "bus"), str(runtime / "bus"),
                 "--ro-bind", str(runtime / wayland), str(runtime / wayland),
@@ -226,6 +231,10 @@ def session(settings):
                 # the directory leaves those links dangling in this root.
                 # Pin the actual file without exposing the rest of /etc/static.
                 "--ro-bind", str(Path(CA_BUNDLE).resolve(strict=True)), CA_BUNDLE]
+            if hidden_downloads:
+                empty = instance / "empty-downloads"
+                empty.mkdir(mode=0o700)
+                command += ["--ro-bind", str(empty), hidden_downloads]
             for path in ("/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf",
                          "/etc/localtime", "/etc/machine-id",
                          "/run/opengl-driver"):
