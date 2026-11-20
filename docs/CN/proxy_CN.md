@@ -255,7 +255,8 @@ worker 在 `-t` 与快照提交之间离线运行，身份为无 capabilities �
 历史比较使用最近 settled 的 YAML。
 可变 provider 内容仍遵循下文的独立信任模型。
 `my.proxy.insecureProxyExceptions` 中的具名 TLS 例外保留。
-启用 `skip-cert-verify` 且未获具名例外的节点，只在来源列入 Sops 加密的 `insecure_sources` 清单时被丢弃。这类节点和解析失败的节点共用总数五分之一的上限，向下取整，且上限至少为一个。
+启用 `skip-cert-verify` 且未获具名例外的节点，只在来源列入 Sops 加密的 `insecure_sources` 清单时被丢弃。
+解析失败与回环 IP 字面量占位节点共用过滤后节点数五分之一的丢弃上限，向下取整，上限至少为一个。候选必须保留可用节点以及路由规则引用的分组。
 每行写一个已登记的来源 ID，允许空行和重复 ID。
 文件缺失、无法读取、UTF-8 无效或任一 ID 格式错误时，所有来源的清洗授权均失效。
 清洗未获授权时，worker 保留相应节点，交由审计和核心守卫判定。见 [whitelist.yaml](../../system/secrets/whitelist.yaml)。

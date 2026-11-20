@@ -110,8 +110,8 @@ Activation enters C before replacing the core through helper IPC, repeats import
 Worker failures identify `fetch`, `parse`, `render` or `pin-addresses`.
 `Subscription download` in `proxy-status` adds a fixed DNS, TLS, connection or HTTP failure category and an HTTP status when available.
 `Subscription download` also reports when a candidate is waiting to apply. `Profile refresh` reports the audit and health verdict.
-Unresolvable nodes may be dropped up to `max(1, node_count // 5)`.
-Private answers still refuse the candidate.
+After authorized TLS filtering, the worker may drop unresolved nodes and literal loopback placeholders up to `max(1, remaining_node_count // 5)`.
+DNS answers containing non-public addresses and other non-public literal endpoints refuse the candidate.
 Fetch/parse/audit failure preserves a valid runtime fallback.
 No fallback leaves C.
 If C prevents source recovery, deliberately select A, fetch the registered source, then request B.

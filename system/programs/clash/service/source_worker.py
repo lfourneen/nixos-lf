@@ -479,9 +479,19 @@ def prune_groups(document, dropped):
             group['proxies'] = [ref for ref in group['proxies'] if ref not in empty]
 
 
+def loopback_literal(server):
+    try:
+        address = ipaddress.ip_address(server)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return address.is_loopback
+
+
 def pin_servers(config, resolver=socket.getaddrinfo, allowed_insecure=(), sanitize_insecure=False):
     document = load(config)
-    nodes, dropped = [], []
+    nodes, unavailable, excluded = [], [], []
     allowed = set(allowed_insecure)
     for node in document['proxies']:
         if node.get('type') not in ('ss', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'http', 'socks5', 'anytls'):
@@ -492,19 +502,21 @@ def pin_servers(config, resolver=socket.getaddrinfo, allowed_insecure=(), saniti
         # only when root authorized this source for sanitizing; otherwise keep
         # them so the audit and the core guard refuse the candidate. A named
         # insecure-proxy-exception stays in either case.
-        if insecure_leaf(node) and node.get('name') not in allowed:
-            if sanitize_insecure:
-                dropped.append(node.get('name'))
-                continue
+        if sanitize_insecure and insecure_leaf(node) and node.get('name') not in allowed:
+            excluded.append(node.get('name'))
+            continue
         server, port = node.get('server'), node.get('port')
         if not isinstance(server, str) or type(port) is not int or not 1 <= port <= 65535:
             raise Refused('node endpoint')
+        # Some subscription banners use literal loopback endpoints. Keep DNS
+        # answers subject to the same public-address checks as other endpoints.
+        if loopback_literal(server):
+            unavailable.append(node.get('name'))
+            continue
         try:
             addresses = public_addresses(resolver, server, port)
         except OSError:
-            # Never leave an unpinned name for the core to resolve later; an
-            # unavailable endpoint is dropped and counted, not silently dialed.
-            dropped.append(node.get('name'))
+            unavailable.append(node.get('name'))
             continue
         node['lf-source-server'] = server
         node['server'] = addresses[0]
@@ -517,10 +529,10 @@ def pin_servers(config, resolver=socket.getaddrinfo, allowed_insecure=(), saniti
         nodes.append(node)
     if not nodes:
         raise Refused('empty nodes')
-    # A failing resolver must not silently shrink the source to a handful of
-    # endpoints; bounded loss keeps the candidate representative.
-    if len(dropped) > max(1, len(document['proxies']) // 5):
+    # The resolution limit applies to nodes eligible under the TLS policy.
+    if len(unavailable) > max(1, (len(nodes) + len(unavailable)) // 5):
         raise Refused('node resolution')
+    dropped = excluded + unavailable
     document['proxies'] = nodes
     prune_groups(document, set(dropped))
     return yaml.safe_dump(document, allow_unicode=True, sort_keys=True).encode(), len(dropped)

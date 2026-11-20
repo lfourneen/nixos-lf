@@ -110,7 +110,8 @@ worker 失败区分 `fetch`、`parse`、`render`、`pin-addresses`。
 `proxy-status` 的 `Subscription download` 另显示固定的 DNS、TLS、连接或 HTTP 失败分类，以及可用的 HTTP 状态码。
 `Subscription download` 也显示候选是否正在等待应用。`Profile refresh` 显示审计与健康结果。
 
-解析失败最多丢弃 `max(1, node_count // 5)` 个节点，私网答案仍拒绝候选。
+按授权过滤不安全的 TLS 节点后，解析失败的节点和使用回环 IP 字面量的占位节点，最多丢弃 `max(1, remaining_node_count // 5)` 个。
+DNS 答案含非公网地址，或节点使用其他非公网 IP 字面量时，拒绝候选。
 下载、解析和审计失败保留有效的运行回退，没有回退则保持 C。
 若 C 阻止来源恢复，须主动选 A 获取已登记来源，再请求 B。
 DNS 不自动降级。

@@ -2372,7 +2372,7 @@ class SubscriptionAndStatusTests(unittest.TestCase):
         value = {'ready': True, 'mode': 'proxy', 'target': 'proxy',
                  'source_trust': {'provenance': 'controlled-fetch', 'dropped': 10}}
         self.assertEqual(dict(status.rows(value))['Dropped leaves'],
-                         '10 · unresolvable or unapproved insecure')
+                         '10 · unresolved, loopback or unapproved TLS')
         value['source_trust']['dropped'] = 0
         self.assertNotIn('Dropped leaves', dict(status.rows(value)))
 

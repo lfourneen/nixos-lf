@@ -457,11 +457,56 @@ class SourceTests(unittest.TestCase):
         with self.assertRaises(w.Refused):
             w.prepare(request, lambda *_: json.dumps(doc).encode(), resolver)
 
-    def test_private_resolution_still_refuses_the_candidate(self):
-        def private(*args, **kwargs):
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('10.0.0.1', 443))]
-        with self.assertRaises(w.Refused):
-            w.pin_servers(json.dumps(DOC).encode(), private)
+    def test_loopback_placeholders_count_towards_resolution_loss(self):
+        usable = [dict(NODE, name=f'ok{i}') for i in range(4)]
+        banner = dict(NODE, name='banner', server='::ffff:127.0.0.1')
+        group = dict(DOC['proxy-groups'][0], proxies=[node['name'] for node in usable] + ['banner'])
+        document = dict(DOC, proxies=[*usable, banner], **{'proxy-groups': [group]})
+
+        def resolver(host, port, **kwargs):
+            self.assertEqual(host, NODE['server'], 'a loopback placeholder reached the resolver')
+            return public()
+
+        pinned, dropped = w.pin_servers(json.dumps(document).encode(), resolver)
+        self.assertEqual(dropped, 1)
+        self.assertEqual(w.load(pinned)['proxy-groups'][0]['proxies'], [node['name'] for node in usable])
+        document['proxies'].append(dict(NODE, name='second-banner', server='::1'))
+        group['proxies'].append('second-banner')
+        with self.assertRaisesRegex(w.Refused, '^node resolution$'):
+            w.pin_servers(json.dumps(document).encode(), resolver)
+
+    def test_private_dns_answers_and_other_non_public_literals_refuse_the_candidate(self):
+        for server, addresses in (('private.example', ['127.0.0.1']),
+                                  ('mixed.example', ['1.1.1.1', '10.0.0.1']),
+                                  ('192.168.1.20', ['192.168.1.20'])):
+            with self.subTest(server=server):
+                other = dict(NODE, name='other', server=server)
+                doc = dict(DOC, proxies=[NODE, other],
+                           **{'proxy-groups': [dict(DOC['proxy-groups'][0], proxies=['n', 'other'])]})
+
+                def resolver(host, port, **kwargs):
+                    if host == server:
+                        return [(socket.AF_INET, 1, 6, '', (address, port)) for address in addresses]
+                    return public()
+
+                with self.assertRaisesRegex(w.Refused, '^destination$'):
+                    w.pin_servers(json.dumps(doc).encode(), resolver, sanitize_insecure=True)
+
+    def test_authorized_tls_filtering_has_a_separate_resolution_budget(self):
+        usable = [dict(NODE, name=f'ok{i}') for i in range(46)]
+        insecure = [dict(NODE, name=f'insecure{i}', **{'skip-cert-verify': True}) for i in range(16)]
+        banners = [dict(NODE, name=f'banner{i}', server='127.0.0.1') for i in range(3)]
+        nodes = usable + insecure + banners
+        group = dict(DOC['proxy-groups'][0], proxies=[node['name'] for node in nodes])
+        document = dict(DOC, proxies=nodes, **{'proxy-groups': [group]})
+        request = {'registry': {'id': 'fixture', 'subscription': {'url': 'https://s.example/'}},
+                   'policy': {}, 'sanitize_insecure': True}
+        result = w.prepare(request, lambda *_: json.dumps(document).encode(), public)
+        self.assertEqual(result['dropped'], 19)
+        config = w.load(result['yaml'])
+        expected = [node['name'] for node in usable]
+        self.assertEqual([node['name'] for node in config['proxies']], expected)
+        self.assertEqual(config['proxy-groups'][0]['proxies'], expected)
 
 
 if __name__ == '__main__':

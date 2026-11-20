@@ -162,7 +162,7 @@ def rows(state):
     if trust.get('source_id'):
         yield 'Active source', trust['source_id']
     if trust.get('dropped'):
-        yield 'Dropped leaves', f"{trust['dropped']} · unresolvable or unapproved insecure"
+        yield 'Dropped leaves', f"{trust['dropped']} · unresolved, loopback or unapproved TLS"
     yield 'Publisher signature', 'Not checked · verification is not implemented'
     fetch = state.get('source_fetch') or {}
     if fetch:

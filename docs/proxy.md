@@ -270,7 +270,8 @@ The audit checks node server addresses, unauthorized `skip-cert-verify`, empty g
 Historical comparisons use the last settled YAML.
 Mutable provider contents retain the separate trust model described below.
 Named TLS exceptions in `my.proxy.insecureProxyExceptions` remain valid.
-Leaves that enable `skip-cert-verify` without a named exception are dropped only when their source is listed in the Sops-encrypted `insecure_sources` allowlist. Together with unresolvable nodes, the worker may drop up to one fifth of the nodes, rounded down with a minimum limit of one.
+Leaves that enable `skip-cert-verify` without a named exception are dropped only when their source is listed in the Sops-encrypted `insecure_sources` allowlist.
+The worker then limits the combined loss from resolution failures and literal loopback placeholders to one fifth of the remaining nodes, rounded down with a minimum limit of one. A candidate needs at least one usable node, and filtering must preserve the groups used by routing rules.
 Use one registered source ID per line. Blank lines and duplicate IDs are valid.
 A missing or unreadable file, invalid UTF-8 or any malformed ID disables sanitizing for every source.
 Without this permission, the worker retains those leaves for the audit and core guard. See [whitelist.yaml](../system/secrets/whitelist.yaml).
