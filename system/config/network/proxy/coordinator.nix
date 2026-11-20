@@ -76,13 +76,6 @@ let
     exec ${pkgs.python3}/bin/python3 ${./tun.py} ${tunSettings}
   '';
 
-  # A name used for the TUN self-test: its fake-ip answer is only
-  # reachable through the TUN. The probe resolves the name to the fake IP, sends a
-  # real HTTP request over the TUN and requires both a final status and the core's
-  # exact-source-port route log, so a DNS-only success is not accepted. It is a
-  # distinct transparent-path observation. Rule profiles may send this domestic
-  # name DIRECT; opt-in proxyOnly routing sends it through the proxy as well.
-  # Single source: home/config/clash/cvr-merge.nix asserts it is not fake-ip-filtered.
   tunProbeName = config.my.proxy.tunProbeName;
 
   # The core runs as clash-core and owns its control socket outside the desktop

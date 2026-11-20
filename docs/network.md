@@ -121,6 +121,7 @@ Applications using the shared readiness check refuse it.
 The core's service cgroup, namespace-specific passive TCP/UDP listener identities, managed controller values, private TUN and host veth routes and actual unmarked IPv6 selection for root and the desktop UID feed the health decision.
 The mixed-port HTTP request runs before DNS/TUN checks so its result can be diagnosed independently.
 With TUN enabled, all configured candidate names are warmed concurrently and their fake-IPs are reused within the same probe.
+This host tries `cp.cloudflare.com` first and `connectivity-check.ubuntu.com` second. The managed source renderer routes both names through `lf-remote` in rules mode.
 TUN TCP tries those candidates in the configured order, with at least one candidate required to pass fake-IP DNS, TUN DNS hijack and real HTTP.
 HTTP route proof uses an exact source address, source port and destination match from the core log or a connection-table record captured while the request is running.
 The recorded leaf must match the current policy graph. Mixed HTTP requires a remote proxy; TUN follows the root-approved route class for its target.

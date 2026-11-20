@@ -136,6 +136,10 @@ def gui_controls():
     assert status == 200, (status, body)
     before = json.loads(body)
     assert before['mode'] == 'rule', before['mode']
+    assert before['tcp-concurrent'] is True and before['interface-name'] == 'lf-host'
+    for patch in ({'tcp-concurrent': False}, {'interface-name': 'Mihomo'}):
+        status, body = request(sock, 'PATCH', '/configs', patch)
+        assert status == 403, (patch, status, body)
     files = [GUI / 'verge.yaml', GUI / 'clash-verge.yaml',
              Path('/run/proxy-mode/routing.json')]
     original = {path: path.read_bytes() if path.exists() else None for path in files}
@@ -148,6 +152,7 @@ def gui_controls():
     status, body = request(sock, 'GET', '/configs')
     after = json.loads(body)
     assert status == 200 and after['mode'] == 'rule' and after['tun'] == before['tun']
+    assert after['tcp-concurrent'] is True and after['interface-name'] == 'lf-host'
     assert original == {path: path.read_bytes() if path.exists() else None for path in files}
     helper = '/run/clash-verge-rev/service.sock'
     headers = {'X-IPC-Magic': MAGIC, 'X-LF-Peer-Uid': '0'}

@@ -241,12 +241,18 @@ func lfValidateRuleInvariants(raw *RawConfig) error {
 	return nil
 }
 
-// Build TUN from upstream defaults and root policy, never GUI profile fields.
+// Apply system-owned dialing, mode, and TUN settings before validation.
 func lfApplySystemControls(raw *RawConfig, policy map[string]any) error {
 	if len(policy) == 0 {
 		return fmt.Errorf("managed proxy policy is empty")
 	}
 	raw.Mode = T.Rule
+	if enabled, ok := policy["tcp-concurrent"].(bool); ok {
+		raw.TCPConcurrent = enabled
+	}
+	if name, ok := policy["interface-name"].(string); ok {
+		raw.Interface = name
+	}
 	defaults, err := UnmarshalRawConfig(nil)
 	if err != nil {
 		return err
@@ -277,11 +283,6 @@ func lfManagedProfileDefaults(raw *RawConfig) error {
 	if err != nil || policy == nil {
 		return err
 	}
-	// Core mode and the whole TUN section are system-rendered state. A GUI
-	// profile may still carry its own toggles after the controller discarded
-	// the matching write, so shadow those fields before validation. This keeps
-	// a local preference from changing the running core or making a restart
-	// fail policy validation.
 	if err := lfApplySystemControls(raw, policy); err != nil {
 		return err
 	}

@@ -42,9 +42,17 @@ let
       outgoing-range: ${toString (value.budget * 2)}
       incoming-num-tcp: ${toString value.budget}
       outgoing-num-tcp: ${toString value.budget}
-      msg-cache-size: 4m
-      rrset-cache-size: 8m
-      serve-expired: no
+      msg-cache-size: ${if role == "application" then "16m" else "4m"}
+      rrset-cache-size: ${if role == "application" then "32m" else "8m"}
+      serve-expired: ${if role == "application" then "yes" else "no"}
+      ${lib.optionalString (role == "application") (lib.concatStringsSep "\n      " [
+        "prefetch: yes"
+        "serve-expired-ttl: 300"
+        "serve-expired-ttl-reset: no"
+        "serve-expired-reply-ttl: 30"
+        "serve-expired-client-timeout: ${toString p.dnsStaleWaitMilliseconds}"
+        "ede-serve-expired: yes"
+      ])}
       do-not-query-localhost: no
       ${lib.concatMapStrings (cidr: "private-address: ${cidr}\n")
         (config.services.unbound.settings.server.private-address or [ ])}

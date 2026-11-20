@@ -118,6 +118,7 @@ DNS 传输独立设置：`my.proxy.dnsEncryption="strict"` 禁用 A 的公网明
 健康判断检查核心 cgroup、所属命名空间内的 TCP/UDP 监听身份、受管 API、私有 TUN 与宿主 veth 路由，以及 root/桌面 UID 未打标 IPv6 的实际选路。
 先执行 mixed 入口的 HTTP 请求，使其结果可以与 DNS/TUN 检查分别诊断。
 启用 TUN 时并发预热全部候选名称，并在同一轮探测中复用得到的 fake-IP。
+本机先尝试 `cp.cloudflare.com`，再尝试 `connectivity-check.ubuntu.com`。在 rules 模式下，受管来源将这两个域名路由到 `lf-remote`。
 TUN TCP 按配置顺序尝试候选，至少一个名称须完成 fake-IP DNS、TUN DNS hijack 和真实 HTTP 请求。
 HTTP 路由证明使用核心日志，或请求仍在进行时采集的连接表记录，精确匹配源地址、源端口和目标。
 记录的叶子必须符合当前策略图。Mixed HTTP 要求远程代理，TUN 遵循 root 为目标批准的路由类别。

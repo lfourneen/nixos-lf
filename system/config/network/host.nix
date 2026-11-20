@@ -1,3 +1,5 @@
+{ config, ... }:
+
 {
   # This host trusts its configured subscription sources. Reusable modules and
   # VM fixtures retain the strict option default.
@@ -33,8 +35,6 @@
     "time.facebook.com" = "17.253.84.125";
   };
 
-  # The TUN self-test is force-proxied through the selected node. A domestic
-  # HTTP target is slow and occasionally blocked over an overseas node, so the
-  # fast global endpoint runs first and the domestic name stays as a fallback.
-  my.proxy.tunProbeNames = [ "cp.cloudflare.com" "www.baidu.com" ];
+  my.proxy.tunProbeName = "connectivity-check.ubuntu.com";
+  my.proxy.tunProbeNames = [ "cp.cloudflare.com" config.my.proxy.tunProbeName ];
 }

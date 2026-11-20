@@ -49,6 +49,11 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   assert isolated['profile'] != browser['profile']
   '') entries}
   policy = json.loads(Path('${if c.my.proxy.runtimeRouting then c.my.proxy.routingPolicies.rules else c.my.proxy.activeManagedPolicy}').read_text())
+  assert policy['tcp-concurrent'] is True
+  assert policy['interface-name'] == '${c.my.proxy.coreTopology.peer}' == 'lf-host'
+  sources = json.loads(Path('${c.my.proxy.sourceSettings}').read_text())
+  assert 'connectivity-check.ubuntu.com' in sources['forced_domains']
+  assert 'www.baidu.com' not in sources['forced_domains']
   assert policy['lf-private-targets']['subscription-trust'] == 'fixed'
   assert policy['lf-private-targets']['strict-inlets'] == ['lf-strict']
   assert policy['listeners'][0]['port'] == ${toString c.my.machine.ports.mihomoStrict}
@@ -59,7 +64,25 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   assert transport['proxy-server-nameserver'] == ['https://223.5.5.5/dns-query']
   for role, path in ${builtins.toJSON (pkgs.lib.mapAttrs (_: path: toString path) c.my.proxy.coreValidatorConfigs)}.items():
       validator = Path(path).read_text()
-      assert 'forward-tcp-upstream: yes' in validator and 'forward-addr: 127.0.0.1@' in validator
+      fields = dict(line.strip().split(': ', 1) for line in validator.splitlines() if ': ' in line)
+      assert fields['forward-tcp-upstream'] == 'yes' and fields['forward-first'] == 'no'
+      assert fields['forward-addr'] == '127.0.0.1@' + {
+          'application': '${toString c.my.machine.ports.coreDnsTransport}',
+          'infrastructure': '${toString c.my.machine.ports.coreDnsBootstrapTransport}',
+      }[role]
+      assert fields['module-config'] == '"validator iterator"' and fields['val-permissive-mode'] == 'no'
+      assert fields['ignore-cd-flag'] == fields['harden-dnssec-stripped'] == 'yes'
+      assert 'cache-min-ttl' not in fields and 'cache-min-negative-ttl' not in fields
+      if role == 'application':
+          assert fields['msg-cache-size'] == '16m' and fields['rrset-cache-size'] == '32m'
+          assert fields['prefetch'] == fields['serve-expired'] == 'yes'
+          assert fields['serve-expired-ttl'] == '300' and fields['serve-expired-ttl-reset'] == 'no'
+          assert fields['serve-expired-reply-ttl'] == '30'
+          assert fields['serve-expired-client-timeout'] == '${toString c.my.proxy.dnsStaleWaitMilliseconds}'
+          assert fields['ede-serve-expired'] == 'yes'
+      else:
+          assert fields['msg-cache-size'] == '4m' and fields['rrset-cache-size'] == '8m'
+          assert fields['serve-expired'] == 'no' and 'prefetch' not in fields
       assert 'dot.360.cn' not in validator and '101.226.4.6' not in validator
   PY
   touch "$out"

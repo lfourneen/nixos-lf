@@ -88,16 +88,17 @@ def confinement():
         except socket.timeout:
             data = b''
         assert not data, ('namespace injected a reply into an unrelated host connection', data)
+        for family in ('-4', '-6'):
+            assert before[family] == run('ip', family, '-j', 'route', 'show', 'table', 'all').stdout
+            assert rules[family] == run('ip', family, '-j', 'rule', 'show').stdout
+        assert base == run('nft', '-s', '-j', 'list', 'chain', 'inet', 'lf_filter', 'lf_core_egress').stdout
+        after = packets()
+        assert after >= count + 8, (count, after)
     finally:
         os.close(fd)
         client.close()
         run('systemctl', 'stop', 'namespace-unrelated.service')
         run('systemctl', 'start', 'proxy-mode.service')
-    for family in ('-4', '-6'):
-        assert before[family] == run('ip', family, '-j', 'route', 'show', 'table', 'all').stdout
-        assert rules[family] == run('ip', family, '-j', 'rule', 'show').stdout
-    assert base == run('nft', '-s', '-j', 'list', 'chain', 'inet', 'lf_filter', 'lf_core_egress').stdout
-    assert packets() >= count + 8, (count, packets())
     print('Private NET_ADMIN/RAW, injected host netns FD denial, mark/raw guards and unchanged host policy passed')
 
 

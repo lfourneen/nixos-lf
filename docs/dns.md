@@ -231,6 +231,9 @@ my.proxy.dnsQueryBudget = {
 Local validation requires strict encryption and `coreNetns=true`.
 The query budgets shown are the module defaults, with allowed ranges of 32–4096 and 8–1024 respectively.
 Each validator has its own request list, cache, descriptor limit and memory limit, so application overload does not consume the bootstrap validator's budget.
+The application validator allocates 16 MiB for DNS messages and 32 MiB for RRsets. It refreshes popular answers near expiry and can serve eligible expired answers for up to 300 seconds.
+`my.proxy.dnsStaleWaitMilliseconds` controls how long it waits for a fresh answer, with a default of 300 ms. Stale replies have a TTL of at most 30 seconds, and fresh records keep their upstream TTL limits.
+The bootstrap validator uses 4 MiB for messages and 8 MiB for RRsets and requires current answers.
 Excess requests can be refused.
 Capacity becomes available again as in-flight work finishes.
 A's host validator and restricted socket guest DNS remain separate.

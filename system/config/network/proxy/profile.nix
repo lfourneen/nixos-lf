@@ -191,6 +191,7 @@ in
       bind-address = "*";
       ipv6 = config.networking.enableIPv6;
       routing-mark = m.mihomoMark;
+      "tcp-concurrent" = true;
       "tun.enable" = p.tunMode;
       "tun.file-descriptor" = 0;
       "dns.fallback" = [ ];
@@ -199,6 +200,7 @@ in
       # Fake-IP mappings and explicit proxy targets already supply the domain.
       "sniffer.enable" = false;
     } // lib.optionalAttrs p.controlledSources { "geodata-mode" = true; }
+      // lib.optionalAttrs p.coreNetns { "interface-name" = p.coreTopology.peer; }
       // lib.optionalAttrs p.runtimeRouting { "profile.store-fake-ip" = true; }
       // lib.mapAttrs' (key: value: lib.nameValuePair "dns.${key}" value) p.managedDns
       // lib.genAttrs (map (key: "tun.${key}") emptyTunFields) (_: [ ])

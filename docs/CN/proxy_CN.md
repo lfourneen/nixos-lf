@@ -297,6 +297,8 @@ worker 自身失败也不能在 `enforce` 下通过。
 
 [profile.nix](../../system/config/network/proxy/profile.nix) 定义 root 策略，[cvr-merge.nix](../../home/config/clash/cvr-merge.nix) 生成匹配的 GUI Merge。
 最终核心 parser 在 GUI/订阅处理后约束监听、mark、DNS、TUN 路由/排除项和私网目标设置。
+Mihomo 建立出站 TCP 连接时会并发尝试可用地址。在核心命名空间内，出站传输绑定到通往宿主的 veth 接口 `lf-host`。
+受管解析器对缓存 profile 也应用这两项设置，GUI 无法通过控制器修改它们。
 
 Rule providers 固定为空，geodata 自动更新关闭，无条件 `MATCH,DIRECT`/`FINAL,DIRECT` 被拒绝。
 其它订阅规则和组选择保留授权语义。

@@ -12,8 +12,9 @@ import time
 def main(core):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        policy = {"lf-private-targets": {"prefixes": ["10.0.0.0/8"],
-                                        "allowed-domains": [], "proxy-only": True}}
+        policy = {"tun.enable": False, "tun.device": "netsec-disabled",
+                  "lf-private-targets": {"prefixes": ["10.0.0.0/8"],
+                                         "allowed-domains": [], "proxy-only": True}}
         (root / "policy.json").write_text(json.dumps(policy))
         profile = {"mixed-port": 17897, "external-controller": "127.0.0.1:19090",
                    "routing-mark": 6666, "mode": "rule", "log-level": "info",
@@ -49,10 +50,14 @@ def main(core):
                     assert process.poll() is None, "strict core exited"
                     try:
                         before = config()
-                        break
                     except OSError:
-                        assert time.monotonic() < deadline, "strict core startup timeout"
-                        time.sleep(0.05)
+                        pass
+                    else:
+                        if (before["mixed-port"] == profile["mixed-port"]
+                                and before["tun"].get("device") == policy["tun.device"]):
+                            break
+                    assert time.monotonic() < deadline, "strict core configuration did not become active"
+                    time.sleep(0.05)
                 assert before["mode"] == "rule", before["mode"]
                 tun_before = before["tun"]
                 assert request().returncode != 0, "DIRECT leaked application data"

@@ -42,7 +42,40 @@ def query(name, port, kind='A', tcp=True, cd=False):
     return (dns.query.tcp if tcp else dns.query.udp)(message, '127.0.0.1', port=port, timeout=4)
 
 
+def cache_checks():
+    spec = importlib.util.spec_from_file_location('health', '/etc/netsec-health.py')
+    health = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(health)
+    settings = json.loads(Path('/etc/netsec-health.json').read_text())
+    name = 'cache.signed.fixture.example'
+    settings['tun_probe_names'] = [name]
+
+    def upstream_queries():
+        log = Path('/run/netsec-doh.jsonl')
+        return sum(json.loads(line)['name'] == name + '.' for line in log.read_text().splitlines()) if log.exists() else 0
+
+    before = upstream_queries()
+    cold = health.Probe(settings)
+    cold.timed('application_dns', cold.application_dns)
+    after_cold = upstream_queries()
+    assert after_cold > before, 'cold lookup did not reach DoH'
+    warm = health.Probe(settings)
+    warm.timed('application_dns', warm.application_dns)
+    assert warm.fake_ips[name] == cold.fake_ips[name]
+    assert upstream_queries() == after_cold, 'warm lookup reached DoH'
+
+    answer = run('ip', 'netns', 'exec', 'lf-clash-core', 'dig', '+tcp', '+dnssec',
+                 '+noall', '+answer', '@127.0.0.1', '-p', '1055', 'short.signed.fixture.example', 'A')
+    records = [line.split() for line in answer.stdout.splitlines()]
+    assert any(fields[3:] == ['A', '203.0.113.43'] and int(fields[1]) <= 1
+               for fields in records), answer.stdout
+    print(json.dumps({'application_dns_cold_ms': cold.timings['application_dns'],
+                      'application_dns_warm_ms': warm.timings['application_dns'],
+                      'additional_warm_doh_queries': 0}), flush=True)
+
+
 def dns_checks():
+    cache_checks()
     for exchange in (dns.query.tcp, dns.query.udp):
         request = dns.message.make_query('bogus.signed.fixture.example', 'A')
         request.question.append(request.question[0])

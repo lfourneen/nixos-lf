@@ -33,12 +33,12 @@ func TestLFManagedEmptyPolicyFailsClosed(t *testing.T) {
 
 func TestLFManagedSystemControlsShadowGUIConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "policy.json")
-	policy := `{"tun.enable":false,"tun.stack":"mixed","tun.dns-mode":"hijack"}`
+	policy := `{"tcp-concurrent":true,"interface-name":"lf-host","tun.enable":false,"tun.stack":"mixed","tun.dns-mode":"hijack"}`
 	if err := os.WriteFile(path, []byte(policy), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
-	raw, err := UnmarshalRawConfig([]byte("mode: global\ntun:\n  enable: true\n  stack: gvisor\n  dns-mode: normal\n  gso: true\n  udp-timeout: 17\n  endpoint-independent-nat: true\n"))
+	raw, err := UnmarshalRawConfig([]byte("mode: global\ntcp-concurrent: false\ninterface-name: Mihomo\ntun:\n  enable: true\n  stack: gvisor\n  dns-mode: normal\n  gso: true\n  udp-timeout: 17\n  endpoint-independent-nat: true\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,6 +47,14 @@ func TestLFManagedSystemControlsShadowGUIConfig(t *testing.T) {
 	}
 	if raw.Mode.String() != "rule" {
 		t.Fatalf("GUI mode changed the core mode: %s", raw.Mode)
+	}
+	if !raw.TCPConcurrent || raw.Interface != "lf-host" {
+		t.Fatal("GUI preferences changed managed dialing settings")
+	}
+	for key, value := range map[string]any{"tcp-concurrent": false, "interface-name": "Mihomo"} {
+		if err := ValidateManagedPatch(map[string]any{key: value}); err == nil {
+			t.Fatalf("controller accepted a change to %s", key)
+		}
 	}
 	if raw.Tun.Enable {
 		t.Fatal("GUI preference enabled the managed TUN")

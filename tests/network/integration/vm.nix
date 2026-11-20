@@ -299,12 +299,12 @@ pkgs.testers.runNixOSTest {
       SKIP_SYSTEM_IPV6_CHECK = "1";
     };
 
-    systemd.services.netsec-listener-impostor.serviceConfig = {
-      User = "lfour";
-      ExecStart = pkgs.writeShellScript "test-impostor-listeners" ''
+    systemd.services.netsec-listener-impostor.serviceConfig.ExecStart =
+      let fixture = pkgs.writeShellScript "test-impostor-listeners" ''
         exec ${pkgs.python3}/bin/python3 /etc/netsec-listeners-test.py serve "$(cat /run/listener-bad-protocol)"
       '';
-    };
+      # The fixture must bind a reserved port with an untrusted socket UID.
+      in "${pkgs.util-linux}/bin/setpriv --reuid=lfour --regid=users --clear-groups ${fixture}";
 
     environment.etc."netsec-split-test.py".source = ../dns/split_fixture.py;
     environment.etc."netsec-policy.py".source = ../../../system/config/network/dns/dns_policy.py;

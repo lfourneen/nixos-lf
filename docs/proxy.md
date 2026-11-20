@@ -315,6 +315,8 @@ Public findings contain fixed categories and counts.
 [profile.nix](../system/config/network/proxy/profile.nix) is the root policy.
 [cvr-merge.nix](../home/config/clash/cvr-merge.nix) generates the matching GUI Merge configuration.
 The final core parser enforces listeners, mark, DNS, TUN routes/exclusions and private-target settings after GUI/subscription processing.
+Mihomo races eligible addresses when opening an outbound TCP connection. In the core namespace it binds outbound transport to the host-facing veth, `lf-host`.
+The managed parser applies both settings to cached profiles, and the GUI cannot change them through the controller.
 Rule providers are pinned empty and automatic geodata updates are disabled.
 Unconditional `MATCH,DIRECT` and `FINAL,DIRECT` rules are refused.
 Subscription rules and group selection otherwise retain their authorized meaning.
