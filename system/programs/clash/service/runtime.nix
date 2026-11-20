@@ -98,6 +98,7 @@ in
   systemd.services.profile-refresh-verify = {
     description = "Settle validated profile refreshes or restore the previous snapshot";
     after = [ "proxy-mode.service" ];
+    environment.LF_MANAGED_PROXY_POLICY = config.my.proxy.activeManagedPolicy;
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${pkgs.python3}/bin/python3 ${./clash-verge-stage.py} verify-refresh ${config.programs.clash-verge.package.stageSettings} ${config.programs.clash-verge.package}/bin/verge-mihomo";

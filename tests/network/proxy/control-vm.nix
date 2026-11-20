@@ -575,7 +575,7 @@ pkgs.testers.runNixOSTest {
             print(machine.succeed("python3 -u /etc/netsec-managed.py switch", timeout=240))
             wait_proxy()
         except Exception:
-            print(machine.execute("journalctl -u clash-strict -u clash-source-select --no-pager -n 45"))
+            print(machine.execute("journalctl -u clash-strict -u clash-source-select -u clash-source-download -u clash-source-apply -u clash-source-refresh --no-pager -n 60"))
             raise
     ''}
     ${pkgs.lib.optionalString hermesContainers ''

@@ -167,7 +167,11 @@ def rows(state):
     fetch = state.get('source_fetch') or {}
     if fetch:
         label = {'fetching': 'fetching', 'downloaded': 'downloaded · import and health are separate',
-                 'failed': 'failed', 'deferred': 'waiting for network mode'}[fetch['result']]
+                 'failed': 'failed', 'deferred': 'deferred', 'discarded': 'request changed'}[fetch['result']]
+        if fetch.get('application') == 'pending':
+            label = 'downloaded · waiting to apply'
+        elif fetch.get('application') == 'discarded':
+            label = 'downloaded · application discarded'
         detail = fetch.get('reason') or fetch.get('phase') or ''
         if fetch.get('http_status'):
             detail += f" · HTTP {fetch['http_status']}"

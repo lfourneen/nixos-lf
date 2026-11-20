@@ -327,6 +327,12 @@ let
     lock_state() { $FLOCK -x -w 10 9 || exit 1; }
     unlock_state() { forget_snapshot; $FLOCK -u 9; }
     read_intent() { $CAT "$INTENT" 2>/dev/null || echo auto; }
+    ${lib.optionalString config.my.proxy.controlledSources ''
+    source_schedule() {
+      ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/source_refresh.py} schedule \
+        ${config.programs.clash-verge.package.stageSettings} "$@" || true
+    }
+    ''}
     read_version() { $CAT "$VERSION" 2>/dev/null || echo 0; }
     core_stamp() { $CAT /sys/fs/cgroup/system.slice/clash-verge.service/cgroup.procs 2>/dev/null || true; }
     publish_state() {
@@ -933,13 +939,13 @@ NFT_OFF
         ) || true
       fi
       ${lib.optionalString config.my.proxy.controlledSources ''
-      if [ "$ok" != 1 ] || [ "$mode" != proxy ]; then
-        rm -f /run/proxy-mode/source-refresh-stable.json
-      fi
-      # A request is consumed before downloading. Core restarts caused by an
-      # import therefore cannot trigger an endless fetch / restart cycle.
-      if [ "$ok" = 1 ] && [ "$mode" = proxy ] && [ -f /run/proxy-mode/source-refresh-pending ]; then
-        $SYSTEMCTL start --no-block clash-source-refresh.service >/dev/null 2>&1 || true
+      if [ -f /run/proxy-mode/source-refresh-pending ] || [ -f /run/proxy-mode/source-gui-request.json ] \
+          || [ -f /run/proxy-mode/source-refresh-stable.json ]; then
+        if [ "$ok" = 1 ]; then
+          source_schedule
+        else
+          source_schedule unverified
+        fi
       fi
       ''}
       [ "$ok" = 1 ]
@@ -1183,7 +1189,8 @@ NFT_OFF
             rm -f /run/proxy-mode/authorized-config /run/proxy-mode/config-digest \
               /run/proxy-mode/authorize-window /run/proxy-mode/effective-config-sha256 /run/proxy-mode/effective-config.json ${frontSock}
             ${lib.optionalString config.my.proxy.controlledSources ''
-            rm -f /run/proxy-mode/source-refresh-pending /run/proxy-mode/source-refresh-stable.json
+            ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/source_refresh.py} cancel \
+              ${config.programs.clash-verge.package.stageSettings}
             ''}
             ${pkgs.python3}/bin/python3 -c 'import importlib.util; s=importlib.util.spec_from_file_location("stage", "${../../../programs/clash/service/clash-verge-stage.py}"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.clear_refresh("/run/proxy-mode", "/run/clash-verge-rev", keep_health_pin=${if config.my.proxy.controlledSources then "True" else "False"})'
             flock -u 9

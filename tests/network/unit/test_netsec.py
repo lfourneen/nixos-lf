@@ -1747,7 +1747,7 @@ class RulesTests(unittest.TestCase):
 
 
 class SupervisorTests(unittest.TestCase):
-    def test_verified_b_consumes_a_pending_fetch_once_after_unlocking_policy(self):
+    def test_pending_fetch_runs_scheduler_only_after_unlocking_policy(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             pending = directory / 'source-refresh-pending'
@@ -1757,13 +1757,13 @@ class SupervisorTests(unittest.TestCase):
             script = self.setup_shell(directory) + body + '''
 requests=0; locked=0
 lock_state() { locked=1; }; unlock_state() { locked=0; }
-systemctl_stub() {
+source_schedule() {
  [ "$locked" = 0 ] || exit 91
- [ "$*" = 'start --no-block clash-source-refresh.service' ] || exit 92
+ [ "$#" = 0 ] || exit 92
  requests=$((requests+1))
  rm -f source-refresh-pending
 }
-SYSTEMCTL=systemctl_stub
+SYSTEMCTL=false
 sync_pass
 [ "$requests" = 1 ] || exit 93
 sync_pass

@@ -3,6 +3,9 @@
 let
   p = config.my.proxy;
   python = pkgs.python3.withPackages (p: [ p.pyyaml p.dnspython ]);
+  stageSettings = config.programs.clash-verge.package.stageSettings;
+  refreshCommand = "${pkgs.python3}/bin/python3 ${./source_refresh.py}";
+  guiDirectory = "${config.users.users.${config.my.machine.desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev";
 
   rendererSettings = {
     forced_domains = p.tunProbeNames ++ map (url:
@@ -27,7 +30,7 @@ let
     setpriv = "${pkgs.util-linux}/bin/setpriv";
     systemctl = "${pkgs.systemd}/bin/systemctl";
     desktop_uid = config.users.users.${config.my.machine.desktopUser}.uid;
-    gui_index = "${config.users.users.${config.my.machine.desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev/profiles.yaml";
+    gui_index = "${guiDirectory}/profiles.yaml";
     ca = config.security.pki.caBundle;
     resolver = { address = "127.0.0.1"; port = config.my.machine.ports.socketGuestDns; };
     assets = {
@@ -37,8 +40,39 @@ let
   }));
 
   command = pkgs.writeShellScriptBin "clash-source" ''
+    export LF_MANAGED_PROXY_POLICY=${lib.escapeShellArg p.activeManagedPolicy}
     exec ${python}/bin/python3 -I ${./source_broker.py} ${settings} "$@"
   '';
+
+  downloadService = request: {
+    description = "Fetch registered subscription and immutable provider generation";
+    after = [ "proxy-mode.service" "network-online.target" "socket-guest-dns.service" ];
+    wants = [ "network-online.target" "socket-guest-dns.service" ];
+    environment = {
+      LF_MANAGED_PROXY_POLICY = p.activeManagedPolicy;
+      LF_SOURCE_GUI_INDEX = "/run/clash-source-gui/profiles.yaml";
+    };
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${command}/bin/clash-source automatic${lib.optionalString request " --request"}";
+      UMask = "0077";
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      BindReadOnlyPaths = [ "-${guiDirectory}:/run/clash-source-gui" ];
+      ReadWritePaths = [ "/var/lib/clash-source" "/run/proxy-mode" ];
+
+      # Only the broker can read the fixed GUI index and query core status.
+      # The download worker drops all capabilities and supplementary groups.
+      SupplementaryGroups = [ "clash-core" ];
+      CapabilityBoundingSet = [ "CAP_DAC_READ_SEARCH" "CAP_SETUID" "CAP_SETGID" "CAP_SETPCAP" ];
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+      TimeoutStartSec = "210s";
+      MemoryMax = "768M";
+      TasksMax = 32;
+    };
+  };
 
 in
 {
@@ -61,6 +95,7 @@ in
     }];
 
     environment.systemPackages = [ command (pkgs.writeShellScriptBin "clash-diff" ''
+      export LF_MANAGED_PROXY_POLICY=${lib.escapeShellArg p.activeManagedPolicy}
       exec ${python}/bin/python3 -I ${./source_review.py} ${settings} "$@"
     '') ];
 
@@ -68,11 +103,12 @@ in
 
     systemd.paths.clash-source-select = {
       wantedBy = [ "multi-user.target" ];
-      pathConfig.PathChanged = "${config.users.users.${config.my.machine.desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev/profiles.yaml";
+      pathConfig.PathChanged = "${guiDirectory}/profiles.yaml";
     };
 
     systemd.services.clash-source-select = {
       description = "Select only root-approved GUI source mappings";
+      after = [ "proxy-mode.service" ];
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${command}/bin/clash-source gui-select";
@@ -81,12 +117,12 @@ in
         ProtectSystem = "strict";
         ProtectHome = "read-only";
         PrivateTmp = true;
-        ReadWritePaths = [ "/var/lib/clash-source" ];
+        ReadWritePaths = [ "/var/lib/clash-source" "/run/proxy-mode" ];
 
         # Read the fixed desktop-owned index through a private home directory.
-        CapabilityBoundingSet = [ "CAP_SETUID" "CAP_SETGID" "CAP_SETPCAP" "CAP_DAC_READ_SEARCH" ];
-        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
-        TimeoutStartSec = "70s";
+        CapabilityBoundingSet = [ "CAP_DAC_READ_SEARCH" ];
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+        TimeoutStartSec = "25s";
         MemoryMax = "768M";
         TasksMax = 32;
       };
@@ -114,38 +150,24 @@ in
       };
     };
 
-    systemd.services.clash-source-refresh = {
-      description = "Fetch registered subscription and immutable provider generation";
-      after = [ "network-online.target" "socket-guest-dns.service" ];
-      wants = [ "network-online.target" "socket-guest-dns.service" ];
-      environment.LF_MANAGED_PROXY_POLICY = config.systemd.services.clash-verge.environment.LF_MANAGED_PROXY_POLICY;
+    systemd.services.clash-source-refresh = downloadService true;
+    systemd.services.clash-source-download = downloadService false;
 
-      script = ''
-        # Bound transient download retries within this job, without rate
-        # limiting a later explicit start or retrying a rejected import.
-        for attempt in 1 2 3; do
-          if ! ${pkgs.python3}/bin/python3 ${./source_refresh.py} download-ready \
-            ${config.programs.clash-verge.package.stageSettings}; then
-            exit 0
-          fi
-          if ${command}/bin/clash-source refresh; then break; fi
-          if ! ${pkgs.python3}/bin/python3 ${./source_refresh.py} download-ready \
-            ${config.programs.clash-verge.package.stageSettings}; then
-            exit 0
-          fi
-          if [ "$attempt" = 3 ]; then exit 1; fi
-          sleep 15
-        done
-        if [ "$(cat /run/proxy-mode/intent 2>/dev/null)" = proxy ]; then
-          ${pkgs.python3}/bin/python3 ${./source_refresh.py} \
-            ${config.programs.clash-verge.package.stageSettings} \
-            ${config.programs.clash-verge.package}/bin/verge-mihomo \
-            clash-source-guard.service /run/clash-source-check
-        fi
-      '';
+    systemd.paths.clash-source-download = {
+      wantedBy = [ "multi-user.target" ];
+      pathConfig.PathExists = "/run/proxy-mode/source-refresh-ready";
+    };
+    systemd.paths.clash-source-apply = {
+      wantedBy = [ "multi-user.target" ];
+      pathConfig.PathExists = "/run/proxy-mode/source-apply.json";
+    };
 
+    systemd.services.clash-source-apply = {
+      description = "Apply a downloaded subscription generation";
+      environment.LF_MANAGED_PROXY_POLICY = p.activeManagedPolicy;
       serviceConfig = {
         Type = "oneshot";
+        ExecStart = "${refreshCommand} apply ${stageSettings} ${config.programs.clash-verge.package}/bin/verge-mihomo clash-source-guard.service /run/clash-source-check";
         UMask = "0077";
         RuntimeDirectory = "clash-source-check";
         RuntimeDirectoryMode = "0755";
@@ -158,20 +180,38 @@ in
           "/run/proxy-mode"
         ];
 
-        # Check the core socket after restart without granting DAC override.
-        # The download worker clears supplementary groups before execution.
         SupplementaryGroups = [ "clash-core" ];
         CapabilityBoundingSet = [ "CAP_SETUID" "CAP_SETGID" "CAP_SETPCAP" ];
         RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" "AF_NETLINK" ];
-        TimeoutStartSec = "180s";
+        TimeoutStartSec = "infinity";
         MemoryMax = "768M";
         TasksMax = 32;
       };
     };
 
+    systemd.services.clash-source-request = {
+      description = "Queue a subscription refresh";
+      after = [ "proxy-mode.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${refreshCommand} request ${stageSettings}";
+        UMask = "0077";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ReadWritePaths = [ "/run/proxy-mode" ];
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+      };
+    };
+
     systemd.timers.clash-source-refresh = {
       wantedBy = [ "timers.target" ];
-      timerConfig = { OnBootSec = "2min"; OnUnitActiveSec = "30min"; RandomizedDelaySec = "30s"; };
+      timerConfig = {
+        Unit = "clash-source-request.service";
+        OnBootSec = "2min";
+        OnUnitActiveSec = "30min";
+        RandomizedDelaySec = "30s";
+      };
     };
   }) ];
 }

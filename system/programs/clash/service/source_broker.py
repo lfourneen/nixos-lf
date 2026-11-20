@@ -197,26 +197,17 @@ def migrate(root):
     select(root, source_path(root, identity))
 
 
-def use(settings, root, identity, revision=None):
-    path = source_path(root, identity)
-    if revision is not None and digest(read_private(path / 'registry.json')) != revision:
-        raise ValueError('source revision changed')
-    if (root / 'selected').is_symlink() and selected(root) == path:
-        return False
-    # All fallible fetching precedes the one selection commit. Runtime audit
-    # and health still gate activation, with the previous runtime as fallback.
-    refresh(settings, path)
-    select(root, path)
-    return True
-
-
 def gui_choice(settings, root):
     """The GUI supplies only an identifier, never endpoints or configuration."""
     import importlib.util
     spec = importlib.util.spec_from_file_location('source_worker', settings['worker'])
     worker = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(worker)
-    fd = os.open(settings['gui_index'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        fd = os.open(os.environ.get('LF_SOURCE_GUI_INDEX', settings['gui_index']),
+                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
     with os.fdopen(fd, 'rb') as stream:
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_uid != settings['desktop_uid'] or before.st_size > 1024 * 1024:
@@ -227,7 +218,7 @@ def gui_choice(settings, root):
         raise ValueError('GUI index changed')
     identity = worker.load(data).get('current')
     if not isinstance(identity, str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', identity):
-        return False
+        return None
     matches = []
     for path in (root / 'sources').iterdir():
         if path.is_symlink() or not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', path.name):
@@ -237,7 +228,7 @@ def gui_choice(settings, root):
             matches.append(path.name)
     if len(matches) > 1:
         raise ValueError('ambiguous GUI mapping')
-    return use(settings, root, matches[0]) if matches else False
+    return source_path(root, matches[0]) if matches else None
 
 
 def register(root, data, expected, previous):
@@ -263,21 +254,21 @@ def register(root, data, expected, previous):
         select(root, path)
 
 
-def publish_fetch(settings, result, phase=None, reason=None, http_status=None):
+def publish_fetch(settings, result, phase=None, reason=None, http_status=None, *, at=None):
     try:
-        _publish_fetch(settings, result, phase, reason, http_status)
+        _publish_fetch(settings, result, phase, reason, http_status, at)
     except (OSError, ValueError, KeyError, TypeError):
         pass  # A missing diagnostic directory must not block the downloader.
 
 
-def _publish_fetch(settings, result, phase=None, reason=None, http_status=None):
+def _publish_fetch(settings, result, phase, reason, http_status, at):
     """Separate download outcome from the runtime's import/health decision."""
     if not settings.get('stageSettings'):
         return
     state = Path(json.loads(Path(settings['stageSettings']).read_text())['state'])
     if not state.is_dir():
         return
-    value = dict(at=time.time(), boot_id=(state / 'boot-id').read_text().strip(), result=result)
+    value = dict(at=time.time() if at is None else at, boot_id=(state / 'boot-id').read_text().strip(), result=result)
     if phase in ('fetch', 'parse', 'render', 'pin-addresses', 'worker'):
         value['phase'] = phase
     if reason in FETCH_REASONS:
@@ -287,17 +278,23 @@ def _publish_fetch(settings, result, phase=None, reason=None, http_status=None):
     atomic(state / 'source-fetch.json', (json.dumps(value) + '\n').encode(), mode=0o644)
 
 
-def refresh(settings, root):
+def refresh(settings, root, *, downloaded=None):
     publish_fetch(settings, 'fetching')
     try:
-        refresh_generation(settings, root)
+        generation = refresh_generation(settings, root)
+        at = time.time()
+        if downloaded is not None:
+            downloaded(generation, at)
     except SourceFailure as error:
         publish_fetch(settings, 'failed', error.phase, error.reason, error.http_status)
+        raise
+    except RequestChanged:
+        publish_fetch(settings, 'discarded')
         raise
     except Exception:
         publish_fetch(settings, 'failed', 'worker', 'worker failure')
         raise
-    publish_fetch(settings, 'downloaded')
+    publish_fetch(settings, 'downloaded', at=at)
 
 
 @contextmanager
@@ -364,6 +361,9 @@ def refresh_generation(settings, root):
                                     timeout=50, env={'PATH': '', 'SSL_CERT_FILE': settings['ca']}, preexec_fn=limits)
             output.seek(0)
             data = output.read(48 * 1024 * 1024 + 1)
+    check = settings.get('_before_publish')
+    if check is not None:
+        check()
     # Downloading grants no authority. Registration and selection can change
     # while the worker runs, so reject its result before touching generations.
     if read_private(root / 'registry.json') != raw or (settings.get('_fetch_lock') is not None
@@ -413,6 +413,8 @@ def refresh_generation(settings, root):
             manifest['assets'][name] = digest(content)
         identity = digest(json.dumps(manifest, sort_keys=True).encode())
         atomic(candidate / 'source-manifest.json', json.dumps(manifest, sort_keys=True).encode())
+        if check is not None:
+            check()
         destination = generations / identity
         if destination.exists():
             shutil.rmtree(candidate)
@@ -429,6 +431,7 @@ def refresh_generation(settings, root):
             shutil.rmtree(path)
         atomic(root / 'status.json', json.dumps(dict(source_id=registry['id'], revision=digest(raw),
                generation=identity, at=time.time(), state='fetched')).encode(), 0o644)
+        return destination
     finally:
         if candidate.exists():
             shutil.rmtree(candidate)
@@ -563,6 +566,10 @@ class SourceFailure(ValueError):
         self.phase, self.reason, self.http_status = phase, reason, http_status
 
 
+class RequestChanged(ValueError):
+    pass
+
+
 def review_module(settings):
     spec = importlib.util.spec_from_file_location('source_review', settings['review'])
     result = importlib.util.module_from_spec(spec)
@@ -608,9 +615,7 @@ def confirm_add(settings, root, lock, identity):
 
 
 def prepare_manual(settings, root, lock, identity, revision):
-    stage_settings = json.loads(Path(settings['stageSettings']).read_text())
-    manual = load_module('source_manual_refresh', settings['manual_refresh'])
-    stage = manual.module('source_stage', stage_settings['snapshot_tool'])
+    manual, stage, stage_settings = refresh_context(settings)
     stage_settings.update(launcher=settings['launcher'], guard_service='clash-source-guard.service')
     state = Path(stage_settings['state'])
     mode = stage.read_record(state / 'state.json').get('mode')
@@ -623,6 +628,118 @@ def prepare_manual(settings, root, lock, identity, revision):
     candidate = stage.snapshot_digest((path / 'current').resolve(strict=True))
     select(root, path)
     return manual, stage, stage_settings, candidate, mode
+
+
+def refresh_context(settings):
+    stage_settings = json.loads(Path(settings['stageSettings']).read_text())
+    manual = load_module('source_manual_refresh', settings['manual_refresh'])
+    return manual, manual.module('source_stage', stage_settings['snapshot_tool']), stage_settings
+
+
+def gui_binding(settings, root, manual, stage, stage_settings):
+    path = gui_choice(settings, root)
+    if path is None or not (root / 'selected').is_symlink():
+        return None
+    previous = selected(root)
+    if path == previous:
+        return None
+    return dict(boot_id=stage.boot_id(Path(stage_settings['state'])), source=path.name,
+                revision=digest(read_private(path / 'registry.json')), previous=previous.name,
+                previous_revision=digest(read_private(previous / 'registry.json')),
+                selection=manual.selection_stamp(root / 'selected'))
+
+
+def request_gui(settings, root):
+    manual, stage, stage_settings = refresh_context(settings)
+    state = Path(stage_settings['state'])
+    path = state / 'source-gui-request.json'
+    with manual.queue_lock(state):
+        try:
+            binding = gui_binding(settings, root, manual, stage, stage_settings)
+        except (OSError, ValueError, KeyError):
+            path.unlink(missing_ok=True)
+            raise
+        if binding is None:
+            path.unlink(missing_ok=True)
+        elif stage.read_record(path) != binding:
+            stage.atomic_record(path, binding, mode=0o600)
+    return binding is not None
+
+
+def automatic_refresh(settings, root, lock, *, requested=False, wait=time.sleep):
+    manual, stage, stage_settings = refresh_context(settings)
+    state = Path(stage_settings['state'])
+    with manual.download_job(state) as acquired:
+        if acquired:
+            run_automatic(settings, root, lock, manual, stage, stage_settings, requested, wait)
+
+
+def run_automatic(settings, root, lock, manual, stage, stage_settings, requested, wait):
+    state = Path(stage_settings['state'])
+    gui_request = state / 'source-gui-request.json'
+    gui = stage.read_record(gui_request)
+    if gui:
+        try:
+            current_gui = gui_binding(settings, root, manual, stage, stage_settings)
+        except (OSError, ValueError, KeyError):
+            current_gui = None
+        if current_gui != gui:
+            with manual.queue_lock(state):
+                gui_request.unlink(missing_ok=True)
+            gui = {}
+    if not manual.schedule_download(stage_settings, stage, consume=True, request=requested):
+        return
+    previous = selected(root)
+    path = source_path(root, gui['source']) if gui else previous
+    selection = manual.selection_stamp(root / 'selected')
+    registration = read_private(path / 'registry.json')
+    network = manual.network_mode(stage_settings, stage)
+    epoch = manual.authorization_epoch(state)
+    stable = stage.read_record(state / 'source-refresh-stable.json')
+
+    def check():
+        try:
+            unchanged = (manual.network_mode(stage_settings, stage) == network
+                and manual.authorization_epoch(state) == epoch
+                and stage.read_record(state / 'source-refresh-stable.json') == stable
+                and manual.selection_stamp(root / 'selected') == selection
+                and read_private(path / 'registry.json') == registration
+                and stage.read_record(gui_request) == gui
+                and (not gui or gui_binding(settings, root, manual, stage, stage_settings) == gui))
+        except (OSError, ValueError, KeyError):
+            unchanged = False
+        if not unchanged:
+            raise RequestChanged('automatic download request changed')
+
+    def downloaded(generation, at):
+        if gui:
+            select(root, path)
+        if network[0] == 'proxy':
+            manual.queue_application(stage_settings, stage, stage.snapshot_digest(generation), at)
+
+    try:
+        for attempt in range(3):
+            try:
+                check()
+                with manual.queue_lock(state):
+                    if manual.download_gate(stage_settings, stage) is not None:
+                        raise RequestChanged('download protection changed')
+                refresh(dict(settings, _fetch_lock=lock, _expected_selection=previous,
+                             _before_publish=check), path, downloaded=downloaded)
+                return
+            except RequestChanged:
+                return
+            except (OSError, ValueError, subprocess.SubprocessError):
+                if attempt == 2:
+                    raise
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                wait(15)
+                acquire(lock)
+    finally:
+        if gui:
+            with manual.queue_lock(state):
+                if stage.read_record(gui_request) == gui:
+                    gui_request.unlink(missing_ok=True)
 
 
 def load_module(name, path):
@@ -644,6 +761,8 @@ def main():
             p.add_argument('--digest', required=True)
             p.add_argument('--previous', required=True, help='current digest, or none for first registration')
     sub.add_parser('refresh')
+    automatic = sub.add_parser('automatic')
+    automatic.add_argument('--request', action='store_true')
     sub.add_parser('diff', help='read-only comparison of local source snapshots')
     choose = sub.add_parser('use')
     choose.add_argument('id')
@@ -695,10 +814,8 @@ def main():
                 for path in sorted((root / 'sources').iterdir()) if re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', path.name) and not path.is_symlink()]}))
             return
         if args.action == 'gui-select':
-            changed = gui_choice(settings, root)
-            if changed and settings.get('systemctl'):
-                subprocess.run([settings['systemctl'], 'start', '--no-block', 'clash-source-refresh.service'], check=True, timeout=10)
-            print('registered source selected; runtime validation remains required' if changed else 'source selection unchanged')
+            if request_gui(settings, root):
+                print('registered source queued for download')
             return
         if args.action == 'revoke':
             path = source_path(root, args.id)
@@ -711,6 +828,9 @@ def main():
             settings['_fetch_lock'] = lock
             refresh(settings, selected(root))
             print('source candidate prepared; runtime validation remains required')
+            return
+        if args.action == 'automatic':
+            automatic_refresh(settings, root, lock, requested=args.request)
             return
         if args.action in ('review', 'register'):
             values = definitions(read_private(args.file), args.source_id)

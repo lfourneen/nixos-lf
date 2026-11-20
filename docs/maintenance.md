@@ -166,16 +166,16 @@ Eligible node changes create a root-private five-minute `approval.json`, which t
 The record also binds audit and validator policies, and automatic approval never includes structural or unresolved findings.
 
 Startup and rollback check the snapshot's source revision, renderer settings and managed policy, then apply the current audit. Keep older revisions under their original labels for comparison.
-Startup leaves an update request pending until verified B has remained healthy for 90 seconds.
-Bind this stability interval to the boot, snapshot and policy, and reset it outside healthy B.
+Startup and the root timer queue download requests. The coordinator marks a request ready after verified B has remained healthy for 90 seconds.
+The stability interval binds the boot, snapshot, policy, routing selection and authorization epoch. Leaving healthy B resets the interval.
 The stable blocklist path must still resolve to build-validated immutable content. Static checks repeat on restore, and live health still gates B.
-Only explicit `on` and automatic attempts deferred during C create `source-refresh-pending`. The service consumes it before fetching, and explicit `off` clears it.
-The shared proxy-intent guard must not enqueue updates. These rules prevent activation from causing a fetch/restart loop.
-Automatic attempts in C defer rather than using retries or weakening the application guard.
-Keep that path and refresh prechecks consistent.
+The downloader consumes the ready request and rechecks protection before fetching. C keeps requests pending.
+The shared proxy-intent guard only changes intent. Explicit `off` clears the download and application queues.
+The apply service binds the downloaded generation to the source selection, registration revision, digest and routing selection.
+It retries a busy import outside the operator and source locks. A changed binding discards the request.
 
-Periodic downloads and explicit `add` or `use` release the source publication lock during network waits, then recheck registration and selection under the lock before publishing.
-Preserve that recheck so foreground startup stays available without allowing revoked input to be published.
+Periodic downloads, mapped GUI requests and explicit `add` or `use` release the source publication lock during network waits.
+Before publishing, the broker reacquires the lock and rechecks registration and selection. GUI requests also recheck the desktop index against the approved mapping.
 Explicit operations in A or B bypass the automatic stability interval and wait for the verifier's result for the downloaded digest. The wait holds neither the operator nor the source lock.
 
 Within the current boot, health-failure pins survive explicit on/off requests for their remaining TTL. Startup imports keep the full 60-second window. Later imports with repeated fresh full failures can roll back after the configured grace. Successful acceptance always keeps the full window.

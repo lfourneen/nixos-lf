@@ -34,7 +34,8 @@ REFRESH_REASONS = ('configuration invalid', 'input unreadable', 'validation time
 FETCH_REASONS = frozenset(('dns lookup failed', 'certificate rejected', 'tls failed',
     'connection timeout', 'connection refused', 'connection reset', 'network unreachable',
     'http rejected', 'encoding unsupported', 'redirect refused', 'destination refused',
-    'response limit', 'yaml invalid', 'configuration unsupported', 'node resolution failed', 'worker failure', 'network protection active'))
+    'response limit', 'yaml invalid', 'configuration unsupported', 'node resolution failed', 'worker failure',
+    'network protection active', 'waiting for healthy proxy', 'waiting for stable proxy'))
 AUDIT_CATEGORIES = frozenset((
     'yaml_structure', 'private_server', 'certificate', 'empty_nodes', 'group_reference',
     'hosts_override', 'provider_change', 'rule_provider_change', 'sensitive_route',
@@ -133,10 +134,11 @@ def source_trust(root, boot):
 
 
 def source_fetch(root=Path('/run'), boot=None, now=None):
-    value = read(Path(root) / 'proxy-mode/source-fetch.json')
+    directory = Path(root) / 'proxy-mode'
+    value = read(directory / 'source-fetch.json')
     boot = boot_identity(root) if boot is None else boot
     if (not boot or value.get('boot_id') != boot or
-            value.get('result') not in ('fetching', 'downloaded', 'failed', 'deferred') or
+            value.get('result') not in ('fetching', 'downloaded', 'failed', 'deferred', 'discarded') or
             not fresh(value.get('at'), time.time() if now is None else now, 7 * 86400)):
         return None
     result = {key: value[key] for key in ('at', 'result')}
@@ -147,6 +149,11 @@ def source_fetch(root=Path('/run'), boot=None, now=None):
     status = value.get('http_status')
     if type(status) is int and 100 <= status <= 599:
         result['http_status'] = status
+    if result['result'] == 'downloaded':
+        application = read(directory / 'source-apply-status.json')
+        if application.get('boot_id') == boot and application.get('at') == result['at']:
+            if application.get('result') in ('pending', 'discarded'):
+                result['application'] = application['result']
     return result
 
 

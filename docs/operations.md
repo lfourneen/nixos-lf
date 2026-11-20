@@ -83,20 +83,23 @@ The `clash-source-select.path` unit watches the GUI's `profiles.yaml`.
 Switching to a mapped UID requests the corresponding registered source.
 Unknown profiles leave the selection unchanged.
 Changing a GUI URL, YAML or script grants no additional authority.
-Inspect `journalctl -u clash-source-select -u clash-source-refresh` when the GUI selection and active source differ.
-GUI selection in A leaves the mode unchanged. Use `clash-on` to request B after a GUI selection.
+Inspect the request, download and application logs when the GUI selection and active source differ.
+
+```bash
+journalctl -u clash-source-select -u clash-source-download -u clash-source-apply
+```
+
+In A, a GUI request downloads and selects the source for the next `clash-on`.
 
 `clash-source refresh` only prepares a candidate.
-The system service checks it before deciding whether to replace the managed core while proxy intent is active.
+To request the automatic download and application flow directly, start `clash-source-refresh.service`.
 An explicit `clash-on` uses the accepted snapshot when available and records one pending update request.
-The coordinator starts that background request after B passes its health and enforcement checks and remains healthy for 90 seconds under the same boot, snapshot and policy.
+The coordinator starts the downloader after B remains healthy and verified for 90 seconds under the same boot, snapshot, policy and routing selection.
 A transition out of healthy B restarts this wait.
-Automatic jobs triggered during C record `deferred`, preserve the request for B and make no download attempt.
-This does not relax C or give the download account a public-egress exception.
-Its root timer starts about two minutes after boot and then runs every 30 minutes, independently of the GUI.
-Each background job retries a failed download up to three times with 15 seconds between attempts.
-The 180-second service timeout caps the job; it does not delay foreground startup.
-Refresh defers while an import or rollback is being settled.
+In C, the request remains queued and `proxy-status` reports the deferral. `clash-off` cancels pending requests and applications.
+The root timer queues a request about two minutes after boot and every 30 minutes thereafter, independently of the GUI.
+A download job allows up to three attempts, spaced 15 seconds apart, with a 210-second service timeout.
+While an import or rollback is being settled, the downloaded candidate waits for application by digest.
 The GUI's `update_interval` controls only its display copy: startup raises existing intervals shorter than 1440 minutes to 1440 and preserves longer intervals and disabled schedules.
 
 If the current snapshot remains authorized and intact, with fresh full health, readiness and any required B lease,
@@ -106,7 +109,7 @@ Activation enters C before replacing the core through helper IPC, repeats import
 
 Worker failures identify `fetch`, `parse`, `render` or `pin-addresses`.
 `Subscription download` in `proxy-status` adds a fixed DNS, TLS, connection or HTTP failure category and an HTTP status when available.
-A completed download does not establish runtime acceptance. Content audit and health results appear separately.
+`Subscription download` also reports when a candidate is waiting to apply. `Profile refresh` reports the audit and health verdict.
 Unresolvable nodes may be dropped up to `max(1, node_count // 5)`.
 Private answers still refuse the candidate.
 Fetch/parse/audit failure preserves a valid runtime fallback.

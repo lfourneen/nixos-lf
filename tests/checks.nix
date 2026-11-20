@@ -70,7 +70,12 @@ let
       }).config.programs.clash-verge.package;
 
       managedClashPackage = (self.nixosConfigurations.lfour.extendModules {
-        modules = [ ({ lib, ... }: { my.proxy.runtimeRouting = lib.mkForce false; }) ];
+        modules = [ ({ lib, ... }: {
+          my.proxy.runtimeRouting = lib.mkForce false;
+          my.proxy.nodeProbeUrls = lib.mkForce [ "http://node.fixture.example:8080/" ];
+          my.proxy.tunProbeName = lib.mkForce "tun.fixture.example";
+          my.proxy.tunProbeNames = lib.mkForce [ "tun.fixture.example" "cp.cloudflare.com" ];
+        }) ];
       }).config.programs.clash-verge.package;
 
       strictDnsConfig = (self.nixosConfigurations.lfour.extendModules {

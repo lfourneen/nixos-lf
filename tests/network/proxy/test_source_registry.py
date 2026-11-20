@@ -15,6 +15,8 @@ spec = importlib.util.spec_from_file_location('broker', sys.argv.pop(1))
 b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
 worker = sys.argv.pop(1)
+refresh_tool = b.load_module('source_refresh', sys.argv.pop(1))
+stage_tool = b.load_module('source_stage', sys.argv.pop(1))
 
 
 class RegistryTests(unittest.TestCase):
@@ -270,22 +272,17 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(b.DefinitionError, 'duplicate JSON field'):
             b.definitions('{"id":"one","id":"two","subscription":{"url":"https://example.invalid/"}}')
 
-    def test_registration_selection_failure_and_old_revision(self):
+    def test_registration_checks_approved_revision_and_selection(self):
         a = self.register('one')
         self.register('two')
         self.assertEqual(b.selected(self.root).name, 'one')
         b.atomic(self.root / 'sources/two/review.json', b'{}')
-        with patch.object(b, 'refresh', side_effect=ValueError('fetch')):
-            with self.assertRaises(ValueError): b.use({}, self.root, 'two')
-        self.assertEqual(b.selected(self.root).name, 'one')
-        with patch.object(b, 'refresh') as refresh:
-            self.assertTrue(b.use({}, self.root, 'two'))
-            self.assertFalse((self.root / 'sources/two/review.json').exists())
-            refresh.assert_called_once_with({}, self.root / 'sources/two')
-            self.assertTrue(b.use({}, self.root, 'one', b.digest(a)))
-            for identity in ('../one', 'missing', '/one', 'ONE'):
-                with self.assertRaises(ValueError): b.use({}, self.root, identity)
-            with self.assertRaises(ValueError): b.use({}, self.root, 'two', '0' * 64)
+        b.select(self.root, b.source_path(self.root, 'two'))
+        self.assertEqual(b.selected(self.root).name, 'two')
+        self.assertFalse((self.root / 'sources/two/review.json').exists())
+        for identity in ('../one', 'missing', '/one', 'ONE'):
+            with self.assertRaises(ValueError):
+                b.source_path(self.root, identity)
         with self.assertRaises(ValueError): self.register('one', 'uid-1', '0' * 64)
         self.assertEqual((self.root / 'sources/one/registry.json').read_bytes(), a)
 
@@ -300,11 +297,104 @@ class RegistryTests(unittest.TestCase):
             self.assertFalse(b.gui_choice(settings, self.root))
             self.assertEqual(b.selected(self.root).name, 'one')
         index.write_text('current: uid-two\nitems: [{uid: uid-two, url: https://evil.example/}]')
-        with patch.object(b, 'refresh') as refresh:
-            self.assertTrue(b.gui_choice(settings, self.root))
-            refresh.assert_called_once_with(settings, self.root / 'sources/two')
-        self.assertEqual(b.selected(self.root).name, 'two')
+        self.assertEqual(b.gui_choice(settings, self.root), self.root / 'sources/two')
+        self.assertEqual(b.selected(self.root).name, 'one')
         self.assertEqual(sorted(p.name for p in (self.root / 'sources').iterdir()), ['one', 'two'])
+
+    def test_gui_fetch_reuses_generation_and_rechecks_selection_after_network_wait(self):
+        self.register('one', 'uid-one')
+        self.register('two', 'uid-two')
+        index = self.root / 'profiles.yaml'
+        state = self.root / 'state'
+        state.mkdir()
+        boot = '00000000-1111-2222-3333-444444444444'
+        (state / 'boot-id').write_text(boot)
+        (state / 'intent').write_text('proxy')
+        state_file = state / 'state.json'
+        state_file.write_text('{"mode":"blocked"}')
+        policy = self.root / 'policy.json'
+        policy.write_text('{}')
+        stage_settings = dict(state=str(state), source_root=str(self.root), managed_policy=str(policy))
+        stage_file = self.root / 'stage.json'
+        stage_file.write_text(json.dumps(stage_settings))
+        settings = dict(root=str(self.root), gui_index=str(index), desktop_uid=os.getuid(),
+            worker=worker, policy=str(policy), assets={}, forced_domains=[], setpriv='/fixed/setpriv',
+            python='/fixed/python', ca='/fixed/ca', stageSettings=str(stage_file))
+        candidate = self.root / 'sources/two/current'
+        gui_request = state / 'source-gui-request.json'
+        application = state / 'source-apply.json'
+        attempts = []
+        responses = ['subscription', 'provider']
+
+        def download(*args, **kwargs):
+            with (self.root / 'source.lock').open('a') as other:
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                attempts.append(self.mode)
+                if self.mode == 'stale':
+                    index.write_text('current: uid-one\n')
+                if self.mode == 'timeout':
+                    kwargs['stdout'].write(b'{"error":"fetch","reason":"connection timeout"}')
+                    self.mode = 'success'
+                    return SimpleNamespace(returncode=1)
+            kwargs['stdout'].write(json.dumps(dict(yaml='proxies: []\n', responses=responses, dropped=0)).encode())
+            return SimpleNamespace(returncode=0)
+
+        def prepare_gui():
+            index.write_text('current: uid-two\n')
+            self.assertTrue(b.request_gui(settings, self.root))
+
+        with patch.object(b, 'refresh_context', return_value=(refresh_tool, stage_tool, stage_settings)), \
+                patch.object(stage_tool, 'source_directory', side_effect=lambda _: b.selected(self.root)), \
+                patch.object(refresh_tool, 'healthy_runtime', return_value='a' * 64), \
+                patch.object(refresh_tool.time, 'clock_gettime', return_value=120), \
+                patch.object(b.subprocess, 'run', side_effect=download), \
+                (self.root / 'source.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            prepare_gui()
+            b.automatic_refresh(settings, self.root, lock)
+            self.assertEqual(attempts, [])
+            self.assertTrue(gui_request.exists())
+            self.assertEqual(b.selected(self.root).name, 'one')
+
+            def allow_proxy_download():
+                state_file.write_text('{"mode":"proxy","policy_version":1}')
+                stage_tool.atomic_record(state / 'source-refresh-stable.json',
+                    dict(since=0, digest='a' * 64, boot_id=boot, policy_version=1, authorization_epoch=''))
+
+            allow_proxy_download()
+            self.mode = 'stale'
+            b.automatic_refresh(settings, self.root, lock)
+            self.assertFalse(candidate.exists())
+            self.assertFalse(application.exists())
+            self.assertEqual(b.selected(self.root).name, 'one')
+
+            prepare_gui()
+            self.mode = 'timeout'
+            def backoff(seconds):
+                self.assertEqual(seconds, 15)
+                self.assertEqual(b.selected(self.root).name, 'one')
+                self.assertEqual(stage_tool.read_record(state / 'source-fetch.json')['reason'], 'connection timeout')
+                with (self.root / 'source.lock').open('a') as other:
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            b.automatic_refresh(settings, self.root, lock, wait=backoff)
+            self.assertEqual(attempts, ['stale', 'timeout', 'success'])
+            self.assertEqual(b.selected(self.root).name, 'two')
+            self.assertFalse(gui_request.exists())
+            queued = stage_tool.read_record(application)['binding']
+            self.assertEqual(queued['candidate'], stage_tool.snapshot_digest(candidate.resolve()))
+            manifest = stage_tool.read_record(candidate / 'source-manifest.json')
+            self.assertEqual(manifest['responses'], responses)
+            self.assertEqual(stage_tool.read_record(state / 'source-fetch.json')['result'], 'downloaded')
+
+            refresh_tool.cancel_automatic(stage_settings)
+            b.select(self.root, self.root / 'sources/one')
+            state_file.write_text('{"mode":"direct","policy_version":2}')
+            (state / 'intent').write_text('direct')
+            prepare_gui()
+            b.automatic_refresh(settings, self.root, lock)
+            self.assertEqual(attempts, ['stale', 'timeout', 'success', 'success'])
+            self.assertEqual(b.selected(self.root).name, 'two')
+            self.assertFalse(application.exists(), 'the GUI must not request proxy operation in A')
 
     def test_legacy_migration_retains_generations_and_approvals(self):
         data = b.canonical(json.dumps({'id': 'legacy', 'subscription': {'url': 'https://source.example/'}}))

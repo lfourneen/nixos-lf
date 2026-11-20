@@ -1,5 +1,6 @@
 """Check a downloaded candidate before disrupting a trusted, healthy core."""
 
+from contextlib import contextmanager
 import fcntl
 import grp
 import hashlib
@@ -21,40 +22,118 @@ def module(name, path):
     return result
 
 
-def automatic_download_ready(settings, stage):
-    """C protects the downloader too; defer without reporting a fetch error."""
+def network_mode(settings, stage):
     state = Path(settings['state'])
-    mode = stage.read_record(state / 'state.json').get('mode')
+    record = stage.read_record(state / 'state.json')
     try:
         intent = (state / 'intent').read_text().strip()
     except FileNotFoundError:
         intent = 'auto'
-    allowed = mode == 'direct' and intent != 'proxy'
+    return record.get('mode'), intent, record.get('policy_version')
+
+
+def authorization_epoch(state):
+    try:
+        return (state / 'authorization-epoch').read_text().strip()
+    except FileNotFoundError:
+        return ''
+
+
+@contextmanager
+def queue_lock(state):
+    fd = os.open(state / 'source-refresh.lock', os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+@contextmanager
+def download_job(state):
+    fd = os.open(state / 'source-refresh-job.lock', os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+
+
+def download_gate(settings, stage):
+    state = Path(settings['state'])
+    mode, intent, policy = network_mode(settings, stage)
     stable_path = state / 'source-refresh-stable.json'
     if mode == 'proxy' and intent == 'proxy':
         digest = healthy_runtime(settings, stage)
+        if not digest:
+            stable_path.unlink(missing_ok=True)
+            return 'waiting for healthy proxy'
         now = time.clock_gettime(time.CLOCK_BOOTTIME)
-        policy = stage.read_record(state / 'state.json').get('policy_version')
-        binding = dict(boot_id=stage.boot_id(state), digest=digest, policy_version=policy)
+        binding = dict(boot_id=stage.boot_id(state), digest=digest, policy_version=policy,
+                       authorization_epoch=authorization_epoch(state))
         binding.update(stage.routing_binding(settings))
         stable = stage.read_record(stable_path)
-        if digest and all(stable.get(key) == value for key, value in binding.items()):
-            allowed = 90 <= now - stable.get('since', now)
-        elif digest:
+        since = stable.get('since')
+        if (type(since) not in (int, float) or not 0 <= since <= now
+                or any(stable.get(key) != value for key, value in binding.items())):
             stage.atomic_record(stable_path, dict(binding, since=now), mode=0o600)
-        else:
-            stable_path.unlink(missing_ok=True)
-    else:
-        stable_path.unlink(missing_ok=True)
+            since = now
+        return 'waiting for stable proxy' if now - since < 90 else None
+    stable_path.unlink(missing_ok=True)
+    if mode == 'direct' and intent != 'proxy':
+        return None
+    return 'network protection active'
+
+
+def schedule_download(settings, stage, *, consume=False, request=False, verified=True):
+    state = Path(settings['state'])
     pending = state / 'source-refresh-pending'
-    if allowed:
-        pending.unlink(missing_ok=True)
+    ready = state / 'source-refresh-ready'
+    stable = state / 'source-refresh-stable.json'
+    with queue_lock(state):
+        if not verified:
+            stable.unlink(missing_ok=True)
+            ready.unlink(missing_ok=True)
+        if request:
+            pending.touch(mode=0o600)
+        if consume:
+            ready.unlink(missing_ok=True)
+        if not pending.exists() and not (state / 'source-gui-request.json').exists():
+            if stable.exists() and network_mode(settings, stage)[0] != 'proxy':
+                stable.unlink()
+            return False
+        if (state / 'source-apply.json').exists():
+            return False
+        try:
+            if verified:
+                reason = download_gate(settings, stage)
+            else:
+                reason = ('network protection active' if network_mode(settings, stage)[0] == 'blocked'
+                          else 'waiting for healthy proxy')
+        except (OSError, ValueError):
+            reason = 'waiting for healthy proxy'
+            stable.unlink(missing_ok=True)
+        if reason is not None:
+            ready.unlink(missing_ok=True)
+            boot = stage.boot_id(state)
+            previous = stage.read_record(state / 'source-fetch.json')
+            status = dict(boot_id=boot, result='deferred', reason=reason)
+            if any(previous.get(key) != value for key, value in status.items()):
+                stage.atomic_record(state / 'source-fetch.json', dict(status, at=time.time()))
+            return False
+        if consume:
+            pending.unlink(missing_ok=True)
+        elif not ready.exists():
+            ready.touch(mode=0o600)
         return True
-    # Keep startup online before a background update can interrupt it.
-    stage.atomic_text(pending, '1\n')
-    stage.atomic_record(state / 'source-fetch.json', dict(at=time.time(),
-        boot_id=stage.boot_id(state), result='deferred', reason='network protection active'))
-    return False
+
+
+def cancel_automatic(settings):
+    state = Path(settings['state'])
+    with queue_lock(state):
+        for name in ('source-refresh-pending', 'source-refresh-ready', 'source-refresh-stable.json',
+                     'source-gui-request.json', 'source-apply.json', 'source-apply-status.json'):
+            (state / name).unlink(missing_ok=True)
 
 
 def healthy_runtime(settings, stage):
@@ -105,6 +184,67 @@ def source_binding(settings, stage):
             'LF_MANAGED_PROXY_POLICY', settings['managed_policy'])).read_bytes()).hexdigest())
     identity.update(stage.routing_binding(settings))
     return inputs, config, baseline, identity
+
+
+def selection_stamp(path):
+    info = path.lstat()
+    return [info.st_ino, info.st_ctime_ns]
+
+
+def application_binding(settings, stage, expected):
+    state = Path(settings['state'])
+    root = Path(settings['source_root'])
+    source = stage.source_directory(settings)
+    _, config = stage.prepared_source(settings, expected)
+    return dict(boot_id=stage.boot_id(state), source_id=source.name, candidate=expected,
+                revision=hashlib.sha256(stage.read_input(source, 'registry.json', os.geteuid())).hexdigest(),
+                selected=selection_stamp(root / 'selected'), current=selection_stamp(source / 'current'),
+                generation=Path(config).parent.name, routing=stage.routing_binding(settings))
+
+
+def queue_application(settings, stage, expected, at):
+    state = Path(settings['state'])
+    binding = application_binding(settings, stage, expected)
+    with queue_lock(state):
+        stage.atomic_record(state / 'source-apply-status.json',
+                            dict(boot_id=binding['boot_id'], at=at, result='pending'))
+        stage.atomic_record(state / 'source-apply.json', dict(binding=binding, at=at), mode=0o600)
+
+
+def apply_queued(settings, stage, *, validate=None, activate=None, wait=time.sleep):
+    state = Path(settings['state'])
+    path = state / 'source-apply.json'
+
+    def try_operator(lock):
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    while path.exists():
+        request = stage.read_record(path)
+        if not request:
+            with queue_lock(state):
+                if not stage.read_record(path):
+                    path.unlink(missing_ok=True)
+            continue
+        try:
+            binding = request['binding']
+            at = request['at']
+            boot = binding['boot_id']
+            result = restart_source(settings, stage, validate, activate, expected=binding['candidate'],
+                                    lock_operator=try_operator, request=request)
+        except BlockingIOError:
+            result = 'busy'
+        except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException, subprocess.SubprocessError):
+            at, boot = request.get('at'), stage.boot_id(state)
+            result = 'discarded'
+        if result == 'busy':
+            wait(2)
+            continue
+        with queue_lock(state):
+            if stage.read_record(path) == request:
+                path.unlink()
+                stage.atomic_record(state / 'source-apply-status.json', dict(
+                    at=at, boot_id=boot,
+                    result='submitted' if result in ('verifying', 'decided', 'accepted') else 'discarded'))
 
 
 def check_candidate(settings, stage, validate):
@@ -163,7 +303,8 @@ def check_candidate(settings, stage, validate):
         return dict(accepted=False, digest=digest, binding=identity, findings=findings, reason=reason)
 
 
-def restart_source(settings, stage, validate=None, activate=None, expected=None, lock_operator=None):
+def restart_source(settings, stage, validate=None, activate=None, expected=None, lock_operator=None,
+                   request=None):
     state = Path(settings['state'])
     if validate is None:
         validate = lambda directory: stage.validate_snapshot(settings, settings['managed_core'],
@@ -184,17 +325,27 @@ def restart_source(settings, stage, validate=None, activate=None, expected=None,
                 return 'busy'
             if (state / 'intent').read_text().strip() != 'proxy':
                 return 'proxy intent changed'
-            if expected is not None:
+            if request is not None:
+                gui = stage.read_record(state / 'source-gui-request.json')
+                if gui and gui.get('source') != request['binding']['source_id']:
+                    return 'source selection changed'
+            if request is None and expected is not None:
                 stage.prepared_source(settings, expected)
             with (state / 'authorization.lock').open('a') as authorization:
                 fcntl.flock(authorization, fcntl.LOCK_EX)
-                if any((state / name).exists() for name in ('profile-refresh-verifying.json',
-                        'profile-refresh-restart.json', 'profile-refresh-commit.json')):
+                verifying = any((state / name).exists() for name in ('profile-refresh-verifying.json',
+                                'profile-refresh-restart.json', 'profile-refresh-commit.json'))
+                if verifying:
                     pending = stage.read_record(state / 'profile-refresh-verifying.json')
-                    if expected is not None and pending.get('digest') == expected:
-                        return 'verifying'
-                    return 'busy'  # The existing acceptance/rollback worker owns it.
-                current = healthy_runtime(settings, stage)
+                    if expected is None or pending.get('digest') != expected:
+                        return 'busy'
+                current = healthy_runtime(settings, stage) if not verifying else None
+            if request is not None:
+                if (stage.read_record(state / 'source-apply.json') != request
+                        or application_binding(settings, stage, expected) != request['binding']):
+                    return 'snapshot mismatch'
+            if verifying:
+                return 'verifying'
             # Keep the authority lock available to launch/sleep/recovery
             # writers while checks run. Recheck after reacquiring EX.
             decision = None
@@ -203,10 +354,11 @@ def restart_source(settings, stage, validate=None, activate=None, expected=None,
                 decision = check_candidate(settings, stage, validate)
             with (state / 'authorization.lock').open('a') as authorization:
                 fcntl.flock(authorization, fcntl.LOCK_EX)
-                if ((state / 'intent').read_text().strip() != 'proxy'
-                        or any((state / name).exists() for name in ('profile-refresh-verifying.json',
-                            'profile-refresh-restart.json', 'profile-refresh-commit.json'))):
-                    return 'proxy intent or verification changed'
+                if (state / 'intent').read_text().strip() != 'proxy':
+                    return 'proxy intent changed'
+                if any((state / name).exists() for name in ('profile-refresh-verifying.json',
+                        'profile-refresh-restart.json', 'profile-refresh-commit.json')):
+                    return 'busy'
                 if current is not None:
                     if (decision['accepted'] and decision['digest'] != current
                             and settings.get('refresh_policy', 'strict') == 'strict'):
@@ -300,16 +452,30 @@ def verify_selection(settings, stage, candidate, initial_mode, lock_operator):
 def main():
     if os.geteuid() != 0:
         raise ValueError('source refresh requires root')
-    if sys.argv[1] == 'download-ready':
-        settings = json.loads(Path(sys.argv[2]).read_text())
-        stage = module('source_stage', settings['snapshot_tool'])
-        raise SystemExit(0 if automatic_download_ready(settings, stage) else 1)
-    settings = json.loads(Path(sys.argv[1]).read_text())
-    settings.update(launcher=sys.argv[2], guard_service=sys.argv[3], core_gid=grp.getgrnam('clash-core').gr_gid)
-    if len(sys.argv) > 4:
-        settings['check_directory'] = sys.argv[4]
+    action, path, *arguments = sys.argv[1:]
+    settings = json.loads(Path(path).read_text())
     stage = module('source_stage', settings['snapshot_tool'])
-    restart_source(settings, stage)
+    if action == 'schedule':
+        state = Path(settings['state'])
+        with download_job(state) as idle:
+            if idle:
+                schedule_download(settings, stage, verified=not arguments)
+            elif arguments:
+                with queue_lock(state):
+                    (state / 'source-refresh-stable.json').unlink(missing_ok=True)
+    elif action == 'request':
+        state = Path(settings['state'])
+        with queue_lock(state):
+            (state / 'source-refresh-pending').touch(mode=0o600)
+    elif action == 'cancel':
+        cancel_automatic(settings)
+    elif action == 'apply':
+        launcher, guard_service, check_directory = arguments
+        settings.update(launcher=launcher, guard_service=guard_service, check_directory=check_directory,
+                        core_gid=grp.getgrnam('clash-core').gr_gid)
+        apply_queued(settings, stage)
+    else:
+        raise ValueError('unknown source refresh action')
 
 
 if __name__ == '__main__':

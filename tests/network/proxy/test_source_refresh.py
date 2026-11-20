@@ -1,5 +1,6 @@
 """Source precheck and recovery regressions with real immutable snapshots."""
 import copy
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -57,7 +58,7 @@ class SourceRefreshTests(unittest.TestCase):
         with patch.object(refresh, 'restart_source', return_value='verifying') as restart, \
                 patch.object(refresh.grp, 'getgrnam', return_value=Mock(gr_gid=os.getgid())), \
                 patch.object(refresh.subprocess, 'run') as systemctl, \
-                patch.object(refresh, 'automatic_download_ready', side_effect=AssertionError('manual refresh must not defer')), \
+                patch.object(refresh, 'schedule_download', side_effect=AssertionError('manual refresh must not defer')), \
                 patch.object(refresh.time, 'sleep', side_effect=verify_round) as sleep:
             result = refresh.verify_selection(self.settings, stage, candidate, 'proxy', lock)
         self.assertEqual(restart.call_args.kwargs, dict(expected=candidate, lock_operator=lock))
@@ -65,37 +66,66 @@ class SourceRefreshTests(unittest.TestCase):
         sleep.assert_called_once()
         self.assertEqual(result, dict(result='rolled_back', reason='obs', active_source='source-one'))
 
-    def test_automatic_download_defers_in_c_then_consumes_one_pending_request_in_b(self):
+    def test_manual_selection_from_a_starts_the_prepared_generation_immediately(self):
+        candidate = 'a' * 64
+
+        def command(argv, **kwargs):
+            if argv[-1] == 'on':
+                self.assertEqual(kwargs['env']['LF_SOURCE_GENERATION'], candidate)
+                stage.atomic_record(self.state / 'source.json', dict(boot_id=self.boot, source_id='source-one'))
+                stage.atomic_record(self.state / 'profile-refresh.json', dict(boot_id=self.boot,
+                    history=[dict(digest=candidate, result='accepted', at=time.time())]))
+
+        with patch.object(refresh.subprocess, 'run', side_effect=command) as systemctl, \
+                patch.object(refresh, 'schedule_download', side_effect=AssertionError('manual refresh must not defer')):
+            result = refresh.verify_selection(self.settings, stage, candidate, 'direct', Mock())
+        self.assertEqual(systemctl.call_args_list[0].args[0], ['/run/current-system/sw/bin/proxy-control', 'on'])
+        self.assertEqual(result, dict(result='accepted', reason=None, active_source='source-one'))
+
+    def test_automatic_download_dispatches_once_after_ninety_healthy_seconds(self):
         (self.state / 'state.json').write_text('{"mode":"blocked"}')
-        with patch.object(refresh.subprocess, 'run', side_effect=AssertionError('C must not try a download')):
-            self.assertFalse(refresh.automatic_download_ready(self.settings, stage))
+        self.assertFalse(refresh.schedule_download(self.settings, stage, request=True))
         pending = self.state / 'source-refresh-pending'
+        ready = self.state / 'source-refresh-ready'
+        status = self.state / 'source-fetch.json'
         self.assertTrue(pending.exists())
-        record = json.loads((self.state / 'source-fetch.json').read_text())
+        record = stage.read_record(status)
         self.assertEqual((record['result'], record['reason']), ('deferred', 'network protection active'))
         self.assertEqual(record['boot_id'], self.boot)
-        (self.state / 'state.json').write_text(json.dumps(dict(mode='proxy', policy_version=1,
-            monotonic_seconds=time.clock_gettime(time.CLOCK_BOOTTIME))))
-        self.assertFalse(refresh.automatic_download_ready(self.settings, stage))
-        stable_path = self.state / 'source-refresh-stable.json'
-        stable = json.loads(stable_path.read_text())
-        stable['since'] -= 91
-        stable_path.write_text(json.dumps(stable))
-        self.assertTrue(refresh.automatic_download_ready(self.settings, stage))
-        self.assertFalse(pending.exists(), 'activation must not enqueue another download on its own B transition')
-        self.assertTrue(refresh.automatic_download_ready(self.settings, stage))
+        self.assertFalse(refresh.schedule_download(self.settings, stage, request=True))
+        self.assertEqual(record, stage.read_record(status))
+        (self.state / 'state.json').write_text('{"mode":"proxy","policy_version":1}')
+        with patch.object(refresh, 'healthy_runtime', return_value=self.old), \
+                patch.object(refresh.time, 'clock_gettime', side_effect=[100, 189.9, 190, 191, 192]):
+            self.assertFalse(refresh.schedule_download(self.settings, stage))
+            self.assertFalse(refresh.schedule_download(self.settings, stage))
+            self.assertFalse(ready.exists())
+            self.assertTrue(refresh.schedule_download(self.settings, stage, request=True))
+            stamp = ready.stat().st_mtime_ns
+            self.assertTrue(refresh.schedule_download(self.settings, stage))
+            self.assertEqual(ready.stat().st_mtime_ns, stamp)
+            self.assertTrue(refresh.schedule_download(self.settings, stage, consume=True))
+        self.assertFalse(ready.exists())
         self.assertFalse(pending.exists())
+        self.assertFalse(refresh.schedule_download(self.settings, stage))
 
     def test_startup_download_stability_is_bound_to_health_boot_policy_and_snapshot(self):
-        self.assertFalse(refresh.automatic_download_ready(self.settings, stage))
+        self.assertFalse(refresh.schedule_download(self.settings, stage, request=True))
         stable_path = self.state / 'source-refresh-stable.json'
         original = json.loads(stable_path.read_text())
-        for changed in (dict(boot_id='old'), dict(policy_version=0), dict(digest='f' * 64)):
-            stable_path.write_text(json.dumps(dict(original, since=original['since'] - 100, **changed)))
-            self.assertFalse(refresh.automatic_download_ready(self.settings, stage))
+        for changed in (dict(boot_id='old'), dict(policy_version=0), dict(digest='f' * 64),
+                        dict(authorization_epoch='older'), dict(routing_epoch=8)):
+            with patch.object(stage, 'routing_binding', return_value={'routing_epoch': 9}), \
+                    patch.object(refresh, 'healthy_runtime', return_value=self.old), \
+                    patch.object(refresh.time, 'clock_gettime', return_value=100):
+                stable_path.write_text(json.dumps(dict(original, since=0, routing_epoch=9) | changed))
+                self.assertFalse(refresh.schedule_download(self.settings, stage))
+                self.assertEqual(stage.read_record(stable_path)['since'], 100)
         (self.state / 'state.json').write_text('{"mode":"blocked"}')
-        self.assertFalse(refresh.automatic_download_ready(self.settings, stage))
+        self.assertFalse(refresh.schedule_download(self.settings, stage))
         self.assertFalse(stable_path.exists())
+        refresh.cancel_automatic(self.settings)
+        self.assertFalse((self.state / 'source-refresh-pending').exists())
 
     def test_automatic_download_requires_a_mode_matching_operator_intent(self):
         for mode, intent, expected in (('direct', 'direct', True), ('direct', 'auto', True),
@@ -104,7 +134,7 @@ class SourceRefreshTests(unittest.TestCase):
             (self.state / 'state.json').write_text(json.dumps(dict(mode=mode)))
             (self.state / 'intent').write_text(intent)
             with self.subTest(mode=mode, intent=intent):
-                self.assertEqual(refresh.automatic_download_ready(self.settings, stage), expected)
+                self.assertEqual(refresh.schedule_download(self.settings, stage, request=True), expected)
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -117,6 +147,7 @@ class SourceRefreshTests(unittest.TestCase):
         self.state.mkdir()
         self.runtime.mkdir()
         self.source.mkdir(parents=True, mode=0o700)
+        (self.store / 'selected').symlink_to(self.source)
         (self.source / 'registry.json').write_text('{"id":"one"}')
         self.policy = self.root / 'policy.json'
         self.policy.write_text('{}')
@@ -594,7 +625,6 @@ class SourceRefreshTests(unittest.TestCase):
         self.validate.assert_not_called()
 
     def test_pending_acceptance_and_busy_fetch_defer_without_operator_lock_leak(self):
-        import fcntl
         marker = self.state / 'profile-refresh-verifying.json'
         marker.write_text('{}')
         self.run_refresh()
@@ -606,6 +636,58 @@ class SourceRefreshTests(unittest.TestCase):
         self.validate.assert_not_called()
         with (self.state / 'operator.lock').open('a') as operator:
             fcntl.flock(operator, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_queued_generation_waits_for_source_lock_and_previous_acceptance(self):
+        expected = stage.snapshot_digest(self.candidate)
+        request = self.state / 'source-apply.json'
+        refresh.queue_application(self.settings, stage, expected, 1)
+        marker = self.state / 'profile-refresh-verifying.json'
+        with (self.store / 'source.lock').open('a') as locked:
+            fcntl.flock(locked, fcntl.LOCK_EX)
+            def other_operation_finishes(_):
+                self.assertTrue(request.exists())
+                self.validate.assert_not_called()
+                with (self.state / 'operator.lock').open('a') as operator:
+                    fcntl.flock(operator, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if marker.exists():
+                    marker.unlink()
+                else:
+                    marker.write_text('{}')
+                    fcntl.flock(locked, fcntl.LOCK_UN)
+            sleep = Mock(side_effect=other_operation_finishes)
+            refresh.apply_queued(self.settings, stage, validate=self.validate, activate=self.activate, wait=sleep)
+        self.assertEqual(sleep.call_count, 2)
+        self.validate.assert_called_once()
+        self.activate.assert_called_once()
+        self.assertFalse(request.exists())
+        self.assertEqual(stage.read_record(self.state / 'source-apply-status.json')['result'], 'submitted')
+
+    def test_queued_generation_is_discarded_after_intent_selection_revision_or_current_changes(self):
+        expected = stage.snapshot_digest(self.candidate)
+        with patch.object(stage, 'run_audit', return_value=copy.deepcopy(PASS)):
+            for name, path, value in (
+                    ('intent', self.state / 'intent', 'direct'),
+                    ('GUI selection', self.state / 'source-gui-request.json', '{"source":"two"}'),
+                    ('registration', self.source / 'registry.json', '{"id":"one","revision":2}'),
+                    ('current', self.source / 'current', self.candidate),
+                    ('selection', self.store / 'selected', self.source)):
+                with self.subTest(name=name):
+                    refresh.queue_application(self.settings, stage, expected, 1)
+                    if isinstance(value, Path):
+                        path.unlink()
+                        path.symlink_to(value)
+                    else:
+                        original = path.read_text() if path.exists() else None
+                        path.write_text(value)
+                    refresh.apply_queued(self.settings, stage, validate=self.validate, activate=self.activate)
+                    self.assertEqual(stage.read_record(self.state / 'source-apply-status.json')['result'], 'discarded')
+                    if isinstance(value, str):
+                        if original is None:
+                            path.unlink()
+                        else:
+                            path.write_text(original)
+        self.assert_unchanged()
+        self.validate.assert_not_called()
 
     def test_production_activation_arms_c_before_restart(self):
         calls = []

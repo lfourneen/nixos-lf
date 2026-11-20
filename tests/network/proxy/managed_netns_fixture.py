@@ -1,4 +1,5 @@
 """Actual registered-source and strict-browser paths across the core netns."""
+import fcntl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import http.client
 import importlib.util
@@ -18,6 +19,7 @@ DESKTOP = runpy.run_path('/etc/netsec_desktop.py')
 GUI, USER = DESKTOP['GUI'], DESKTOP['USER']
 
 SETTINGS = json.loads(Path('/etc/netsec-managed.json').read_text())
+SOURCE_ORIGIN = 'https://source.fixture.example'
 
 
 def run(*args, **kwargs):
@@ -58,9 +60,11 @@ def source():
                 self.end_headers()
                 self.wfile.write(body)
                 return
-            if self.path not in ('/one', '/two'):
+            if self.path not in ('/one', '/two', '/provider-two'):
                 self.send_error(404)
                 return
+            with open('/run/managed-source-requests', 'a') as requests:
+                requests.write(self.path + '\n')
             if Path('/run/managed-source-unavailable').exists():
                 self.send_error(503)
                 return
@@ -70,6 +74,14 @@ def source():
                 while Path('/run/managed-source-hold').exists() and time.monotonic() < deadline:
                     time.sleep(.1)
             candidate = json.loads(json.dumps(data))
+            if not SETTINGS.get('routing') and self.path in ('/two', '/provider-two'):
+                if self.path == '/two':
+                    candidate['proxy-providers'] = {
+                        'fixture': {'type': 'http', 'url': SOURCE_ORIGIN + '/provider-two'}}
+                    candidate['proxies'] = []
+                    candidate['proxy-groups'][0].update(proxies=[], use=['fixture'])
+                else:
+                    candidate = {'proxies': data['proxies']}
             if self.path == '/one' and Path('/run/managed-source-change').exists():
                 candidate['proxies'][0]['server'] = 'source-node-updated.fixture.example'
                 if Path('/run/managed-source-block').exists():
@@ -99,8 +111,11 @@ def setup():
         **{'bind-address': '1.1.1.1' if SETTINGS.get('routing') else '0.0.0.0'})))
     registry = Path('/run/managed-source-definition.json')
     for identity in ('one', 'two'):
-        registry.write_text(json.dumps({'id': identity, 'gui-profile': 'uid-' + identity,
-            'subscription': {'url': 'https://source.fixture.example/' + identity}}))
+        definition = {'id': identity, 'gui-profile': 'uid-' + identity,
+                      'subscription': {'url': SOURCE_ORIGIN + '/' + identity}}
+        if identity == 'two' and not SETTINGS.get('routing'):
+            definition['providers'] = {'fixture': {'url': SOURCE_ORIGIN + '/provider-two'}}
+        registry.write_text(json.dumps(definition))
         registry.chmod(0o600)
         review = json.loads(run('clash-source', 'review', registry).stdout)
         run('clash-source', 'register', registry, '--digest', review['digest'], '--previous', 'none')
@@ -114,6 +129,32 @@ def state_is(mode):
 
 def ready():
     return json.loads(run('proxy-control', 'status', 'proxy').stdout)['ready'] is True
+
+
+def stage_tool():
+    spec = importlib.util.spec_from_file_location('refresh_stage', SETTINGS['stage'])
+    stage = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stage)
+    return stage
+
+
+def advance_refresh_window(state, stage):
+    path = state / 'source-refresh-stable.json'
+
+    def advance():
+        with (state / 'source-refresh.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not any((state / name).exists() for name in ('source-refresh-pending', 'source-gui-request.json')):
+                return True
+            binding = stage.read_record(path)
+            now = time.clock_gettime(time.CLOCK_BOOTTIME)
+            if not binding or now < 90:
+                return False
+            if now - binding['since'] < 90:
+                stage.atomic_record(path, dict(binding, since=now - 90), mode=0o600)
+            return True
+
+    wait(advance, 20)
 
 
 def refresh():
@@ -161,9 +202,7 @@ def recover():
     wait(accepted_and_healthy, 90)
     baseline = json.loads(settled.read_text())['digest']
     marker = Path('/run/managed-source-change')
-    spec = importlib.util.spec_from_file_location('refresh_stage', SETTINGS['stage'])
-    stage = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(stage)
+    stage = stage_tool()
     stage_settings = json.loads(Path(SETTINGS['stageSettings']).read_text())
     before_pid = stage.service_request(stage_settings, 'GET', '/status')['core_pid']
     before_version = json.loads((state / 'state.json').read_text())['policy_version']
@@ -180,6 +219,7 @@ def recover():
     blocked.touch()
     try:
         run('systemctl', 'start', 'clash-source-refresh.service')
+        advance_refresh_window(state, stage)
         wait(lambda: json.loads((state / 'profile-refresh.json').read_text()).get('result') == 'fallback', 150)
         wait(ready, 90)
         rejection = json.loads((state / 'profile-refresh.json').read_text())
@@ -244,9 +284,7 @@ def recover():
         assert 'restored accepted snapshot' in status and 'HTTP 503' in status
         print('Explicit on restored accepted source while cached input was rejected and background download returned HTTP 503')
         unavailable.unlink()
-        run('systemctl', 'stop', 'clash-source-refresh.service')
-        run('systemctl', 'reset-failed', 'clash-source-refresh.service')
-        run('systemctl', 'start', 'clash-source-refresh.service')
+        wait(lambda: json.loads((state / 'profile-refresh.json').read_text()).get('result') == 'fallback', 90)
         wait(ready, 90)
         assert (state / 'authorized-config').read_text().strip() == baseline
         rejection = json.loads((state / 'profile-refresh.json').read_text())
@@ -261,9 +299,12 @@ def recover():
         assert not (source / 'review.json').exists(), 'read-only comparison wrote a review'
         assert (state / 'authorized-config').read_text().strip() == baseline
         blocked.unlink()
-        rotation_helper = run('systemctl', 'show', '-p', 'MainPID', '--value', 'clash-verge.service').stdout
+        rotation_helper = run('systemctl', 'show', '-p', 'MainPID', '--value', 'clash-verge.service').stdout.strip()
         rotation_core = stage.service_request(stage_settings, 'GET', '/status')['core_pid']
         run('systemctl', 'start', 'clash-source-refresh.service')
+        wait(lambda: json.loads((state / 'profile-refresh.json').read_text()).get('result') in
+             ('verifying', 'accepted') and stage.service_request(stage_settings, 'GET', '/status')['core_pid']
+             not in (None, rotation_core), 90)
         wait(ready, 90)
         wait(accepted_and_healthy, 90)
         imported = json.loads((state / 'profile-refresh.json').read_text())
@@ -272,7 +313,7 @@ def recover():
         assert imported['last_auto_approval']['categories'] == {'node_identity': 1}
         assert imported['last_auto_approval']['nodes'] == 1
         assert (state / 'authorized-config').read_text().strip() != baseline
-        assert run('systemctl', 'show', '-p', 'MainPID', '--value', 'clash-verge.service').stdout == rotation_helper
+        assert run('systemctl', 'show', '-p', 'MainPID', '--value', 'clash-verge.service').stdout.strip() == rotation_helper
         assert stage.service_request(stage_settings, 'GET', '/status')['core_pid'] != rotation_core
         assert not (source / 'approval.json').exists() and not (source / 'review.json').exists()
         status = run('setpriv', f'--reuid={USER.pw_uid}', '--clear-groups', 'proxy-status', '--plain').stdout
@@ -401,15 +442,20 @@ def switch():
     original = json.loads(Path('/run/clash-verge-rev/effective/source-manifest.json').read_text())
     assert original['source_id'] == 'one'
     index = GUI/'profiles.yaml'
-    index.write_text('current: uid-two\nitems: [{uid: uid-two, url: https://unregistered.invalid/}]\n')
-    os.chown(index, USER.pw_uid, USER.pw_gid)
-    run('clash-source', 'gui-select')
-    assert Path('/var/lib/clash-source/selected').resolve().name == 'two'
-    run('systemctl', 'start', 'clash-source-refresh.service')
+    requests = Path('/run/managed-source-requests')
+    before = requests.read_text().splitlines()
+    run('setpriv', f'--reuid={USER.pw_uid}', f'--regid={USER.pw_gid}', '--clear-groups',
+        sys.executable, '-c', 'from pathlib import Path; import sys; Path(sys.argv[1]).write_text(sys.argv[2])',
+        index, 'current: uid-two\nitems: [{uid: uid-two, url: https://unregistered.invalid/}]\n')
+    wait(lambda: (state / 'source-gui-request.json').exists()
+         or Path('/var/lib/clash-source/selected').resolve().name == 'two', 20)
+    advance_refresh_window(state, stage_tool())
     wait(lambda: json.loads(Path('/run/clash-verge-rev/effective/source-manifest.json').read_text())['source_id'] == 'two', 180)
     wait(ready, 90)
     browser_request()
     assert Path('/var/lib/clash-source/selected').resolve().name == 'two'
+    after = requests.read_text().splitlines()
+    assert after[len(before):].count('/two') == after[len(before):].count('/provider-two') == 1
     print('Actual TLS registration, source worker, approved GUI source switch and core restart passed')
 
 

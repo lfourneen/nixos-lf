@@ -8,7 +8,8 @@ pkgs.runCommand "controlled-source-checks" {
   export SOURCE_BROKER=${../../../system/programs/clash/service/source_broker.py}
   export SOURCE_WORKER=${../../../system/programs/clash/service/source_worker.py}
   python3 ${./test_source.py} ${../../../system/programs/clash/service/source_worker.py}
-  python3 ${./test_source_registry.py} ${../../../system/programs/clash/service/source_broker.py} ${../../../system/programs/clash/service/source_worker.py}
+  python3 ${./test_source_registry.py} ${../../../system/programs/clash/service/source_broker.py} ${../../../system/programs/clash/service/source_worker.py} \
+    ${../../../system/programs/clash/service/source_refresh.py} ${../../../system/programs/clash/service/clash-verge-stage.py}
   python3 ${./test_source_review.py} ${../../../system/programs/clash/service/source_review.py} ${../../../system/programs/clash/service/source_broker.py}
   python3 ${./test_source_refresh.py} ${../../../system/programs/clash/service/clash-verge-stage.py} \
     ${../../../system/programs/clash/service/source_refresh.py} ${../../../system/config/network/proxy/state.py}

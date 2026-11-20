@@ -82,20 +82,23 @@ sudo clash-source add SOURCE_ID
 `clash-source-select.path` 监听 GUI 的 `profiles.yaml`，切换到已映射 UID 会请求对应的登记来源。
 未知 profile 不改变选择。
 修改 GUI URL、YAML 或脚本不授予新权限。
-GUI 选择与实际来源不同时，检查 `journalctl -u clash-source-select -u clash-source-refresh`。
-A 中从 GUI 选择来源会保留直连。GUI 选择后可用 `clash-on` 请求 B。
+GUI 选择与实际来源不同时，可查看请求、下载和应用日志。
+
+```bash
+journalctl -u clash-source-select -u clash-source-download -u clash-source-apply
+```
+
+A 中的 GUI 请求会下载并选择来源，供下次 `clash-on` 使用。
 
 `clash-source refresh` 只准备候选。
-system service 在代理意图有效时先检查候选，再决定是否替换受管核心。
+直接请求自动下载和应用流程时，可启动 `clash-source-refresh.service`。
 显式运行 `clash-on` 时，有已接受快照便先用它启动，并记录一次待处理的更新请求。
-B 通过健康与执行策略检查，并在同一次启动、快照和策略下持续健康 90 秒后，协调器启动这项后台请求。
+B 在同一次启动、快照、策略和路由选择下经验证并持续健康 90 秒后，协调器启动下载服务。
 离开健康 B 后重新计时。
-自动任务在 C 中触发时记录 `deferred`，保留请求等待 B，不尝试下载。
-这不会放宽 C，也不给下载账号增加公网外联豁免。
-root timer 在开机约两分钟后启动，此后每 30 分钟执行，不依赖 GUI。
-每轮后台任务最多尝试下载三次，失败尝试之间间隔 15 秒。
-服务的 180 秒超时限制任务总时长，不会延迟前台启动。
-导入或回滚尚未收尾时，本次刷新暂缓切换。
+C 中请求继续排队，`proxy-status` 显示延期原因。`clash-off` 会取消尚未处理的下载和应用请求。
+root timer 在开机约两分钟后排队一次请求，此后每 30 分钟排队一次，不依赖 GUI。
+每轮下载任务最多尝试三次，间隔 15 秒，服务总时限为 210 秒。
+导入或回滚尚未收尾时，已下载的候选按摘要等待应用。
 GUI 的 `update_interval` 只影响展示副本：启动时将已存在且短于 1440 分钟的间隔提升至 1440，保留更长间隔和已禁用的计划。
 
 当前快照仍获授权且完整，并通过新鲜的完整健康检查、就绪检查及所需 B 租约检查时，
@@ -105,7 +108,7 @@ GUI 的 `update_interval` 只影响展示副本：启动时将已存在且短于
 
 worker 失败区分 `fetch`、`parse`、`render`、`pin-addresses`。
 `proxy-status` 的 `Subscription download` 另显示固定的 DNS、TLS、连接或 HTTP 失败分类，以及可用的 HTTP 状态码。
-下载完成不代表运行配置已接受，内容审计和健康结果分别显示。
+`Subscription download` 也显示候选是否正在等待应用。`Profile refresh` 显示审计与健康结果。
 
 解析失败最多丢弃 `max(1, node_count // 5)` 个节点，私网答案仍拒绝候选。
 下载、解析和审计失败保留有效的运行回退，没有回退则保持 C。

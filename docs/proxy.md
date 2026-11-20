@@ -12,7 +12,8 @@ The GUI-specific import and mutable-provider descriptions below apply to that co
 Each has its own subscription, providers, revision, approvals and accepted baseline.
 `add <id>` reviews and registers a catalog entry, then downloads, selects and verifies it.
 `use <id>` performs the same immediate download and verification for an existing registration.
-The GUI can select only sources mapped to a root-approved `gui-profile` UID.
+The GUI can request only sources mapped to a root-approved `gui-profile` UID.
+The broker downloads the mapped source and rechecks the mapping and registration before selecting it.
 
 An unprivileged worker downloads the HTTPS subscription and registered HTTP providers, pins public endpoint addresses and renders the configuration.
 Nix supplies listeners, DNS, TUN settings and geodata.
@@ -67,7 +68,7 @@ Approved snapshots survive switching and reboot.
 Fetch failures preserve the selection, and parser, audit or health failures preserve the authorized runtime snapshot.
 Until checks complete, `Active source` can differ from the requested selection.
 
-The refresh service checks candidates before interrupting a ready core.
+The apply service checks downloaded candidates before interrupting a ready core.
 Rejected or unchanged candidates preserve that core only while its snapshot authority, integrity, full health and readiness remain valid.
 An unhealthy or unauthorized runtime follows C recovery.
 Applying a changed candidate enters C before restarting the core and must pass startup checks again.
@@ -80,10 +81,11 @@ When the mixed HTTP probe fails, the health check concurrently delay-tests every
 With automatic refresh, the next `clash-on` prefers an accepted snapshot that matches the current source revision, managed policy and renderer settings. Reusing it records `restored`.
 It repeats parser, content-audit and digest checks, and fresh live health still gates B.
 The shared blocklist has a stable policy path, so a validated blocklist update does not invalidate the accepted subscription baseline.
-The startup update request stays pending during C. After verified B remains healthy for 90 seconds under the same boot, snapshot and policy, the background service consumes the request and starts fetching.
-The request is coalesced so an update restarting the core does not cause repeated downloads.
-A periodic attempt during C defers without reporting a download failure.
-Neither waiting nor downloading blocks foreground core startup or requires waiting for the boot timer.
+The coordinator coalesces startup and timer requests. In C it keeps the requests pending.
+In B it starts the downloader after 90 continuous seconds of verified health for the same boot, snapshot, policy and routing selection.
+A mapped GUI request uses the same download gate. In A the download runs directly and prepares the source for the next proxy startup.
+In B a successful download queues its exact candidate for application. If another import or rollback is in progress, the apply service retries with that candidate after rechecking the selection, registration and digest.
+Foreground core startup can finish while the background request is waiting or downloading. `clash-off` cancels queued downloads and applications.
 A first import without an accepted baseline uses the available candidate and the ordinary health observation window.
 Stopping and restarting does not waive structural checks.
 

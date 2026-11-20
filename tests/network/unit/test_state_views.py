@@ -149,6 +149,15 @@ class StateTests(unittest.TestCase):
         result = state.subscription_health('/missing/profiles', dict(result='restored', at=950), now=1100, fetch=value)
         self.assertFalse(result['update_failed'])
 
+    def test_application_status_is_tied_to_the_download(self):
+        directory = self.root / 'proxy-mode'
+        (directory / 'source-fetch.json').write_text(json.dumps(dict(at=1000, boot_id=BOOT, result='downloaded')))
+        status = directory / 'source-apply-status.json'
+        for result, at, expected in (('pending', 1000, 'pending'), ('submitted', 1000, None),
+                                     ('discarded', 1000, 'discarded'), ('pending', 999, None)):
+            status.write_text(json.dumps(dict(at=at, boot_id=BOOT, result=result)))
+            self.assertEqual(state.source_fetch(self.root, now=1100).get('application'), expected)
+
     def test_profile_vs_runtime_digest_reconciliation(self):
         (self.root / 'clash-verge.yaml').write_text(
             NORMALIZED.replace('/run/clash-verge-rev/core/mihomo.sock', '/old.sock'))
