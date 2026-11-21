@@ -170,7 +170,7 @@ This command does not create a recovery generation or alter DNS fallback policy.
 
 Use the Nushell commands `clash-on` and `clash-off`.
 They record privileged intent, manage the GUI/helper lifecycle and wait for coherent state.
-With runtime routing, `clash-on` waits up to 30 seconds after core startup when starting from A with `rules` selected. A successful probe for its current transaction allows up to 10 more seconds to commit B and confirm readiness across its dependent services.
+With runtime routing, `clash-on` waits up to 90 seconds after core startup. That window covers DNS and TUN warmup, committing B with a fresh proof for the current routing transaction, and confirming readiness across its dependent services.
 Closing the GUI leaves proxy intent and the managed core active. Use `clash-off` to stop managed proxy access.
 
 On this host, `clash-rules` and `clash-proxy-only` select a routing submode and request B in one command.

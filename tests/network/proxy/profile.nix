@@ -66,7 +66,10 @@ pkgs.runCommand "proxy-profile-tests" {
   nativeBuildInputs = [ (pkgs.python3.withPackages (p: [ p.pyyaml ])) pkgs.nodejs ];
 } ''
   python3 ${./test_profile.py} ${manifest}
-  node ${./test_profile.js} ${manifest}
+  node ${./test_profile.js} ${manifest} ${./protected-transport.json} "$TMPDIR/gui-profile.json"
+  ln -s ${pkgs.v2ray-domain-list-community}/share/v2ray/geosite.dat "$TMPDIR/GeoSite.dat"
+  ln -s ${pkgs.v2ray-geoip}/share/v2ray/geoip.dat "$TMPDIR/GeoIP.dat"
+  ${config.programs.clash-verge.package.managedCore}/bin/mihomo -t -d "$TMPDIR" -f "$TMPDIR/gui-profile.json"
   touch "$out"
 ''
 

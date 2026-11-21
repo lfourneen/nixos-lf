@@ -254,6 +254,23 @@ DELAY_REDIRECT = Path('/run/netsec-delay-redirect')
 DELAY_READY = Path('/run/netsec-delay-ready')
 
 
+def cold_start():
+    unit = 'control-http-8080.service'
+    run('systemctl', 'freeze', unit)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        startup = executor.submit(run, 'proxy-control', 'on', timeout=125)
+        try:
+            wait(lambda: Path('/run/clash-verge-rev/core/mihomo.sock').is_socket(), timeout=35)
+            time.sleep(36)
+            assert not startup.done(), 'cold startup returned before its health target was warm'
+            assert Path('/run/proxy-mode/status').read_text().strip() == 'blocked'
+        finally:
+            run('systemctl', 'thaw', unit)
+        assert 'Routing switch succeeded: rules' in startup.result().stdout
+    assert 'Routing already active: rules' in run('proxy-control', 'on').stdout
+    print('The first start waited through cold health targets in C and committed B.', flush=True)
+
+
 def delay_origin():
     class Handler(BaseHTTPRequestHandler):
         def do_HEAD(self):
@@ -311,32 +328,33 @@ def check_delay_controls(mode):
                    DELAY_TARGET.replace('source.fixture.example', 'other.fixture.example')):
         assert speed('proxies', 'Fixture', target)[0] == 403, target
         assert speed('group', group, target)[0] == 403, target
-    assert speed('proxies', 'Fixture', DELAY_TARGET, 10001)[0] == 400
+    assert speed('proxies', 'Fixture', DELAY_TARGET, 0)[0] == 400
+    assert speed('proxies', 'Fixture', 'http://cp.cloudflare.com/generate_204', 15000)[0] == 200
     assert speed('group', 'lf-remote', health, 1200)[0] == 403
     assert speed('proxies', 'DIRECT', DELAY_TARGET)[0] == 503
-    assert len(records()) == initial + 2
+    assert [entry[0] for entry in records()[initial:]] == [DELAY_PATH] * 3
     if mode == 'rules':
         # Exercise the exact privileged fallback path also used by health.py.
         wait(lambda: speed('group', 'lf-remote', health, 1200, root=True)[0] == 200, timeout=15)
         DELAY_REDIRECT.touch()
         try:
             assert speed('proxies', 'Fixture', DELAY_TARGET)[0] == 503
-            assert [entry[0] for entry in records()[initial + 2:]] == [DELAY_PATH]
+            assert [entry[0] for entry in records()[initial + 3:]] == [DELAY_PATH]
         finally:
             DELAY_REDIRECT.unlink(missing_ok=True)
 
         before = len(records())
         DELAY_HOLD.touch()
-        with ThreadPoolExecutor(max_workers=18) as executor:
-            jobs = [executor.submit(speed, 'proxies', 'Fixture', DELAY_TARGET) for _ in range(18)]
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            single_jobs = [executor.submit(speed, 'proxies', 'Fixture', DELAY_TARGET) for _ in range(3)]
+            batch = executor.submit(speed, 'group', group, DELAY_TARGET)
             try:
-                wait(lambda: any(job.done() and job.result()[0] == 429 for job in jobs), timeout=6)
-                wait(lambda: len(records()) >= before + 1, timeout=5)
-                assert len(records()) <= before + 10, records()[before:]
+                wait(lambda: len(records()) >= before + 4, timeout=6)
+                assert speed('group', group, DELAY_TARGET)[0] == 429
             finally:
                 DELAY_HOLD.unlink(missing_ok=True)
-            results = [job.result()[0] for job in jobs]
-        assert 429 in results and 200 in results and set(results) <= {200, 429}, results
+            results = [job.result()[0] for job in [*single_jobs, batch]]
+        assert results == [200] * 4, results
     print(f'{mode}: exact desktop delay URL, real leaf, root-only health and request limits verified', flush=True)
 
 
@@ -537,4 +555,5 @@ table inet routing_wire {
 
 
 if __name__ == '__main__':
-    {'check': check, 'peer': old_peer, 'client': old_client, 'delay-origin': delay_origin}[sys.argv[1]]()
+    {'check': check, 'peer': old_peer, 'client': old_client, 'delay-origin': delay_origin,
+     'cold-start': cold_start}[sys.argv[1]]()

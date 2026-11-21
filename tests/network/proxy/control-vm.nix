@@ -492,7 +492,11 @@ pkgs.testers.runNixOSTest {
     machine.succeed("python3 -u /etc/netsec-assurance.py dns-handoff-start", timeout=55)
     ''}
     try:
+        ${if guiControls then ''
+        print(machine.succeed("python3 -u /etc/netsec-routing.py cold-start", timeout=130))
+        '' else ''
         machine.succeed("proxy-control on")
+        ''}
     except Exception:
         print(machine.execute("journalctl -u clash-verge -u proxy-mode --no-pager -n 60; cat /run/proxy-mode/preflight.log /run/clash-verge-rev/validator.log 2>/dev/null"))
         ${pkgs.lib.optionalString guiControls ''

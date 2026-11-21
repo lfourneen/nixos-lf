@@ -2,6 +2,8 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
+const transportCases = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const remote = {name: "Remote", type: "ss", cipher: "aes-128-gcm", password: "fixture"};
 
 const probeDomains = [
   "ip.cn", "browserleaks.com", "ipinfo.io", "necaptcha.nosdn.127.net",
@@ -13,7 +15,7 @@ for (const test of JSON.parse(fs.readFileSync(process.argv[2], "utf8"))) {
   const context = vm.createContext({});
   new vm.Script(fs.readFileSync(test.script, "utf8")).runInContext(context);
   const policy = "selected/[group]";
-  const config = { proxies: [{name: "Remote", type: "ss"}],
+  const config = { proxies: [remote],
     "proxy-groups": [{name: policy, type: "select", proxies: ["Remote"]}], rules: [
     ...probeDomains.map(domain => "DOMAIN-SUFFIX," + domain + ",DIRECT"),
     "DOMAIN-SUFFIX,msftconnecttest.com,DIRECT", "MATCH," + policy,
@@ -76,7 +78,7 @@ for (const test of JSON.parse(fs.readFileSync(process.argv[2], "utf8"))) {
 
   // The merge filter drops unchecked TLS leaves and their group references.
   const tlsProxies = [
-    { name: "keep", type: "vless", "skip-cert-verify": false },
+    { name: "keep", type: "vless", tls: true, "skip-cert-verify": false },
     { name: "drop", type: "hysteria2", "skip-cert-verify": true },
     { name: "nested", type: "ss", plugin: { "\u017fkip_cert_verify": "true" } },
   ];
@@ -93,10 +95,11 @@ for (const test of JSON.parse(fs.readFileSync(process.argv[2], "utf8"))) {
     proxies: [{ name: "only", type: "hysteria2", "skip-cert-verify": true }],
     "proxy-groups": [{ name: "only", type: "select", proxies: ["only"] }],
     rules: ["MATCH,only"],
-  }), /disables TLS verification/);
+  }), /removed by the managed transport policy/);
   for (const value of [false, 0, "false", "False", "FALSE", "0", "f", "F"]) {
-    const result = context.main({proxies:[{name:"boolean-safe", nested:{SKIP_CERT_VERIFY:value}}]});
-    assert.equal(result.proxies.length, 1, `${test.name}: false Boolean form filtered`);
+    const result = context.main({proxies:[{...remote, nested:{SKIP_CERT_VERIFY:value}}]});
+    const expected = test.expected.targets["require-protected-node-transport"] && value !== false ? 0 : 1;
+    assert.equal(result.proxies.length, expected, `${test.name}: certificate Boolean handling`);
   }
   const provider = {"proxy-providers":{source:{type:"http", url:"https://fixture.example/proxies"}},
     proxies:[{name:"drop", "skip-cert-verify":true}],
@@ -106,9 +109,43 @@ for (const test of JSON.parse(fs.readFileSync(process.argv[2], "utf8"))) {
   assert.equal(pruned.proxies.length,0);
   assert.equal(pruned["proxy-groups"][0].proxies.length,0);
   assert.equal(pruned["proxy-providers"].source.url,"https://fixture.example/proxies");
-  assert.doesNotThrow(() => context.main({proxies:[{name:"Remote",type:"ss"}],rules:["MATCH,Remote"]}));
+  assert.doesNotThrow(() => context.main({proxies:[remote],rules:["MATCH,Remote"]}));
+  if (test.expected.targets["require-protected-node-transport"]) {
+    const names = transportCases.map(item => item.node.name);
+    const accepted = transportCases.filter(item => item.accept).map(item => item.node.name);
+    const fixture = context.main({
+      proxies: transportCases.map(item => item.node),
+      "proxy-groups": [
+        {name: "Parent", type: "select", proxies: ["Empty", "Mixed"]},
+        {name: "Mixed", type: "url-test", proxies: names},
+        {name: "Empty", type: "select", proxies: ["Legacy VMess"]},
+      ],
+      rules: ["DOMAIN,Legacy VMess,Parent", "MATCH,Parent"],
+    });
+    assert.deepEqual(Array.from(fixture.proxies, node => node.name), accepted);
+    assert.deepEqual(Array.from(fixture["proxy-groups"], group => group.name), ["Parent", "Mixed"]);
+    assert.deepEqual(Array.from(fixture["proxy-groups"][0].proxies), ["Mixed"]);
+    assert.deepEqual(Array.from(fixture["proxy-groups"][1].proxies), accepted);
+    assert.throws(() => context.main({
+      proxies: [remote, transportCases[0].node],
+      rules: ["DOMAIN-SUFFIX,fixture.invalid,Legacy VMess", "MATCH,Remote"],
+    }), /removed by the managed transport policy/);
+    if (test.name === "default") {
+      const generated = context.main({
+        proxies: transportCases.slice(0, 4).map(item => ({
+          server: "node.fixture.example", port: 443, ...item.node,
+        })),
+        "proxy-groups": [{name: "Remote group", type: "select",
+          proxies: transportCases.slice(0, 4).map(item => item.node.name)}],
+        rules: ["MATCH,Remote group"],
+      });
+      assert.deepEqual(Array.from(generated.proxies, node => node.name), ["VMess AEAD"]);
+      generated["lf-private-targets"]["blocked-domains-file"] = "";
+      fs.writeFileSync(process.argv[4], JSON.stringify(generated));
+    }
+  }
   const nested = {
-    proxies: [{name: "Remote", type: "ss"}, {name: "Local alias", type: "direct"}],
+    proxies: [remote, {name: "Local alias", type: "direct"}],
     "proxy-groups": [
       {name: "CatchAll", type: "select", proxies: ["DIRECT", "Choice"]},
       {name: "Choice", type: "select", proxies: ["Local alias", "REJECT", "Remote"]},

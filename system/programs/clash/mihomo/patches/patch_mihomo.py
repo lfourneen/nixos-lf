@@ -111,30 +111,54 @@ replace(root / "adapter/adapter.go", '\tinstance, err := p.DialContext(ctx, &add
 for indent in ('\t', '\t\t\t'):
     close = '\n' + indent + '_ = resp.Body.Close()'
     replace(root / "adapter/adapter.go", close, close + '\n' + indent +
-            'if addr.LFDelay && resp.StatusCode >= 300 && resp.StatusCode < 400 {\n' + indent +
-            '\treturn 0, fmt.Errorf("managed delay test refused a redirect")\n' + indent + '}')
-replace(root / "adapter/outboundgroup/groupbase.go", '''	proxies := gb.GetProxies(false)
+            'if addr.LFDelay && (resp.StatusCode < 200 || resp.StatusCode >= 300) {\n' + indent +
+            '\treturn 0, fmt.Errorf("managed delay test requires a successful response")\n' + indent + '}')
+replace(root / "adapter/outboundgroup/groupbase.go", '\t"context"',
+        '\t"context"\n\n\t"github.com/metacubex/mihomo/component/lfguard"')
+replace(root / "adapter/outboundgroup/groupbase.go", '''	var wg sync.WaitGroup
+	var lock sync.Mutex
+	mp := map[string]uint16{}
+	proxies := gb.GetProxies(false)
 	for _, proxy := range proxies {
 		proxy := proxy
 		wg.Add(1)
 		go func() {
-			delay, err := proxy.URLTest(ctx, url, expectedStatus)''', '''	proxies := gb.GetProxies(false)
-	slots := make(chan struct{}, 10)
-probe:
-	for _, proxy := range proxies {
-		select {
-		case <-ctx.Done():
-			break probe
-		case slots <- struct{}{}:
+			delay, err := proxy.URLTest(ctx, url, expectedStatus)
+			if err == nil {
+				lock.Lock()
+				mp[proxy.Name()] = delay
+				lock.Unlock()
+			}
+
+			wg.Done()
+		}()
+	}
+	wg.Wait()''', '\tmp := lfguard.TestDelayBatch(ctx, gb.GetProxies(false), url, expectedStatus)')
+replace(root / "adapter/provider/healthcheck.go", '\t"context"',
+        '\t"context"\n\n\t"github.com/metacubex/mihomo/component/lfguard"')
+replace(root / "adapter/provider/healthcheck.go", '''	if len(url) == 0 || url == hc.url {
+		log.Debugln("ignore invalid health check url: %s", url)
+		return
+	}
+
+	hc.mu.Lock()
+	defer hc.mu.Unlock()''', '''	if len(url) == 0 {
+		log.Debugln("ignore invalid health check url: %s", url)
+		return
+	}
+
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	if url == hc.url {
+		// Managed providers and groups use the same URL. A disabled provider
+		// can inherit its group's schedule without registering a second test.
+		if lfguard.ManagedDelay() && hc.interval == 0 {
+			hc.interval = time.Duration(interval) * time.Second
 		}
-		proxy := proxy
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() { <-slots }()
-			delay, err := proxy.URLTest(ctx, url, expectedStatus)''')
-replace(root / "adapter/outboundgroup/groupbase.go", '\n\n\t\t\twg.Done()\n\t\t}()\n\t}\n\twg.Wait()',
-        '\n\t\t}()\n\t}\n\twg.Wait()')
+		return
+	}''')
+replace(root / "adapter/provider/healthcheck.go", 'context.WithTimeout(hc.ctx, hc.timeout)',
+        'lfguard.BackgroundDelay(hc.ctx, hc.timeout)')
 replace(root / "adapter/parser.go", '"fmt"', '"fmt"\n\t"github.com/metacubex/mihomo/component/lfguard"')
 replace(root / "adapter/parser.go", 'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {',
         'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {\n'
@@ -323,11 +347,19 @@ replace(root / "hub/route/groups.go", '''	if selectAble, ok := proxy.Adapter().(
 	dm, err := group.URLTest(call.ctx, call.target, call.expected)''')
 replace(root / "hub/route/provider.go", '\t"context"',
         '\t"context"\n\n\t"github.com/metacubex/mihomo/component/lfguard"')
-replace(root / "hub/route/provider.go", 'func healthCheckProvider(w http.ResponseWriter, r *http.Request) {',
-        'func healthCheckProvider(w http.ResponseWriter, r *http.Request) {\n'
-        '\tif lfguard.ManagedDelay() {\n'
-        '\t\tlfRefuseDelay(w, r, http.StatusForbidden, "test individual provider nodes through the managed delay endpoint")\n'
-        '\t\treturn\n\t}')
+replace(root / "hub/route/provider.go", '\tprovider.HealthCheck()\n\trender.NoContent(w, r)', '''	if lfguard.ManagedDelay() {
+		call := lfProviderDelay(w, r, provider.Name())
+		if call == nil { return }
+		defer call.stop()
+		lfguard.TestDelayBatch(call.ctx, provider.Proxies(), call.target, nil)
+		if call.ctx.Err() != nil {
+			lfRefuseDelay(w, r, http.StatusGatewayTimeout, "provider delay tests timed out")
+			return
+		}
+	} else {
+		provider.HealthCheck()
+	}
+	render.NoContent(w, r)''')
 # Weak decoding renders a float as a string with 'E' notation, so a JSON
 # round-tripped port such as 7898 becomes "7.898E+03" and the listener range
 # parser rejects the whole profile. Format like upstream mapstructure instead.

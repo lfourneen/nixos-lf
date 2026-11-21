@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/metacubex/chi/render"
@@ -39,9 +40,34 @@ func lfControllerPeer(ctx context.Context, conn net.Conn) context.Context {
 }
 
 var (
-	lfDelayRequests = make(chan struct{}, 16)
-	lfGroupDelay    = make(chan struct{}, 1)
+	lfDelayRequests = make(chan struct{}, 256)
+	lfDelayBatches  = struct {
+		sync.Mutex
+		active map[string]bool
+	}{active: make(map[string]bool)}
 )
+
+func lfReserveDelay(batch string) func() {
+	if batch == "" {
+		select {
+		case lfDelayRequests <- struct{}{}:
+			return func() { <-lfDelayRequests }
+		default:
+			return nil
+		}
+	}
+	lfDelayBatches.Lock()
+	defer lfDelayBatches.Unlock()
+	if lfDelayBatches.active[batch] || len(lfDelayBatches.active) >= 4 {
+		return nil
+	}
+	lfDelayBatches.active[batch] = true
+	return func() {
+		lfDelayBatches.Lock()
+		delete(lfDelayBatches.active, batch)
+		lfDelayBatches.Unlock()
+	}
+}
 
 type lfDelayCall struct {
 	ctx      context.Context
@@ -63,7 +89,7 @@ func lfStartDelay(w http.ResponseWriter, r *http.Request, group string) *lfDelay
 	}
 	query, queryErr := url.ParseQuery(r.URL.RawQuery)
 	limit := 16
-	if group != "" {
+	if group != "" || managed {
 		limit = 32
 	}
 	timeout, timeoutErr := strconv.ParseInt(query.Get("timeout"), 10, limit)
@@ -75,32 +101,53 @@ func lfStartDelay(w http.ResponseWriter, r *http.Request, group string) *lfDelay
 	target := query.Get("url")
 	release := func() {}
 	if managed {
-		if timeout <= 0 || timeout > 10000 || len(query["url"]) != 1 || len(query["timeout"]) != 1 ||
+		if timeout <= 0 || len(query["url"]) != 1 || len(query["timeout"]) != 1 ||
 			len(query["expected"]) > 1 || query.Get("expected") != "" {
 			return lfRefuseDelay(w, r, http.StatusBadRequest, "invalid managed delay test parameters")
 		}
 		root, _ := ctx.Value(lfControllerRoot{}).(bool)
 		health := root && group == "lf-remote" && timeout <= 1200
+		// Verge uses this built-in URL when its writable preference is absent.
+		// Translate the request locally and dial only the managed endpoint.
+		if !health && (target == "" || target == "http://cp.cloudflare.com/generate_204") {
+			target = lfguard.DelayTarget()
+		}
 		if !lfguard.DelayAllowed(target, health) {
 			return lfRefuseDelay(w, r, http.StatusForbidden, "managed delay test endpoint is not authorized")
 		}
 		if health {
 			ctx = lfguard.WithHealthDelay(ctx)
 		} else {
-			slots := lfDelayRequests
+			batch := ""
 			if group != "" {
-				slots = lfGroupDelay
+				batch = "group/" + group
 			}
-			select {
-			case slots <- struct{}{}:
-				release = func() { <-slots }
-			default:
+			release = lfReserveDelay(batch)
+			if release == nil {
 				return lfRefuseDelay(w, r, http.StatusTooManyRequests, "managed delay tests are busy")
+			}
+			ctx = lfguard.WithInteractiveDelay(ctx)
+			if timeout > lfguard.MaxInteractiveDelay.Milliseconds() {
+				timeout = lfguard.MaxInteractiveDelay.Milliseconds()
 			}
 		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
 	return &lfDelayCall{
 		ctx: ctx, stop: func() { cancel(); release() }, target: target, expected: expected,
+	}
+}
+
+func lfProviderDelay(w http.ResponseWriter, r *http.Request, name string) *lfDelayCall {
+	if r.URL.RawQuery != "" {
+		return lfRefuseDelay(w, r, http.StatusBadRequest, "managed provider tests use the configured endpoint")
+	}
+	release := lfReserveDelay("provider/" + name)
+	if release == nil {
+		return lfRefuseDelay(w, r, http.StatusTooManyRequests, "managed delay tests are busy")
+	}
+	ctx, cancel := context.WithTimeout(lfguard.WithInteractiveDelay(r.Context()), lfguard.MaxInteractiveDelay)
+	return &lfDelayCall{
+		ctx: ctx, stop: func() { cancel(); release() }, target: lfguard.DelayTarget(),
 	}
 }

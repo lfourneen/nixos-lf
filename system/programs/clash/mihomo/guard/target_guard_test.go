@@ -2,6 +2,7 @@ package lfguard
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/netip"
@@ -574,6 +575,26 @@ func TestRequiredNodeTransport(t *testing.T) {
 	} {
 		if err := CheckProxy(node); err != nil {
 			t.Fatalf("rejected a protected transport: %v (%v)", node, err)
+		}
+	}
+}
+
+func TestGUITransportFixture(t *testing.T) {
+	contents, err := os.ReadFile(os.Getenv("LF_MANAGED_TEST_TRANSPORT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Accept bool
+		Node   map[string]any
+	}
+	if err := json.Unmarshal(contents, &cases); err != nil {
+		t.Fatal(err)
+	}
+	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"}, "require-protected-node-transport": true})
+	for _, item := range cases {
+		if err := CheckProxy(item.Node); (err == nil) != item.Accept {
+			t.Errorf("%s: accepted = %t, want %t", item.Node["name"], err == nil, item.Accept)
 		}
 	}
 }

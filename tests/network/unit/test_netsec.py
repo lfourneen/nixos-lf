@@ -719,6 +719,28 @@ class HealthTests(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 0.25)
             worker.join()
 
+    def test_initial_controller_retry_is_bounded_and_distinct_from_invalid_data(self):
+        now = [0.0]
+        with tempfile.TemporaryDirectory() as directory:
+            probe = health.Probe({"budget_seconds": 10, "socket": str(Path(directory) / "missing")},
+                                 clock=lambda: now[0])
+            def sleep(interval):
+                now[0] += interval
+            with patch.object(health.time, 'sleep', side_effect=sleep):
+                with self.assertRaises(health.ProbeFailure) as failure:
+                    probe.initial_config(fast=False)
+            self.assertEqual(failure.exception.layer, 'restarting')
+            self.assertEqual(now[0], 2.0)
+        with patch.object(probe, 'api', side_effect=[
+                health.ProbeFailure('restarting', 'controller socket is restarting'), {'mode': 'rule'}]) as api:
+            with patch.object(health.time, 'sleep'):
+                self.assertEqual(probe.initial_config(fast=False), {'mode': 'rule'})
+            self.assertEqual(api.call_count, 2)
+        with patch.object(probe, 'api', side_effect=health.ProbeFailure('obs', 'invalid reply')) as api:
+            with self.assertRaises(health.ProbeFailure):
+                probe.initial_config(fast=False)
+            api.assert_called_once_with('/configs')
+
     def test_exact_log_source_and_host(self):
         line = lambda port, host: json.dumps({"payload": f"[TCP] 127.0.0.1:{port} --> {host}:80 match Rule using group[node]"})
         content = "\n".join([line(15011, "www.gstatic.com"), line(15010, "www.gstatic.com.evil")])

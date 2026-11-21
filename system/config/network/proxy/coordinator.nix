@@ -614,6 +614,12 @@ NFT_OFF
       ${lib.optionalString config.my.proxy.runtimeRouting ''
       if ! "$ROUTING" probe-ready; then health_gate=config; return 1; fi
       ''}
+      # The operator lock covers core replacement. Sample it without holding
+      # it during the probe so an off or reload request can still interrupt us.
+      if ! $FLOCK -sn /run/proxy-mode/operator.lock ${pkgs.coreutils}/bin/true; then
+        $SLEEP 0.5
+        health_gate=interrupted; return 1
+      fi
       $SETSID "$HEALTH" "$HEALTH_SCRIPT" "$HEALTH_SETTINGS" > "$output" 9>&- &
       health_pid=$!
       while kill -0 "$health_pid" 2>/dev/null; do
@@ -623,6 +629,10 @@ NFT_OFF
         fi
         if [ "$SECONDS" -ge "$next_fast" ]; then
           next_fast=$((SECONDS + 1))
+          if ! $FLOCK -sn /run/proxy-mode/operator.lock ${pkgs.coreutils}/bin/true; then
+            stop_health; rm -f "$output"
+            health_gate=interrupted; return 1
+          fi
           if ! $IS_CLASH_ON; then
             stop_health; rm -f "$output"
             health_gate=core-gone; return 1
@@ -642,6 +652,11 @@ NFT_OFF
       done
       wait "$health_pid" 2>/dev/null || true
       health_pid=""
+      if [ "$woken" = 1 ] || [ "$(core_stamp)" != "$decision_core" ] ||
+         ! $FLOCK -sn /run/proxy-mode/operator.lock ${pkgs.coreutils}/bin/true; then
+        rm -f "$output"
+        health_gate=interrupted; return 1
+      fi
       if ! $JQ -e 'has("ok") and has("duration_ms")' "$output" >/dev/null 2>&1; then
         rm -f "$output"; return 1
       fi
@@ -801,7 +816,7 @@ NFT_OFF
                 return 0
               fi
               case "$health_gate" in
-                obs|dns|node|application) obs_fails=$((obs_fails + 1)) ;;
+                obs|dns|node|application|restarting) obs_fails=$((obs_fails + 1)) ;;
                 *) obs_fails=0 ;;
               esac
               want_reason="$health_gate"
@@ -1074,7 +1089,7 @@ NFT_OFF
         shift 2
         local -a routing_args=()
         if [ "$#" = 2 ]; then routing_args=(--routing "$1" --routing-epoch "$2"); fi
-        while (( SECONDS < deadline )); do
+        while true; do
           ${lib.optionalString config.my.proxy.runtimeRouting ''
           if [ "$#" = 2 ] && [ "$2" != "$(${config.my.proxy.routingCommand} view | jq -r .routing_epoch)" ]; then
             echo 'Routing request was superseded by another transaction' >&2
@@ -1084,13 +1099,13 @@ NFT_OFF
           if ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} "''${routing_args[@]}" >/dev/null; then
             return 0
           fi
+          if (( SECONDS >= deadline )); then return 1; fi
           if (( attempt % 10 == 0 )); then
             ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} "''${routing_args[@]}" >&2 || true
           fi
           sleep 1
           attempt=$((attempt + 1))
         done
-        return 1
       }
 
       case "''${1:-}" in
@@ -1106,7 +1121,6 @@ NFT_OFF
           ;;
         routing|recover|on)
           [ "$EUID" = 0 ] || { echo "Use sudo proxy-control $*" >&2; exit 1; }
-          operation="$1"
           recovery=0
           keep_selection=0
           if [ "$1" = recover ]; then
@@ -1224,22 +1238,8 @@ NFT_OFF
             exit 0
           fi
           transaction_step=health
-          short_start=0
-          if [ "$operation" = on ] && [ "$2" = rules ] && [ "$initial_mode" = direct ]; then
-            short_start=1
-            deadline=$((SECONDS + 30))
-          else
-            deadline=$((SECONDS + 90))
-          fi
-          if ! wait_policy proxy "$deadline" "$2" "$transaction_epoch" 2>/dev/null; then
-            # A successful probe can precede the B commit and consumer observations.
-            [ "$short_start" = 1 ]
-            jq -e --arg mode "$2" --argjson epoch "$transaction_epoch" \
-              --arg boot "$(cat /run/proxy-mode/boot-id)" \
-              '.ok == true and .routing_requested == $mode and .routing_epoch == $epoch and .boot_id == $boot' \
-              /run/proxy-mode/health.json >/dev/null 2>&1
-            wait_policy proxy "$((deadline + 10))" "$2" "$transaction_epoch" 2>/dev/null
-          fi
+          # Include DNS/TUN warmup and the commit of the matching health proof.
+          wait_policy proxy "$((SECONDS + 90))" "$2" "$transaction_epoch" 2>/dev/null
           if [ "$recovery" = 1 ] && [ "$(cat /run/proxy-mode/config-digest)" != "$LF_SOURCE_GENERATION" ]; then
             echo 'The source changed during recovery. Check proxy-status.' >&2
             exit 1

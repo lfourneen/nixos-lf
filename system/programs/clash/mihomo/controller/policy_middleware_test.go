@@ -6,11 +6,18 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/metacubex/http"
+	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/lfguard"
+	C "github.com/metacubex/mihomo/constant"
+	P "github.com/metacubex/mihomo/constant/provider"
 )
 
 func TestLFManagedDelayControllerRequiresExactURLAndRootPeer(t *testing.T) {
@@ -40,7 +47,10 @@ func TestLFManagedDelayControllerRequiresExactURLAndRootPeer(t *testing.T) {
 		{health, "lf-remote", "1200", true, 0},
 		{health, "lf-remote", "1201", true, 403},
 		{health, "other", "1200", true, 403},
-		{target, "Selector", "10001", false, 400},
+		{target, "Selector", "15000", false, 0},
+		{"http://cp.cloudflare.com/generate_204", "", "5000", false, 0},
+		{"", "", "5000", false, 0},
+		{target, "", "0", false, 400},
 	} {
 		query := url.Values{"url": {tt.target}, "timeout": {tt.timeout}}.Encode()
 		req, err := http.NewRequest(http.MethodGet, "/group/lf-remote/delay?"+query, nil)
@@ -53,6 +63,13 @@ func TestLFManagedDelayControllerRequiresExactURLAndRootPeer(t *testing.T) {
 		}
 		rec := &lfPolicyRecorder{}
 		if call := lfStartDelay(rec, req, tt.group); call != nil {
+			if tt.target != health && call.target != target {
+				t.Fatalf("unexpected dial target %s", call.target)
+			}
+			deadline, ok := call.ctx.Deadline()
+			if !ok || time.Until(deadline) > lfguard.MaxInteractiveDelay {
+				t.Fatal("delay deadline exceeds limit")
+			}
 			call.stop()
 		}
 		if rec.code != tt.want {
@@ -74,11 +91,133 @@ func TestLFManagedDelayControllerRequiresExactURLAndRootPeer(t *testing.T) {
 	if call := lfStartDelay(rec, req, "Selector"); call != nil || rec.code != 429 {
 		t.Fatalf("overlapping desktop group test accepted: %d", rec.code)
 	}
-	if internal := lfStartDelay(&lfPolicyRecorder{}, req.WithContext(
-		context.WithValue(req.Context(), lfControllerRoot{}, true)), "lf-remote"); internal != nil {
-		// A long desktop-style timeout also consumes the ordinary group budget.
-		internal.stop()
-		t.Fatal("root desktop-style request bypassed the group limit")
+	for _, group := range []string{"lf-remote", "second", "third"} {
+		parallel := lfStartDelay(&lfPolicyRecorder{}, req, group)
+		if parallel == nil {
+			t.Fatalf("independent group %s refused", group)
+		}
+		defer parallel.stop()
+	}
+	rec = &lfPolicyRecorder{}
+	if call := lfStartDelay(rec, req, "fourth"); call != nil || rec.code != 429 {
+		t.Fatalf("batch limit was not enforced: %d", rec.code)
+	}
+	healthRequest, err := http.NewRequest(http.MethodGet, "/group/lf-remote/delay?"+url.Values{
+		"url": {health}, "timeout": {"1200"},
+	}.Encode(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	internal := lfStartDelay(&lfPolicyRecorder{}, healthRequest.WithContext(
+		context.WithValue(healthRequest.Context(), lfControllerRoot{}, true)), "lf-remote")
+	if internal == nil {
+		t.Fatal("desktop batches blocked root health")
+	}
+	internal.stop()
+}
+
+type lfDelayFixtureProxy struct {
+	C.Proxy
+	name    string
+	started *atomic.Int32
+}
+
+func (p lfDelayFixtureProxy) Name() string        { return p.name }
+func (p lfDelayFixtureProxy) Type() C.AdapterType { return C.Shadowsocks }
+func (p lfDelayFixtureProxy) URLTest(ctx context.Context, url string, _ utils.IntRanges[uint16]) (uint16, error) {
+	ctx, done, err := lfguard.BeginDelay(ctx, url)
+	if err != nil {
+		return 0, err
+	}
+	defer done()
+	p.started.Add(1)
+	return 1, ctx.Err()
+}
+
+func TestLFManagedDesktopBatchAndIndividualBurst(t *testing.T) {
+	const target = "https://probe.fixture/delay"
+	if err := lfguard.Configure(map[string]any{
+		"prefixes": []string{"10.0.0.0/8"}, "delay-test-url": target,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lfguard.Configure(nil) })
+
+	// Verge races one group request against 117 single-node requests.
+	for _, timeout := range []string{"5000", "10000"} {
+		t.Run(timeout, func(t *testing.T) {
+			var started atomic.Int32
+			proxies := make([]C.Proxy, 117)
+			for i := range proxies {
+				proxies[i] = lfDelayFixtureProxy{name: strconv.Itoa(i), started: &started}
+			}
+			req, err := http.NewRequest(http.MethodGet, "/delay?"+url.Values{
+				"url": {target}, "timeout": {timeout},
+			}.Encode(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch := lfStartDelay(&lfPolicyRecorder{}, req, "fixture")
+			if batch == nil {
+				t.Fatal("batch rejected")
+			}
+			defer batch.stop()
+			var workers sync.WaitGroup
+			for _, proxy := range proxies {
+				call := lfStartDelay(&lfPolicyRecorder{}, req, "")
+				if call == nil {
+					t.Error("single request rejected")
+					continue
+				}
+				proxy := proxy
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					defer call.stop()
+					if _, err := proxy.URLTest(call.ctx, call.target, nil); err != nil {
+						t.Errorf("single delay failed: %v", err)
+					}
+				}()
+			}
+			got := lfguard.TestDelayBatch(batch.ctx, proxies, batch.target, nil)
+			workers.Wait()
+			if len(got) != len(proxies) || int(started.Load()) != 2*len(proxies) {
+				t.Fatalf("batch completed %d/%d, started %d dials", len(got), len(proxies), started.Load())
+			}
+		})
+	}
+}
+
+type lfDelayFixtureProvider struct {
+	P.ProxyProvider
+	proxies []C.Proxy
+}
+
+func (p lfDelayFixtureProvider) Name() string       { return "fixture" }
+func (p lfDelayFixtureProvider) Proxies() []C.Proxy { return p.proxies }
+
+func TestLFManagedProviderBatchUsesConfiguredEndpoint(t *testing.T) {
+	if err := lfguard.Configure(map[string]any{
+		"prefixes": []string{"10.0.0.0/8"}, "delay-test-url": "https://probe.fixture/delay",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lfguard.Configure(nil) })
+	var started atomic.Int32
+	provider := lfDelayFixtureProvider{proxies: []C.Proxy{lfDelayFixtureProxy{name: "node", started: &started}}}
+	for query, want := range map[string]int{"": http.StatusNoContent, "?url=https://other.fixture/": http.StatusBadRequest} {
+		req, err := http.NewRequest(http.MethodGet, "/providers/proxies/fixture/healthcheck"+query, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := &lfPolicyRecorder{}
+		healthCheckProvider(rec, req.WithContext(context.WithValue(req.Context(), CtxKeyProvider, provider)))
+		if rec.code != want {
+			t.Fatalf("provider batch status %d, want %d", rec.code, want)
+		}
+	}
+	if started.Load() != 1 {
+		t.Fatalf("expected one authorized probe, got %d", started.Load())
 	}
 }
 

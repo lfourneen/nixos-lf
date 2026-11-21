@@ -161,6 +161,7 @@ let
       export LF_MANAGED_TEST_POLICY=${pkgs.writeText "mihomo-managed-test-policy.json" (builtins.toJSON (testPolicy config.my.proxy.managedProfile))}
       export LF_MANAGED_TEST_HTTP_POLICY=${pkgs.writeText "mihomo-managed-test-http-policy.json" (builtins.toJSON (testPolicy httpOnlyPolicy))}
       export LF_MANAGED_TEST_LEGACY_PROFILE=${../../../tests/network/proxy/legacy-managed-profile.json}
+      export LF_MANAGED_TEST_TRANSPORT=${../../../tests/network/proxy/protected-transport.json}
       go test -mod=vendor ./config ./hub/route -run '^TestLFManaged' -count=1
       go test -mod=vendor ./listener/sing_tun -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/inbound ./transport/socks5 -count=1

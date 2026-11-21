@@ -206,7 +206,7 @@ in
   };
 
   # Global extension script (after Merge, before per-profile extensions):
-  # (1) drop subscription leaves that disable TLS verification; the core
+  # (1) drop subscription leaves that fail the managed transport policy; the core
   # checks every remaining leaf when it is loaded; (2) replace DNS with the managed
   # object; (3) prepend forcedProxyDomains via the catch-all group. The core
   # validates later per-profile extensions too, so a leaf re-added by one of
@@ -216,6 +216,7 @@ in
       // Managed by home/config/clash/cvr-merge.nix -- do not edit in the GUI.
       const FORCED_PROXY_DOMAINS = ${forcedProxyDomainsJs};
       const DELAY_TEST_URL = ${builtins.toJSON osConfig.my.proxy.delayTestUrl};
+      const REQUIRE_PROTECTED_TRANSPORT = ${lib.boolToString (osConfig.my.proxy.managedProfile.lf-private-targets.require-protected-node-transport or false)};
       const PROXY_ONLY = ${lib.boolToString osConfig.my.proxy.proxyOnly};
       const REMOTE_ONLY_CATCH_ALL = ${lib.boolToString osConfig.my.proxy.remoteOnlyCatchAll};
       function httpsHealthChecks(config) {
@@ -238,9 +239,8 @@ in
         }
       }
 
-      // Prune leaves with unchecked TLS and their group references before the
-      // managed core validates the profile.
       function insecureValue(value) {
+        if (REQUIRE_PROTECTED_TRANSPORT) return value !== false;
         if (value === false || value === 0) return false;
         if (typeof value === "string") {
           return ["0", "f", "F", "FALSE", "false", "False"].indexOf(value) === -1;
@@ -266,14 +266,78 @@ in
         return false;
       }
 
+      // Keep this check aligned with checkProtectedTransport in Mihomo's guard.
+      function protectedTransport(node) {
+        const fields = Object.create(null);
+        for (const key of Object.keys(node)) {
+          const name = key.toLowerCase().replace(/_/g, "-");
+          if (/[^\x00-\x7f]/.test(key) || name in fields) return false;
+          fields[name] = node[key];
+        }
+        const present = value => value && (typeof value !== "object" || Object.keys(value).length > 0);
+        for (const option of ["dialer-proxy", "interface-name", "routing-mark", "plugin",
+          "shadow-tls-opts", "restls-opts", "jls-opts", "tlsmirror-opts"]) {
+          if (present(fields[option])) return false;
+        }
+        for (const option of ["tls", "udp"]) {
+          if (option in fields && typeof fields[option] !== "boolean") return false;
+        }
+        const kind = fields.type;
+        const network = "network" in fields ? fields.network : "";
+        if (typeof network !== "string") return false;
+        if (present(fields["reality-opts"]) &&
+            (network === "ws" || !["vmess", "vless", "trojan"].includes(kind))) return false;
+        switch (kind) {
+          case "http":
+          case "socks5":
+            return network === "" && fields.tls === true && fields.udp !== true;
+          case "ss":
+            return network === "" && typeof fields.password === "string" && fields.password.trim() !== "" &&
+              ["aes-128-gcm", "aes-192-gcm", "aes-256-gcm", "chacha20-ietf-poly1305",
+               "xchacha20-ietf-poly1305", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm",
+               "2022-blake3-chacha20-poly1305"].includes(fields.cipher);
+          case "vmess":
+          case "vless":
+            return ["", "tcp", "ws", "http", "h2", "grpc"].includes(network) &&
+              (fields.tls === true || (kind === "vmess" && fields.alterid === 0 &&
+                ["auto", "aes-128-gcm", "chacha20-poly1305"].includes(fields.cipher) &&
+                typeof fields.uuid === "string" && fields.uuid.length === 36 &&
+                /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(fields.uuid) &&
+                fields.uuid !== "00000000-0000-0000-0000-000000000000"));
+          case "trojan":
+            return ["", "tcp", "ws", "grpc"].includes(network);
+          case "tuic":
+            return network === "" && (!("disable-sni" in fields) || fields["disable-sni"] === false) &&
+              !present(fields.ip);
+          case "hysteria2":
+            return network === "" && !present(fields["realm-opts"]);
+          case "anytls":
+            return network === "";
+          default:
+            return false;
+        }
+      }
+
+      function ruleTarget(rule) {
+        if (typeof rule !== "string") return null;
+        const parts = rule.split(",").map(part => part.replace(/^ +| +$/g, ""));
+        const kind = parts[0].toUpperCase();
+        if (kind === "MATCH" || kind === "FINAL") return parts[1];
+        if (kind === "SUB-RULE") return null;
+        if (["NOT", "OR", "AND", "DOMAIN-REGEX", "PROCESS-NAME-REGEX",
+             "PROCESS-PATH-REGEX"].includes(kind)) return parts[parts.length - 1];
+        return parts[2];
+      }
+
       function dropInsecureProxies(config) {
         const proxies = config.proxies;
         if (!Array.isArray(proxies)) return;
-        const dropped = [];
+        const dropped = new Set();
         const kept = [];
         for (const proxy of proxies) {
-          if (proxy && typeof proxy === "object" && disablesTLS(proxy)) {
-            if (typeof proxy.name === "string") dropped.push(proxy.name);
+          if (proxy && typeof proxy === "object" &&
+              (disablesTLS(proxy) || (REQUIRE_PROTECTED_TRANSPORT && !protectedTransport(proxy)))) {
+            if (typeof proxy.name === "string") dropped.add(proxy.name);
             continue;
           }
           kept.push(proxy);
@@ -281,16 +345,28 @@ in
         if (kept.length === proxies.length) return;
         config.proxies = kept;
 
-        const groups = config["proxy-groups"];
-        if (!Array.isArray(groups)) return;
-        const emptied = [];
-        for (const group of groups) {
-          if (!group || !Array.isArray(group.proxies) || group.proxies.length === 0) continue;
-          group.proxies = group.proxies.filter(name => dropped.indexOf(name) === -1);
-          if (group.proxies.length === 0 && !(group.use && group.use.length)) emptied.push(group.name);
+        let groups = config["proxy-groups"];
+        if (Array.isArray(groups)) {
+          let removedGroup;
+          do {
+            removedGroup = false;
+            groups = groups.filter(group => {
+              if (!group || !Array.isArray(group.proxies) || group.proxies.length === 0) return true;
+              group.proxies = group.proxies.filter(name => !dropped.has(name));
+              if (group.proxies.length || (group.use && group.use.length) || group["include-all"] ||
+                  group["include-all-proxies"] || group["include-all-providers"]) return true;
+              dropped.add(group.name);
+              removedGroup = true;
+              return false;
+            });
+          } while (removedGroup);
+          config["proxy-groups"] = groups;
         }
-        if (emptied.length) {
-          throw new Error("Every proxy in these groups disables TLS verification: " + emptied.join(", "));
+        const routes = [config.rules, ...Object.values(config["sub-rules"] || {})];
+        for (const rules of routes) {
+          if (Array.isArray(rules) && rules.some(rule => dropped.has(ruleTarget(rule)))) {
+            throw new Error("A rule requires a proxy removed by the managed transport policy");
+          }
         }
       }
 

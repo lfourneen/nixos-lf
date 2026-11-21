@@ -361,7 +361,9 @@ Core mode is fixed by the system-rendered profile; the managed parser also pins 
 Both the GUI forwarder and the direct controller socket cross the same unconditional gate, independent of policy state.
 New controller write endpoints require an explicit policy decision when upgrading the core.
 
-The desktop and automatic group and provider tests use the exact HTTPS endpoint in `my.proxy.delayTestUrl`, including its path and query. Tests refuse redirects and share a bounded dial budget. The desktop can test individual provider nodes. Bulk provider health checks are refused. The supervisor has separate slots for health tests sent directly over the Unix controller as root. The fixed exit stays selected during its delay test.
+Desktop node, group and provider tests use the exact HTTPS endpoint in `my.proxy.delayTestUrl`, including its path and query. The controller maps Verge's built-in fallback URL to that endpoint and caps desktop requests at 10 seconds. Only successful HTTP responses count. Group and provider batches omit built-in direct adapters.
+
+Desktop tests share 64 dial slots and a budget of 64 starts per second with a burst of 128. Up to four distinct group or provider batches can run concurrently. Automatic checks use their own 10 slots and 10 starts per second. Root health probes sent directly over the Unix controller have separate slots. The fixed exit stays selected during its delay test.
 
 ## Subscription trust in compatibility mode
 

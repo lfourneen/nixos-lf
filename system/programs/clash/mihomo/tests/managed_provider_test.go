@@ -73,6 +73,23 @@ func TestLFManagedProviderRefreshPreservesLastValidNodesAndCache(t *testing.T) {
 	}
 }
 
+func TestLFManagedProviderInheritsGroupScheduleForSameEndpoint(t *testing.T) {
+	const target = "https://probe.fixture/delay"
+	if err := lfguard.Configure(map[string]any{
+		"prefixes": []string{"10.0.0.0/8"}, "delay-test-url": target,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lfguard.Configure(nil) })
+	check := NewHealthCheck(nil, target, 5000, 0, true, nil)
+	defer check.close()
+	check.registerHealthCheckTask(target, nil, "", 300)
+	check.registerHealthCheckTask(target, nil, "", 600)
+	if check.interval != 300*time.Second || len(check.extra) != 0 {
+		t.Fatalf("same endpoint should inherit one schedule: interval %s, %d extra tests", check.interval, len(check.extra))
+	}
+}
+
 func TestLFManagedProviderInvalidCacheFallsBackToRemote(t *testing.T) {
 	safe := lfProviderPayload("remote", false)
 	provider, path, _ := lfProviderFixture(t, lfProviderPayload("old-unsafe", true), safe, false)

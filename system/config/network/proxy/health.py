@@ -3,6 +3,7 @@
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import errno
 import importlib.util
 import http.client
 import ipaddress
@@ -36,6 +37,7 @@ def failure_stage(detail):
         ('TUN route proof unavailable', 'tun-route-proof'),
         ('recorded leaf no longer', 'selection'),
         ('controller reply unavailable', 'controller'),
+        ('controller socket is restarting', 'controller'),
         ('managed DNS did not return', 'fake-ip-dns'),
         ('TUN DNS self-test', 'tun-dns'),
         ('real-address DNS self-test', 'real-address-dns'),
@@ -257,12 +259,26 @@ class Probe:
             if response.status != 200:
                 raise ValueError('controller request failed')
             return json.loads(value)
-        except (OSError, ValueError, http.client.HTTPException):
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            if isinstance(error, http.client.RemoteDisconnected) or getattr(error, "errno", None) in (
+                    errno.ENOENT, errno.ECONNREFUSED, errno.ECONNRESET, errno.EPIPE):
+                raise ProbeFailure("restarting", "controller socket is restarting") from None
             raise ProbeFailure("obs", "controller reply unavailable or invalid") from None
         finally:
             if timer is not None:
                 timer.cancel()
             connection.close()
+
+    def initial_config(self, fast):
+        deadline = self.clock() + self.remaining(2.0)
+        while True:
+            try:
+                return self.api('/configs')
+            except ProbeFailure as error:
+                wait = min(0.15, deadline - self.clock())
+                if fast or error.layer != 'restarting' or wait <= 0:
+                    raise
+                time.sleep(wait)
 
     def alternate_leaves(self, group):
         if self.routing.get('egress_requested'):
@@ -728,7 +744,7 @@ class Probe:
         self.timed('listeners', listeners)
         self.diagnostics['listener_ok'] = True
         self.diagnostics['config_ok'] = False
-        initial = self.api('/configs')
+        initial = self.initial_config(fast)
         self.core_mode = initial.get('mode', 'unknown')
         fingerprint = self.timed("config", lambda: check_config(initial, self.settings))
         self.diagnostics['config_ok'] = True
@@ -793,7 +809,8 @@ def main():
                   duration_ms=round((time.monotonic() - probe.start) * 1000), layers=probe.timings)
     if os.geteuid() == 0 and not fast and result.get('reason') != 'interrupted':
         classification = result.get('reason')
-        if classification not in ('node', 'application', 'tun', 'dns', 'config', 'route', 'obs', 'direct-mode', 'no-tun', 'core-gone'):
+        if classification not in ('node', 'application', 'tun', 'dns', 'config', 'route', 'obs',
+                                  'restarting', 'direct-mode', 'no-tun', 'core-gone'):
             classification = 'obs'
         if not result['ok']:
             print('proxy health warning: ' + classification, file=sys.stderr)

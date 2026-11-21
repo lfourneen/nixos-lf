@@ -1,0 +1,22 @@
+[
+  {"accept": false, "node": {"name": "Legacy VMess", "type": "vmess", "tls": false, "alterId": 1, "cipher": "auto", "uuid": "b1b79275-9dea-4046-93b7-b06d7bc594a6"}},
+  {"accept": false, "node": {"name": "VMess missing alterId", "type": "vmess", "cipher": "auto", "uuid": "b1b79275-9dea-4046-93b7-b06d7bc594a6"}},
+  {"accept": false, "node": {"name": "VMess nil UUID", "type": "vmess", "cipher": "auto", "alterId": 0, "uuid": "00000000-0000-0000-0000-000000000000"}},
+  {"accept": true, "node": {"name": "VMess AEAD", "type": "vmess", "tls": false, "alterId": 0, "cipher": "auto", "uuid": "b1b79275-9dea-4046-93b7-b06d7bc594a6"}},
+  {"accept": false, "node": {"name": "Plain VLESS", "type": "vless"}},
+  {"accept": true, "node": {"name": "TLS VLESS", "type": "vless", "TLS": true, "network": "grpc"}},
+  {"accept": false, "node": {"name": "VLESS over unsupported transport", "type": "vless", "tls": true, "network": "xhttp"}},
+  {"accept": false, "node": {"name": "Legacy SS", "type": "ss", "cipher": "aes-128-cfb", "password": "fixture"}},
+  {"accept": true, "node": {"name": "Shadowsocks AEAD", "type": "ss", "cipher": "aes-128-gcm", "password": "fixture"}},
+  {"accept": false, "node": {"name": "Plain HTTP", "type": "http"}},
+  {"accept": true, "node": {"name": "TLS HTTP", "type": "http", "tls": true, "skip-cert-verify": false}},
+  {"accept": false, "node": {"name": "Plain SOCKS5", "type": "socks5"}},
+  {"accept": false, "node": {"name": "SOCKS5 native UDP", "type": "socks5", "tls": true, "udp": true}},
+  {"accept": true, "node": {"name": "TLS SOCKS5", "type": "socks5", "tls": true}},
+  {"accept": true, "node": {"name": "Trojan", "type": "trojan", "network": "ws"}},
+  {"accept": false, "node": {"name": "TUIC without identity", "type": "tuic", "disable-sni": true}},
+  {"accept": false, "node": {"name": "Hysteria with Realm", "type": "hysteria2", "realm-opts": {"url": "https://fixture.invalid/"}}},
+  {"accept": true, "node": {"name": "AnyTLS", "type": "anytls"}},
+  {"accept": false, "node": {"name": "Nested unchecked TLS", "type": "trojan", "options": {"ſkip_cert_verify": true}}},
+  {"accept": false, "node": {"name": "Ambiguous TLS", "type": "http", "tls": true, "TLS": true}}
+]
