@@ -120,19 +120,21 @@ let
       dns = dnsListeners "dnsmasq" [ 0 config.users.users.dnsmasq.uid ] port.dnsmasq
         ++ dnsListeners "unbound" [ 0 config.users.users.unbound.uid ] port.unbound
         ++ lib.optionals config.my.proxy.runtimeRouting
-          (dnsListeners "proxy-real-dns" [ config.users.users.dnsmasq.uid ] port.coreRealDns
-            ++ dnsListeners "socket-guest-dns" [ config.users.users.dnsmasq.uid ] port.socketGuestDns
+          (dnsListeners "proxy-real-dns" [ m.uids.socketGuestDns ] port.coreRealDns
+            ++ dnsListeners "proxy-real-dns" [ m.uids.socketGuestDns ] port.coreInfrastructureDns
+            ++ dnsListeners "socket-guest-dns" [ m.uids.socketGuestDns ] port.socketGuestDns
             ++ lib.optionals config.networking.enableIPv6 (lib.concatMap (protocol: [
-              (listener "proxy-real-dns" [ config.users.users.dnsmasq.uid ] protocol "::1" port.coreRealDns)
-              (listener "socket-guest-dns" [ config.users.users.dnsmasq.uid ] protocol "::1" port.socketGuestDns)
+              (listener "proxy-real-dns" [ m.uids.socketGuestDns ] protocol "::1" port.coreRealDns)
+              (listener "proxy-real-dns" [ m.uids.socketGuestDns ] protocol "::1" port.coreInfrastructureDns)
+              (listener "socket-guest-dns" [ m.uids.socketGuestDns ] protocol "::1" port.socketGuestDns)
             ]) [ "tcp" "udp" ]))
         ++ lib.optionals config.networking.enableIPv6
           (map (protocol: listener "dnsmasq" [ 0 config.users.users.dnsmasq.uid ] protocol "::1" port.dnsmasq) [ "tcp" "udp" ]);
 
       socket-guest-dns = lib.optionals (config.my.hardening.socketGuestUsers != [ ])
-        (dnsListeners "socket-guest-dns" [ config.users.users.dnsmasq.uid ] port.socketGuestDns
+        (dnsListeners "socket-guest-dns" [ m.uids.socketGuestDns ] port.socketGuestDns
           ++ lib.optionals config.networking.enableIPv6
-            (map (protocol: listener "socket-guest-dns" [ config.users.users.dnsmasq.uid ] protocol "::1" port.socketGuestDns) [ "tcp" "udp" ]));
+            (map (protocol: listener "socket-guest-dns" [ m.uids.socketGuestDns ] protocol "::1" port.socketGuestDns) [ "tcp" "udp" ]));
 
       relay = [
         (listener "gost-relay" [ m.uids.gost ] "tcp" "127.0.0.1" port.gostHttp)

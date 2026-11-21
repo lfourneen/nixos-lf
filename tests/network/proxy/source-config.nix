@@ -21,6 +21,8 @@ assert builtins.elem "/var/lib/clash-source" c.systemd.services.profile-refresh-
 assert c.my.proxy.dnsEncryption == "strict";
 assert c.users.users.clash-fetch.uid == c.my.machine.uids.clashFetch;
 assert c.systemd.services.socket-guest-dns.enable;
+assert c.systemd.services.socket-guest-dns.serviceConfig.User == "socket-guest-dns";
+assert c.systemd.services.unbound-infrastructure.serviceConfig.User == "unbound-infrastructure";
 assert builtins.elem "socket-guest-dns.service" c.systemd.services.clash-source-refresh.after;
 assert builtins.elem "clash-core" c.systemd.services.clash-source-refresh.serviceConfig.SupplementaryGroups;
 assert !(builtins.elem "CAP_NET_ADMIN" c.systemd.services.clash-source-refresh.serviceConfig.CapabilityBoundingSet);
@@ -72,6 +74,7 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   assert audit['protected_routes']['connectivity-check.ubuntu.com'] == 'proxy'
   assert 'www.baidu.com' not in audit['protected_routes']
   assert policy['lf-private-targets']['subscription-trust'] == 'fixed'
+  assert policy['lf-private-targets']['require-protected-node-transport'] is True
   assert policy['lf-private-targets']['strict-inlets'] == ['lf-strict']
   assert policy['listeners'][0]['port'] == ${toString c.my.machine.ports.mihomoStrict}
   transport = policy['lf-dns-transport']['dns']
@@ -82,6 +85,9 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   assert policy['dns.proxy-server-nameserver'] == ['tcp://127.0.0.1:${toString c.my.machine.ports.socketGuestDns}#DIRECT']
   strict = json.loads(Path('${c.my.proxy.routingPolicies.proxy-only}').read_text())
   assert strict['lf-private-targets']['single-egress'] is True
+  assert strict['lf-private-targets']['require-protected-node-transport'] is True
+  assert routing['validator_port'] != routing['infrastructure_validator_port']
+  assert routing['real_dns_port'] != routing['infrastructure_dns_port']
   for role in ('nameserver', 'proxy-server-nameserver'):
       assert strict['lf-dns-transport']['dns'][role] == [
           'https://1.1.1.1/dns-query#lf-remote', 'https://8.8.8.8/dns-query#lf-remote']

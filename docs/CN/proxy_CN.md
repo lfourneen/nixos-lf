@@ -46,7 +46,9 @@ ID 和 GUI 映射必须唯一。
 | `expected-status` | HTTP 状态表达式 |
 
 不支持 `load-balance`、动态 filter、`rule-providers` 和 provider filter/override。
-节点支持 SS、VMess、VLESS、Trojan、Hysteria2、TUIC、HTTP、SOCKS5 和 AnyTLS，拒绝远程 HTTP/SOCKS 明文认证。
+受控来源要求节点的数据通道受到保护。HTTP 和 SOCKS5 须启用认证 TLS，且仅可用于 TCP。SOCKS5 的 TLS 保护 TCP 上的 association 协商，原生 UDP 数据报仍是明文。
+Shadowsocks 须使用允许的 AEAD 算法及共享密钥。VMess 须使用认证 TLS 或 VMess AEAD（`alterId: 0`、允许的算法及有效 UUID）。VLESS 须在受支持的传输上使用认证 TLS。Trojan、Hysteria2、TUIC 和 AnyTLS 使用各自受支持的认证传输。
+来源渲染器剔除传输方式不受支持的节点。若过滤后没有可用叶子，或破坏必要路由或分组，会拒绝候选。受管核心独立检查实际应用的配置，包括恢复的快照。
 AnyTLS 只参与 Rule 路由，不列入固定出口候选（单叶子校验器仍只接受上表之外的既有协议）。
 需要通过 DNS 查询 ECH 配置的节点排除在 `lf-remote`、受管 DNS 组 `lf-dns` 和固定出口候选之外，避免 DNS 传输叶子拨号时发生循环解析。
 这些节点仍可在订阅分组中使用，由其他叶子传输加密查询。内联 `ech-opts.config` 的节点仍可进入受管组。
@@ -108,7 +110,7 @@ Worker 仍拒绝非公网答案，并验证 HTTPS 证书。
 一个地址家族不可用时，可以使用另一个家族的有效答案。
 下载先检查完整地址集合，再在同一截止时间内重试公网地址，保留 HTTPS 主机名和证书验证。
 没有可用答案时刷新失败，不回退到系统 DNS。
-因此，B 中的新查询也需要 Unbound DoT 路径，`unboundDotInProxy=false` 时只能使用符合条件的缓存答案。
+Rules 中的新查询使用基础设施 Unbound 的 DoT 路径。`unboundDotInProxy=false` 时，该路径只返回符合条件的缓存或本地答案。运行时 `proxy-only` 使用核心应用验证器。[解析路径](dns_CN.md#受限-socket-访客-dns)
 
 ## 可见信息与信任
 
@@ -258,12 +260,12 @@ worker 在 `-t` 与快照提交之间离线运行，身份为无 capabilities �
 检查范围包括节点 server 地址、未获授权的 `skip-cert-verify`、空组、无效组引用、YAML 键结构、hosts 映射和 provider 配置变化。
 历史比较使用最近 settled 的 YAML。
 可变 provider 内容仍遵循下文的独立信任模型。
-`my.proxy.insecureProxyExceptions` 中的具名 TLS 例外保留。
-启用 `skip-cert-verify` 且未获具名例外的节点，只在来源列入 Sops 加密的 `insecure_sources` 清单时被丢弃。
-解析失败与回环 IP 字面量占位节点共用过滤后节点数五分之一的丢弃上限，向下取整，上限至少为一个。候选必须保留可用节点以及路由规则引用的分组。
+受控来源的传输检查会剔除绕过证书校验的节点，`my.proxy.insecureProxyExceptions` 中的具名节点也适用此要求。
+Sops 加密的 `insecure_sources` 清单控制是否在解析节点地址之前提前删除启用了 `skip-cert-verify` 且未获具名例外的节点。
+解析失败与回环 IP 字面量占位节点共用过滤后节点数五分之一的丢弃上限，向下取整，上限至少为一个。
 每行写一个已登记的来源 ID，允许空行和重复 ID。
 文件缺失、无法读取、UTF-8 无效或任一 ID 格式错误时，所有来源的清洗授权均失效。
-清洗未获授权时，worker 保留相应节点，交由审计和核心守卫判定。见 [whitelist.yaml](../../system/secrets/whitelist.yaml)。
+未授权时，worker 保留这些节点交给后续检查。[Sops 白名单](../../system/secrets/whitelist.yaml)
 
 有意使用非公网节点端点时须声明 `my.proxy.subscriptionAuditServerCidrs`，该审计例外不授予应用访问权限，组播端点仍被拒绝。
 
@@ -343,7 +345,7 @@ split DNS、原生 MagicDNS 和字面 IP 边界见 [DNS](dns_CN.md)。
 预检显示内联节点数、provider 数、来源主机和申请的证书例外数量，不输出订阅 URL 或凭据。
 启用受控来源时，使用 `sudo proxy-control preflight` 读取 root 所有的来源状态。
 
-全局 merge 脚本过滤内联节点中启用 `skip-cert-verify` 的节点，并移除分组中的对应引用。
+对于受控来源之外的兼容导入，全局 merge 脚本过滤内联节点中启用 `skip-cert-verify` 的节点，并移除分组中的对应引用。
 `my.proxy.insecureProxyExceptions` 点名的节点保留。
 没有 provider 成员的分组被清空时，配置生成终止。
 核心在 per-profile 扩展和 provider override 处理后应用同一份例外名单。
@@ -432,7 +434,7 @@ Proxy-only 禁用 LAN、组播、时间同步、Tailscale 和入站服务回复�
 切换前先配置两端。
 
 1. 在远端为客户端配置 IPv4 和 IPv6 两条隧道主机路由，开启双栈转发，并允许相关 ICMP 错误，包括 IPv4 需要分片和 IPv6 Packet Too Big。让远端转发的 echo 与 SOCKS5 relay 在每个地址族使用相同的公网源地址。
-2. SOCKS5 relay 使用隧道内可达的公网字面地址，可以与 WireGuard 外层端点共用地址。远端防火墙将 relay 入站访问限制于 WireGuard 接口和客户端地址。SOCKS5 UDP association 须返回配置中的 relay 地址和固定端口。将此节点登记到来源的远程兜底组，设置 `udp: true`。启动隧道前，用 rules 下可达的节点完成首次来源接受。
+2. SOCKS5 relay 使用隧道内可达的公网字面地址，可以与 WireGuard 外层端点共用地址。远端防火墙将 relay 入站访问限制于 WireGuard 接口和客户端地址。SOCKS5 UDP association 须返回配置中的 relay 地址和固定端口。将此节点登记到来源的远程兜底组，设置 `udp: true`。该 relay 仅作为所配 WireGuard 出口的固定叶子使用。兜底组还需保留一个可达且符合传输要求的节点，用于首次接受来源和 Rules 模式。
 3. 在客户端声明外层端点、对端公钥、客户端地址、relay，以及位于远端之后的两个受控公网 echo 目标。客户端私钥放在仅 root 可读的运行时文件中，可由 sops 提供。
 
 ```nix

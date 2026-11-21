@@ -41,7 +41,8 @@ Guest forwarding and host input have separate policies.
 |---|---|---|
 | Isolated proxy core | Fixed private veth/source, public TCP/UDP or authorized local targets. Host scrubs packet marks and checks return ownership | B and C recovery. Dangerous targets, reserved host services and external port 53 are restricted. Network capabilities apply only inside the core namespace |
 | Tailscale | Root-owned UDP socket, **both** marks equal to upstream `LinuxBypassMarkNum` (`0x80000`), physical `ens1`/`wlo1`. Dynamic peer/STUN targets and ports | B allows hole punching, C blocks it. Normal system builds check the [source contract](../system/config/network/tailscale/transport.nix). This is not authentication against root |
-| Host Unbound (983) | Configured literal IPv4/IPv6 upstreams, TCP 853 | A/B target guard. B can disable this exception with `unboundDotInProxy=false`. C blocks external DoT. Other ordinary UIDs cannot use TCP/UDP 853. Root diagnostics remain trusted. Port 443 DoH is separate |
+| Application Unbound (983) | Configured literal IPv4/IPv6 upstreams, TCP 853 | A only. The kernel cuts traffic and loopback replies from this resolver when B takes over |
+| Infrastructure Unbound (979) | Same configured DoT upstreams, TCP 853 | A and Rules B for source downloads and restricted socket backends. Set `unboundDotInProxy=false` to revoke the Rules exception |
 | Chrony (61) | Physical uplinks, UDP 123 and TCP 4460 | A/B. C blocks. Default permits changing addresses. Optional `timeServerCidrs` bounds original targets before TUN/NAT in A/B. Include NTS-KE and negotiated NTP servers |
 | dnsmasq (985) split DNS | Installed, expiring interface + resolver-address leases, TCP/UDP 53 | Earlier DNS guard enforces the lease. Restricted B retains it, C blocks external queries |
 | Managed DNS continuation | Ordinary physical-uplink TCP/UDP 53, except MagicDNS | Continues into the managed DNS redirect, not an arbitrary direct DNS grant. Earlier lease/internal-port guards still apply |
@@ -59,7 +60,7 @@ Ordinary clients cannot escape C through loopback proxy listeners.
 With `localDnssec=true`, private validators query only loopback transport listeners inside the core namespace and have no external DNS transport permission.
 For foreign application queries, rules mode uses authenticated Cloudflare or Google DoH through the separate `lf-dns` selector. Runtime `proxy-only` carries both application and bootstrap DoH through its fixed leaf.
 The core's existing recovery transport remains available in C.
-`unboundDotInProxy` controls the host Unbound exception and does not disable these private validators.
+`unboundDotInProxy` applies only to the Rules exception for infrastructure Unbound. C blocks ordinary host DoT, with a separately leased resolver for registered-source recovery. Root diagnostics are trusted.
 
 DNS transport is independently controlled by `my.proxy.dnsEncryption`.
 The default permits leased Mode-A plaintext recovery.

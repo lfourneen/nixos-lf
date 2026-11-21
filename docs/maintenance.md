@@ -404,13 +404,13 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 | `proxy-routing` | Boot-scoped immutable selection, full proof and epoch binding, failed preparation, sanitized status and real-DNS deadline/fallback refusal |
 | `proxy-routing-vm` | Registered sources and production namespace: bidirectional rules/proxy-only switching, original rules restored, physical-peer node-only evidence, real DNS/source refresh, old replies, guest refusals, idempotence, concurrent selection, off/on, reboot and kernel expiry |
 | `proxy-single-egress-vm` | Two controlled exits: rules selector separation, fixed-leaf dual-stack TCP/UDP and DNS observations, actual Firefox and strict inlet, unsupported/lost UDP, old flows, concurrent refresh, uplink/node failure, plus routing and lease regressions |
-| `proxy-ip-tunnel-vm` | Dual-stack WireGuard echo and fixed TCP/UDP exit, private proxy inlets in A/B/C, layered latency and failure observations, source acceptance, lease revocation and peer rotation |
+| `proxy-ip-tunnel-vm` | Dual-stack WireGuard echo, fixed TCP/UDP exit, relay restricted to the declared peer, source acceptance, lease revocation and peer rotation |
 | `proxy-rules`, `proxy-egress-rules` | Complete compatibility/restricted mode rules parsed by the build-time LKL nft environment |
 | `proxy-firewall-vm` | A/C ownership, external-table preservation, rejected-load rollback, migration locks, idempotence and migration-target name reuse |
 | `proxy-dns-strict-rules` | Complete strict DNS firewall rules parsed in LKL |
 | `proxy-dns-config` | Generated DNS and verifier script syntax across default, strict, dual-stack, IPv6-only and HTTP-only configurations |
 | `proxy-dns-strict-vm` | Real helper/core, shared DNS/proxy filtering, strict outage/override/lease and leftover-set refusal, private split permission and literal portal recovery |
-| `proxy-assurance-vm` | A/B local DNSSEC, bogus/CD and fake-IP/real-target behavior, B proxy DNS independence from incorrect A answers, isolated DNS saturation/recovery, and frozen/stopped/sleep B lease revocation with dual-stack TCP/UDP |
+| `proxy-assurance-vm` | A/B local DNSSEC, direct DNS cutover with outstanding requests, managed DNS probe failure and recovery, independent DNS budgets, and dual-stack B lease revocation while the supervisor is frozen, stopped or suspended |
 | `proxy-guest-config`, `proxy-guest-rules` | Production/dedicated-account configuration and rootless launcher syntax. Complete mixed-role rules in LKL. Guest validation is also required by normal system builds |
 | `proxy-guest-vm` | Three real routed networks, DHCP/DNS, IPv4/ULA, spoofed sources, actual pasta/RootlessKit/subuid sockets, fake-IP refusal, stale DNS conntrack, bidirectional grant revocation and C with a live core |
 | `proxy-hermes-containers-vm` | Real legacy/new Docker, socket ACL, offline image, account grants, TCP/UDP, unsupported IPv6 refusal, Hermes host proxy, A/B/C and recovery |

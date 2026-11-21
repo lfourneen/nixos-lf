@@ -139,9 +139,15 @@ in
         local-dnssec = if p.localDnssec then "127.0.0.1:${toString m.ports.unbound}" else "";
         validator-ports = lib.optionals p.localDnssec [ m.ports.unbound m.ports.socketGuestDns
           m.ports.coreDnsTransport m.ports.coreDnsBootstrapTransport ]
-          ++ lib.optional p.runtimeRouting m.ports.coreRealDns;
+          ++ lib.optionals p.runtimeRouting [ m.ports.coreRealDns m.ports.coreInfrastructureDns ]
+          ++ lib.optional (p.controlledSources || config.my.hardening.socketGuestUsers != [ ]) m.ports.unboundInfrastructure;
         proxy-only = p.proxyOnly;
         reject-plaintext-credentials = p.controlledSources;
+        require-protected-node-transport = p.controlledSources;
+        wireguard-relay = if p.ipTunnel == null then null else {
+          address = p.ipTunnelPolicy.relayAddress;
+          port = p.ipTunnelPolicy.relayPort;
+        };
         strict-inlets = lib.optional p.strictBrowser "lf-strict";
         subscription-trust = p.subscriptionTrust;
         insecure-proxy-exceptions = p.insecureProxyExceptions;

@@ -16,7 +16,7 @@ DoT 故障时保留缓存/本地回答。
 应用 -> systemd-resolved -> dnsmasq 127.0.0.1:1054
                               | 本地后缀黑名单 / 例外
                               +-> B: Mihomo 127.0.0.1:1053（fake-IP）
-                              +-> A/C: Unbound 127.0.0.1:1055（DoT）
+                              +-> A: Unbound 127.0.0.1:1055（DoT）
                               +-> 批准的 split DNS / A 中有租约的明文回退
 ```
 
@@ -176,12 +176,12 @@ DNS 叶子的运营方可观察 DoH 端点和时序。认证的 DoH 解析器收
 核心使用已接受并固定的节点地址启动，保留 TLS 服务名；切换无需联网获取来源或直连解析节点。
 节点或验证器不可用时保持 C。
 
-宿主的来源下载与受限 socket 后端仍需要真实地址。
-宿主过滤解析器可见订阅与 provider 的主机名、用于固定端点的节点域名，以及受限 socket 后端的查询。
-启用运行时切换时，其 1056 dnsmasq 转交固定的 loopback 网关 1059。
-代理意图为 proxy-only 时，网关经 root 所有的 Unix socket 进入核心命名空间的应用验证器，不回退宿主 DoT。
-Rules 和 A 使用宿主 Unbound 1055。
-1059 仅允许 root 与 dnsmasq 查询，Unix 桥接不提供任意目标参数。
+B 中 DNS 等待确认（`proxy-priming`）或探测失败（`degraded-proxy`）时，普通解析器继续将公网查询送往已选定的核心路径。
+受管路径不可用时，新查询可能失败。切到 B 时也会切断 A 的应用 Unbound（1055）尚未完成的 DoT 和 loopback 回包。
+
+1056 的真实地址过滤解析器处理订阅和 provider 主机名、用于固定端点的节点域名及受限 socket 后端查询。启用运行时切换时，该解析器使用 1062 的基础设施网关。
+Rules 和 A 使用 1061 的专用宿主 Unbound，其 DoT 连接和缓存独立。代理意图为 proxy-only 时，网关通过 root 所有的 Unix socket 进入核心应用验证器。
+1059 服务于 WireGuard 出口下的普通真实地址查询，在 A 和 Rules 中拒绝此类查询。
 宿主 DoT、split DNS 和原生 MagicDNS 无法穿过 proxy-only 的外层防火墙。
 切换时清空宿主解析缓存并重建核心验证器；受管 fake-IP 映射持久保存，使应用缓存的地址继续对应原域名。
 
@@ -247,11 +247,11 @@ A 的宿主验证器和受限 socket 访客 DNS 仍相互独立。
 
 ## 受限 socket 访客 DNS
 
-`my.hardening.socketGuestUsers` 非空或启用受控来源时，[socket-guest.nix](../../system/config/network/dns/socket-guest.nix) 以 UID 985 在 loopback 1056 启动额外 dnsmasq。
+`my.hardening.socketGuestUsers` 非空或启用受控来源时，额外的 dnsmasq 以专用 `socket-guest-dns` 用户（UID 978）监听 loopback 1056。[解析服务](../../system/config/network/dns/socket-guest.nix)
 它复用不可变后缀过滤、增补及例外并返回真实地址，不使用明文租约、split DNS 或原生 MagicDNS。
-启用运行时切换时使用上述选定网关路径，否则转交宿主 Unbound 1055。
+未启用运行时切换时直接转交 1061 的基础设施 Unbound。
 
-DoT 不可用（包括 B 中 `unboundDotInProxy=false`）时，新鲜公网名称失败。
+A 和 Rules 中，基础设施 DoT 不可用时，新鲜公网查询失败。`unboundDotInProxy=false` 在 Rules 中关闭该传输。
 符合条件的缓存和本地数据继续返回。
 
 声明的主 UID 和 subordinate UID 的 TCP/UDP 53 在核心 auto-redirect 前重定向至此。

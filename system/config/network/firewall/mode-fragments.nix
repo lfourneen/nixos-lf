@@ -4,7 +4,7 @@
   vmTransparentProxyIfaces, nftIfaces, tproxyMark, guestIfaces,
   local4, local6, fakeIpNet, timeNatReturn, timeCidrs4, timeCidrs6,
   coreMark, redirectExemptUidSet, redirectExempt4, redirectExempt6,
-  port, strictReplyRules, actorConnmark, appConnmark, tunIpv4Address,
+  port, strictReplyRules, actorConnmark, appConnmark, directDnsConnmark, tunIpv4Address,
   addRules, guestReplyRules }:
 
 let
@@ -35,6 +35,7 @@ in {
     flush set inet lf_filter source_recovery6
     ''}
     flush chain inet lf_filter lf_tailnet_guard
+    add rule inet lf_filter lf_tailnet_guard ct direction reply ct mark ${directDnsConnmark} counter drop
     flush chain inet lf_filter lf_strict_reply_guard
     ${hostDirectGuard}
     flush set inet lf_filter dns_plaintext4
@@ -122,6 +123,7 @@ in {
     flush chain inet lf_filter lf_host_egress_guard
     flush chain inet lf_filter lf_host_direct
     flush chain inet lf_filter lf_tailnet_guard
+    add rule inet lf_filter lf_tailnet_guard ct direction reply ct mark ${directDnsConnmark} counter drop
     flush chain inet lf_filter lf_strict_reply_guard
     ${lib.optionalString config.my.proxy.strictBrowser ''
     ${lib.concatMapStrings (rule: "add rule inet lf_filter lf_strict_reply_guard ${rule}\n") strictReplyRules}

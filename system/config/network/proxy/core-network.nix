@@ -32,7 +32,8 @@ let
     magicDns = if config.services.tailscale.enable && config.my.hardening.tailscale.magicDns
       then { address = m.magicDns; interface = config.services.tailscale.interfaceName; } else null;
 
-    bypassUids = map (name: config.users.users.${name}.uid) [ "dnsmasq" "unbound" "chrony" ];
+    bypassUids = map (name: config.users.users.${name}.uid) [ "dnsmasq" "unbound" "chrony" ]
+      ++ lib.optional (config.my.hardening.socketGuestUsers != [ ] || p.controlledSources) m.uids.unboundInfrastructure;
     coreMark = m.mihomoMark;
     tailscaleMark = config.my.hardening.tailscale.transportMark;
     coreUid = m.uids.clashCore;

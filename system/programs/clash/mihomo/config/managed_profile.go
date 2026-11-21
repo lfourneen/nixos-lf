@@ -181,6 +181,17 @@ func lfValidateSingleEgress(raw *RawConfig) error {
 	if raw.LFPrivateTargets["proxy-only"] != true || len(raw.Proxy) != 1 || len(raw.ProxyGroup) != 1 || len(raw.ProxyProvider) != 0 {
 		return refuse()
 	}
+	if relay, _ := raw.LFPrivateTargets["wireguard-relay"].(map[string]any); relay != nil {
+		policy, _, err := lfManagedPolicy()
+		if err != nil {
+			return err
+		}
+		tunnel, _ := policy["lf-ip-tunnel"].(map[string]any)
+		if tunnel == nil || !reflect.DeepEqual(relay["address"], tunnel["relayAddress"]) ||
+			!reflect.DeepEqual(relay["port"], tunnel["relayPort"]) {
+			return refuse()
+		}
+	}
 	node := raw.Proxy[0]
 	name, _ := node["name"].(string)
 	server, _ := node["server"].(string)

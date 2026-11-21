@@ -107,6 +107,7 @@ let
   # Conntrack ownership for ordinary host-initiated flows; distinct from guest
   # identities (0x47500000 + UID) and from routing/socket marks.
   appConnmark = "0x4c460001";
+  directDnsConnmark = "0x4c460004";
   actorConnmark = "ct mark" + lib.optionalString config.my.proxy.coreNetns " & 0x7fffffff";
   
   # Loopback listeners owned by the core, DNS, relay and guest DNS services.
@@ -137,11 +138,14 @@ let
   #
   # A literal uid cannot be checked by the evaluator and would silently stop
   # matching the daemon; the pins live in the module body.
-  dotRules = lib.concatMap (endpoint: [
-    "meta skuid ${toString unboundUid} ${if lib.hasInfix ":" endpoint.address then "ip6" else "ip"} daddr ${endpoint.address} tcp dport ${toString port.dot} accept"
+  dotRules = uid: action: lib.concatMap (endpoint: [
+    "meta skuid ${toString uid} ${if lib.hasInfix ":" endpoint.address then "ip6" else "ip"} daddr ${endpoint.address} tcp dport ${toString port.dot} ${action}accept"
   ]) m.dotEndpoints;
   unboundUid = config.users.users.unbound.uid;
   dnsmasqUid = config.users.users.dnsmasq.uid;
+  socketDns = config.my.hardening.socketGuestUsers != [ ] || config.my.proxy.controlledSources;
+  infrastructureUid = m.uids.unboundInfrastructure;
+  socketDnsUid = m.uids.socketGuestDns;
   timeUid = config.users.users.chrony.uid;
   timeCidrs4 = lib.filter (cidr: !lib.hasInfix ":" cidr) egress.timeServerCidrs;
   timeCidrs6 = lib.filter (cidr: lib.hasInfix ":" cidr) egress.timeServerCidrs;
@@ -164,7 +168,9 @@ let
     "meta skuid ${toString dnsmasqUid} meta oifname . ip6 daddr @dns_split6 meta l4proto { tcp, udp } th dport 53 accept"
   ];
 
-  processDirectRules = map (rule: ''oifname { "${wired}", "${wireless}" } ${rule}'') dotRules ++ timeRules ''oifname { "${wired}", "${wireless}" }'' ++ dnsSplitRules;
+  processDirectRules = map (rule: ''oifname { "${wired}", "${wireless}" } ${rule}'')
+    (dotRules unboundUid "" ++ lib.optionals socketDns (dotRules infrastructureUid ""))
+    ++ timeRules ''oifname { "${wired}", "${wireless}" }'' ++ dnsSplitRules;
 
   addRules = chain: rules: lib.concatMapStrings (rule:
     "add rule inet lf_filter ${chain} ${rule}\n") rules;
@@ -223,8 +229,13 @@ let
   hostDirectGuard = ''
     flush chain inet lf_filter lf_host_egress_guard
     flush chain inet lf_filter lf_host_direct
-    ${lib.optionalString (!egress.unboundDotInProxy) ''
+    # Revoke the A instance before any transparent redirect and stop stale
+    # local forwarding requests/replies as part of the same B policy.
     add rule inet lf_filter lf_host_egress_guard meta skuid ${toString unboundUid} tcp dport ${toString port.dot} counter drop
+    add rule inet lf_filter lf_host_egress_guard oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.unbound} counter drop
+    add rule inet lf_filter lf_host_egress_guard oifname "lo" meta skuid ${toString unboundUid} meta l4proto { tcp, udp } th sport ${toString port.unbound} counter drop
+    ${lib.optionalString (socketDns && !egress.unboundDotInProxy) ''
+    add rule inet lf_filter lf_host_egress_guard meta skuid ${toString infrastructureUid} tcp dport ${toString port.dot} counter drop
     ''}
     ${lib.optionalString restrictedEgress ''
     add rule inet lf_filter lf_host_egress_guard ip daddr { ${local4}, ${join multicast4} } jump lf_host_direct
@@ -269,7 +280,7 @@ let
       tunDev join multicast4 guestPolicy vmTransparentProxyIfaces nftIfaces
       tproxyMark guestIfaces local4 local6 fakeIpNet timeNatReturn timeCidrs4
       timeCidrs6 coreMark redirectExemptUidSet redirectExempt4 redirectExempt6
-      port strictReplyRules actorConnmark appConnmark tunIpv4Address addRules guestReplyRules;
+      port strictReplyRules actorConnmark appConnmark directDnsConnmark tunIpv4Address addRules guestReplyRules;
   };
   inherit (fragments) proxyModeRules blockedModeRules;
 
@@ -576,8 +587,7 @@ in
     allowInterfaces = [ "lo" "tailscale0" ] ++ lib.optionals hotspotEnable [ hotspotIface ];
   };
 
-  # DNS upstream: dnsmasq forwards to mihomo while clash runs and to the encrypted
-  # fallback otherwise; dns-upstream.service switches the upstream (see dns/upstream.nix).
+  # dns-upstream.service selects the application DNS route for the enforced mode.
   services.dnsmasq = {
     enable = true;
     # In strict-order mode, terminal UDP SERVFAIL/REFUSED must reach the
@@ -846,11 +856,15 @@ in
           oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.sourceRecoveryDns} meta skuid != { 0, ${toString m.uids.clashFetch} } counter drop
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.sourceRecoveryDns} meta skuid != ${toString m.uids.clashRecoveryDns} counter drop
           oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.coreRealDns} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
-          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.coreRealDns} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.coreRealDns} meta skuid != ${toString socketDnsUid} counter drop
+          oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.coreInfrastructureDns} meta skuid != { 0, ${toString socketDnsUid} } counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.coreInfrastructureDns} meta skuid != ${toString socketDnsUid} counter drop
           ''}
-          ${lib.optionalString (guestPolicy.socketUids != [ ] || config.my.proxy.controlledSources) ''
+          ${lib.optionalString socketDns ''
           oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.socketGuestDns} meta skuid != { 0${lib.optionalString config.my.proxy.controlledSources ", ${toString m.uids.clashFetch}"} } counter drop
-          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.socketGuestDns} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.socketGuestDns} meta skuid != ${toString socketDnsUid} counter drop
+          oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.unboundInfrastructure} meta skuid != { 0, ${toString socketDnsUid} } counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.unboundInfrastructure} meta skuid != ${toString infrastructureUid} counter drop
           ''}
           # Only the gateway and root diagnostics may query internal upstreams.
           # Leave 1054 open: uplink :53 is redirected there with the caller UID.
@@ -1031,7 +1045,8 @@ in
         chain lf_dns_egress_guard {
           type filter hook output priority -196; policy accept;
           ${lib.optionalString config.my.proxy.runtimeRouting "meta mark 0x4c460003 ct mark 0x4c460003 accept"}
-          ${lib.concatStringsSep "\n" dotRules}
+          ${lib.concatStringsSep "\n" (dotRules unboundUid "ct mark set ${directDnsConnmark} ")}
+          ${lib.optionalString socketDns (lib.concatStringsSep "\n" (dotRules infrastructureUid ""))}
           ${coreSocket} meta l4proto { tcp, udp } th dport ${toString port.dot} accept
           meta skuid != 0 meta l4proto { tcp, udp } th dport ${toString port.dot} counter drop
         }

@@ -13,6 +13,7 @@ let
       trust-anchor-file: ${signed}/trust.key
       domain-insecure: slow.fixture.example.
       domain-insecure: unsigned.fixture.example.
+      domain-insecure: dns-path.fixture.example.
       max-reuse-tcp-queries: 1
       local-zone: "node.fixture.example." static
       local-data: "node.fixture.example. 60 IN A 203.0.113.10"
@@ -43,7 +44,7 @@ in
   services.unbound.settings.server = {
     do-not-query-localhost = false;
     trust-anchor-file = "${signed}/trust.key";
-    domain-insecure = [ "unsigned.fixture.example." ];
+    domain-insecure = [ "unsigned.fixture.example." "dns-path.fixture.example." ];
   };
 
 

@@ -439,7 +439,7 @@ let
 
       proxy-single-egress-vm = import ./network/proxy/control-vm.nix {
         inherit pkgs;
-        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        clashPackage = managedClashPackageFor true;
         managedSources = true;
         assurance = true;
         routing = true;
@@ -452,7 +452,7 @@ let
 
       proxy-ip-tunnel-vm = import ./network/proxy/control-vm.nix {
         inherit pkgs;
-        clashPackage = self.nixosConfigurations.lfour.config.programs.clash-verge.package;
+        clashPackage = managedClashPackageFor true;
         managedSources = true;
         assurance = true;
         routing = true;

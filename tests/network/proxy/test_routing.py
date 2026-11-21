@@ -328,6 +328,19 @@ class RoutingTests(unittest.TestCase):
                 dns.receive(stream, 4, 1)
         self.assertEqual(stream.recv.call_count, 2)
 
+    def test_stale_application_real_dns_route_cannot_use_the_infrastructure_resolver(self):
+        packet = b'\x12\x34\x01\x00\x00\x01' + b'\x00' * 6 + b'\x01a\x00\x00\x01\x00\x01'
+        settings = {'state': str(self.state), 'infrastructure_validator_port': 1061}
+        for intent in ('direct', 'proxy'):
+            (self.state / 'intent').write_text(intent)
+            with patch.object(Path, 'lstat', return_value=SimpleNamespace(st_uid=0, st_mode=stat.S_IFREG | 0o644)), \
+                    patch.object(dns.socket, 'create_connection') as host, patch.object(dns, 'exchange'):
+                with self.assertRaisesRegex(ValueError, 'application DNS unavailable'):
+                    dns.query(settings, packet)
+                host.assert_not_called()
+                dns.query(settings, packet, infrastructure=True)
+                self.assertEqual(host.call_args.args, (('127.0.0.1', 1061),))
+
     def test_nft_echo_and_listing_preserve_exact_node_tuples(self):
         table = {'table': {'family': 'inet', 'name': 'lf_routing'}}
         declaration = dict(family='inet', table='lf_routing', name='nodes4',

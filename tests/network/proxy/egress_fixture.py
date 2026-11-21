@@ -1,4 +1,4 @@
-"""Two controlled SOCKS exits and independent target observations in the VM."""
+"""Two protected exits and independent target observations in the VM."""
 from concurrent.futures import ThreadPoolExecutor
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -84,9 +84,25 @@ def header(host, port):
 
 
 def node(number, association_override=None):
-    port = 18079 + number
+    bind_address, port = '1.1.1.1', 18079 + number
+    if association_override is None:
+        bind_address, port = '127.0.0.1', 19079 + number
+        # Reuse the fixture's address-specific exit over a real AEAD outer hop.
+        directory = Path(f'/run/netsec-egress-{number}')
+        directory.mkdir(exist_ok=True)
+        config = directory / 'node.json'
+        config.write_text(json.dumps({
+            'mode': 'rule', 'log-level': 'info', 'ipv6': True,
+            'listeners': [{'name': 'Outer', 'type': 'shadowsocks', 'listen': '1.1.1.1',
+                           'port': 18079 + number, 'udp': True, 'cipher': 'aes-128-gcm',
+                           'password': 'fixture-aead-key'}],
+            'proxies': [{'name': 'Local', 'type': 'socks5', 'server': bind_address,
+                         'port': port, 'udp': True}],
+            'rules': ['MATCH,Local'],
+        }))
+        subprocess.Popen([Path('/etc/netsec-core').read_text().strip(), '-d', str(directory), '-f', str(config)])
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp.bind(('1.1.1.1', port))
+    udp.bind((bind_address, port))
     def relay(packet, peer):
         try:
             if packet[:3] != b'\0\0\0' or Path(f'/tmp/egress-drop-udp-{number}').exists():
@@ -112,7 +128,7 @@ def node(number, association_override=None):
     threading.Thread(target=packets, daemon=True).start()
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(('1.1.1.1', port))
+    listener.bind((bind_address, port))
     listener.listen()
     def connection(client):
         remote = None
@@ -126,7 +142,7 @@ def node(number, association_override=None):
             target_port = struct.unpack('!H', exact(client, 2))[0]
             assert version == 5
             if command == 3:
-                bind = ('1.1.1.1', port)
+                bind = (bind_address, port)
                 if association_override is not None and association_override.exists():
                     host, bound_port = association_override.read_text().split()
                     bind = (host, int(bound_port))
@@ -140,7 +156,7 @@ def node(number, association_override=None):
             remote.settimeout(5)
             remote.bind((EXITS[number][0 if kind == 1 else 1], 0))
             remote.connect((host, target_port))
-            client.sendall(b'\5\0\0' + header('1.1.1.1', port))
+            client.sendall(b'\5\0\0' + header(bind_address, port))
             client.settimeout(None)
             remote.settimeout(None)
             while True:

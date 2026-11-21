@@ -190,7 +190,11 @@ in
     subUidRanges = lib.mapAttrs (_: u: u.subUidRanges or [ ]) config.users.users;
     subGidRanges = lib.mapAttrs (_: u: u.subGidRanges or [ ]) config.users.users;
     groups = lib.mapAttrs (_: g: g.gid) config.users.groups;
-    protectedUsers = lib.unique ([ "root" "nobody" m.desktopUser "clash-core" "clash-validate" "clash-loopback" "gost" "dnsmasq" "unbound" "chrony" "systemd-resolve" "dhcpcd" ]);
+    protectedUsers = lib.unique [
+      "root" "nobody" m.desktopUser "clash-core" "clash-validate" "clash-loopback"
+      "gost" "dnsmasq" "unbound" "unbound-infrastructure" "socket-guest-dns"
+      "chrony" "systemd-resolve" "dhcpcd"
+    ];
     tunInterface = p.tunDev;
     forbiddenInterfaces = [ "lo" m.wired.name m.wireless.name p.tunDev "tailscale0" ];
     privateScopes = private4 ++ m.ulaV6 ++ m.linkLocalV6;
@@ -199,7 +203,8 @@ in
 
     reservedPorts = [ 53 m.ports.mihomoMixed m.ports.mihomoDns m.ports.dnsmasq m.ports.unbound
       m.ports.socketGuestDns m.ports.coreDnsTransport m.ports.coreDnsBootstrapTransport
-      m.ports.mihomoTproxy m.ports.gostHttp m.ports.gostRedirect ];
+      m.ports.mihomoTproxy m.ports.gostHttp m.ports.gostRedirect
+      m.ports.unboundInfrastructure m.ports.coreInfrastructureDns ];
   };
 
   nft = rules + ''

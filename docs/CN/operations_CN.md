@@ -294,7 +294,7 @@ Tailscale 打标失败时，B 仍会阻断未打标的 root UDP。
 验证器的 `ok` 和 `degraded` 都表示硬性检查已通过。
 `degraded` 另有观察性警告，显示为 `Passed · warnings`。
 失败或未知结果不算就绪。
-Broker 必须 `applied`，`suspended`/`revoked` 和 DNS `degraded-dot-only` 不算就绪。
+Broker 必须为 `applied`。B 要求 DNS 状态为 `proxy`，严格 DNS 下的 A 接受 `dot` 或 `dot-priming`。
 消费者默认有效期 120 秒，验证为 420 秒以容纳五分钟定时器及有界执行。
 Boot identity 和单调时间戳拒绝跨开机、未来与陈旧记录。
 
@@ -307,6 +307,8 @@ Boot identity 和单调时间戳拒绝跨开机、未来与陈旧记录。
 | `route` | 日志实际叶子为 DIRECT/REJECT 或与选择图不符 |
 | `obs`、`obs:1/3`、`obs:2/3`、`obs:3/3` | HTTP 完成、精确源端口日志和选择观测 |
 | `resolver-error`、`split-error` | DNS 身份或批准 Wi-Fi profile/租约 |
+| DNS `proxy-priming`、`degraded-proxy` | B 正在确认选定的核心解析器或探测已失败。检查核心 DNS 监听及选定的 DoH 路径 |
+| DNS `degraded-dot-only` | 检查 A 的已认证 DoT 上游及 DNSSEC 探测结果 |
 
 ```sh
 journalctl -b -u proxy-mode -u dns-upstream -u gost-relay -u clash-verge

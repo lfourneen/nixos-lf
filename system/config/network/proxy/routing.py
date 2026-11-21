@@ -473,7 +473,8 @@ def main():
             worker, base, *_ = broker.local_source(source_settings, broker.selected(Path(source_settings['root'])), 'proxy-only')
             print(json.dumps([dict(id=worker.node_identity(node), name=node['name'], protocol=node['type'],
                 udp=node.get('udp', node['type'] in ('hysteria2', 'tuic')) is True)
-                for node in worker.egress_nodes(base, settings['ip_tunnel']['policy'] if settings.get('ip_tunnel') else None)],
+                for node in worker.egress_nodes(base, settings['ip_tunnel']['policy'] if settings.get('ip_tunnel') else None,
+                                                require_protected=True)],
                 ensure_ascii=True))
     elif command == 'stop-ip-tunnel' and len(sys.argv) == 3:
         stop_ip_tunnel(settings)

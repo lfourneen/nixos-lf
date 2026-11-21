@@ -11,6 +11,7 @@ import time
 import base64
 import http.server
 import json
+from pathlib import Path
 import urllib.parse
 
 import dns.flags
@@ -28,6 +29,12 @@ def answer(packet, tcp=False, transport='dot'):
     request = dns.message.from_wire(packet)
     response = dns.message.make_response(request)
     response.flags |= dns.flags.AA
+    if request.question and request.question[0].name.to_text().endswith('.dns-path.fixture.example.'):
+        question = request.question[0]
+        if question.rdtype == dns.rdatatype.A:
+            address = '203.0.113.42' if transport == 'doh' else '203.0.113.66'
+            response.answer.append(dns.rrset.from_text(question.name, 5, 'IN', 'A', address))
+        return response.to_wire()
     if request.question and request.question[0].name.to_text().endswith('.egress.fixture.example.'):
         addresses = {
             'v4.egress.fixture.example.': {'A': '203.0.113.10'},
@@ -111,6 +118,15 @@ class TCP(socketserver.BaseRequestHandler):
                 packet = receive(self.request, struct.unpack("!H", header)[0])
                 if not packet:
                     return
+                if os.environ.get('NETSEC_TLS_TEST_DOH') == '1':
+                    name = dns.message.from_wire(packet).question[0].name.to_text()
+                    with open('/run/netsec-dot.jsonl', 'a') as log:
+                        log.write(json.dumps({'name': name, 'client': self.client_address[0]}) + '\n')
+                    if name == 'pending.dns-path.fixture.example.':
+                        release = Path('/run/netsec-dot-hold')
+                        deadline = time.monotonic() + 75
+                        while release.exists() and time.monotonic() < deadline:
+                            time.sleep(.1)
                 result = answer(packet, tcp=True)
                 self.request.sendall(struct.pack("!H", len(result)) + result)
         except OSError:

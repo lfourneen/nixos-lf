@@ -14,6 +14,7 @@ import socket
 import ssl
 import sys
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
@@ -282,7 +283,7 @@ def node_identity(node):
                                     separators=(',', ':')).encode()).hexdigest()
 
 
-def egress_nodes(document, tunnel=None):
+def egress_nodes(document, tunnel=None, require_protected=False):
     """Return ordered, fixed leaves reachable from the subscription catch-all."""
     nodes = {node['name']: node for node in document['proxies']}
     groups = {group['name']: group for group in document['proxy-groups']}
@@ -296,7 +297,7 @@ def egress_nodes(document, tunnel=None):
         if name in nodes:
             node = nodes[name]
             if node.get('type') in ('ss', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'http', 'socks5') \
-                    and not ech_lookup(node):
+                    and not ech_lookup(node) and (not require_protected or tunnel or protected_transport(node)):
                 result.append(node)
         elif name in groups:
             for child in groups[name]['proxies']:
@@ -307,9 +308,8 @@ def egress_nodes(document, tunnel=None):
     if not result:
         raise Refused('empty catchall')
     if tunnel:
-        result = [node for node in result if node.get('type') == 'socks5'
-                  and node.get('server') == tunnel['relayAddress']
-                  and node.get('port') == tunnel['relayPort'] and node.get('udp') is True]
+        relay = {'address': tunnel['relayAddress'], 'port': tunnel['relayPort']}
+        result = [node for node in result if wireguard_relay(node, relay)]
     return result
 
 
@@ -332,8 +332,97 @@ def insecure_leaf(node):
     return value is True or (isinstance(value, str) and value.lower() in ('true', 'yes', '1', 'on'))
 
 
-def render(document, payloads, policy, forced_domains=(), probe_domains=(), remote_only_catchall=False, source=None,
-           egress_id=None):
+def transport_fields(node):
+    fields = {}
+    for key, value in node.items():
+        key = key.lower().replace('_', '-')
+        if key in fields:
+            raise Refused('ambiguous node transport')
+        fields[key] = value
+    return fields
+
+
+def skips_certificate(value):
+    if isinstance(value, dict):
+        return any((key.lower().replace('_', '-') == 'skip-cert-verify' and child is not False)
+                   or skips_certificate(child) for key, child in value.items())
+    if isinstance(value, list):
+        return any(skips_certificate(child) for child in value)
+    return False
+
+
+def allowed_transport_fields(node, fields):
+    return not any(fields.get(key) for key in (
+        'dialer-proxy', 'interface-name', 'routing-mark', 'plugin',
+        'shadow-tls-opts', 'restls-opts', 'jls-opts', 'tlsmirror-opts',
+    )) and all(key not in fields or type(fields[key]) is bool for key in ('tls', 'udp')) \
+        and not skips_certificate(node)
+
+
+def wireguard_relay(node, relay):
+    if not relay:
+        return False
+    fields = transport_fields(node)
+    return (fields.get('type') == 'socks5' and fields.get('server') == relay['address']
+            and type(fields.get('port')) is int and fields['port'] == relay['port']
+            and fields.get('udp') is True and fields.get('network', '') == ''
+            and (fields.get('tls') is True or not (fields.get('username') or fields.get('password')))
+            and allowed_transport_fields(node, fields))
+
+
+def vmess_aead(fields):
+    identity = fields.get('uuid')
+    if (type(fields.get('alterid')) is not int or fields['alterid'] != 0
+            or fields.get('cipher') not in ('auto', 'aes-128-gcm', 'chacha20-poly1305')
+            or not isinstance(identity, str)):
+        return False
+    try:
+        parsed = uuid.UUID(identity)
+    except ValueError:
+        return False
+    return parsed.int != 0 and str(parsed) == identity.lower()
+
+
+def protected_transport(node):
+    fields = transport_fields(node)
+    if not allowed_transport_fields(node, fields):
+        return False
+    kind = fields.get('type')
+    network = fields.get('network', '')
+    tls = fields.get('tls') is True
+    if fields.get('reality-opts') and (kind not in ('vmess', 'vless', 'trojan') or network == 'ws'):
+        return False
+    if kind == 'tuic' and (fields.get('disable-sni', False) is not False or fields.get('ip')):
+        return False
+    if kind == 'hysteria2' and fields.get('realm-opts'):
+        return False
+    if kind in ('http', 'socks5'):
+        return network == '' and tls and fields.get('udp') is not True
+    if kind == 'ss':
+        password = fields.get('password')
+        return isinstance(password, str) and bool(password.strip()) and network == '' and fields.get('cipher') in (
+            'aes-128-gcm', 'aes-192-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305',
+            'xchacha20-ietf-poly1305', '2022-blake3-aes-128-gcm',
+            '2022-blake3-aes-256-gcm', '2022-blake3-chacha20-poly1305',
+        )
+    if kind in ('vmess', 'vless'):
+        return network in ('', 'tcp', 'ws', 'http', 'h2', 'grpc') and (tls or kind == 'vmess' and vmess_aead(fields))
+    if kind == 'trojan':
+        return network in ('', 'tcp', 'ws', 'grpc')
+    return kind in ('hysteria2', 'tuic', 'anytls') and network == ''
+
+
+def prune_nodes(document, dropped):
+    if not dropped:
+        return
+    for rule in document['rules']:
+        if not isinstance(rule, str) or any(part.strip() in dropped for part in rule.split(',')[1:]):
+            raise Refused('rule requires a rejected node')
+    document['proxies'] = [node for node in document['proxies'] if node['name'] not in dropped]
+    prune_groups(document, dropped)
+
+
+def normalize(document, payloads):
     document = json.loads(json.dumps(document, allow_nan=False))
     # Only subscription routing data survives. Managed listeners/DNS/TUN come
     # exclusively from the immutable Nix policy, never from GUI merge scripts.
@@ -403,9 +492,27 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
     catchall = rules[-1].split(',')
     if len(catchall) != 2 or catchall[0].upper() not in ('MATCH', 'FINAL'):
         raise Refused('catchall')
+    return result
+
+
+def render(document, payloads, policy, forced_domains=(), probe_domains=(), remote_only_catchall=False, source=None,
+           egress_id=None):
+    result = normalize(document, payloads)
+    targets = policy.get('lf-private-targets', {})
+    proxy_only = targets.get('proxy-only') is True
+    require_protected = targets.get('require-protected-node-transport') is True
+    tunnel = policy.get('lf-ip-tunnel') if proxy_only and targets.get('single-egress') is True else None
+    relay = targets.get('wireguard-relay')
+    if require_protected:
+        prune_nodes(result, {node['name'] for node in result['proxies']
+                             if not protected_transport(node) and not wireguard_relay(node, relay)})
     if source is not None:
         source.update(json.loads(json.dumps(result)))
-    proxy_only = policy.get('lf-private-targets', {}).get('proxy-only') is True
+    if require_protected and not tunnel:
+        prune_nodes(result, {node['name'] for node in result['proxies'] if wireguard_relay(node, relay)})
+    nodes, groups, rules = (result[key] for key in ('proxies', 'proxy-groups', 'rules'))
+    names = {node['name'] for node in nodes}
+    catchall = rules[-1].split(',')
     if proxy_only and any(node.get('ports') or node.get('hop-interval') for node in nodes):
         raise Refused('proxy-only requires fixed node ports')
     if remote_only_catchall or proxy_only:
@@ -460,7 +567,7 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
     if policy.get('lf-private-targets', {}).get('single-egress') is True:
         if not proxy_only:
             raise Refused('single egress requires proxy-only')
-        candidates = egress_nodes(result, policy.get('lf-ip-tunnel'))
+        candidates = egress_nodes(result, tunnel, require_protected)
         selected = next((node for node in candidates if not egress_id or node_identity(node) == egress_id), None)
         if selected is None:
             raise Refused('selected egress unavailable')
@@ -540,6 +647,8 @@ def pin_servers(config, resolver=socket.getaddrinfo, allowed_insecure=(), saniti
         if node.get('tls') or node.get('type') in ('trojan', 'hysteria2', 'tuic', 'anytls'):
             node.setdefault('servername', node.get('sni') or server)
             node.setdefault('sni', node.get('servername') or server)
+        if node.get('type') == 'socks5' and node.get('tls') is True:
+            node.setdefault('name-cert-verify', server)
         ws = node.get('ws-opts')
         if isinstance(ws, dict):
             ws.setdefault('headers', {}).setdefault('Host', server)
@@ -584,10 +693,7 @@ def prepare(request, download=None, resolver=socket.getaddrinfo):
             raise Refused('render')
         payloads[name] = step('fetch', download, registered[name], deadline, budget)
         hashes['provider:' + name] = hashlib.sha256(payloads[name]).hexdigest()
-    source = {}
-    step('render', render, document, payloads, policy,
-                    request.get('forced_domains', []), request.get('probe_domains', []),
-                    request.get('remote_only_catchall', False), source)
+    source = step('render', normalize, document, payloads)
     targets = policy.get('lf-private-targets') if isinstance(policy, dict) else None
     listed = targets.get('insecure-proxy-exceptions') if isinstance(targets, dict) else None
     allowed_insecure = {value for value in listed if isinstance(value, str)} if isinstance(listed, list) else set()
@@ -599,11 +705,13 @@ def prepare(request, download=None, resolver=socket.getaddrinfo):
     removed = {node['name'] for node in source['proxies']} - retained
     source['proxies'] = pinned
     prune_groups(source, removed)
+    accepted_source = {}
     config = step('render', render, source, {}, policy, request.get('forced_domains', []),
                   request.get('probe_domains', []), request.get('remote_only_catchall', False),
-                  egress_id=request.get('egress_id'))
+                  source=accepted_source, egress_id=request.get('egress_id'))
+    dropped += len(source['proxies']) - len(accepted_source['proxies'])
     return {'yaml': config.decode(), 'responses': hashes, 'dropped': dropped,
-            'source_data': json.dumps(source, sort_keys=True, ensure_ascii=False),
+            'source_data': json.dumps(accepted_source, sort_keys=True, ensure_ascii=False),
             'egress_id': selected_egress(load(config))}
 
 

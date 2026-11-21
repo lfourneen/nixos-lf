@@ -220,10 +220,16 @@ def check():
     capture()
     source = Path('/var/lib/clash-source/selected').resolve()
     wait(lambda: (source / 'approved/rules/settled.json').exists())
+    status, data = egress.api('GET', '/proxies')
+    assert status == 200 and 'TunnelRelay' not in json.loads(data)['proxies'], data
+    choices = json.loads(run('proxy-control', 'egress', 'list').stdout)
+    assert [node['name'] for node in choices] == ['TunnelRelay'], choices
     check_inlets('proxy')
     run(*APP, 'curl', '--noproxy', '*', '-fsS', '--max-time', '5', 'http://tun.fixture.example:8080/')
     run('proxy-control', 'routing', 'proxy-only', timeout=110)
     verdict = egress.status()
+    status, data = egress.api('GET', '/proxies')
+    assert status == 200 and 'TunnelRelay' in json.loads(data)['proxies'], data
     assert verdict['capabilities']['icmp'] == 'verified-dual-stack', verdict
     assert verdict['capabilities']['udp_declared'] is True and verdict['capabilities']['udp'] == 'not-probed', verdict
     for target, source_address in zip(TARGETS, EXITS):

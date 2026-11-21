@@ -3,9 +3,15 @@ package adapter
 import (
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/lfguard"
 	C "github.com/metacubex/mihomo/constant"
 )
@@ -16,6 +22,63 @@ type lfTargetLeaf struct {
 	kind   C.AdapterType
 	calls  int
 	target *C.Metadata
+}
+
+func TestLFManagedAuthenticatedHTTPTransport(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "CONNECT required", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := ca.AddCertificate(string(server.Certificate().Raw)); err != nil {
+		t.Fatal(err)
+	}
+	defer ca.ResetCertificate()
+	if err := lfguard.Configure(map[string]any{
+		"prefixes": []string{"10.0.0.0/8"}, "require-protected-node-transport": true,
+		"insecure-proxy-exceptions": []string{"secure"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer lfguard.Configure(nil)
+	host, number, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "https://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(number)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := map[string]any{"name": "secure", "type": "http", "server": host, "port": port}
+	if _, err := ParseProxy(node); err == nil {
+		t.Fatal("guest-facing parser accepted cleartext, credential-free HTTP")
+	}
+	node["tls"] = true
+	request := &C.Metadata{DstIP: netip.MustParseAddr("203.0.113.10"), DstPort: 443, Type: C.INNER, NetWork: C.TCP}
+	dial := func() (C.Conn, error) {
+		proxy, err := ParseProxy(node)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return proxy.DialContext(context.Background(), request)
+	}
+	conn, err := dial()
+	if err != nil {
+		t.Fatalf("verified HTTPS CONNECT failed: %v", err)
+	}
+	conn.Close()
+	node["sni"] = "mismatch.invalid"
+	if conn, err := dial(); err == nil {
+		conn.Close()
+		t.Fatal("HTTPS CONNECT accepted a different certificate identity")
+	}
+	node["skip-cert-verify"] = true
+	if _, err := ParseProxy(node); err == nil {
+		t.Fatal("named certificate exception bypassed the transport floor")
+	}
 }
 
 func (p *lfTargetLeaf) Name() string        { return p.name }

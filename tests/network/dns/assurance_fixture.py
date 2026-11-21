@@ -123,7 +123,7 @@ def dns_checks():
     # The local validator must retain the encrypted proxy upstream even when
     # Mode A's authenticated resolver returns a wrong unsigned address.
     strict = json.loads(Path('/run/proxy-mode/state.json').read_text()).get('routing_applied') == 'proxy-only'
-    host_answer = query('unsigned.fixture.example', 1056 if strict else 1055)
+    host_answer = query('unsigned.fixture.example', 1056 if strict else 1061)
     assert ('203.0.113.42' if strict else '203.0.113.66') in host_answer.to_text(), host_answer
     run('curl', '--noproxy', '', '--socks5-hostname', '127.0.0.1:7897',
         '-fsS', '--max-time', '5', 'http://unsigned.fixture.example:8080/')
@@ -150,6 +150,92 @@ def direct():
             bogus = query('bogus.signed.fixture.example', 1054, tcp=tcp, cd=cd)
             assert bogus.rcode() == dns.rcode.SERVFAIL, bogus
     print('A local DNSSEC: valid and bogus/CD over TCP/UDP passed', flush=True)
+
+
+def observed(name, transport):
+    logfile = Path(f'/run/netsec-{transport}.jsonl')
+    return logfile.exists() and any(json.loads(line)['name'] == name + '.'
+                                    for line in logfile.read_text().splitlines())
+
+
+def dns_handoff_start():
+    name = 'pending.dns-path.fixture.example'
+    wait(lambda: json.loads(Path('/run/dns-upstream/state.json').read_text())['mode'] == 'dot', 25)
+    Path('/run/netsec-dot-hold').touch()
+    run('systemd-run', '--unit=netsec-a-dns-query.service', '--uid=1000',
+        '--property=StandardOutput=append:/tmp/netsec-a-dns-answer',
+        'dig', '+tcp', '+time=70', '+tries=1', '+short', '@127.0.0.1', '-p', '1054', name, 'A')
+    wait(lambda: observed(name, 'dot'))
+    run('systemctl', 'freeze', 'dns-upstream.service')
+
+
+def dns_handoff_finish():
+    assert 'server=127.0.0.1#1055' in Path('/run/dns-upstream/servers.conf').read_text()
+    assert Path('/run/proxy-mode/status').read_text().strip() == 'proxy'
+    Path('/run/netsec-dot-hold').unlink()
+    name = 'stale.dns-path.fixture.example'
+    # The DNS coordinator is frozen with the old A forwarding file active.
+    # The independent kernel policy must prevent a new upstream request.
+    response = run('setpriv', '--reuid=1000', '--clear-groups', 'dig', '+time=2', '+tries=1', '+short',
+                   '@127.0.0.1', '-p', '1054', name, 'A', required=False)
+    assert '203.0.113.66' not in response.stdout and not observed(name, 'dot'), response
+    answer = Path('/tmp/netsec-a-dns-answer')
+    assert not answer.exists() or '203.0.113.66' not in answer.read_text()
+    run('systemctl', 'stop', 'netsec-a-dns-query.service', required=False)
+    print('DNS handoff: stale A forwarding and its pending reply stayed isolated in B', flush=True)
+
+
+def dns_degrade():
+    status = Path('/run/dns-upstream/state.json')
+
+    def await_mode(mode):
+        deadline = time.monotonic() + 28
+        while (state := json.loads(status.read_text()))['mode'] != mode:
+            assert time.monotonic() < deadline, (
+                mode, state, run('nft', 'list', 'table', 'inet', 'dns_path_fixture', required=False).stdout)
+            # Wake both rounds even if the healthy loop had already backed off.
+            run('systemctl', 'kill', '-s', 'WINCH', '--kill-whom=main', 'dns-upstream.service')
+            time.sleep(2)
+
+    # Fail only the DNS coordinator's UDP probes, keeping core health and the
+    # listener available to ordinary clients.
+    run('nft', 'add', 'table', 'inet', 'dns_path_fixture')
+    try:
+        run('nft', 'add chain inet dns_path_fixture output { type filter hook output priority -200; policy accept; }')
+        run('nft', 'add rule inet dns_path_fixture output socket cgroupv2 level 2 '
+                   '"system.slice/dns-upstream.service" udp dport 1053 counter reject with icmpx type port-unreachable')
+        await_mode('degraded-proxy')
+        assert Path('/run/proxy-mode/status').read_text().strip() == 'proxy'
+        assert 'server=127.0.0.1#1053' in Path('/run/dns-upstream/servers.conf').read_text()
+        name = 'degraded.dns-path.fixture.example'
+        answer = run('setpriv', '--reuid=1000', '--clear-groups', 'dig', '+time=4', '+tries=1',
+                     '+short', '@127.0.0.1', '-p', '1054', name, 'A').stdout
+        assert answer.startswith('198.18.') and observed(name, 'doh') and not observed(name, 'dot'), answer
+    finally:
+        run('nft', 'delete', 'table', 'inet', 'dns_path_fixture')
+    await_mode('proxy')
+    print('DNS degradation: B stayed on the managed upstream and recovered after probes resumed', flush=True)
+
+
+def dns_roles():
+    selected = json.loads(Path('/run/proxy-mode/state.json').read_text())['routing_applied']
+    via_proxy = selected == 'proxy-only'
+    for role, uid, resolver, port in (
+        ('source', run('id', '-u', 'clash-fetch').stdout.strip(), '127.0.0.1', '1056'),
+        ('guest', '1100', '127.0.0.53', '53'),
+    ):
+        name = f'{role}-{selected}.dns-path.fixture.example'
+        answer = run('setpriv', f'--reuid={uid}', '--clear-groups', 'dig', '+time=4', '+tries=1',
+                     '+short', '@' + resolver, '-p', port, name, 'A').stdout
+        assert ('203.0.113.42' if via_proxy else '203.0.113.66') in answer, answer
+        assert observed(name, 'doh' if via_proxy else 'dot')
+        if via_proxy:
+            assert not observed(name, 'dot')
+    if not via_proxy:
+        name = 'stale-real-address.dns-path.fixture.example'
+        answer = query(name, 1059)
+        assert answer.rcode() == dns.rcode.SERVFAIL and not observed(name, 'dot'), answer
+    print(f'DNS roles: {selected} preserved filtered source and guest resolution', flush=True)
 
 
 def configure():
@@ -426,5 +512,6 @@ def lease():
 
 if __name__ == '__main__':
     {'configure': configure, 'direct': direct, 'dns': dns_checks, 'pressure': pressure,
-     'http': http, 'health': health_checks,
+     'http': http, 'health': health_checks, 'dns-roles': dns_roles, 'dns-degrade': dns_degrade,
+     'dns-handoff-start': dns_handoff_start, 'dns-handoff-finish': dns_handoff_finish,
      'lease': lease, 'peer': peer, 'client': client}[sys.argv[1]]()

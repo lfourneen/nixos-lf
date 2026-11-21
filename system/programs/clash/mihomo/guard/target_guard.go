@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -28,27 +29,34 @@ type targetGrant struct {
 	prefix  netip.Prefix
 }
 
+type wireguardRelay struct {
+	Address netip.Addr `json:"address"`
+	Port    uint16     `json:"port"`
+}
+
 type policy struct {
-	ValidatorPorts             []uint16       `json:"validator-ports"`
-	PreviousDNS                map[string]any `json:"previous-dns"`
-	LocalDNSSEC                string         `json:"local-dnssec"`
-	SubscriptionTrust          string         `json:"subscription-trust"`
-	InsecureProxyExceptions    []string       `json:"insecure-proxy-exceptions"`
-	AllowDynamicRemoteGrants   bool           `json:"allow-dynamic-remote-grants"`
-	RejectPlaintextCredentials bool           `json:"reject-plaintext-credentials"`
-	StrictInlets               []string       `json:"strict-inlets"`
-	ProxyOnly                  bool           `json:"proxy-only"`
-	SingleEgress               bool           `json:"single-egress"`
-	Prefixes                   []string       `json:"prefixes"`
-	AllowedDomains             []string       `json:"allowed-domains"`
-	MagicDNSSuffixFile         string         `json:"magic-dns-suffix-file"`
-	BlockedDomainsFile         string         `json:"blocked-domains-file"`
-	BlockedDomains             []string       `json:"blocked-domains"`
-	BlockExceptions            []string       `json:"blocked-domain-exceptions"`
-	LocalTargetCIDRs           []string       `json:"local-target-cidrs"`
-	RemoteTargetGrants         []targetGrant  `json:"remote-target-grants"`
-	NAT64Prefixes              []string       `json:"nat64-prefixes"`
-	FakeIPPrefix               string         `json:"fake-ip-prefix"`
+	ValidatorPorts             []uint16        `json:"validator-ports"`
+	PreviousDNS                map[string]any  `json:"previous-dns"`
+	LocalDNSSEC                string          `json:"local-dnssec"`
+	SubscriptionTrust          string          `json:"subscription-trust"`
+	InsecureProxyExceptions    []string        `json:"insecure-proxy-exceptions"`
+	AllowDynamicRemoteGrants   bool            `json:"allow-dynamic-remote-grants"`
+	RejectPlaintextCredentials bool            `json:"reject-plaintext-credentials"`
+	RequireProtectedTransport  bool            `json:"require-protected-node-transport"`
+	WireGuardRelay             *wireguardRelay `json:"wireguard-relay"`
+	StrictInlets               []string        `json:"strict-inlets"`
+	ProxyOnly                  bool            `json:"proxy-only"`
+	SingleEgress               bool            `json:"single-egress"`
+	Prefixes                   []string        `json:"prefixes"`
+	AllowedDomains             []string        `json:"allowed-domains"`
+	MagicDNSSuffixFile         string          `json:"magic-dns-suffix-file"`
+	BlockedDomainsFile         string          `json:"blocked-domains-file"`
+	BlockedDomains             []string        `json:"blocked-domains"`
+	BlockExceptions            []string        `json:"blocked-domain-exceptions"`
+	LocalTargetCIDRs           []string        `json:"local-target-cidrs"`
+	RemoteTargetGrants         []targetGrant   `json:"remote-target-grants"`
+	NAT64Prefixes              []string        `json:"nat64-prefixes"`
+	FakeIPPrefix               string          `json:"fake-ip-prefix"`
 	local                      []netip.Prefix
 	nat64                      []netip.Prefix
 	fake                       netip.Prefix
@@ -606,10 +614,169 @@ func DialTCP(ctx context.Context, metadata *C.Metadata,
 	return nil, fmt.Errorf("validated destination candidates unavailable: %w", last)
 }
 
+func canonicalTransportKey(key string) string {
+	return strings.ToLower(strings.ReplaceAll(key, "_", "-"))
+}
+
+func strictCertificateChecks(value any) bool {
+	switch object := value.(type) {
+	case map[string]any:
+		for key, nested := range object {
+			if canonicalTransportKey(key) == "skip-cert-verify" && nested != false || !strictCertificateChecks(nested) {
+				return false
+			}
+		}
+	case []any:
+		for _, nested := range object {
+			if !strictCertificateChecks(nested) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func transportValuePresent(value any) bool {
+	switch v := value.(type) {
+	case nil:
+		return false
+	case bool:
+		return v
+	case string:
+		return v != ""
+	case int:
+		return v != 0
+	case float64:
+		return v != 0
+	case map[string]any:
+		return len(v) != 0
+	case []any:
+		return len(v) != 0
+	default:
+		return true
+	}
+}
+
+func transportInteger(value any, expected int) bool {
+	switch v := value.(type) {
+	case int:
+		return v == expected
+	case float64:
+		return v == float64(expected)
+	default:
+		return false
+	}
+}
+
+func protectedVMess(fields map[string]any) bool {
+	switch fields["cipher"] {
+	case "auto", "aes-128-gcm", "chacha20-poly1305":
+	default:
+		return false
+	}
+	identity, ok := fields["uuid"].(string)
+	if !ok || !transportInteger(fields["alterid"], 0) || len(identity) != 36 ||
+		identity[8] != '-' || identity[13] != '-' || identity[18] != '-' || identity[23] != '-' {
+		return false
+	}
+	decoded, err := hex.DecodeString(strings.ReplaceAll(identity, "-", ""))
+	return err == nil && len(decoded) == 16 && !bytes.Equal(decoded, make([]byte, 16))
+}
+
+// Mirrors the registered-source renderer. Do this on the input to the actual
+// adapter, including all provider refreshes and restored snapshots.
+func (p *policy) checkProtectedTransport(mapping map[string]any) bool {
+	fields := make(map[string]any, len(mapping))
+	for key, value := range mapping {
+		key = canonicalTransportKey(key)
+		if _, duplicate := fields[key]; duplicate {
+			return false
+		}
+		fields[key] = value
+	}
+	for _, key := range []string{"dialer-proxy", "interface-name", "routing-mark", "plugin",
+		"shadow-tls-opts", "restls-opts", "jls-opts", "tlsmirror-opts"} {
+		if transportValuePresent(fields[key]) {
+			return false
+		}
+	}
+	for _, key := range []string{"tls", "udp"} {
+		if value, present := fields[key]; present {
+			if _, ok := value.(bool); !ok {
+				return false
+			}
+		}
+	}
+	if !strictCertificateChecks(mapping) {
+		return false
+	}
+	kind, _ := fields["type"].(string)
+	network := ""
+	if value, present := fields["network"]; present {
+		var ok bool
+		network, ok = value.(string)
+		if !ok {
+			return false
+		}
+	}
+	tls := fields["tls"] == true
+	udp := fields["udp"] == true
+	if p.ProxyOnly && p.SingleEgress && p.WireGuardRelay != nil {
+		relay := p.WireGuardRelay
+		return kind == "socks5" && network == "" && udp && fields["server"] == relay.Address.String() &&
+			transportInteger(fields["port"], int(relay.Port)) &&
+			(tls || !transportValuePresent(fields["username"]) && !transportValuePresent(fields["password"]))
+	}
+	if transportValuePresent(fields["reality-opts"]) && (network == "ws" ||
+		kind != "vmess" && kind != "vless" && kind != "trojan") {
+		return false
+	}
+	switch kind {
+	case "http", "socks5":
+		// SOCKS5 wraps only the TCP stream, including association control.
+		// Its native UDP socket carries unencrypted SOCKS5 datagrams.
+		return network == "" && tls && !udp
+	case "ss":
+		password, _ := fields["password"].(string)
+		if network != "" || strings.TrimSpace(password) == "" {
+			return false
+		}
+		switch fields["cipher"] {
+		case "aes-128-gcm", "aes-192-gcm", "aes-256-gcm", "chacha20-ietf-poly1305",
+			"xchacha20-ietf-poly1305", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm",
+			"2022-blake3-chacha20-poly1305":
+			return true
+		}
+	case "vmess", "vless":
+		switch network {
+		case "", "tcp", "ws", "http", "h2", "grpc":
+			return tls || kind == "vmess" && protectedVMess(fields)
+		}
+	case "trojan":
+		return network == "" || network == "tcp" || network == "ws" || network == "grpc"
+	case "tuic":
+		// Locked TUIC would set InsecureSkipVerify for disable-sni and
+		// bypass the pinned server address when an alternate IP is present.
+		value, specified := fields["disable-sni"]
+		return network == "" && (!specified || value == false) && !transportValuePresent(fields["ip"])
+	case "hysteria2":
+		return network == "" && !transportValuePresent(fields["realm-opts"])
+	case "anytls":
+		return network == ""
+	}
+	return false
+}
+
 // Called for inline nodes and provider refreshes by the real adapter parser.
 func CheckProxy(mapping map[string]any) error {
 	p := current.Load()
 	if p == nil {
+		return nil
+	}
+	if p.RequireProtectedTransport {
+		if !p.checkProtectedTransport(mapping) {
+			return fmt.Errorf("managed proxy refuses unprotected node transport")
+		}
 		return nil
 	}
 	name, _ := mapping["name"].(string)

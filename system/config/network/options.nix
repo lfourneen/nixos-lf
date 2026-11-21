@@ -70,7 +70,7 @@
       unboundDotInProxy = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Permit Unbound's UID/uplink/fixed-IP TCP DoT exception in B. False drops its DoT before redirection; A retains recovery DoT and C blocks it.";
+        description = "Permit the source and socket-guest Unbound instance to use fixed authenticated DoT upstreams in Rules B. The ordinary direct resolver is limited to A.";
       };
 
       timeServerCidrs = lib.mkOption {

@@ -74,6 +74,8 @@ let
     dhcp_uid = m.uids.dhcpcd;
     dnsmasq_uid = config.users.users.dnsmasq.uid;
     real_dns_port = m.ports.coreRealDns;
+    infrastructure_dns_port = m.ports.coreInfrastructureDns;
+    infrastructure_validator_port = m.ports.unboundInfrastructure;
     validator_port = m.ports.unbound;
     ipv6 = config.networking.enableIPv6;
     observer = p.coreTopology.observer;
@@ -132,13 +134,13 @@ in
     };
 
     systemd.services.proxy-real-dns = lib.mkIf p.runtimeRouting {
-      description = "Validated real-address DNS through the selected application path";
+      description = "Separate application and infrastructure real-address DNS gateways";
       wantedBy = [ "multi-user.target" ];
       after = [ "proxy-mode.service" ];
       serviceConfig = {
         ExecStart = "${pkgs.python3}/bin/python3 -I ${../dns/real_proxy.py} ${settings}";
-        User = "dnsmasq";
-        Group = "dnsmasq";
+        User = "socket-guest-dns";
+        Group = "socket-guest-dns";
         NoNewPrivileges = true;
         CapabilityBoundingSet = "";
         ProtectSystem = "strict";
@@ -161,7 +163,7 @@ in
       serviceConfig = {
         ExecStart = "${pkgs.python3}/bin/python3 -I ${../dns/real_proxy.py} ${settings} --backend";
         NetworkNamespacePath = p.coreTopology.namespacePath;
-        Group = "dnsmasq";
+        Group = "socket-guest-dns";
         RuntimeDirectory = "clash-real-dns";
         RuntimeDirectoryMode = "0750";
         NoNewPrivileges = true;

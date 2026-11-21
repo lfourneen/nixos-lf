@@ -10,6 +10,7 @@ import unicodedata
 
 MODES = {'direct': 'A · Direct', 'proxy': 'B · Proxy', 'blocked': 'C · Protected', 'unenforced': 'Unenforced'}
 DNS = {'dot': 'Unbound · authenticated DoT', 'proxy': 'Mihomo · managed DNS', 'dot-priming': 'DoT · trust anchor initialization',
+       'proxy-priming': 'Mihomo · awaiting DNS confirmation', 'degraded-proxy': 'Mihomo · DNS probes failed',
        'bootstrap-plaintext': 'Plaintext recovery · bootstrap', 'portal-plaintext': 'Plaintext recovery · portal',
        'degraded-plaintext': 'Plaintext recovery · encrypted upstream unavailable', 'degraded-dot-only': 'Encrypted upstream unavailable',
        'resolver-error': 'Resolver identity check failed', 'split-error': 'Split DNS configuration error'}

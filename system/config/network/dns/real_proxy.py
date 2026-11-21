@@ -41,7 +41,7 @@ def error_reply(packet):
         + packet[4:6] + b'\0' * 4 + packet[10:]
 
 
-def query(settings, packet, backend=False, deadline=None):
+def query(settings, packet, backend=False, deadline=None, *, infrastructure=False):
     if not 12 <= len(packet) <= 65535 or packet[2] & 0xf8 or packet[4:6] != b'\0\1' or packet[6:10] != b'\0' * 4:
         raise ValueError('invalid DNS query')
     deadline = time.monotonic() + 4 if deadline is None else deadline
@@ -69,21 +69,28 @@ def query(settings, packet, backend=False, deadline=None):
             if uid != 0:
                 raise ValueError('untrusted validator bridge')
             return exchange(stream, packet, deadline)
-    # Backend runs inside the core namespace; frontend runs on the host.
-    with socket.create_connection(('127.0.0.1', settings.get('validator_port', 1055)), timeout=remaining) as stream:
+    if backend:
+        port = settings['validator_port']
+    elif infrastructure:
+        port = settings['infrastructure_validator_port']
+    else:
+        # A stale application target must not inherit the infrastructure
+        # gateway's permission to query the direct resolver.
+        raise ValueError('managed real-address application DNS unavailable')
+    with socket.create_connection(('127.0.0.1', port), timeout=remaining) as stream:
         return exchange(stream, packet, deadline)
 
 
 def serve(settings, backend=False):
     slots = threading.BoundedSemaphore(24)
-    def handle(stream, peer=None, packet=None):
+    def handle(stream, infrastructure, peer=None, packet=None):
         try:
             deadline = time.monotonic() + 4
             if packet is None:
                 size = struct.unpack('!H', receive(stream, 2, deadline))[0]
                 packet = receive(stream, size, deadline)
             try:
-                answer = query(settings, packet, backend, deadline)
+                answer = query(settings, packet, backend, deadline, infrastructure=infrastructure)
             except (OSError, ValueError, KeyError):
                 answer = error_reply(packet)
             if peer is None:
@@ -98,13 +105,13 @@ def serve(settings, backend=False):
                 stream.close()
             slots.release()
 
-    def tcp(listener):
+    def tcp(listener, infrastructure):
         while True:
             stream, _ = listener.accept()
             if not slots.acquire(blocking=False):
                 stream.close()
                 continue
-            threading.Thread(target=handle, args=(stream,), daemon=True).start()
+            threading.Thread(target=handle, args=(stream, infrastructure), daemon=True).start()
 
     listeners = []
     if backend:
@@ -114,28 +121,30 @@ def serve(settings, backend=False):
         listener.bind(str(path))
         path.chmod(0o660)
         listener.listen(24)
-        tcp(listener)
+        tcp(listener, False)
         return
-    for address in (('127.0.0.1', '::1') if settings.get('ipv6', True) else ('127.0.0.1',)):
-        family = socket.AF_INET6 if ':' in address else socket.AF_INET
-        for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
-            listener = socket.socket(family, kind)
-            if family == socket.AF_INET6:
-                listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            listener.bind((address, settings['real_dns_port']))
-            listeners.append(listener)
-            if kind == socket.SOCK_STREAM:
-                listener.listen(24)
-                threading.Thread(target=tcp, args=(listener,), daemon=True).start()
+
+    def udp(stream, infrastructure):
+        while True:
+            packet, peer = stream.recvfrom(65535)
+            if slots.acquire(blocking=False):
+                threading.Thread(target=handle, args=(stream, infrastructure, peer, packet), daemon=True).start()
             else:
-                def udp(stream=listener):
-                    while True:
-                        packet, peer = stream.recvfrom(65535)
-                        if slots.acquire(blocking=False):
-                            threading.Thread(target=handle, args=(stream, peer, packet), daemon=True).start()
-                        else:
-                            stream.sendto(error_reply(packet), peer)
-                threading.Thread(target=udp, daemon=True).start()
+                stream.sendto(error_reply(packet), peer)
+
+    addresses = ('127.0.0.1', '::1') if settings.get('ipv6', True) else ('127.0.0.1',)
+    for port, infrastructure in ((settings['real_dns_port'], False), (settings['infrastructure_dns_port'], True)):
+        for address in addresses:
+            family = socket.AF_INET6 if ':' in address else socket.AF_INET
+            for kind, serve_socket in ((socket.SOCK_STREAM, tcp), (socket.SOCK_DGRAM, udp)):
+                listener = socket.socket(family, kind)
+                if family == socket.AF_INET6:
+                    listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                listener.bind((address, port))
+                listeners.append(listener)
+                if kind == socket.SOCK_STREAM:
+                    listener.listen(24)
+                threading.Thread(target=serve_socket, args=(listener, infrastructure), daemon=True).start()
     threading.Event().wait()
 
 

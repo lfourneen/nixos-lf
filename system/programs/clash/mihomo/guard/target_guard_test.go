@@ -509,6 +509,65 @@ func TestPlaintextCredentialsCannotUseCertificateException(t *testing.T) {
 	}
 }
 
+func TestRequiredNodeTransport(t *testing.T) {
+	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"}, "require-protected-node-transport": true,
+		"wireguard-relay": map[string]any{"address": "1.1.1.1", "port": 1080}})
+	for _, node := range []map[string]any{
+		{"type": "socks5"},
+		{"type": "socks5", "tls": true, "UDP": true},
+		{"type": "http", "tls": "true"},
+		{"type": "http", "tls": true, "TLS": true},
+		{"type": "http", "tls": true, "SKIP_CERT_VERIFY": 1},
+		{"type": "ss", "cipher": "none", "password": "test"},
+		{"type": "ss", "cipher": "aes-128-gcm", "password": " "},
+		{"type": "vmess", "cipher": "none", "alterId": 0},
+		{"type": "vmess", "cipher": "aes-128-gcm", "alterId": 0, "uuid": "00000000-0000-0000-0000-000000000000"},
+		{"type": "vless", "tls": true, "network": "xhttp"},
+		{"type": "tuic", "DISABLE_SNI": "true"},
+		{"type": "tuic", "ip": "9.9.9.9"},
+		{"type": "hysteria2", "realm_opts": map[string]any{"service": "alternate.example"}},
+		{"type": "socks5", "udp": true, "server": "1.1.1.1", "port": 1080},
+	} {
+		if CheckProxy(node) == nil {
+			t.Fatalf("accepted an unprotected transport: %v", node)
+		}
+	}
+	for _, node := range []map[string]any{
+		{"type": "socks5", "tls": true, "udp": false},
+		{"type": "ss", "cipher": "aes-128-gcm", "password": "fixture", "udp": true},
+		{"type": "vmess", "cipher": "auto", "alterId": 0, "uuid": "b1b79275-9dea-4046-93b7-b06d7bc594a6"},
+		{"type": "vless", "tls": true, "network": "grpc"},
+		{"type": "trojan", "network": "ws"},
+		{"type": "tuic", "disable-sni": false},
+	} {
+		if err := CheckProxy(node); err != nil {
+			t.Fatalf("rejected a protected transport: %v (%v)", node, err)
+		}
+	}
+}
+
+func TestWireGuardOnlyAllowsItsExactRelay(t *testing.T) {
+	ConfigureT(t, map[string]any{
+		"prefixes": []string{"10.0.0.0/8"}, "require-protected-node-transport": true,
+		"proxy-only": true, "single-egress": true,
+		"wireguard-relay": map[string]any{"address": "1.1.1.1", "port": 1080},
+	})
+	node := map[string]any{"type": "socks5", "udp": true, "server": "1.1.1.1", "port": 1080}
+	if err := CheckProxy(node); err != nil {
+		t.Fatal(err)
+	}
+	for _, alternative := range []map[string]any{
+		{"type": "socks5", "udp": true, "server": "1.1.1.1", "port": 1081},
+		{"type": "socks5", "udp": true, "server": "9.9.9.9", "port": 1080},
+		{"type": "socks5", "tls": true, "server": "1.1.1.1", "port": 1080},
+		{"type": "http", "tls": true, "server": "1.1.1.1", "port": 1080},
+	} {
+		if CheckProxy(alternative) == nil {
+			t.Fatalf("authorized an alternative adapter for the tunnel: %v", alternative)
+		}
+	}
+}
+
 // A page load or a GUI delay-test batch asks the validator for the same name
 // many times at once. Both families are asked once, one carrying records is
 // enough, and the answer is shared until the policy changes.

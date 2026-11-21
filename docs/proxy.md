@@ -52,8 +52,9 @@ Members must be explicit or refer to registered providers.
 | `expected-status` | HTTP status expression |
 
 `load-balance`, dynamic filters, `rule-providers` and provider filters/overrides are unsupported.
-Supported nodes are SS, VMess, VLESS, Trojan, Hysteria2, TUIC, HTTP, SOCKS5 and AnyTLS.
-Remote HTTP/SOCKS plaintext authentication is refused.
+Controlled sources require protected node data channels. HTTP and SOCKS5 require authenticated TLS and are limited to TCP. SOCKS5 TLS covers association setup on the TCP stream, while the native UDP data path sends plaintext datagrams.
+Shadowsocks requires an approved AEAD cipher and a shared secret. VMess requires authenticated TLS or VMess AEAD (`alterId: 0` with an approved cipher and a valid UUID). VLESS requires authenticated TLS on a supported carrier. Trojan, Hysteria2, TUIC and AnyTLS use their supported authenticated transports.
+The source renderer removes unsupported transport variants. It rejects the candidate if removing them leaves no usable node or breaks a required route or group. The managed core independently checks the effective profile, including restored snapshots.
 AnyTLS participates in Rule routing only and is not offered as a fixed egress; the single-leaf validator keeps its existing protocol list.
 Nodes that need a DNS lookup for their ECH configuration are excluded from `lf-remote`, the managed DNS group `lf-dns`, and the fixed-egress candidates. This avoids circular resolution when a DNS transport leaf dials.
 They remain eligible in subscription groups where another leaf can carry the encrypted lookup. Nodes with an inline `ech-opts.config` are eligible for the managed groups.
@@ -115,7 +116,7 @@ The worker still rejects non-public answers and verifies HTTPS certificates.
 A usable DNS family can be used when the other family is unavailable.
 Downloads validate the entire address set before connecting and retry public addresses within one deadline, preserving HTTPS hostname and certificate checks.
 If no usable answer remains, refresh fails without falling back to system DNS.
-Fresh lookups therefore require the Unbound DoT path in B as well; `unboundDotInProxy=false` leaves only eligible cached answers.
+Fresh lookups in Rules use the infrastructure Unbound's DoT path. With `unboundDotInProxy=false`, only eligible cached or local answers are available on that path. Runtime `proxy-only` uses the core application validator. [Resolver paths](dns.md#restricted-socket-guest-dns)
 
 ## Visibility and trust
 
@@ -273,12 +274,12 @@ The managed parser and digest checks always apply.
 The audit checks node server addresses, unauthorized `skip-cert-verify`, empty groups, invalid group references, YAML key structure, hosts mappings and provider configuration changes.
 Historical comparisons use the last settled YAML.
 Mutable provider contents retain the separate trust model described below.
-Named TLS exceptions in `my.proxy.insecureProxyExceptions` remain valid.
-Leaves that enable `skip-cert-verify` without a named exception are dropped only when their source is listed in the Sops-encrypted `insecure_sources` allowlist.
-The worker then limits the combined loss from resolution failures and literal loopback placeholders to one fifth of the remaining nodes, rounded down with a minimum limit of one. A candidate needs at least one usable node, and filtering must preserve the groups used by routing rules.
+For controlled sources, the transport check excludes certificate-verification bypasses even when a node appears in `my.proxy.insecureProxyExceptions`.
+The Sops-encrypted `insecure_sources` allowlist still controls early removal of unlisted `skip-cert-verify` leaves before node-address resolution.
+The worker limits the combined loss from resolution failures and literal loopback placeholders to one fifth of the remaining nodes, rounded down with a minimum limit of one.
 Use one registered source ID per line. Blank lines and duplicate IDs are valid.
 A missing or unreadable file, invalid UTF-8 or any malformed ID disables sanitizing for every source.
-Without this permission, the worker retains those leaves for the audit and core guard. See [whitelist.yaml](../system/secrets/whitelist.yaml).
+Without this permission, the worker retains those leaves for the later checks. [Sops allowlists](../system/secrets/whitelist.yaml)
 Intentional non-public node endpoints require `my.proxy.subscriptionAuditServerCidrs`.
 This audit exception grants no application access, and multicast endpoints remain refused.
 
@@ -364,7 +365,7 @@ New controller write endpoints require an explicit policy decision when upgradin
 Preflight reports inline-node and provider counts, source hosts and requested certificate exceptions without subscription URLs or credentials.
 For controlled sources, run `sudo proxy-control preflight` to read the root-owned source state.
 
-The global merge script filters inline nodes with `skip-cert-verify` enabled and removes their group references.
+For compatibility imports outside controlled sources, the global merge script filters inline nodes with `skip-cert-verify` enabled and removes their group references.
 Exact names in `my.proxy.insecureProxyExceptions` are kept.
 An emptied group without provider members stops configuration generation.
 The core applies the same exception list after per-profile extensions and provider overrides.
@@ -457,7 +458,7 @@ Set `my.proxy.ipTunnel` to use a controlled WireGuard exit in runtime `proxy-onl
 Configure the two ends before selecting the mode.
 
 1. On the peer, authorize the client's tunnel addresses as one IPv4 host route and one IPv6 host route. Enable forwarding for both families and allow related ICMP errors, including IPv4 fragmentation-needed and IPv6 Packet Too Big. Configure forwarded echo and the SOCKS5 relay to use the same public source address per family.
-2. Bind the peer's SOCKS5 listener to a public literal address reachable inside the tunnel. This can be the same address as the WireGuard endpoint. Scope inbound access to the WireGuard interface and the client addresses. The SOCKS5 UDP association must advertise the configured relay address and fixed relay port. Register that SOCKS5 node in the source's remote catch-all with `udp: true`. Use a reachable rules-mode node to complete initial source acceptance before starting the tunnel.
+2. Bind the peer's SOCKS5 listener to a public literal address reachable inside the tunnel. This can be the same address as the WireGuard endpoint. Scope inbound access to the WireGuard interface and the client addresses. The SOCKS5 UDP association must advertise the configured relay address and fixed relay port. Register the node in the source's remote catch-all with `udp: true`. The relay is available only as the fixed leaf of the configured WireGuard exit. Keep a reachable protected node in the catch-all for initial source acceptance and Rules operation.
 3. Declare the endpoint, peer key, client addresses, relay and two controlled public echo targets beyond the peer. Keep the client private key in a root-only runtime file, such as a sops secret.
 
 ```nix

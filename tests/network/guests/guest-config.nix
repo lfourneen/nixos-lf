@@ -76,7 +76,7 @@ in
 
   # A's external DNS is deliberately absent in this VM. Keep one explicit
   # local name usable through the normal guest gateway in every mode.
-  services.dnsmasq.settings.server = [ "/public.guest.fixture.example/127.0.0.1#1055" ];
+  services.dnsmasq.settings.host-record = [ "public.guest.fixture.example,203.0.113.10" ];
   networking.networkmanager.unmanaged = [ "interface-name:virbr0" "interface-name:waydroid0" "interface-name:ap0" "interface-name:gv*" ];
   environment.etc."netsec-guests.json".text = builtins.toJSON fixture;
   environment.etc."netsec-guests.py".source = ./guest_fixture.py;

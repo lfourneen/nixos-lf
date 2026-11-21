@@ -20,6 +20,7 @@ GUI, USER = DESKTOP['GUI'], DESKTOP['USER']
 
 SETTINGS = json.loads(Path('/etc/netsec-managed.json').read_text())
 SOURCE_ORIGIN = 'https://source.fixture.example'
+NODE_PASSWORD = 'fixture-aead-key'
 
 
 def run(*args, **kwargs):
@@ -40,8 +41,8 @@ def wait(check, timeout=60):
 
 
 def source():
-    data = {'proxies': [{'name': 'Fixture', 'type': 'socks5', 'server': 'source-node.fixture.example',
-                        'port': 18080, 'udp': True}],
+    data = {'proxies': [{'name': 'Fixture', 'type': 'ss', 'server': 'source-node.fixture.example',
+                        'port': 18080, 'udp': True, 'cipher': 'aes-128-gcm', 'password': NODE_PASSWORD}],
             'proxy-groups': [{'name': 'Choice', 'type': 'select', 'proxies': ['Fixture']}],
             'rules': ['MATCH,Choice']}
     if SETTINGS.get('routing'):
@@ -50,6 +51,10 @@ def source():
         data['proxies'].append(dict(data['proxies'][0], name='Other', port=18081))
         data['proxies'].append(dict(data['proxies'][0], name='NoUDP', port=18081, udp=False))
         data['proxy-groups'][0]['proxies'].extend(['Other', 'NoUDP'])
+    elif SETTINGS.get('ipTunnel'):
+        data['proxies'].append({'name': 'TunnelRelay', 'type': 'socks5', 'server': 'source-node.fixture.example',
+                                'port': 18081, 'udp': True})
+        data['proxy-groups'][0]['proxies'].append('TunnelRelay')
     class Handler(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
         def do_GET(self):
@@ -127,8 +132,12 @@ def setup():
     node = Path('/run/netsec-node.json')
     # A wildcard UDP listener chooses the peer link's primary source address
     # for replies, which is outside the strict mode's declared node tuple.
-    node.write_text(json.dumps(dict(json.loads(node.read_text()),
-        **{'bind-address': '1.1.1.1' if SETTINGS.get('routing') else '0.0.0.0'})))
+    profile = json.loads(node.read_text())
+    profile.update({'mixed-port': 0, 'listeners': [{
+        'name': 'Fixture', 'type': 'shadowsocks', 'listen': '1.1.1.1' if SETTINGS.get('routing') else '0.0.0.0',
+        'port': 18080, 'udp': True, 'cipher': 'aes-128-gcm', 'password': NODE_PASSWORD,
+    }]})
+    node.write_text(json.dumps(profile))
     registry = Path('/run/managed-source-definition.json')
     for identity in ('one', 'two'):
         definition = {'id': identity, 'gui-profile': 'uid-' + identity,

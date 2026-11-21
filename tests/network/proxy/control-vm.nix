@@ -216,7 +216,7 @@ pkgs.testers.runNixOSTest {
     };
 
     environment.etc."netsec-managed.json" = lib.mkIf managedSources {
-      text = builtins.toJSON { tls = sourceTls; inherit routing; egress = egressBrowser != null || ipTunnel; stage = ../../../system/programs/clash/service/clash-verge-stage.py;
+      text = builtins.toJSON { tls = sourceTls; inherit routing ipTunnel; egress = egressBrowser != null; stage = ../../../system/programs/clash/service/clash-verge-stage.py;
         stageSettings = clashPackage.stageSettings; launcher = "${clashPackage}/bin/verge-mihomo"; };
     };
 
@@ -242,7 +242,7 @@ pkgs.testers.runNixOSTest {
       };
     };
 
-    users.users.routing-guest = lib.mkIf routing {
+    users.users.routing-guest = lib.mkIf (routing || assurance) {
       isNormalUser = true;
       uid = 1100;
       subUidRanges = [{ startUid = 600000; count = 65536; }];
@@ -250,7 +250,7 @@ pkgs.testers.runNixOSTest {
     };
 
     my.hardening.guestNetworks.virbr0.sourceCidrs = lib.mkIf routing [ "192.168.122.0/24" "fd42:122::/64" ];
-    my.hardening.socketGuestUsers = lib.mkIf routing [ "routing-guest" ];
+    my.hardening.socketGuestUsers = lib.mkIf (routing || assurance) [ "routing-guest" ];
     my.proxy.transparentGuestInterfaces = lib.mkIf routing [ "waydroid0" ];
 
     environment.etc."netsec-refresh.py".source = ./refresh_fixture.py;
@@ -375,6 +375,7 @@ pkgs.testers.runNixOSTest {
     ${pkgs.lib.optionalString assurance ''
     machine.wait_for_unit("netsec-assurance-dns.service")
     try:
+        machine.wait_until_succeeds("test $(jq -r .mode /run/dns-upstream/state.json) = dot", timeout=45)
         print(machine.succeed("python3 -u /etc/netsec-assurance.py direct", timeout=30))
     except Exception:
         print(machine.execute("journalctl -u unbound -u netsec-assurance-dns --no-pager -n 30; nft list chain inet lf_filter lf_dns_egress_guard"))
@@ -481,9 +482,24 @@ pkgs.testers.runNixOSTest {
     machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18095")
     ''}
     machine.succeed("python3 /etc/netsec-control.py refuse")
-    machine.succeed("proxy-control on || { cat /run/proxy-mode/preflight.log; exit 1; }")
+    ${pkgs.lib.optionalString (assurance && !routing) ''
+    machine.succeed("python3 -u /etc/netsec-assurance.py dns-handoff-start", timeout=55)
+    ''}
+    try:
+        machine.succeed("proxy-control on")
+    except Exception:
+        print(machine.execute("journalctl -u clash-verge -u proxy-mode --no-pager -n 60; cat /run/proxy-mode/preflight.log /run/clash-verge-rev/validator.log 2>/dev/null"))
+        raise
     machine.wait_for_file("/run/clash-verge-rev/service.sock")
     machine.succeed("python3 /etc/netsec-control.py start")
+    ${pkgs.lib.optionalString (assurance && !routing) ''
+    with subtest("DNS handoff prevents the old A resolver from sending or answering in B"):
+        try:
+            machine.wait_until_succeeds("grep -qx proxy /run/proxy-mode/status", timeout=70)
+            print(machine.succeed("python3 -u /etc/netsec-assurance.py dns-handoff-finish"))
+        finally:
+            machine.execute("rm -f /run/netsec-dot-hold; systemctl thaw dns-upstream.service")
+    ''}
     wait_proxy()
     ${pkgs.lib.optionalString arpProtection ''
     check_arp_proxy(machine, ${toString desktop.uid}, wait_proxy)
@@ -596,6 +612,7 @@ pkgs.testers.runNixOSTest {
     ${pkgs.lib.optionalString (assurance && !routing) ''
     with subtest("local DNSSEC, isolated DNS budgets and expiring kernel authorization"):
         try:
+            print(machine.succeed("python3 -u /etc/netsec-assurance.py dns-degrade", timeout=60))
             print(machine.succeed("python3 -u /etc/netsec-assurance.py health", timeout=90))
             print(machine.succeed("python3 -u /etc/netsec-assurance.py dns", timeout=90))
             print(machine.succeed("ip netns exec lf-clash-core python3 -u /etc/netsec-assurance.py pressure", timeout=60))
@@ -640,7 +657,7 @@ pkgs.testers.runNixOSTest {
     ''}
     with subtest("${if guiControls then "GUI controls and root routing ownership" else "root routing transactions, exact outer transports and proxied real DNS"}"):
         try:
-            print(machine.succeed("python3 -u /etc/netsec-routing.py check", timeout=900))
+            print(machine.succeed("python3 -u /etc/netsec-routing.py check", timeout=1200))
         except Exception:
             print(machine.execute("cat /run/proxy-mode/state.json /run/proxy-mode/routing.json /run/proxy-mode/health.json /run/proxy-mode/routing-firewall.json 2>/dev/null || true; journalctl -u proxy-mode -u clash-verge -u proxy-real-dns -u clash-real-dns --no-pager -n 70; nft -j list table inet lf_routing"))
             raise

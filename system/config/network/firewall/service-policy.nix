@@ -8,7 +8,7 @@ let
     "clash-core-localhost" "clash-core-loopback" "clash-dns-application"
     "clash-dns-infrastructure" "clash-source-recovery-dns" "clash-strict" "dhcpcd" "gost-relay"
     "proxy-real-dns" "clash-real-dns"
-    "socket-guest-dns" "unbound" "nscd" "wpa_supplicant" "clamav-freshclam"
+    "socket-guest-dns" "unbound" "unbound-infrastructure" "nscd" "wpa_supplicant" "clamav-freshclam"
   ];
 
   protected = [

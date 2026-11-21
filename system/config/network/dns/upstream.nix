@@ -177,10 +177,10 @@ in
     };
   };
 
-  # DNS upstream: mihomo DNS while clash runs, unbound DoT otherwise, with the DHCP
-  # resolvers only inside the bounded windows below.
+  # Publish the managed DNS route in B, and the direct validator and bounded
+  # recovery routes in A.
   systemd.services.dns-upstream = {
-    description = "DNS upstream: mihomo DNS when clash is up, DoT otherwise";
+    description = "Select the DNS route for the enforced network policy";
     after = [ "network.target" "nftables.service" ];
     wantedBy = [ "multi-user.target" ];
     unitConfig.StartLimitIntervalSec = 0;
@@ -317,8 +317,8 @@ in
         }
         dns_ok() {
           for name in ${lib.concatStringsSep " " config.my.proxy.tunProbeNames}; do
-            answer=$(dig +time=2 +tries=1 +short @127.0.0.1 -p "$proxy_dns_port" "$name" A 2>/dev/null)
-            [ -z "$answer" ] || return 0
+            answer=$(dig +time=2 +tries=1 +short @127.0.0.1 -p "$proxy_dns_port" "$name" A 2>/dev/null) || continue
+            if grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' <<< "$answer"; then return 0; fi
           done
           return 1
         }
@@ -383,7 +383,7 @@ in
             fi
           fi
           new_conf='server=127.0.0.1#${toString port.unbound}'
-          if [ "$target" = proxy ]; then
+          if [[ "$target" = proxy || "$target" = proxy-priming || "$target" = degraded-proxy ]]; then
             new_conf="server=127.0.0.1#$proxy_dns_port"
           elif [ "$target" = split-error ] || [ "$target" = resolver-error ]; then
             # no-resolv + an empty servers-file disables forwarding. Do not
@@ -405,6 +405,10 @@ in
           fi
           pid=$(systemctl show -p MainPID --value dnsmasq.service 2>/dev/null || true)
           if [ "$new_conf" != "$last_conf" ] || [ "$pid" != "$last_pid" ] || [ -z "$pid" ] || [ "$pid" = 0 ]; then
+            if [ "$(jq -r '.policy_version // .version' /run/proxy-mode/state.json)" != "$policy_version" ]; then
+              apply_reason='network policy changed before DNS reload'
+              return 1
+            fi
             atomic_write "$runtime/servers.conf" "$new_conf" || { apply_reason='cannot write servers.conf'; return 1; }
             if systemctl is-active --quiet dnsmasq.service; then
               timeout 8 systemctl reload dnsmasq.service || { apply_reason='dnsmasq reload failed'; return 1; }
@@ -477,11 +481,14 @@ in
               ${pkgs.python3}/bin/python3 ${../firewall/alerts.py} set dns-split-policy 'cannot read approved split DNS; forwarding disabled'
             fi
           fi
-          policy_version=$(jq -r '.policy_version // .version // -1' /run/proxy-mode/state.json 2>/dev/null || echo -1)
-          mode=$(jq -r '.mode // "unknown"' /run/proxy-mode/state.json 2>/dev/null || echo unknown)
+          policy=$(cat /run/proxy-mode/state.json 2>/dev/null || echo '{}')
+          previous_version=$policy_version
+          policy_version=$(jq -r '.policy_version // .version // -1' <<< "$policy")
+          mode=$(jq -r '.mode // "unknown"' <<< "$policy")
+          if [ "$policy_version" != "$previous_version" ]; then hits=0; misses=0; fi
           proxy_dns_port=${toString port.mihomoDns}
           ${lib.optionalString (config.my.proxy.ipTunnel != null) ''
-          if [ "$(jq -r '.routing_requested' /run/proxy-mode/state.json 2>/dev/null)" = proxy-only ]; then
+          if [ "$(jq -r '.routing_requested' <<< "$policy")" = proxy-only ]; then
             proxy_dns_port=${toString port.coreRealDns}
             split='{"entries":[],"context":null}'
           fi
@@ -500,10 +507,12 @@ in
             if dns_ok; then hits=$((hits + 1)); misses=0; else hits=0; misses=$((misses + 1)); fi
             if [ "$hits" -ge 2 ]; then
               new_status=proxy; state_reason='mode-b: managed DNS healthy'
-            elif [ "$current" = proxy ] && [ "$misses" -lt 2 ]; then
+            elif [ "$current" = proxy ] && [ "$policy_version" = "$previous_version" ] && [ "$misses" -lt 2 ]; then
               new_status=proxy; state_reason='mode-b: one DNS miss, awaiting confirmation'
+            elif [ "$misses" -ge 2 ]; then
+              new_status=degraded-proxy; state_reason='mode-b: managed DNS probes failed'
             else
-              new_status=degraded-dot-only; state_reason='mode-b: awaiting mihomo DNS confirmation'
+              new_status=proxy-priming; state_reason='mode-b: awaiting managed DNS confirmation'
             fi
           elif [ "$mode" = direct ] && ! $CLASH_ON; then
             hits=0; misses=0

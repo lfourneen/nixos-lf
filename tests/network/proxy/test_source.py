@@ -245,6 +245,58 @@ class SourceTests(unittest.TestCase):
             w.prepare(request, resolver=resolver)
         self.assertEqual([call.args[0] for call in resolver.call_args_list], ['proxy.example'])
 
+    def test_protected_transport_keeps_only_proven_channels(self):
+        targets = {'require-protected-node-transport': True}
+        endpoint = {key: NODE[key] for key in ('name', 'server', 'port')}
+        relay = dict(endpoint, type='socks5', port=444, udp=True)
+        protected = dict(endpoint, type='http', tls=True, udp=False)
+        rejected = [
+            dict(endpoint, type='http', tls=False),
+            dict(endpoint, type='socks5', udp=False),
+            dict(endpoint, type='socks5', tls=True, UDP=True),
+            dict(protected, tls='true'),
+            dict(protected, **{'SKIP_CERT_VERIFY': True}),
+            dict(NODE, type='ss', cipher='aes-128-cfb', password='fixture'),
+            dict(NODE, type='ss', cipher='aes-128-gcm', password=''),
+            dict(NODE, type='vless', tls=True, network='xhttp'),
+            dict(NODE, type='tuic', **{'DISABLE_SNI': True}),
+            dict(NODE, type='tuic', ip='1.0.0.1'),
+            dict(NODE, type='hysteria2', **{'realm-opts': {'server': 'alternate.example'}}),
+            relay,
+        ]
+        for node in rejected:
+            with self.subTest(node=node):
+                with self.assertRaises(w.Refused):
+                    w.render(dict(DOC, proxies=[node]), {}, {'lf-private-targets': targets})
+        saved = {}
+        alternate = dict(protected, name='alternate', tls=False)
+        document = dict(DOC, proxies=[protected, alternate],
+                        **{'proxy-groups': [dict(DOC['proxy-groups'][0], proxies=[protected['name'], alternate['name']])]})
+        rendered = w.load(w.render(document, {}, {'lf-private-targets': targets}, source=saved))
+        self.assertEqual(rendered['proxies'], [protected])
+        self.assertEqual(saved['proxies'], [protected])
+        self.assertEqual(rendered['proxy-groups'][0]['proxies'], [protected['name']])
+        with self.assertRaises(w.Refused):
+            w.render(dict(document, rules=['DOMAIN,fixture.example,alternate', 'MATCH,P']), {},
+                     {'lf-private-targets': targets})
+
+    def test_wireguard_relay_is_preserved_but_never_emitted_in_rules(self):
+        relay = {'type': 'socks5', 'name': 'tunnel', 'server': '1.1.1.1', 'port': 1080, 'udp': True}
+        secure = dict(NODE, type='ss', server='9.9.9.9', cipher='aes-128-gcm', password='fixture-password')
+        document = dict(DOC, proxies=[relay, secure],
+                        **{'proxy-groups': [dict(DOC['proxy-groups'][0], proxies=[relay['name'], secure['name']])]})
+        targets = {'require-protected-node-transport': True, 'wireguard-relay': {'address': '1.1.1.1', 'port': 1080}}
+        saved = {}
+        rules = w.load(w.render(document, {}, {'lf-private-targets': targets}, source=saved))
+        self.assertEqual(rules['proxies'], [secure])
+        self.assertEqual(saved['proxies'], [relay, secure])
+        strict = {'lf-private-targets': dict(targets, **{'proxy-only': True, 'single-egress': True}),
+                  'lf-ip-tunnel': {'relayAddress': '1.1.1.1', 'relayPort': 1080}}
+        tunneled = w.load(w.render(saved, {}, strict, egress_id=w.node_identity(relay)))
+        self.assertEqual(tunneled['proxies'], [relay])
+        self.assertEqual(w.load(w.render(saved, {}, {'lf-private-targets': {
+            'require-protected-node-transport': True}}))['proxies'], [secure])
+
     def test_ua_negotiation_on_the_same_endpoint(self):
         class Connection:
             sock = None

@@ -154,7 +154,8 @@ table inet recovery_wire {
     marker.touch()
     try:
         run('systemd-run', '--no-block', f'--unit={unit}', 'proxy-control', 'recover')
-        wait(active.exists, 18)
+        # The recovery transaction first stops the core and establishes C.
+        wait(active.exists, 40)
         assert status()['mode'] == 'blocked'
         assert (runtime / 'intent').read_text().strip() == 'proxy'
         assert '1.1.1.1 . 443' in run('nft', 'list', 'set', 'inet', 'lf_filter',
@@ -265,6 +266,7 @@ def check():
     run(sys.executable, '/etc/netsec-control.py', 'check_gui_controls')
     request('domestic.fixture.example')
     request('denied.fixture.example', False)
+    print(run(sys.executable, '/etc/netsec-assurance.py', 'dns-roles').stdout, end='', flush=True)
     source = Path('/var/lib/clash-source/selected').resolve()
     wait(lambda: (source / 'approved/rules/settled.json').exists(), 100)
     rule_snapshot = json.loads((source / 'approved/rules/settled.json').read_text())['digest']
@@ -274,6 +276,7 @@ def check():
     wait(lambda: Path('/tmp/routing-old-replies').exists())
 
     strict = route('proxy-only')
+    print(run(sys.executable, '/etc/netsec-assurance.py', 'dns-roles').stdout, end='', flush=True)
     run(sys.executable, '/etc/netsec-control.py', 'check_gui_controls')
     assert strict['capabilities']['icmp'] == 'blocked'
     assert strict['capabilities']['udp'] == 'not-probed'

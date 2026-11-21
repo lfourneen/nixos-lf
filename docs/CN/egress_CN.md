@@ -38,7 +38,8 @@ UID、接口和端口来自 [machine.nix](../../system/config/machine.nix)、服
 |---|---|---|
 | 隔离代理核心 | 固定私有 veth/源地址，公网 TCP/UDP 或已授权本地目标。宿主清除 packet mark 并核对回包归属 | B 及 C 恢复。危险目标、宿主保留服务和外部 53 端口受限。网络能力仅作用于核心命名空间 |
 | Tailscale | root UDP socket，两个 mark **同时**为上游 `LinuxBypassMarkNum`（`0x80000`），物理 `ens1`/`wlo1`。peer/STUN 地址和端口动态 | B 保留打洞，C 阻断。正常系统构建检查[源码约定](../../system/config/network/tailscale/transport.nix)，不能对抗 root 冒用 |
-| 宿主 Unbound（983） | 声明的字面 IPv4/IPv6 上游，TCP 853 | A/B 均检查目标。B 可用 `unboundDotInProxy=false` 关闭此例外。C 阻断外部 DoT。其它普通 UID 不得使用 TCP/UDP 853。root 诊断仍受信任。443 DoH 属于另一策略 |
+| 应用 Unbound（983） | 声明的字面 IPv4/IPv6 上游，TCP 853 | 仅 A。进入 B 时内核切断此解析器的流量和 loopback 回包 |
+| 基础设施 Unbound（979） | 同一组声明的 DoT 上游，TCP 853 | A 和 Rules B 可用于来源下载及受限 socket 后端。通过 `unboundDotInProxy=false` 收回 Rules 中的例外 |
 | Chrony（61） | 物理上行，UDP 123、TCP 4460 | A/B，C 阻断。默认兼容地址变化。可用 `timeServerCidrs` 在 A/B 的 TUN/NAT 之前限制原始目标，须包含 NTS-KE 和协商出的 NTP 服务器 |
 | dnsmasq（985）分流 DNS | 已安装、有到期时间的接口 + 解析器地址租约，TCP/UDP 53 | 更早的 DNS 守卫强制检查租约。受限 B 保留，C 阻断外部查询 |
 | 受管 DNS 后续路径 | 普通物理上行 TCP/UDP 53，MagicDNS 除外 | 继续进入现有 DNS 重定向，不授予任意直连 DNS。更早的租约与内部端口守卫仍有效 |
@@ -56,7 +57,7 @@ C 还保留[网络架构](network_CN.md)说明的窄核心恢复与自检路径�
 启用 `localDnssec=true` 时，私有验证器只能查询核心命名空间中的 loopback 传输监听，没有外部 DNS 传输权限。
 Rules 模式下，海外应用查询通过独立的 `lf-dns` 选择组发往认证的 Cloudflare 或 Google DoH。运行时 `proxy-only` 通过固定叶子传输应用和引导 DoH。
 C 中继续保留核心原有的恢复传输。
-`unboundDotInProxy` 控制宿主 Unbound 例外，不关闭这些私有验证器。
+`unboundDotInProxy` 仅控制基础设施 Unbound 在 Rules 中的例外。C 阻断普通宿主 DoT，已登记来源的恢复使用单独租约授权的解析器。root 诊断受信任。
 
 DNS 传输由 `my.proxy.dnsEncryption` 独立控制。
 默认允许 A 中有租约的明文恢复。

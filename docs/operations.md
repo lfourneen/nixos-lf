@@ -304,8 +304,7 @@ Readiness requires current-generation mode, DNS, broker and relay observations, 
 Verifier results `ok` and `degraded` both confirm that the hard checks passed.
 `degraded` retains an advisory and appears as `Passed · warnings`.
 Failed or unknown results block readiness.
-Broker state must be `applied`.
-`suspended`/`revoked` and DNS `degraded-dot-only` are not ready.
+Broker state must be `applied`. B requires DNS status `proxy`. With strict DNS, A accepts `dot` or `dot-priming`.
 Consumer freshness defaults to 120 seconds.
 Verifier freshness defaults to 420 seconds, covering its five-minute timer and bounded execution.
 Boot identity and monotonic timestamps reject cross-boot, future and stale records.
@@ -319,6 +318,8 @@ Boot identity and monotonic timestamps reject cross-boot, future and stale recor
 | `route` | Actual logged leaf is DIRECT/REJECT or inconsistent with the selected graph |
 | `obs`, `obs:1/3`, `obs:2/3`, `obs:3/3` | HTTP completion, exact source-port log and selection observations |
 | `resolver-error`, `split-error` | DNS listener identity or approved Wi-Fi profile/lease |
+| DNS `proxy-priming`, `degraded-proxy` | B is confirming the selected core resolver or its probes failed. Check the core DNS listener and selected DoH path |
+| DNS `degraded-dot-only` | Check A's authenticated DoT upstreams and DNSSEC probe result |
 
 ```sh
 journalctl -b -u proxy-mode -u dns-upstream -u gost-relay -u clash-verge

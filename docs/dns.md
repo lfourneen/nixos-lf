@@ -16,7 +16,7 @@ An older recovery generation requires deliberate selection rather than automatic
 Applications -> systemd-resolved -> dnsmasq 127.0.0.1:1054
                                       | local suffix blocklist / exceptions
                                       +-> B: Mihomo 127.0.0.1:1053 (fake-IP)
-                                      +-> A/C: Unbound 127.0.0.1:1055 (DoT)
+                                      +-> A: Unbound 127.0.0.1:1055 (DoT)
                                       +-> approved split DNS / leased A fallback
 ```
 
@@ -184,12 +184,12 @@ It removes domestic resolver-policy maps, direct bootstrap and MagicDNS transpor
 The core starts from accepted, pinned node addresses, preserving TLS server names; switching does not require a network fetch or direct name lookup.
 An unavailable node or validator keeps C active.
 
-Host-side source downloads and restricted socket backends still need real addresses.
-The host's filtering resolver sees subscription and provider hostnames, node hostnames resolved to pin endpoint addresses, and queries from restricted socket backends.
-With runtime routing, their port 1056 dnsmasq forwards to a fixed loopback gateway on 1059.
-For proxy-only intent, the gateway crosses a root-owned Unix socket to the application validator in the core namespace; it never falls back to host DoT.
-Rules and A use host Unbound 1055.
-Only root and dnsmasq may query 1059; the Unix bridge has no arbitrary destination option.
+During B DNS startup (`proxy-priming`) and probe failure (`degraded-proxy`), the ordinary resolver keeps sending public queries to the selected core path.
+An unavailable managed path can make fresh queries fail. The transition to B also cuts outstanding DoT and loopback replies from A's application Unbound on port 1055.
+
+The real-address filtering resolver for subscription and provider hostnames, node endpoint pinning and restricted socket backends listens on port 1056. With runtime routing it uses the infrastructure gateway on port 1062.
+Rules and A use a dedicated host Unbound on port 1061 with its own DoT connections and cache. The gateway uses a root-owned Unix socket to the core application validator for proxy-only intent.
+Port 1059 serves ordinary real-address queries when the WireGuard exit is selected and refuses them in A and Rules.
 Host DoT, split DNS and native MagicDNS cannot cross the proxy-only outer firewall.
 Switching flushes host resolver caches and recreates the core validators; managed fake-IP mappings persist so addresses cached by applications retain their domain identity.
 
@@ -258,11 +258,11 @@ Returning to the compatibility path requires explicitly selecting `localDnssec=f
 
 ## Restricted socket guest DNS
 
-When `my.hardening.socketGuestUsers` is nonempty or controlled sources are enabled, [socket-guest.nix](../system/config/network/dns/socket-guest.nix) starts an additional loopback dnsmasq on port 1056 as UID 985.
+When `my.hardening.socketGuestUsers` is nonempty or controlled sources are enabled, an additional loopback dnsmasq listens on port 1056 as the dedicated `socket-guest-dns` user (UID 978). [Resolver service](../system/config/network/dns/socket-guest.nix)
 It shares the immutable suffix filter, additions and exceptions and returns real addresses.
-With runtime routing it uses the selected gateway path described above; otherwise it forwards to host Unbound 1055.
+Without runtime routing it forwards directly to the infrastructure Unbound on port 1061.
 It has no plaintext lease, split-DNS or native MagicDNS path.
-Unavailable DoT, including `unboundDotInProxy=false` in B, makes fresh public names fail.
+In A and Rules, unavailable infrastructure DoT makes fresh public names fail. Setting `unboundDotInProxy=false` disables that transport in Rules.
 Eligible cached/local answers remain available.
 
 The declared primary and subordinate UIDs have TCP/UDP port 53 redirected here before the core's auto-redirect.

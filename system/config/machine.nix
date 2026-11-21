@@ -68,7 +68,9 @@
       clashCore = lib.mkOption { type = lib.types.int; default = 982; };
       clashValidate = lib.mkOption { type = lib.types.int; default = 1197; };
       unbound = lib.mkOption { type = lib.types.int; default = 983; };
+      unboundInfrastructure = lib.mkOption { type = lib.types.int; default = 979; };
       dnsmasq = lib.mkOption { type = lib.types.int; default = 985; };
+      socketGuestDns = lib.mkOption { type = lib.types.int; default = 978; };
       dhcpcd = lib.mkOption { type = lib.types.int; default = 986; };
       gost = lib.mkOption { type = lib.types.int; default = 987; };
       clashLoopback = lib.mkOption { type = lib.types.int; default = 1199; };
@@ -85,6 +87,8 @@
       coreDnsBootstrapTransport = lib.mkOption { type = lib.types.port; default = 1058; };
       coreRealDns = lib.mkOption { type = lib.types.port; default = 1059; };
       sourceRecoveryDns = lib.mkOption { type = lib.types.port; default = 1060; };
+      unboundInfrastructure = lib.mkOption { type = lib.types.port; default = 1061; };
+      coreInfrastructureDns = lib.mkOption { type = lib.types.port; default = 1062; };
       coreLoopback = lib.mkOption { type = lib.types.port; default = 14661; };
       gostHttp = lib.mkOption { type = lib.types.port; default = 33332; };
       gostRedirect = lib.mkOption { type = lib.types.port; default = 33333; };
