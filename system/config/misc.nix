@@ -72,7 +72,7 @@
   };
 
   time = {
-    timeZone = "Asia/Singapore";
+    timeZone = "Asia/Taipei";
 
     # Keep the hardware RTC in UTC (the systemd/NTP default). Local-time RTC is
     # discouraged: it causes boot-time clock jumps and breaks on DST/timezone
