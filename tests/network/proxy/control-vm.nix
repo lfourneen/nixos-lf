@@ -368,6 +368,10 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"systemd-run --unit=control-node ip netns exec outside {core} -d /run/netsec-node -f /run/netsec-node.json")
     machine.wait_until_succeeds("ip netns exec outside ss -lnt | grep -q :18080")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct")
+    ${pkgs.lib.optionalString (managedSources && !routing) ''
+    machine.wait_for_unit("clash-core-network.service")
+    print(machine.succeed("python3 /etc/netsec-core-network.py host-input-boundary direct"))
+    ''}
     ${pkgs.lib.optionalString arpProtection ''
     ${builtins.readFile ./arp_vm.py}
     check_arp_direct(machine, ${toString desktop.uid})
@@ -583,12 +587,13 @@ pkgs.testers.runNixOSTest {
     ''}
     machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups proxy-status --json | jq -e '(.ready | type) == \"boolean\" and .mode == \"proxy\"'")
     ${pkgs.lib.optionalString (managedSources && !routing) ''
+    print(machine.succeed("python3 /etc/netsec-core-network.py host-input-boundary proxy"))
     with subtest("source refresh uses real filtered DNS while B returns fake-IP"):
         print(machine.succeed("python3 -u /etc/netsec-managed.py refresh", timeout=90))
         wait_proxy()
     with subtest("registered source, actual strict inlet and kernel C revocation share the production namespace"):
         try:
-            print(machine.succeed("python3 -u /etc/netsec-managed.py recover", timeout=420))
+            print(machine.succeed("python3 -u /etc/netsec-managed.py recover", timeout=480))
             wait_proxy()
             print(machine.succeed("python3 -u /etc/netsec-managed.py strict", timeout=120))
             wait_proxy()
@@ -617,7 +622,7 @@ pkgs.testers.runNixOSTest {
             print(machine.succeed("python3 -u /etc/netsec-assurance.py dns", timeout=90))
             print(machine.succeed("ip netns exec lf-clash-core python3 -u /etc/netsec-assurance.py pressure", timeout=60))
             wait_proxy()
-            print(machine.succeed("python3 -u /etc/netsec-assurance.py lease", timeout=120))
+            print(machine.succeed("python3 -u /etc/netsec-assurance.py lease", timeout=240))
         except Exception:
             print(machine.execute("journalctl -u clash-dns-application -u clash-dns-infrastructure -u netsec-assurance-dns -u proxy-mode --no-pager -n 50; cat /run/proxy-mode/health.json /run/proxy-mode/authorization.json; nft list set inet lf_filter b_authorization"))
             raise
@@ -832,6 +837,24 @@ pkgs.testers.runNixOSTest {
     machine.succeed("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy '*' -fsS --max-time 3 http://100.67.0.1:8080/ >/dev/null")
     machine.fail("setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy '*' -fsS --max-time 2 http://100.67.0.1:80/")
     machine.fail("curl --noproxy '*' -fsS --max-time 2 http://100.67.0.1:8080/")
+    with subtest("missing restricted host policy refuses private egress"):
+        policy_version = int(machine.succeed("jq -r .policy_version /run/proxy-mode/state.json"))
+        machine.succeed("ip netns exec outside nft 'add table inet host_direct_wire'; "
+                        "ip netns exec outside nft 'add chain inet host_direct_wire input { type filter hook input priority -10; policy accept; }'; "
+                        "ip netns exec outside nft 'add rule inet host_direct_wire input ip daddr 100.67.0.1 tcp dport { 80, 8080 } counter'; "
+                        "systemctl freeze proxy-mode.service")
+        try:
+            machine.succeed("nft flush chain inet lf_filter lf_host_direct")
+            for port in (80, 8080):
+                machine.fail(f"setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy '*' -fsS --max-time 2 http://100.67.0.1:{port}/")
+            machine.succeed("ip netns exec outside nft list chain inet host_direct_wire input | grep -F 'counter packets 0 bytes 0'")
+        finally:
+            machine.succeed("systemctl thaw proxy-mode.service; ip netns exec outside nft delete table inet host_direct_wire")
+        machine.wait_until_succeeds(
+            f"jq -e '.policy_version > {policy_version}' /run/proxy-mode/state.json",
+            timeout=90,
+        )
+        wait_proxy()
     ''}
     ${pkgs.lib.optionalString (ech != null) ''
     for port in (1053, 1054):

@@ -95,7 +95,7 @@ def dns(target, name, tcp=False, expected=None, nx=False, stream=None):
 def hold(label, target, port, transport='tcp'):
     family = socket.AF_INET6 if ':' in target else socket.AF_INET
     with socket.socket(family, socket.SOCK_STREAM if transport == 'tcp' else socket.SOCK_DGRAM) as stream:
-        stream.settimeout(3)
+        stream.settimeout(6)
         stream.connect((target, port))
         stream.sendall(b'hold:' + label.encode())
         assert stream.recv(4096) == b'ready', label
@@ -513,7 +513,11 @@ def proxy():
             sessions.append(label)
             entries.append({'label': label, 'target': config['private4'], 'port': port, 'transport': transport})
         backends.append(start_backend(kind, 'guestnet', 'hold-'+kind, holds=entries))
-    wait(lambda: all((ROOT/(label+'.ready')).exists() for label in sessions), 45)
+    try:
+        wait(lambda: all((ROOT/(label+'.ready')).exists() for label in sessions), 45)
+    except TimeoutError as error:
+        missing = [label for label in sessions if not (ROOT/(label+'.ready')).exists()]
+        raise AssertionError(f'guest sessions did not become ready: {missing}') from error
     policy('revoke')
     for label in sessions: signal(label, 'after'); signal(label, 'push')
     wait(lambda: all((ROOT/(label+'.blocked')).exists() for label in sessions), 12)

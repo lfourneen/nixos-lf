@@ -228,13 +228,8 @@ chain lf_core_forward_guard {{
  oifname {device} ct direction reply ct original ip6 saddr {c6} jump lf_core_return
 }}
 chain lf_core_input {{
+ # Host input is reserved for replies on flows that the host sent through this veth.
  ct direction reply ct state established,related ct mark & 0x80000000 != 0 accept
- ct direction reply counter drop
- meta l4proto {{ tcp, udp }} th dport {{ {reserved} }} counter drop
- ip saddr {c4} jump lf_core_egress
- ip saddr {c4} accept
- ip6 saddr {c6} jump lf_core_egress
- ip6 saddr {c6} accept
  counter drop
 }}
 chain lf_core_alias_guard {{

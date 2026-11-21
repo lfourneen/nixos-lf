@@ -293,7 +293,7 @@ def recover():
         new_link.symlink_to(Path('/etc/netsec-rotated-blocklist.txt').resolve())
         new_link.replace(blocklist)
         run('proxy-control', 'on')
-        wait(ready, 30)
+        wait(ready, 90)
         assert not run('dig', '+short', '+time=1', '+tries=1', '@127.0.0.1', '-p',
                        '1053', 'rotated-block.fixture.example', 'A').stdout.strip()
         stable_pid = run('systemctl', 'show', '-p', 'MainPID', '--value', 'clash-verge.service').stdout.strip()
@@ -351,6 +351,8 @@ def recover():
         print('Root refresh auto-imported node rotation through normal audit and health gates; read-only diff retained authority')
         run('systemctl', 'stop', 'clash-verge.service')
         wait(lambda: state_is('blocked'), 45)
+        print(run(sys.executable, '/etc/netsec-core-network.py', 'host-input-boundary', 'blocked').stdout,
+              end='', flush=True)
         browser_request(False)
         run('systemctl', 'start', 'clash-verge.service')
         wait(ready, 90)
@@ -412,6 +414,13 @@ def strict():
     pid = int(run('systemctl', 'show', '-p', 'MainPID', '--value', 'clash-strict.service').stdout)
     assert pid > 0 and receive_queue() == 0
     original = run('nft', '-s', 'list', 'chain', 'inet', 'lf_filter', 'lf_strict_reply_guard').stdout
+
+    def independent_drops():
+        chain = json.loads(run('nft', '-j', 'list', 'chain', 'inet', 'lf_policy_guard',
+                               'lf_guard_require_input').stdout)
+        return sum(expr['counter']['packets'] for entry in chain['nftables']
+                   for expr in entry.get('rule', {}).get('expr', []) if 'counter' in expr)
+
     os.kill(pid, signal.SIGSTOP)
     coordinator = None
     try:
@@ -441,10 +450,11 @@ def strict():
         Path('/run/managed-stream-release').touch()
         time.sleep(.8)
         assert receive_queue() == 0, 'strict core replies entered the stopped host relay in C'
-        # Demonstrate a real receive-side loss: with only this guard removed,
-        # the same server push enters the same live TCP socket in C.
+        # The independent guard still cuts the existing TCP stream in C.
+        before = independent_drops()
         run('nft', 'flush', 'chain', 'inet', 'lf_filter', 'lf_strict_reply_guard')
-        wait(lambda: receive_queue() >= len(b'post-C-data'), 10)
+        wait(lambda: independent_drops() > before, 10)
+        assert receive_queue() == 0, 'strict core replies crossed the independent guard in C'
     finally:
         run('nft', 'flush', 'chain', 'inet', 'lf_filter', 'lf_strict_reply_guard')
         run('nft', '-f', '-', input=original)

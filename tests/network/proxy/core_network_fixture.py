@@ -1,8 +1,10 @@
 """Production topology confinement and localhost compatibility in the VM."""
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
 import pwd
+import select
 import socket
 import struct
 import subprocess
@@ -56,6 +58,71 @@ def packets(chain='lf_core_egress'):
     value = json.loads(run('nft', '-j', 'list', 'chain', 'inet', 'lf_filter', chain).stdout)
     return sum(expression.get('counter', {}).get('packets', 0)
                for entry in value['nftables'] for expression in entry.get('rule', {}).get('expr', []))
+
+
+def host_input_boundary(mode):
+    state = Path('/run/proxy-mode/state.json')
+    assert json.loads(state.read_text())['mode'] == mode
+    namespace = 'lf-clash-core'
+    nft = ('ip', 'netns', 'exec', namespace, 'nft')
+    ruleset = json.loads(run(*nft, '-j', 'list', 'ruleset').stdout)['nftables']
+    redirect = [chain['name'] for item in ruleset if (chain := item.get('chain'))
+                and chain.get('table') == 'mihomo' and chain.get('hook') == 'output']
+    for family, address, prefix, gateway in ((4, '192.0.2.77', 32, '10.255.253.1'),
+                                            (6, '2001:db8:fffe::77', 128, 'fd46:6c66:636f::1')):
+        alias = f'{address}/{prefix}'
+        link = ('ip', f'-{family}', 'addr')
+        netns = ('ip', '-n', namespace, f'-{family}')
+        with ExitStack() as cleanup:
+            run(*link, 'add', alias, 'dev', 'lo')
+            cleanup.callback(run, *link, 'del', alias, 'dev', 'lo')
+            # Reach the host INPUT hook without running these test destinations
+            # through the core's own application TUN or auto-redirect chains.
+            route = (alias, 'via', gateway, 'dev', 'lf-host', 'table', '10001')
+            selector = ('pref', '108', 'to', alias, 'lookup', '10001')
+            run(*netns, 'route', 'add', *route)
+            cleanup.callback(run, *netns, 'route', 'del', *route)
+            run(*netns, 'rule', 'add', *selector)
+            cleanup.callback(run, *netns, 'rule', 'del', *selector)
+            assert json.loads(run(*netns, '-j', 'route', 'get', address).stdout)[0]['dev'] == 'lf-host'
+            for name in redirect:
+                chain = ('inet', 'mihomo', name)
+                run(*nft, 'insert', 'rule', *chain, 'ip' if family == 4 else 'ip6',
+                    'daddr', address, 'return', 'comment', '"host-input-boundary"')
+                entries = json.loads(run(*nft, '-a', '-j', 'list', 'chain', *chain).stdout)['nftables']
+                handle, = (rule['handle'] for item in entries if (rule := item.get('rule'))
+                           and rule.get('comment') == 'host-input-boundary')
+                cleanup.callback(run, *nft, 'delete', 'rule', *chain, 'handle', handle)
+            for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+                with socket.socket(socket.AF_INET if family == 4 else socket.AF_INET6, kind) as listener:
+                    listener.bind((address, 0))
+                    if kind == socket.SOCK_STREAM:
+                        listener.listen()
+                    before = packets('lf_core_input')
+                    run('ip', 'netns', 'exec', namespace, 'setpriv', '--reuid=clash-core',
+                        '--regid=clash-core', '--clear-groups',
+                        sys.executable, __file__, 'host-input-probe', address,
+                        str(listener.getsockname()[1]), str(int(kind)))
+                    # A drop on host INPUT distinguishes refusal from merely
+                    # suppressing the host SYN-ACK or UDP response in C.
+                    deadline = time.monotonic() + 2
+                    while packets('lf_core_input') <= before:
+                        assert time.monotonic() < deadline, (mode, address, kind, 'no input refusal')
+                        time.sleep(.05)
+                    assert not select.select([listener], [], [], 0)[0], (mode, address, kind)
+    assert json.loads(state.read_text())['mode'] == mode
+    print(f'{mode}: host-local IPv4 and IPv6 TCP/UDP refused at core veth input', flush=True)
+
+
+def host_input_probe(address, port, kind):
+    family = socket.AF_INET6 if ':' in address else socket.AF_INET
+    with socket.socket(family, kind) as stream:
+        stream.settimeout(.5)
+        try:
+            stream.connect((address, port))
+            stream.sendall(b'namespace input probe')
+        except TimeoutError:
+            assert kind == socket.SOCK_STREAM
 
 
 def confinement():
@@ -128,7 +195,6 @@ def localhost_servers():
 
 
 def localhost_probe():
-    from contextlib import ExitStack
     for family, address in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
         for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
             with ExitStack() as stack:
@@ -236,6 +302,10 @@ if __name__ == '__main__':
         attacker(int(sys.argv[2]), int(sys.argv[3]))
     elif action == 'confinement':
         confinement()
+    elif action == 'host-input-boundary':
+        host_input_boundary(sys.argv[2])
+    elif action == 'host-input-probe':
+        host_input_probe(sys.argv[2], int(sys.argv[3]), int(sys.argv[4]))
     elif action == 'localhost-server':
         localhost_servers()
     elif action == 'localhost-probe':

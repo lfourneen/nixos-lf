@@ -281,6 +281,7 @@ The explicit migration adds its cleanup to that same transaction without leaving
 A rejected nft transaction must retain the previous policy, and first-load failure must retain the independent bootstrap baseline.
 Stopping the nftables unit must leave protection installed.
 Proxy intent must pass through C before a health proof permits B, including when the core remains alive during reload or migration.
+Keep `inet lf_policy_guard` independent of `inet lf_filter`. The required chains record traversal in temporary packet priority bits, which are cleared at both ends of each monitored hook. Apply the guard's requirements and the corresponding B or C chains in one transaction.
 
 Validating and HTTP-only configurations try `tunProbeNames` in order.
 Synthetic-only TUN configurations use a fresh name instead.
@@ -406,11 +407,11 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 | `proxy-single-egress-vm` | Two controlled exits: rules selector separation, fixed-leaf dual-stack TCP/UDP and DNS observations, actual Firefox and strict inlet, unsupported/lost UDP, old flows, concurrent refresh, uplink/node failure, plus routing and lease regressions |
 | `proxy-ip-tunnel-vm` | Dual-stack WireGuard echo, fixed TCP/UDP exit, relay restricted to the declared peer, source acceptance, lease revocation and peer rotation |
 | `proxy-rules`, `proxy-egress-rules` | Complete compatibility/restricted mode rules parsed by the build-time LKL nft environment |
-| `proxy-firewall-vm` | A/C ownership, external-table preservation, rejected-load rollback, migration locks, idempotence and migration-target name reuse |
+| `proxy-firewall-vm` | A/C ownership, C isolation during main table or chain loss and failed repair, external-table preservation, rejected-load rollback and migration |
 | `proxy-dns-strict-rules` | Complete strict DNS firewall rules parsed in LKL |
 | `proxy-dns-config` | Generated DNS and verifier script syntax across default, strict, dual-stack, IPv6-only and HTTP-only configurations |
 | `proxy-dns-strict-vm` | Real helper/core, shared DNS/proxy filtering, strict outage/override/lease and leftover-set refusal, private split permission and literal portal recovery |
-| `proxy-assurance-vm` | A/B local DNSSEC, direct DNS cutover with outstanding requests, managed DNS probe failure and recovery, independent DNS budgets, and dual-stack B lease revocation while the supervisor is frozen, stopped or suspended |
+| `proxy-assurance-vm` | A/B local DNSSEC, DNS cutover and probe failure, independent DNS budgets, and dual-stack B isolation during rule loss, lease expiry and suspend |
 | `proxy-guest-config`, `proxy-guest-rules` | Production/dedicated-account configuration and rootless launcher syntax. Complete mixed-role rules in LKL. Guest validation is also required by normal system builds |
 | `proxy-guest-vm` | Three real routed networks, DHCP/DNS, IPv4/ULA, spoofed sources, actual pasta/RootlessKit/subuid sockets, fake-IP refusal, stale DNS conntrack, bidirectional grant revocation and C with a live core |
 | `proxy-hermes-containers-vm` | Real legacy/new Docker, socket ACL, offline image, account grants, TCP/UDP, unsupported IPv6 refusal, Hermes host proxy, A/B/C and recovery |
@@ -419,7 +420,7 @@ VM checks run in an isolated guest and need KVM access for hardware acceleration
 | `proxy-egress-vm` | Restricted counterpart of the Tailscale VM. Scoped dual-stack private/multicast/DNS/DoT/NTS traffic, UID/interface/port denials, established grant revocation and C |
 | `proxy-egress-control-vm` | Restricted policy before real production TUN/NAT, including allowed/denied private destinations |
 | `tailscale-transport` | Selected upstream Linux bypass constant and expected magicsock/STUN socket marking paths. Also required by normal system builds |
-| `proxy-tailscale-vm` | Real selected Tailscale CLI, isolated dual-stack STUN, both uplinks, socket/packet/UID restrictions, B/C recovery and remote desktop port policy |
+| `proxy-tailscale-vm` | Real Tailscale listener and CLI, dual-stack UDP/STUN on both uplinks, listener restart and replacement, port reservation, authorization expiry, strict-mode blocking and remote desktop port policy |
 | `proxy-control-config` | Production/test identities, helper capabilities and generated listeners agree |
 | `proxy-core` | Patched core build and Go tests for the parser, router, target/cache, actual adapter leaf, DIRECT, UDP, DNS, SOCKS framing and sing-tun interval endpoints |
 | `proxy-target-vm` | Real helper/core, distinct local/node loopback traps, HTTP/CONNECT/SOCKS, internal-name pinning, scoped remote grant, Rule/Global and A/C behavior |

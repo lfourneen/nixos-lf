@@ -132,6 +132,55 @@ pkgs.testers.runNixOSTest {
             machine.succeed("systemctl reload nftables")
             assert_mode(machine, mode)
 
+        if mode == "blocked":
+            with subtest("independent C guard holds through chain loss and failed repair"):
+                machine.succeed("ip netns add guard-peer; ip link add guard-host type veth peer name guard-wire netns guard-peer; "
+                                "ip addr add 192.0.2.1/30 dev guard-host; ip -6 addr add 2001:db8:122::1/64 dev guard-host nodad; "
+                                "ip -n guard-peer addr add 192.0.2.2/30 dev guard-wire; "
+                                "ip -n guard-peer -6 addr add 2001:db8:122::2/64 dev guard-wire nodad; "
+                                "ip link set guard-host up; ip -n guard-peer link set guard-wire up")
+                machine.succeed("ip netns exec guard-peer nft add table inet guard_receipts; "
+                                "ip netns exec guard-peer nft 'add chain inet guard_receipts wire { type filter hook input priority -10; policy accept; }'; "
+                                "ip netns exec guard-peer nft add rule inet guard_receipts wire udp dport 19001 counter")
+                probe = shlex.quote("import socket\nfor family, address in ((socket.AF_INET, '192.0.2.2'), (socket.AF_INET6, '2001:db8:122::2')):\n"
+                                    "    with socket.socket(family, socket.SOCK_DGRAM) as stream:\n"
+                                    "        try:\n"
+                                    "            stream.sendto(b'fixture', (address, 19001))\n"
+                                    "        except PermissionError:\n"
+                                    "            pass")
+                guard = "nft -s -j list table inet lf_policy_guard"
+                wire = "ip netns exec guard-peer nft list chain inet guard_receipts wire"
+                independent = json.loads(machine.succeed(guard))
+                support = snapshot(machine, legacy + foreign)
+
+                def refuses_drift():
+                    counters = ("nft -j list chain inet lf_policy_guard lf_guard_require_output | "
+                                "jq '[.nftables[].rule?.expr[]?.counter.packets // empty] | add'")
+                    drops = int(machine.succeed(counters))
+                    machine.succeed(f"setpriv --reuid=1000 --clear-groups python3 -c {probe}")
+                    machine.succeed(f"{wire} | grep -F 'counter packets 0 bytes 0'")
+                    assert int(machine.succeed(counters)) >= drops + 2
+                    assert json.loads(machine.succeed(guard)) == independent
+
+                machine.succeed("nft flush chain inet lf_filter lf_blocked_guard")
+                refuses_drift()
+                machine.succeed("systemctl reload nftables")
+                independent = json.loads(machine.succeed(guard))
+                for attempt in range(2):
+                    machine.succeed("nft delete table inet lf_filter; mount --bind /tmp/invalid.nft $(readlink -f /etc/firewall-static)")
+                    try:
+                        machine.fail("/etc/firewall-mode --once")
+                        machine.succeed("jq -e '.mode == \"unenforced\" and .reason == \"policy-repair-failed\"' /run/proxy-mode/state.json")
+                        machine.fail("nft list table inet lf_filter")
+                        refuses_drift()
+                        assert snapshot(machine, legacy + foreign) == support, attempt
+                    finally:
+                        machine.succeed("umount $(readlink -f /etc/firewall-static)")
+                    machine.succeed("systemctl reload nftables")
+                    assert_mode(machine, mode)
+                    independent = json.loads(machine.succeed(guard))
+                machine.succeed("ip link delete guard-host; ip netns delete guard-peer")
+
         with subtest(f"{machine.name}: migration requires root and the shared policy lock"):
             machine.fail("setpriv --reuid=1000 --clear-groups proxy-control migrate-firewall")
             assert snapshot(machine, legacy + foreign) == original

@@ -1,4 +1,4 @@
-{ lib, config, proxyKillSwitch, hostDirectGuard, guestGuard, vmTproxy,
+{ lib, config, proxyKillSwitch, policyGuard, hostDirectGuard, guestGuard, vmTproxy,
   tproxyPrerouting, coreSocket, m, wired, wireless, tailscaleMark,
   exempt4, exempt6, tunDev, join, multicast4, guestPolicy,
   vmTransparentProxyIfaces, nftIfaces, tproxyMark, guestIfaces,
@@ -21,6 +21,8 @@ let
   probe = chain: verdict: lib.concatMapStrings ({ family, icmp, probe }: ''
     add rule inet lf_filter ${chain} oifname ${tunnelDevice} meta skuid 0 meta mark ${tunnel.probeMark} ${family} daddr ${probe} ${icmp} type echo-request ct mark set ${tunnel.probeMark} ${verdict}
   '') echo;
+  # An exception in proxymode_drops terminates output before proxymode_tail.
+  acceptBeforeTail = "${policyGuard.stamp [ "proxyTail" ]} accept";
 in {
   proxyModeRules = lib.optionalString proxyKillSwitch ''
     # One atomic load: the mode-dependent NAT tables are torn down here, inside the
@@ -28,6 +30,7 @@ in {
     destroy table ip lf_proxymode_nat
     destroy table ip6 lf_proxymode_nat
 
+    ${policyGuard.enforce "proxy"}
     # Leaving Mode C: the guard must be empty or its drop would refuse everything.
     flush chain inet lf_filter lf_blocked_guard
     ${lib.optionalString config.my.proxy.runtimeRouting ''
@@ -35,8 +38,10 @@ in {
     flush set inet lf_filter source_recovery6
     ''}
     flush chain inet lf_filter lf_tailnet_guard
+    add rule inet lf_filter lf_tailnet_guard ${policyGuard.stamp [ "mode" ]}
     add rule inet lf_filter lf_tailnet_guard ct direction reply ct mark ${directDnsConnmark} counter drop
     flush chain inet lf_filter lf_strict_reply_guard
+    add rule inet lf_filter lf_strict_reply_guard ${policyGuard.stamp [ "service" ]}
     ${hostDirectGuard}
     flush set inet lf_filter dns_plaintext4
     ${guestGuard "proxy"}
@@ -46,24 +51,26 @@ in {
     ''}
 
     flush chain inet lf_filter proxymode_drops
+    add rule inet lf_filter proxymode_drops ${policyGuard.stamp [ "proxyDrops" ]}
     ${lib.optionalString tunnelEnabled ''
-    ${probe "proxymode_drops" "accept"}
-    add rule inet lf_filter proxymode_drops ${outer} accept
+    ${probe "proxymode_drops" acceptBeforeTail}
+    add rule inet lf_filter proxymode_drops ${outer} ${acceptBeforeTail}
     ''}
     # The proxy core marks its own outbound sockets (routing-mark): allow it, it
     # must reach the nodes directly.
-    add rule inet lf_filter proxymode_drops ${coreSocket} accept
+    add rule inet lf_filter proxymode_drops ${coreSocket} ${acceptBeforeTail}
     # DHCP clients on the uplinks: NM is root, dhcpcd has its pinned UID.
-    add rule inet lf_filter proxymode_drops meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 accept
-    add rule inet lf_filter proxymode_drops meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 accept
+    add rule inet lf_filter proxymode_drops meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 68 udp dport 67 ${acceptBeforeTail}
+    add rule inet lf_filter proxymode_drops meta skuid { 0, ${toString m.uids.dhcpcd} } oifname { "${wired}", "${wireless}" } udp sport 546 udp dport 547 ${acceptBeforeTail}
     # Tailscale transports require root ownership and its socket/packet mark.
-    add rule inet lf_filter proxymode_drops meta skuid 0 oifname { "${wired}", "${wireless}" } meta l4proto udp socket mark ${tailscaleMark} meta mark ${tailscaleMark} counter accept
+    add rule inet lf_filter proxymode_drops meta skuid 0 oifname { "${wired}", "${wireless}" } meta l4proto udp socket mark ${tailscaleMark} meta mark ${tailscaleMark} counter ${acceptBeforeTail}
     # Everything else leaving an uplink for a non-local destination is dropped,
     # root included.
     add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } ip daddr != { ${exempt4} } counter drop
     add rule inet lf_filter proxymode_drops oifname { "${wired}", "${wireless}" } ip6 daddr != { ${exempt6} } counter drop
 
     flush chain inet lf_filter proxymode_tail
+    add rule inet lf_filter proxymode_tail ${policyGuard.stamp [ "proxyTail" ]}
     ${lib.optionalString tunnelEnabled ''
     add rule inet lf_filter proxymode_tail oifname ${tunnelDevice} meta l4proto { icmp, icmpv6 } accept
     ''}
@@ -75,6 +82,7 @@ in {
     # the killswitch cannot see it: public destinations are refused instead (v4
     # and v6).
     flush chain inet lf_filter proxymode_forward
+    add rule inet lf_filter proxymode_forward ${policyGuard.stamp [ "mode" ]}
     ${lib.optionalString (config.my.proxy.coreNetns && vmTransparentProxyIfaces != [ ]) ''
     ${lib.concatMapStrings (n: lib.optionalString (builtins.elem n.interface vmTransparentProxyIfaces && n.source4 != [ ]) ''
     add rule inet lf_filter proxymode_forward iifname "${n.interface}" oifname "${tunDev}" ip saddr { ${join n.source4} } meta mark ${tproxyMark} accept
@@ -113,6 +121,7 @@ in {
   # Mode C revokes application traffic and preserves bounded recovery paths.
   blockedModeRules = lib.optionalString proxyKillSwitch ''
     ${config.my.proxy.authorizationReset}
+    ${policyGuard.enforce "blocked"}
     # Tear the normal fragment down inside the same load: no stale redirect and
     # no stale drop can survive next to the guard.
     destroy table ip lf_proxymode_nat
@@ -123,13 +132,16 @@ in {
     flush chain inet lf_filter lf_host_egress_guard
     flush chain inet lf_filter lf_host_direct
     flush chain inet lf_filter lf_tailnet_guard
+    add rule inet lf_filter lf_tailnet_guard ${policyGuard.stamp [ "mode" ]}
     add rule inet lf_filter lf_tailnet_guard ct direction reply ct mark ${directDnsConnmark} counter drop
     flush chain inet lf_filter lf_strict_reply_guard
+    add rule inet lf_filter lf_strict_reply_guard ${policyGuard.stamp [ "service" ]}
     ${lib.optionalString config.my.proxy.strictBrowser ''
     ${lib.concatMapStrings (rule: "add rule inet lf_filter lf_strict_reply_guard ${rule}\n") strictReplyRules}
     ''}
     ${lib.optionalString config.services.tailscale.enable ''
     add rule inet lf_filter lf_tailnet_guard iifname "${config.services.tailscale.interfaceName}" counter drop
+    add rule inet lf_filter lf_tailnet_guard iifname { "${wired}", "${wireless}" } meta l4proto udp socket mark ${tailscaleMark} counter drop
     ''}
     ${lib.optionalString (guestPolicy.socketUids != [ ]) ''
     add rule inet lf_filter lf_tailnet_guard ${actorConnmark} ${guestPolicy.socketMarks} ct direction reply counter drop
@@ -148,6 +160,7 @@ in {
     ${lib.optionalString vmTproxy "flush chain ip lf_mangle proxymode_tproxy"}
 
     flush chain inet lf_filter lf_blocked_guard
+    add rule inet lf_filter lf_blocked_guard ${policyGuard.stamp [ "mode" ]}
     ${lib.optionalString config.my.proxy.runtimeRouting "add rule inet lf_filter lf_blocked_guard meta mark 0x4c460003 ct mark 0x4c460003 accept"}
     ${lib.optionalString tunnelEnabled ''
     ${probe "lf_blocked_guard" "accept"}
@@ -195,6 +208,7 @@ in {
     # Guests/VMs are forwarded traffic: the output guard never sees them, so they
     # are refused public destinations here (LAN/portal stays reachable; the
     # forward chain's early `jump proxymode_forward` runs before its accepts).
+    add rule inet lf_filter proxymode_forward ${policyGuard.stamp [ "mode" ]}
     add rule inet lf_filter proxymode_forward iifname ${nftIfaces guestIfaces} ip daddr != { ${local4} } counter drop
     add rule inet lf_filter proxymode_forward iifname ${nftIfaces guestIfaces} ip6 daddr != { ${local6} } counter drop
     add rule inet lf_filter proxymode_forward oifname ${nftIfaces guestIfaces} ip saddr != { ${local4} } counter drop

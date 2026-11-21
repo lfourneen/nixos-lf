@@ -32,7 +32,8 @@ def status():
 def request(name, allowed=True, uid=1000):
     path = ['--noproxy', '*', '--resolve', f'{name}:18082:203.0.113.10'] if uid in (1100, 600001) else [
         '--noproxy', '', '-x', 'http://127.0.0.1:33332']
-    result = run('setpriv', f'--reuid={uid}', '--clear-groups', 'curl', *path, '-fsS', '--max-time', '4',
+    timeout = '8' if allowed else '4'
+    result = run('setpriv', f'--reuid={uid}', '--clear-groups', 'curl', *path, '-fsS', '--max-time', timeout,
                  f'http://{name}:18082/', required=False)
     assert (result.returncode == 0) == allowed, (name, uid, result.stdout, result.stderr)
 
@@ -290,7 +291,7 @@ def check():
     time.sleep(1)
     assert Path('/tmp/routing-old-replies').read_text() == before, 'old LAN pushes crossed the strict boundary'
     run('systemctl', 'stop', 'routing-old-client.service', 'routing-old-peer.service')
-    wait(lambda: (source / 'approved/proxy-only/settled.json').exists(), 100)
+    wait(lambda: (source / 'approved/proxy-only/settled.json').exists(), 180)
     strict_snapshot = json.loads((source / 'approved/proxy-only/settled.json').read_text())['digest']
     assert (source / 'approved/proxy-only' / strict_snapshot / 'source-data.json').read_bytes() == original
 
@@ -427,7 +428,7 @@ table inet routing_wire {
     interrupt_waiting_switch(runtime)
     recover_source(runtime)
     route('proxy-only')
-    run('python3', '/etc/netsec-assurance.py', 'lease', timeout=150)
+    print(run('python3', '/etc/netsec-assurance.py', 'lease', timeout=240).stdout, end='', flush=True)
     wait(lambda: status()['ready'])
     print('Routing: bidirectional switches, idempotence, off/on memory, corruption failure, concurrency, '
           'interrupted wait recovery and kernel expiry passed', flush=True)

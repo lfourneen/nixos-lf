@@ -17,6 +17,15 @@ let
 in
 {
   options.my.hardening.tailscale = {
+    ingressPort = lib.mkOption {
+      type = lib.types.nullOr lib.types.port;
+      internal = true;
+      readOnly = true;
+      default = if config.services.tailscale.enable && config.services.tailscale.port != 0
+        then config.services.tailscale.port else null;
+      description = "Fixed magicsock UDP port eligible for physical ingress and reserved from local allocation.";
+    };
+
     transportMark = lib.mkOption {
       type = lib.types.int;
       internal = true;

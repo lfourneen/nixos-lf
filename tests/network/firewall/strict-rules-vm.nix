@@ -53,7 +53,8 @@ pkgs.testers.runNixOSTest {
             machine.succeed("nft -j list ruleset > /tmp/live.json")
             machine.succeed("${config.my.proxy.rulesCheck} compare ${config.my.proxy.expectedRules}/" + mode + ".json /tmp/live.json")
             chain = json.loads(machine.succeed("nft -j list chain inet lf_filter lf_strict_reply_guard"))
-            replies = [entry['rule'] for entry in chain['nftables'] if 'rule' in entry]
+            replies = [entry['rule'] for entry in chain['nftables']
+                       if any('drop' in expr for expr in entry.get('rule', {}).get('expr', []))]
             expected_replies = 0 if mode == "proxy" else (2 if config_core_netns else 1)
             assert len(replies) == expected_replies, (mode, replies)
             previous = mode

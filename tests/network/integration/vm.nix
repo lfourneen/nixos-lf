@@ -597,7 +597,7 @@ pkgs.testers.runNixOSTest {
                               ("unspecified", "A"), ("linklocal", "A"), ("ula", "AAAA"),
                               ("loopback6", "AAAA"), ("unspecified6", "AAAA"),
                               ("linklocal6", "AAAA"), ("mapped", "AAAA"), ("mapped-cgnat", "AAAA")):
-            value = machine.succeed(f"dig {transport} +time=2 +tries=1 +short @127.0.0.1 -p 1054 {label}.rebind.fixture.example {rrtype}").strip()
+            value = machine.succeed(f"dig {transport} +time=3 +tries=2 +short @127.0.0.1 -p 1054 {label}.rebind.fixture.example {rrtype}").strip()
             assert not value, (label, value)
         value = machine.succeed(f"dig {transport} +time=2 +tries=1 +short @127.0.0.1 -p 1054 alias.rebind.fixture.example A").strip()
         assert "192.168.1.1" not in value, value

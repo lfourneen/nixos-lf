@@ -12,7 +12,9 @@ TABLES = {"lf_filter", "lf_nat", "lf_mangle", "lf_proxymode_nat"}
 DYNAMIC_CHAINS = {"proxymode_drops", "proxymode_tail", "proxymode_forward",
                   "lf_blocked_guard", "lf_guest_guard", "proxymode_tproxy",
                   "lf_host_egress_guard", "lf_host_direct", "lf_tailnet_guard", "lf_strict_reply_guard",
-                  "lf_lease_output", "lf_lease_input", "lf_lease_forward", "lf_lease_ingress"}
+                  "lf_lease_output", "lf_lease_input", "lf_lease_forward", "lf_lease_ingress",
+                  "lf_guard_require_output", "lf_guard_require_input", "lf_guard_require_forward",
+                  "lf_guard_require_prerouting"}
 LEASE_SETS = {"dns_plaintext4": 4, "dns_split4": 4, "dns_split6": 6, "b_authorization": None,
               "source_recovery4": 4, "source_recovery6": 6}
 
@@ -123,7 +125,7 @@ def policy(document):
             continue
         table = obj.get("name") if kind == "table" else obj.get("table")
         key = (obj["family"], table)
-        if key != ("arp", "lf_arp") and table not in TABLES:
+        if key not in {("arp", "lf_arp"), ("inet", "lf_policy_guard")} and table not in TABLES:
             continue
         bucket = tables.setdefault(key, {"objects": {}, "rules": {}})
         if kind == "rule":

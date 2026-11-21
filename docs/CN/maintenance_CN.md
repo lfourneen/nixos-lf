@@ -267,6 +267,7 @@ NVIDIA 系统还应使用全新 profile 检查真实 Wayland 合成器及 PipeWi
 nft 拒绝事务时须保留原策略，首次完整加载失败须保留独立 bootstrap 基线。
 停止 nftables unit 也须保留保护。
 代理意图在健康证明允许 B 前必须经过 C，包括重载或迁移时核心仍存活的情况。
+`inet lf_policy_guard` 独立于 `inet lf_filter`。必要策略链使用临时报文 priority 位记录经过情况，每个受监控 hook 在开头和末尾清理这些位。守卫的要求与相应 B 或 C 链应在同一事务内安装。
 
 本地验证和 HTTP-only 配置按 `tunProbeNames` 顺序尝试。
 仅合成地址的 TUN 配置使用新生成的名称。
@@ -396,11 +397,11 @@ VM 检查运行在隔离的虚拟机中，硬件加速需要 KVM 权限。
 | `proxy-single-egress-vm` | 两个可控出口：rules 独立选组复现、固定叶子的双栈 TCP/UDP 与 DNS 观测、实际 Firefox 和严格入口、UDP 不支持/故障、旧流、并发刷新、上行/节点故障，以及路由与租约回归 |
 | `proxy-ip-tunnel-vm` | 双栈 WireGuard echo、固定 TCP/UDP 出口、relay 限于所声明对端、来源验收、租约撤销和对端换代 |
 | `proxy-rules`、`proxy-egress-rules` | 构建期 LKL nft 解析完整兼容/受限模式规则 |
-| `proxy-firewall-vm` | A/C 表归属、外部表保留、加载被拒绝时的回滚、迁移锁、幂等及迁移目标名称复用 |
+| `proxy-firewall-vm` | A/C 表归属、主表或关键链丢失及修复失败时的 C 隔离、外部表保留、加载失败回滚和迁移 |
 | `proxy-dns-strict-rules` | LKL 解析完整严格 DNS 防火墙规则 |
 | `proxy-dns-config` | 默认、严格、双栈、IPv6-only 和 HTTP-only 配置中生成的 DNS 与验墙脚本语法 |
 | `proxy-dns-strict-vm` | 真实 helper/核心、共享 DNS/代理过滤、严格故障/override/租约及残留集合拒绝、私网 split 权限与字面门户恢复 |
-| `proxy-assurance-vm` | A/B 本地 DNSSEC、切换时切断未完成的直连 DNS、受管 DNS 探测失败及恢复、独立 DNS 预算，以及监督器冻结、停止或休眠时双栈 B 租约撤权 |
+| `proxy-assurance-vm` | A/B 本地 DNSSEC、DNS 切换与探测失败、独立 DNS 预算，以及规则丢失、租约到期和休眠时的双栈 B 隔离 |
 | `proxy-guest-config`、`proxy-guest-rules` | 生产/独立账户配置与 rootless 启动器语法。LKL 中的完整混合角色规则。正常系统构建也要求访客校验通过 |
 | `proxy-guest-vm` | 三个真实转发网络、DHCP/DNS、IPv4/ULA、伪造源地址、实际 pasta/RootlessKit/subuid socket、fake-IP 拒绝、旧 DNS conntrack、双向撤销以及核心存活时的 C |
 | `proxy-hermes-containers-vm` | 真实旧/新 Docker、socket ACL、离线镜像、账户授权、TCP/UDP、未支持 IPv6 拒绝、Hermes 宿主代理、A/B/C 与恢复 |
@@ -409,7 +410,7 @@ VM 检查运行在隔离的虚拟机中，硬件加速需要 KVM 权限。
 | `proxy-egress-vm` | Tailscale VM 的受限策略版本。双栈私网/多播/DNS/DoT/NTS、UID/接口/端口拒绝、已有连接撤权与 C |
 | `proxy-egress-control-vm` | 真实生产 TUN/NAT 之前的受限策略，包含私网允许与拒绝 |
 | `tailscale-transport` | 所选上游 Linux bypass 常量与预期的 magicsock/STUN socket 打标路径。正常系统构建也强制执行 |
-| `proxy-tailscale-vm` | 所选真实 Tailscale CLI、隔离双栈 STUN、双上行、socket/packet/UID 约束、B/C 恢复及远控端口策略 |
+| `proxy-tailscale-vm` | 真实 Tailscale 监听与 CLI、双上行双栈 UDP/STUN、监听重启和替换、端口保留、租约到期、严格模式阻断及远控端口策略 |
 | `proxy-control-config` | 生产/测试身份、helper 能力与监听一致 |
 | `proxy-core` | 定制核心构建，以及 parser、router、目标与缓存、实际适配器叶节点、DIRECT、UDP、DNS、SOCKS 报文和 sing-tun 区间端点的 Go 测试 |
 | `proxy-target-vm` | 真实 helper/核心，宿主与节点 loopback 陷阱，HTTP/CONNECT/SOCKS、内部域名固定 IP、窄远程授权、Rule/Global 与 A/C 行为 |

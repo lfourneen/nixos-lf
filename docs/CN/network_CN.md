@@ -41,6 +41,7 @@ A 中原生 socket 直连，C 阻断普通外部流量。
 `user.slice` 通过 `SocketBindDeny` 保留固定代理和本地 DNS 端口，覆盖 TCP/UDP 与 IPv4/IPv6。
 桌面会话和用户管理器继承此限制，其它开发端口仍可使用。
 `ip_local_reserved_ports` 将这些端口排除在自动分配范围外，覆盖 `bind(0)` 和客户端隐式绑定。
+Tailscale 配置的固定 UDP 端口也受保护范围内的主动绑定限制，并从自动分配范围中排除。
 
 宿主 Gost 应答要求 root/Gost socket UID。
 核心应答必须经过受管 veth，并匹配已跟踪的入口连接。
@@ -90,7 +91,8 @@ veth 丢失不能把核心入口转发到物理 LAN。
 物理地址/路由变化和恢复钩子更新已授权的 helper/core。
 显式 `clash-on` 重建命名空间，并断开已有核心连接。
 
-宿主防火墙双向复核核心传输，允许公网 TCP/UDP 和声明的 `localTargetCidrs`，另行限制危险目标、宿主保留服务与外部明文 DNS。
+宿主防火墙双向复核核心传输，允许转发公网 TCP/UDP 和声明的 `localTargetCidrs`，另行限制危险目标、保留端口与外部明文 DNS。
+核心 veth 到宿主的入站仅接受带有 core-link conntrack 标记的已跟踪回包。宿主私网或公网地址上的监听均拒绝核心发起的新连接。
 这是传输边界，不是按工作负载限定业务目标。
 localhost 兼容和 GUI 通道使用[独立 Unix relay](proxy_CN.md#组件与身份)，不向核心传递宿主 INET/netlink 描述符。
 
@@ -180,6 +182,7 @@ Mihomo 管理私有命名空间内的自有表，固定 setup 另安装私有 `l
 | 表 | 职责 |
 |---|---|
 | `inet lf_filter` | 宿主、访客和 DNS 过滤，包含随模式变化的链 |
+| `inet lf_policy_guard` | 代理意图下独立逐包检查，主表或必要模式链丢失时切断流量 |
 | `ip lf_nat`、`ip6 lf_nat` | 受管 DNS 重定向。IPv4 另提供已声明访客网络的地址伪装 |
 | `ip lf_proxymode_nat`、`ip6 lf_proxymode_nat` | B 的 TCP 重定向 |
 | `ip lf_mangle` | 可选 IPv4 访客 TPROXY |
@@ -223,6 +226,7 @@ socket 访客 DNS 的 `-90` filter 在该 hook 之后检查实际改写后的目
 B 重定向宿主公网 TCP，fake-IP 保留核心路径，其余公网出站在明确例外后丢弃。
 例外包括核心 mark、按 UID 限定的 Unbound DoT 与 Chrony NTS/NTP、窄 DHCP、组播和默认私网访问。
 Tailscale UDP 例外要求 UID 0、物理上行口，且 socket 的 `SO_MARK` 与 packet mark 都等于上游 Linux bypass mark `0x80000`。
+未跟踪的物理入站使用 `services.tailscale.port` 指定的固定端口。规则在已有流量放行前检查实际接收 socket 的 bypass mark。A 和 Rules B 支持两个物理口的双栈收包，严格 B、C 和 B 租约到期时会切断该路径。`services.tailscale.port = 0` 时使用自动分配和普通连接跟踪回包路径。
 
 保留动态 peer/STUN 端口，未打标 root UDP 按普通规则处理。
 Root 服务负责宿主策略。
@@ -235,7 +239,7 @@ Tailscale 的 bypass mark 是上游常量 `0x80000`，不会随连接的网络�
 
 [直连例外清单](egress_CN.md)逐项记录主体、目标、端口和模式。
 可选受限 B 按接口/UID/CIDR/端口授权，在 TUN/NAT 前切断撤权后的已有宿主主动连接。
-宿主 Unbound 即使在 A 也只能使用声明的 DoT 目标，B 的此项例外可关闭。
+宿主 Unbound 在 A 仍只可使用声明的 DoT 目标。Rules B 可以单独关闭基础设施 Unbound 的例外。
 Chrony 可在 A/B 固定目标 CIDR。
 默认保留 LAN 与 NTS 地址变化兼容性。
 
@@ -268,7 +272,7 @@ C 仍保留 loopback IPC、本地 DNS、root/核心恢复和链路维护流量�
 [bootstrap.nix](../../system/config/network/firewall/bootstrap.nix) 在 NetworkManager/dhcpcd 前安装入站和转发基线。
 首次完整装载失败仍保留它。
 静态漂移触发完整修复：直连意图回到 A，代理意图先回 C，再检查健康。
-失败报告 `unenforced`。
+失败报告 `unenforced`。代理意图下，`inet lf_policy_guard` 逐包检查是否经过必要的主策略链。主表或这些链丢失时会立刻切断新建和已有流量，旧 B 租约尚未到期时也适用。
 
 协调器和验证器在仅 root 可进入的运行目录中抓取完整 nftables 规则集，并在比对后删除快照。桌面诊断读取公开的模式、验证结果和计数摘要。
 

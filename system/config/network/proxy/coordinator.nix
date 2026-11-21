@@ -7,6 +7,10 @@ let
   rules = pkgs.writeText "proxymode-rules.nft" config.my.proxy.proxyModeRules;
   blockedRules = pkgs.writeText "blockedmode-rules.nft" config.my.proxy.blockedModeRules;
   staticRules = pkgs.writeText "lf-static-rules.nft" config.networking.nftables.ruleset;
+  policyGuard = import ../firewall/policy-guard.nix {
+    inherit lib;
+    leaseEnabled = config.my.proxy.authorizationLeaseSeconds != null;
+  };
 
   # These unnamespaced names belonged to older generations, but can now belong
   # to other software. Only an explicit operator migration may delete them.
@@ -492,6 +496,7 @@ let
       $NFT -f - <<'NFT_OFF'
 destroy table ip lf_proxymode_nat
 destroy table ip6 lf_proxymode_nat
+${policyGuard.reset}
 flush chain inet lf_filter proxymode_drops
 flush chain inet lf_filter proxymode_tail
 flush chain inet lf_filter proxymode_forward

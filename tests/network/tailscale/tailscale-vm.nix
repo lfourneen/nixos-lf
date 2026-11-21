@@ -1,5 +1,9 @@
 { pkgs, tailscale, restricted ? false }:
 
+let
+  tailPort = 41642;
+in
+
 pkgs.testers.runNixOSTest {
   name = if restricted then "restricted-direct-egress" else "tailscale-transport-policy";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
@@ -23,7 +27,9 @@ pkgs.testers.runNixOSTest {
     users.groups.dhcpcd = { };
     users.users.dhcpcd = { isSystemUser = true; group = "dhcpcd"; };
     services.tailscale.package = lib.mkForce tailscale;
+    services.tailscale.port = tailPort;
     my.hardening.allowPrivateEgress = !restricted;
+    my.proxy.authorizationLeaseSeconds = lib.mkIf (!restricted) 120;
 
     my.hardening.directEgress = lib.mkIf restricted {
       mode = "restricted";
@@ -49,6 +55,15 @@ pkgs.testers.runNixOSTest {
     environment.etc."tail-mode-c.nft".text = config.my.proxy.blockedModeRules;
     environment.etc."tail-fixture.py".source = ./tailscale_fixture.py;
     environment.etc."egress-fixture.py".source = ../firewall/egress_fixture.py;
+    environment.etc."tail-strict.nft".source = pkgs.runCommand "tail-strict-input-rules" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      python3 - <<'PY' > "$out"
+      import runpy
+      firewall = runpy.run_path('${../../../system/config/network/proxy/routing.py}')['firewall']
+      print(firewall(dict(state='/run/synthetic-missing-authorization', topology=dict(core4='169.254.252.2', core6='fd42:72::2'),
+                          interface='clash-test-host', uplinks=['ens1', 'wlo1'], guest_interfaces=[], guests=[],
+                          dhcp_uid=${toString config.my.machine.uids.dhcpcd}), 'blocked'))
+      PY
+    '';
 
     # Remove only host grants to test revocation; keep the production static
     # policy and restricted infrastructure identities exactly as configured.
@@ -77,6 +92,8 @@ pkgs.testers.runNixOSTest {
         else:
             machine.succeed(f"nft -f /etc/tail-mode-{'b' if name == 'proxy' else 'c'}.nft")
         machine.succeed(f"nft -j list ruleset >/run/tail-rules.json; /etc/tail-rule-check compare /etc/tail-expected/{name}.json /run/tail-rules.json")
+        if name == "proxy" and not restricted:
+            machine.succeed("nft 'add element inet lf_filter b_authorization { ipv4, ipv6 }'")
 
     def probe(address, port=42424, mark=0, uid=0):
         return f"${pkgs.python3}/bin/python3 /etc/tail-fixture.py client {address} {port} --mark {mark} --uid {uid}"
@@ -92,6 +109,94 @@ pkgs.testers.runNixOSTest {
     machine.succeed("systemd-run --unit=tail-peer ip netns exec outside ${pkgs.python3}/bin/python3 /etc/tail-fixture.py server; systemd-run --unit=tail-api ${pkgs.python3}/bin/python3 /etc/tail-fixture.py api")
     machine.wait_for_file("/run/netsec-tailapi.sock")
     machine.wait_until_succeeds("ip netns exec outside ss -lun | grep -q ':42424 '")
+
+    if not restricted:
+        with subtest("Tailscale physical UDP requires the live marked listener and allowed mode"):
+            tail_port = ${toString tailPort}
+            fixture = "${pkgs.python3}/bin/python3 /etc/tail-fixture.py"
+            destinations = ("198.51.100.2", "2001:db8:dead::2", "192.0.2.2", "2001:db8:cafe::2")
+
+            def outside(address, sport, *, send_only=False):
+                command = "ip netns exec outside " + probe(address, tail_port) + f" --sport {sport}"
+                return command + (" --send-only" if send_only else "")
+
+            def count(chain, verdict):
+                table = "lf_routing" if chain.startswith("lf_routing_") else "lf_filter"
+                output = json.loads(machine.succeed(f"nft -j list chain inet {table} {chain}"))
+                rules = [item["rule"]["expr"] for item in output["nftables"] if "rule" in item]
+                return sum(expr["counter"]["packets"] for rule in rules
+                           if any(verdict in action for action in rule)
+                           for expr in rule if "counter" in expr)
+
+            def observe(chain, verdict, start=43010):
+                previous = count(chain, verdict)
+                for address in destinations:
+                    machine.succeed(outside(address, start, send_only=True))
+                current = count(chain, verdict)
+                assert current >= previous + len(destinations), (chain, verdict, previous, current)
+
+            def wait_transport(process):
+                for family in (4, 6):
+                    machine.wait_until_succeeds(f"ss -{family}Hnulp 'sport = :{tail_port}' | grep -F {process}", timeout=20)
+
+            def start_echo(mark):
+                machine.succeed(f"systemd-run --unit=tail-echo {fixture} transport-server {tail_port} {mark}")
+                wait_transport("python3")
+
+            mode("direct")
+            observe("lf_tailscale_ingress", "drop")
+            local_range = machine.succeed("sysctl -n net.ipv4.ip_local_port_range").strip()
+            try:
+                machine.succeed(f"sysctl -w 'net.ipv4.ip_local_port_range={tail_port} {tail_port + 1}'")
+                for slice in ("user", "hermes", "untrusted"):
+                    machine.succeed(f"systemd-run --wait --pipe --slice={slice}.slice --uid=lfour {fixture} check-bind {tail_port}")
+            finally:
+                machine.succeed(f"sysctl -w 'net.ipv4.ip_local_port_range={local_range}'")
+
+            # The real daemon starts both magicsock families without enrolling
+            # in a tailnet. Inbound UDP may reach it without an application echo.
+            launch = ("systemd-run --collect --unit=tail-real --property=RuntimeDirectory=tail-real "
+                      "${tailscale}/bin/tailscaled --state=mem: --statedir=/run/tail-real "
+                      "--socket=/run/tail-real/tailscaled.sock --tun=tail-probe "
+                      f"--port={tail_port} --no-logs-no-support")
+            machine.succeed(launch)
+            wait_transport("tailscaled")
+            for state in ("direct", "proxy"):
+                mode(state)
+                observe("lf_tailscale_ingress", "accept")
+            mode("blocked")
+            observe("lf_tailnet_guard", "drop")
+            mode("proxy")
+            machine.succeed("nft 'flush set inet lf_filter b_authorization; add element inet lf_filter b_authorization { ipv4 timeout 5s, ipv6 timeout 5s }'")
+            observe("lf_tailscale_ingress", "accept")
+            machine.wait_until_succeeds("! nft get element inet lf_filter b_authorization '{ ipv4 }'")
+            observe("lf_lease_input", "drop")
+            mode("proxy")
+            machine.succeed("nft -f /etc/tail-strict.nft")
+            observe("lf_routing_input", "drop")
+            machine.succeed("nft delete table inet lf_routing")
+            machine.succeed("systemctl stop tail-real")
+            observe("lf_tailscale_ingress", "drop")
+            machine.succeed(launch)
+            wait_transport("tailscaled")
+            observe("lf_tailscale_ingress", "accept")
+            machine.succeed("systemctl stop tail-real")
+
+            # The marked echo fixture proves the return path. Replacing it
+            # with an unmarked socket cannot inherit the old conntrack flow.
+            start_echo(0x80000)
+            for state in ("direct", "proxy"):
+                mode(state)
+                for address in destinations:
+                    machine.succeed(outside(address, 43011))
+            mode("blocked")
+            observe("lf_tailnet_guard", "drop", start=43011)
+            mode("direct")
+            machine.succeed("systemctl stop tail-echo")
+            start_echo(0)
+            observe("lf_tailscale_ingress", "drop", start=43011)
+            observe("lf_tailscale_ingress", "drop", start=43012)
+            machine.succeed("systemctl stop tail-echo")
 
     for interface, v4, v6 in (("ens1", "198.51.100", "2001:db8:dead"),
                                ("wlo1", "192.0.2", "2001:db8:cafe")):
@@ -187,7 +292,7 @@ pkgs.testers.runNixOSTest {
         mode(state)
         # Unbound is constrained to its reviewed IPs/TCP, even in direct A.
         dot = probe("101.226.4.6", 853, uid=983) + " --tcp"
-        (machine.succeed if state == "direct" or (state == "proxy" and not restricted) else machine.fail)(dot)
+        (machine.succeed if state == "direct" else machine.fail)(dot)
         machine.fail(probe("203.0.113.11", 853, uid=983) + " --tcp")
         machine.fail(probe("101.226.4.6", 853, uid=983))
         machine.fail(probe("101.226.4.6", 853, uid=1000) + " --tcp")
@@ -257,13 +362,24 @@ pkgs.testers.runNixOSTest {
     if restricted:
         machine.fail(probe("100.64.0.1", uid=1000) + " --sport 47997")
         machine.fail(probe("100.64.0.1") + " --sport 47998")
-        machine.succeed("systemd-run --unit=egress-session " + probe("10.44.0.1", uid=1000) + " --persistent /tmp/egress-session")
-        machine.wait_for_file("/tmp/egress-session.ready")
-        machine.succeed("nft -f /etc/tail-revoked-b.nft; touch /tmp/egress-session.blocked")
-        machine.wait_for_file("/tmp/egress-session.denied")
+        targets = {4: "10.44.0.1", 6: "fd42:44::1"}
+        for family, address in targets.items():
+            stem = f"/tmp/egress-session-{family}"
+            machine.succeed(f"systemd-run --unit=egress-session-{family} {probe(address, uid=1000)} --persistent {stem}")
+            machine.wait_for_file(stem + ".ready")
+        machine.succeed("nft -f /etc/tail-revoked-b.nft")
+        for family, address in targets.items():
+            stem = f"/tmp/egress-session-{family}"
+            machine.succeed(f"touch {stem}.blocked")
+            machine.wait_for_file(stem + ".denied")
+            machine.fail(probe(address, uid=1000))
+            machine.fail(probe(address, uid=1000) + " --tcp")
+        machine.succeed(probe("203.0.113.10", port=123, uid=chrony))
         mode("proxy")
-        machine.succeed("touch /tmp/egress-session.restore")
-        machine.wait_for_file("/tmp/egress-session.recovered")
+        for family in targets:
+            stem = f"/tmp/egress-session-{family}"
+            machine.succeed(f"touch {stem}.restore")
+            machine.wait_for_file(stem + ".recovered")
     mode("blocked")
     machine.fail(probe("100.64.0.1", uid=1000) + " --sport 47998")
     machine.fail(probe("10.44.0.1", uid=1000))

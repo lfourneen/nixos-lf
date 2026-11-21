@@ -1,6 +1,7 @@
 """VM-only UDP/STUN peer and LocalAPI DERP-map fixture; never uses the internet."""
 
 import argparse
+import errno
 from http.server import BaseHTTPRequestHandler
 import ipaddress
 import json
@@ -87,6 +88,36 @@ def host_server():
                 stream.sendto(packet, peer)
 
 
+def transport_server(port, mark):
+    with selectors.DefaultSelector() as selector:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as ipv4, \
+                socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as ipv6:
+            ipv6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            for stream, address in ((ipv4, "0.0.0.0"), (ipv6, "::")):
+                stream.setsockopt(socket.SOL_SOCKET, socket.SO_MARK, mark)
+                stream.bind((address, port))
+                selector.register(stream, selectors.EVENT_READ)
+            while True:
+                for key, _ in selector.select():
+                    packet, peer = key.fileobj.recvfrom(4096)
+                    key.fileobj.sendto(packet, peer)
+
+
+def check_bind(port):
+    for family, address in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        with socket.socket(family, socket.SOCK_DGRAM) as stream:
+            try:
+                stream.bind((address, port))
+            except OSError as error:
+                assert error.errno in (errno.EPERM, errno.EACCES), error
+            else:
+                raise AssertionError((family, "explicit UDP bind succeeded"))
+            stream.bind((address, 0))
+            assert stream.getsockname()[1] == port + 1, stream.getsockname()
+        with socket.socket(family, socket.SOCK_STREAM) as stream:
+            stream.bind((address, port))
+
+
 def wait_file(path):
     deadline = time.monotonic() + 45
     while not path.exists():
@@ -150,6 +181,10 @@ if __name__ == "__main__":
     subparsers.add_parser("server")
     subparsers.add_parser("api")
     subparsers.add_parser("host-server")
+    transport = subparsers.add_parser("transport-server")
+    transport.add_argument("port", type=int)
+    transport.add_argument("mark", type=lambda value: int(value, 0))
+    subparsers.add_parser("check-bind").add_argument("port", type=int)
     probe = subparsers.add_parser("client")
     probe.add_argument("address")
     probe.add_argument("port", type=int)
@@ -169,5 +204,9 @@ if __name__ == "__main__":
         api()
     elif args.command == "host-server":
         host_server()
+    elif args.command == "transport-server":
+        transport_server(args.port, args.mark)
+    elif args.command == "check-bind":
+        check_bind(args.port)
     else:
         client(args)

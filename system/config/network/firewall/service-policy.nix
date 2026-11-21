@@ -1,8 +1,10 @@
 { config, lib, ... }:
 
 let
+  tailscalePort = config.my.hardening.tailscale.ingressPort;
   ports = (import ../lib/reserved-ports.nix { inherit lib; ports = config.my.machine.ports; })
-    ++ lib.optional config.my.proxy.runtimeRouting (toString config.my.machine.ports.sourceRecoveryDns);
+    ++ lib.optional config.my.proxy.runtimeRouting (toString config.my.machine.ports.sourceRecoveryDns)
+    ++ lib.optional (tailscalePort != null) "udp:${toString tailscalePort}";
 
   infrastructure = [
     "clash-core-localhost" "clash-core-loopback" "clash-dns-application"

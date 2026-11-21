@@ -79,10 +79,15 @@ let
 
   guestIfaces = config.my.proxy.guestInterfaces;
   nftIfaces = xs: "{ " + join (map (i: ''"${i}"'') xs) + " }";
+  policyGuard = import ./firewall/policy-guard.nix {
+    inherit lib;
+    leaseEnabled = config.my.proxy.authorizationLeaseSeconds != null;
+  };
   guestGuard = mode: let
     v4 = if mode == "proxy" then lib.subtractLists vmTransparentProxyIfaces guestIfaces else guestIfaces;
   in ''
     flush chain inet lf_filter lf_guest_guard
+    add rule inet lf_filter lf_guest_guard ${policyGuard.stamp [ "mode" ]}
     ${lib.optionalString (mode == "proxy" && vmTransparentProxyIfaces != [ ]) ''add rule inet lf_filter lf_guest_guard iifname ${nftIfaces vmTransparentProxyIfaces} ip daddr ${fakeIpNet} meta l4proto { tcp, udp } meta mark set ${tproxyMark}''}
     ${lib.optionalString (v4 != [ ]) ''add rule inet lf_filter lf_guest_guard iifname ${nftIfaces v4} ip daddr != { 127.0.0.0/8, ${local4}, ${join multicast4} } counter drop''}
     add rule inet lf_filter lf_guest_guard iifname ${nftIfaces guestIfaces} ip6 daddr != { ::1, ${local6}, ${join m.multicastV6} } counter drop
@@ -116,15 +121,18 @@ let
   reservedListenerPorts = (import ./lib/reserved-ports.nix { inherit lib; ports = port; })
     ++ lib.optional config.my.proxy.runtimeRouting (toString port.sourceRecoveryDns)
     ++ lib.optional (config.my.proxy.ipTunnel != null) (toString config.my.proxy.ipTunnel.listenPort);
+  tailscalePort = config.my.hardening.tailscale.ingressPort;
+  reservedSocketBinds = reservedListenerPorts
+    ++ lib.optional (tailscalePort != null) "udp:${toString tailscalePort}";
   coreSocket = "meta skuid { 0, ${toString m.uids.clashCore} } socket mark ${coreMark} meta mark ${coreMark}";
 
   # Tailscale's LinuxBypassMarkNum (tsconst/linuxfw.go), also used by its
   # netns.Listener for IPv4/IPv6 magicsock and standalone STUN sockets. Match
-  # SO_MARK as well as the packet mark: an unrelated unmarked root socket must
-  # not inherit this transport exception. This is a routing contract, not an
-  # isolation boundary against root, which can set SO_MARK itself.
+  # SO_MARK on the socket itself. The output path also requires the packet
+  # mark. Processes able to set SO_MARK remain trusted.
   tailscaleMark = "0x" + lib.toLower (lib.fixedWidthString 8 "0"
     (lib.toHexString config.my.hardening.tailscale.transportMark));
+  wiredMartians = ''iifname "${wired}" ip saddr { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4, 255.255.255.255/32 }'';
   redirectExemptUidSet = "{ ${toString config.users.users.gost.uid} }";
 
   # The :53 redirect must exempt dnsmasq's own upstream sockets or they loop back
@@ -224,11 +232,13 @@ let
 
   # Exemptions stay static so DNS/NTP keep working in direct mode; the drops and
   # the redirect are loaded only while Clash runs (see proxy/coordinator.nix).
-  killSwitchAccepts = lib.optionalString proxyKillSwitch (lib.concatStringsSep "\n" processDirectRules);
+  killSwitchAccepts = lib.optionalString proxyKillSwitch (lib.concatMapStringsSep "\n" (rule:
+    lib.removeSuffix "accept" rule + policyGuard.acceptBeforeProxy) processDirectRules);
 
   hostDirectGuard = ''
     flush chain inet lf_filter lf_host_egress_guard
     flush chain inet lf_filter lf_host_direct
+    add rule inet lf_filter lf_host_egress_guard ${policyGuard.stamp [ "service" ]}
     # Revoke the A instance before any transparent redirect and stop stale
     # local forwarding requests/replies as part of the same B policy.
     add rule inet lf_filter lf_host_egress_guard meta skuid ${toString unboundUid} tcp dport ${toString port.dot} counter drop
@@ -239,7 +249,9 @@ let
     ''}
     ${lib.optionalString restrictedEgress ''
     add rule inet lf_filter lf_host_egress_guard ip daddr { ${local4}, ${join multicast4} } jump lf_host_direct
+    add rule inet lf_filter lf_host_egress_guard ip daddr { ${local4}, ${join multicast4} } counter drop
     add rule inet lf_filter lf_host_egress_guard ip6 daddr { ${local6}, ${join m.multicastV6} } jump lf_host_direct
+    add rule inet lf_filter lf_host_egress_guard ip6 daddr { ${local6}, ${join m.multicastV6} } counter drop
 
     ${addRules "lf_host_direct" ([
       "${coreSocket} accept"
@@ -261,7 +273,7 @@ let
       # Sunshine can initiate media from its fixed server ports after RTSP
       # negotiation; ordinary tailnet client sockets need explicit grants.
       ''oifname "${config.services.tailscale.interfaceName}" meta skuid ${toString config.users.users.${m.desktopUser}.uid} udp sport { ${tailnetUdp} } accept''
-    ] ++ hostDirectExceptions ++ [ "counter drop" ])}
+    ] ++ hostDirectExceptions)}
     ''}
   '';
 
@@ -275,7 +287,7 @@ let
   # Fragment proxy-mode.service applies while Clash runs: LAN/multicast stay
   # link-local, and the tail also covers interfaces not pinned in network.links.
   fragments = import ./firewall/mode-fragments.nix {
-    inherit lib config proxyKillSwitch hostDirectGuard guestGuard vmTproxy
+    inherit lib config proxyKillSwitch policyGuard hostDirectGuard guestGuard vmTproxy
       tproxyPrerouting coreSocket m wired wireless tailscaleMark exempt4 exempt6
       tunDev join multicast4 guestPolicy vmTransparentProxyIfaces nftIfaces
       tproxyMark guestIfaces local4 local6 fakeIpNet timeNatReturn timeCidrs4
@@ -532,12 +544,12 @@ in
   # Reserving both protocols also prevents an old UDP association delivering its
   # next datagram to an occupier after the real listener exits. System services
   # retain their own identities; the output reply guard is a second boundary.
-  systemd.slices.user.sliceConfig.SocketBindDeny = reservedListenerPorts;
+  systemd.slices.user.sliceConfig.SocketBindDeny = reservedSocketBinds;
 
   # Hermes runs local tools, MCP servers and a browser, so it receives the same
   # bind4/bind6 restriction as desktop sessions. clash, gost, unbound, dnsmasq
   # and tailscaled keep system.slice and their listeners.
-  systemd.slices.hermes.sliceConfig.SocketBindDeny = reservedListenerPorts;
+  systemd.slices.hermes.sliceConfig.SocketBindDeny = reservedSocketBinds;
 
   # Uppercase proxy vars for tools that ignore the lowercase *_proxy ones
   environment.sessionVariables = lib.mkIf (!transparentApplications) {
@@ -791,12 +803,15 @@ in
       # stays idempotent. The loader appends the selected safety fragment to
       # this static text and commits both in a single nft transaction.
       destroy table inet lf_filter
+      destroy table inet lf_policy_guard
       destroy table inet lf_bootstrap
       destroy table ip lf_nat
       destroy table ip6 lf_nat
       destroy table ip lf_mangle
       destroy table ip lf_proxymode_nat
       destroy table ip6 lf_proxymode_nat
+
+      ${policyGuard.table}
 
       table inet lf_filter {
         ${lib.optionalString config.my.proxy.coreNetns ''include "${config.my.proxy.coreNetworkPolicy}/filter.nft"''}
@@ -901,12 +916,22 @@ in
         }
         # Guest source, host and routed-reply checks precede generic accepts.
         ${guestPolicy.nft}
+        ${lib.optionalString (tailscalePort != null) ''
+        chain lf_tailscale_ingress {
+          ${wiredMartians} counter drop
+          iifname { "${wired}", "${wireless}" } socket mark ${tailscaleMark} counter accept
+          counter drop
+        }
+        ''}
         chain input {
           type filter hook input priority 0; policy drop;
+          ${policyGuard.stamp [ "primary" ]}
 
           ct state invalid drop
           ${import ./firewall/ndp-validation.nix}
           iif lo accept
+          # Check the actual UDP socket before accepting established flows.
+          ${lib.optionalString (tailscalePort != null) ''udp dport ${toString tailscalePort} jump lf_tailscale_ingress''}
           ${lib.optionalString config.my.proxy.coreNetns ''iifname "${tunDev}" jump lf_core_input''}
           # Clash Verge TUN device: replies only. The core writes arbitrary
           # bytes into this device, and every host-service accept below is
@@ -928,11 +953,7 @@ in
 
           # Martian sources on the wired WAN. 100.64.0.0/10 is absent on purpose:
           # this uplink is CGNAT, so those are the ISP's own subscribers.
-          iifname "${wired}" ip saddr { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4, 255.255.255.255/32 } counter drop
-
-          # Tailscale WireGuard endpoint (ts-input does the ACLs), scoped to the
-          # uplinks so it cannot match public IPv6 inbound.
-          iifname { "${wired}", "${wireless}" } udp dport 41641 accept
+          ${wiredMartians} counter drop
 
           # Tailnet: authenticated, but a blanket accept would expose every
           # 0.0.0.0-bound listener. List ports in my.hardening.tailnet{Tcp,Udp}Ports.
@@ -960,6 +981,7 @@ in
 
         chain forward {
           type filter hook forward priority 0; policy drop;
+          ${policyGuard.stamp [ "primary" ]}
 
           # Guest policy, filled by proxy-mode while Clash runs and empty otherwise.
           # Before the conntrack accept so an established guest flow cannot leak.
@@ -1061,16 +1083,17 @@ in
 
         chain output {
           type filter hook output priority 0; policy accept;
+          ${policyGuard.stamp [ "primary" ]}
 
           # The Mode-C guard is a separate base chain on this same hook at
           # priority -197 (declared above), so it is evaluated before every
           # accept here AND before mihomo's nat/output redirect. It is empty
           # outside `blocked`, so it is a no-op the rest of the time.
 
-          ${lib.optionalString privateEgress ''ip daddr { ${local4} } accept''}
-          ${lib.optionalString privateEgress ''ip6 daddr { ${local6} } accept''}
-          ip daddr 127.0.0.0/8 accept
-          ip6 daddr ::1 accept
+          ${lib.optionalString privateEgress ''ip daddr { ${local4} } ${policyGuard.acceptBeforeProxy}''}
+          ${lib.optionalString privateEgress ''ip6 daddr { ${local6} } ${policyGuard.acceptBeforeProxy}''}
+          ip daddr 127.0.0.0/8 ${policyGuard.acceptBeforeProxy}
+          ip6 daddr ::1 ${policyGuard.acceptBeforeProxy}
 
           # QUIC drop (non-TUN only; see blockQuic).
           ${lib.optionalString blockQuic "meta skuid != 0 udp dport 443 drop"}
@@ -1277,7 +1300,8 @@ in
   }) {
     # bind(0) and implicit connect/send allocation do not name a port at the
     # cgroup bind hook. Keep reserved listeners out of both families' allocator.
-    "net.ipv4.ip_local_reserved_ports" = lib.concatStringsSep "," reservedListenerPorts;
+    "net.ipv4.ip_local_reserved_ports" = lib.concatStringsSep "," (lib.unique (reservedListenerPorts
+      ++ lib.optional (tailscalePort != null) (toString tailscalePort)));
 
     # BBR + cake: the AQM keeps queue delay low on both the LAN device and the
     # TUN, instead of only pacing it like fq.

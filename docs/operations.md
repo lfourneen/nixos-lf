@@ -448,6 +448,7 @@ sudo systemctl start nftables-verify.service
 
 Restart/reload reinstalls the owned static policy plus the safety mode atomically.
 Proxy intent goes through C before health reopens B.
+The independent guard keeps proxy-intended traffic blocked when the main table disappears. Before a live rollback to a generation that predates `inet lf_policy_guard`, enter explicit A with `clash-off` to clear its per-packet requirements.
 Stopping nftables leaves its policy installed.
 `nftables-verify-repair.service` performs explicit repair and recheck.
 `nftables-recover` retries a failed nftables unit.

@@ -426,6 +426,7 @@ sudo systemctl start nftables-verify.service
 
 Restart/reload 原子重装所属静态策略和安全模式。
 代理意图先回 C，再由健康门恢复 B。
+主表丢失后，独立守卫继续阻断代理意图下的流量。若要热回滚到引入 `inet lf_policy_guard` 之前的代次，先用 `clash-off` 明确进入 A，清除独立守卫的逐包要求。
 Stop 保留已加载规则。
 `nftables-verify-repair.service` 显式修复并复验，`nftables-recover` 重试失败的 nftables unit。
 不要清空全局 ruleset。

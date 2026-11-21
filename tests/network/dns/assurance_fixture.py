@@ -35,11 +35,11 @@ def wait(predicate, timeout=15):
         time.sleep(.1)
 
 
-def query(name, port, kind='A', tcp=True, cd=False):
+def query(name, port, kind='A', tcp=True, cd=False, timeout=4):
     message = dns.message.make_query(name, kind, want_dnssec=True)
     if cd:
         message.flags |= dns.flags.CD
-    return (dns.query.tcp if tcp else dns.query.udp)(message, '127.0.0.1', port=port, timeout=4)
+    return (dns.query.tcp if tcp else dns.query.udp)(message, '127.0.0.1', port=port, timeout=timeout)
 
 
 def cache_checks():
@@ -364,11 +364,16 @@ def pressure():
     time.sleep(2.2)
     recovery_codes = []
     while True:
-        recovered = query('recovered.slow.fixture.example', 1055)
-        recovery_codes.append(dns.rcode.to_text(recovered.rcode()))
-        if recovered.rcode() == dns.rcode.NOERROR and recovered.answer:
-            break
-        assert time.monotonic() - released < 10, (recovery_codes, recovered.to_text())
+        remaining = released + 10 - time.monotonic()
+        assert remaining > 0, recovery_codes
+        try:
+            recovered = query('recovered.slow.fixture.example', 1055, timeout=min(remaining, 4))
+        except dns.exception.Timeout:
+            recovery_codes.append('TIMEOUT')
+        else:
+            recovery_codes.append(dns.rcode.to_text(recovered.rcode()))
+            if recovered.rcode() == dns.rcode.NOERROR and recovered.answer:
+                break
         time.sleep(.2)
     recovery_ms = round((time.monotonic() - released) * 1000, 2)
     assert recovery_ms <= 10000, (recovery_ms, recovery_codes)
@@ -454,6 +459,73 @@ def client():
         time.sleep(.1)
 
 
+def fresh_drift_clients():
+    for family, address, _ in lease_endpoints():
+        for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+            with socket.socket(family, kind) as stream:
+                stream.settimeout(.4)
+                try:
+                    stream.connect((address, 18096))
+                    stream.sendall(b'fresh\n')
+                    received = stream.recv(4096)
+                except OSError:
+                    continue
+                assert not received, (address, kind, received)
+
+
+def start_lease_client(environment):
+    state = Path('/tmp/assurance-client.json')
+    state.unlink(missing_ok=True)
+    run('systemd-run', '--collect', *environment, '--unit=assurance-client', 'setpriv',
+        '--reuid=1000', '--clear-groups', sys.executable, __file__, 'client')
+    wait(lambda: state.exists() and all(value > 0 for value in json.loads(state.read_text()).values()),
+         timeout=25)
+
+
+def check_policy_loss(operation, environment, inbound):
+    def counts(side):
+        return json.loads(Path(f'/tmp/assurance-{side}.json').read_text())
+
+    def policy_version():
+        return json.loads(Path('/run/proxy-mode/state.json').read_text())['policy_version']
+
+    def lease_remaining():
+        authority = json.loads(Path('/run/proxy-mode/authorization.json').read_text())
+        return authority['until'] - time.clock_gettime(time.CLOCK_BOOTTIME)
+
+    def output_drops():
+        chain = json.loads(run('nft', '-j', 'list', 'chain', 'inet', 'lf_policy_guard',
+                               'lf_guard_require_output').stdout)
+        return sum(statement['counter']['packets']
+                   for entry in chain['nftables'] for statement in entry.get('rule', {}).get('expr', [])
+                   if 'counter' in statement)
+
+    wait(lambda: lease_remaining() > 8, timeout=35)
+    run('systemctl', 'freeze', 'proxy-mode.service')
+    try:
+        version = policy_version()
+        assert lease_remaining() > 3
+        drops = output_drops()
+        run('nft', *operation)
+        time.sleep(.6)
+        before = [counts('peer')] + ([counts('client')] if inbound else [])
+        run('systemd-run', '--wait', '--pipe', *environment, '--uid=1000',
+            sys.executable, __file__, 'fresh-drift-clients')
+        after = [counts('peer')] + ([counts('client')] if inbound else [])
+        assert before == after and output_drops() > drops, (operation, before, after)
+        assert lease_remaining() > 0, 'fault was observed only after the old B lease expired'
+        print(f'Independent guard refused wire traffic after {" ".join(operation)} before B lease expiry', flush=True)
+    finally:
+        run('systemctl', 'thaw', 'proxy-mode.service')
+    wait(lambda: policy_version() > version
+         and run('proxy-control', 'status', 'proxy', '--check', required=False).returncode == 0,
+         timeout=85)
+    assert '@b_authorization' in run('nft', 'list', 'chain', 'inet', 'lf_filter', 'lf_lease_output').stdout
+    # Establish fresh connections to each peer before the next fault.
+    run('systemctl', 'stop', 'assurance-client.service')
+    start_lease_client(environment)
+
+
 def lease():
     public = json.loads(Path('/run/proxy-mode/state.json').read_text()).get('routing_applied') == 'proxy-only'
     environment = ['--setenv=NETSEC_LEASE_PUBLIC=1'] if public else []
@@ -461,10 +533,8 @@ def lease():
         run('ip', '-n', 'outside', '-6', 'addr', 'replace', '2001:db8:ffff::10/128', 'dev', 'peer0', 'nodad')
     run('systemd-run', *environment, '--unit=assurance-peer', 'ip', 'netns', 'exec', 'outside', sys.executable, __file__, 'peer')
     time.sleep(1)
-    run('systemd-run', *environment, '--unit=assurance-client', 'setpriv', '--reuid=1000', '--clear-groups', sys.executable, __file__, 'client')
     try:
-        wait(lambda: Path('/tmp/assurance-client.json').exists() and
-             all(value > 0 for value in json.loads(Path('/tmp/assurance-client.json').read_text()).values()))
+        start_lease_client(environment)
     except AssertionError:
         for side in ('client', 'peer'):
             path = Path('/tmp/assurance-' + side + '.json')
@@ -472,6 +542,9 @@ def lease():
         print(run('journalctl', '-u', 'assurance-client', '-u', 'assurance-peer',
                   '--no-pager', '-n', '30').stdout, flush=True)
         raise
+    check_policy_loss(('flush', 'chain', 'inet', 'lf_filter', 'lf_lease_output'), environment, False)
+    check_policy_loss(('delete', 'table', 'inet', 'lf_filter'), environment, True)
+    print('Firewall continuity: fresh and established dual-stack TCP/UDP refused during rule loss', flush=True)
     pid = int(run('systemctl', 'show', '-p', 'MainPID', '--value', 'proxy-mode.service').stdout)
     os.kill(pid, signal.SIGSTOP)
     try:
@@ -514,4 +587,4 @@ if __name__ == '__main__':
     {'configure': configure, 'direct': direct, 'dns': dns_checks, 'pressure': pressure,
      'http': http, 'health': health_checks, 'dns-roles': dns_roles, 'dns-degrade': dns_degrade,
      'dns-handoff-start': dns_handoff_start, 'dns-handoff-finish': dns_handoff_finish,
-     'lease': lease, 'peer': peer, 'client': client}[sys.argv[1]]()
+     'lease': lease, 'peer': peer, 'client': client, 'fresh-drift-clients': fresh_drift_clients}[sys.argv[1]]()

@@ -43,6 +43,7 @@ The identity browser uses its own [isolated relay](browser.md#network-policy-and
 Desktop sessions and user managers inherit this restriction.
 Other development ports remain available.
 `ip_local_reserved_ports` excludes these ports from automatic allocation, including `bind(0)` and implicit client binds.
+The configured fixed Tailscale port also reserves UDP binds in protected slices and is excluded from automatic allocation.
 Host Gost replies require the expected root/Gost socket UID.
 Core replies must arrive through the owned veth and tracked inlet connection.
 Readiness checks use the listener address, UID, cgroup and network namespace.
@@ -90,7 +91,8 @@ Physical address/route changes and resume renew the authorized helper/core.
 An explicit `clash-on` reconstructs the namespace and drops existing core connections.
 
 The host firewall rechecks core transports in both directions.
-Public TCP/UDP and declared `localTargetCidrs` are available, with unsafe targets, reserved host services and external plaintext DNS separately restricted.
+Forwarded public TCP/UDP and declared `localTargetCidrs` are available, with unsafe targets, reserved ports and external plaintext DNS separately restricted.
+Host input from the core veth accepts tracked replies with the core-link connection mark. It drops new flows to host listeners on both private and public addresses.
 This is a transport boundary, not per-workload business-target authorization.
 Localhost compatibility and the GUI channel use [separate Unix relays](proxy.md#components-and-identities), without host INET/netlink descriptors entering the core.
 
@@ -186,6 +188,7 @@ The loader owns these exact table family/name pairs:
 | Table | Responsibility |
 |---|---|
 | `inet lf_filter` | Host, guest and DNS filtering, including mode-dependent chains |
+| `inet lf_policy_guard` | Independent per-packet enforcement if the primary table or required mode chains disappear during proxy intent |
 | `ip lf_nat`, `ip6 lf_nat` | Managed DNS redirection. IPv4 also supplies declared guest masquerading |
 | `ip lf_proxymode_nat`, `ip6 lf_proxymode_nat` | Mode-B TCP redirection |
 | `ip lf_mangle` | Optional IPv4 guest TPROXY |
@@ -231,6 +234,7 @@ In B, public host TCP is redirected, fake-IP traffic retains its core path, and 
 These include marked core sockets, UID-scoped Unbound DoT and Chrony NTS/NTP, narrow DHCP, multicast and default private egress.
 Tailscale UDP requires UID 0, a physical uplink, and both socket `SO_MARK` and packet mark equal to the upstream Linux bypass mark `0x80000`.
 Peer/STUN ports remain dynamic.
+Unsolicited physical ingress uses the configured `services.tailscale.port` on either uplink and checks the receiving UDP socket's bypass mark before established-flow accepts. This supports both address families in A and Rules B. Strict B, C and expired B authorization cut reception. With `services.tailscale.port = 0`, Tailscale uses automatic allocation and the normal tracked-reply path.
 
 Unmarked root UDP has no blanket exception.
 Root services administer host policy.
@@ -243,8 +247,7 @@ If marking fails, B continues to block unmarked root UDP.
 
 The [direct-egress ledger](egress.md) records every actor, target, port and mode.
 Optional restricted B grants use interface/UID/CIDR/ports and cut revoked established host-initiated flows before TUN/NAT.
-Host Unbound is limited to configured DoT targets even in A.
-Its B exception can be disabled.
+Host Unbound is limited to configured DoT targets in A. The separate infrastructure Unbound's Rules B exception can be disabled.
 Chrony can pin destination CIDRs in A/B.
 Defaults preserve LAN and changing NTS addresses.
 
@@ -279,7 +282,7 @@ Loopback IPC, local DNS, root/core recovery and link maintenance remain availabl
 [bootstrap.nix](../system/config/network/firewall/bootstrap.nix) installs ingress/forwarding protection before NetworkManager or dhcpcd.
 A failed first full load retains that baseline.
 Static drift triggers a complete repair into A for direct intent or C for proxy intent, followed by health evaluation.
-A failed repair reports `unenforced`.
+A failed repair reports `unenforced`. During proxy intent, `inet lf_policy_guard` requires packets to traverse the relevant main policy chains. Loss of the main table or one of those chains cuts new and established flows even before repair, including while an old B lease is still live.
 
 The coordinator and verifier capture full nftables rulesets in root-only runtime directories and remove the snapshots after comparison. Desktop diagnostics read the published mode, verification result and counter summaries.
 
