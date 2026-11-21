@@ -98,13 +98,13 @@ localhost 兼容和 GUI 通道使用[独立 Unix relay](proxy_CN.md#组件与身
 
 | 模式 | 进入条件 | 应用出站 | 默认 DNS 上游 |
 |---|---|---|---|
-| A / `direct` | 默认直连策略下冷启动、显式 `clash-off` 或显式来源恢复 | 直连 | 本地验证的 Unbound DoT，必要时有界明文恢复 |
+| A / `direct` | 默认直连策略下冷启动或显式 `clash-off` | 直连 | 本地验证的 Unbound DoT，必要时有界明文恢复 |
 | B / `proxy` | 代理意图、已授权核心、所需 TUN 选路和健康证明均成立 | 代理、明确例外或丢弃 | 受管 fake-IP，配置 WireGuard 出口时返回已验证真实地址 |
 | C / `blocked` | 已请求代理但未就绪、崩溃或不健康 | 除恢复与链路基础设施外阻断 | Unbound。外部 DoT 被切断，符合缓存条件的答案继续返回 |
 
 `proxy-mode` 遵循 root 写入的单次开机意图。
 关闭 GUI 会保留代理意图。保留代理意图时，核心停止或崩溃会使宿主进入 C。
-使用 `clash-off` 可请求 A。也可打开临时 A 窗口来[恢复已登记来源](operations_CN.md#恢复已登记来源)。
+使用 `clash-off` 可请求 A。要在 C 中获取所选来源，见[恢复已登记来源](operations_CN.md#恢复已登记来源)。
 只启动 GUI 无法授权 A → B。
 可选 `my.proxy.bootMode="proxy"` 在物理网络启动前安装 C，等待 B。
 默认是 `"direct"`。

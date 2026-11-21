@@ -203,11 +203,12 @@ HTTPS delay 默认通过可写偏好设置。
 运行时路由使用两组不可变策略/健康/审计文件，由 root 选择一个符号链接。
 保留 operator → source → authorization → policy 的锁顺序；探针在 policy 锁外运行，提交前重新检查路由 epoch 与策略摘要。
 应用子模式及续签内核租约均要求 mixed TCP、fake-IP TCP、DNS、监听与配置的完整证明，proxy-only 另需经核心验证器的真实地址 DNS 证明。
-来源下载在释放 source 锁等待网络后，重新检查选择、登记、策略与 epoch。
+常规来源下载在释放 source 锁等待网络后，重新检查选择、登记、策略与 epoch。显式恢复在有界下载期间持有登记锁，并维持 C。
 原始 Rule 数据及固定节点保存在参与摘要的 `source-data.json`，每个来源和子模式分别保存已接受快照。
 策略切换关闭旧核心/relay 流、清空解析缓存，并保留跨重启的 fake-IP 域名映射。
 来源启动会等待刚启动的 helper 暴露 IPC，不能仅因启动延迟重启该 helper；既有核心的恢复仍保留 IPC 传输故障时的单元重启。
 独立的 `lf_routing` 表在基础防火墙重载后仍须执行并核对声明的节点传输元组，已有直连回复不构成例外。
+恢复路径对出站和回包核对同一组到期元组，路由表只放行通过检查后标记的包。VM 暂停恢复命令和协调器，验证内核到期后切断已有连接。
 修改这些路径时运行 `proxy-routing`、`proxy-routing-vm`。
 
 Dnsmasq patch 是 `network.nix` 的内联 `--replace-fail`。

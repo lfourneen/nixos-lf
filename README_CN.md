@@ -116,7 +116,7 @@ sudo nixos-rebuild switch --flake .#lfour
 | `clash-rules` | 选择订阅规则路由并请求健康 B |
 | `clash-proxy-only` | 选择严格代理路由并请求健康 B |
 | `clash-egress [ID]` | 列出已接受来源的出口候选，或经受保护事务选择其中一个 |
-| `sudo proxy-control recover` | 已接受快照无法恢复 B 时，刷新所选来源。应用在临时下载窗口内可直连 |
+| `sudo proxy-control recover` | 在 C 继续阻断应用流量的同时刷新所选来源 |
 | `proxy-status` | 查看模式、DNS 和就绪状态 |
 | `clash-diff` | 只读查看来源变化，不改变网络模式 |
 | `firefox-identity` | 通过严格代理入口打开独立身份 profile |

@@ -64,6 +64,7 @@
 
     uids = {
       clashFetch = lib.mkOption { type = lib.types.int; default = 981; };
+      clashRecoveryDns = lib.mkOption { type = lib.types.int; default = 980; };
       clashCore = lib.mkOption { type = lib.types.int; default = 982; };
       clashValidate = lib.mkOption { type = lib.types.int; default = 1197; };
       unbound = lib.mkOption { type = lib.types.int; default = 983; };
@@ -83,6 +84,7 @@
       coreDnsTransport = lib.mkOption { type = lib.types.port; default = 1057; };
       coreDnsBootstrapTransport = lib.mkOption { type = lib.types.port; default = 1058; };
       coreRealDns = lib.mkOption { type = lib.types.port; default = 1059; };
+      sourceRecoveryDns = lib.mkOption { type = lib.types.port; default = 1060; };
       coreLoopback = lib.mkOption { type = lib.types.port; default = 14661; };
       gostHttp = lib.mkOption { type = lib.types.port; default = 33332; };
       gostRedirect = lib.mkOption { type = lib.types.port; default = 33333; };

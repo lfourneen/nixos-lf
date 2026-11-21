@@ -13,7 +13,8 @@ DYNAMIC_CHAINS = {"proxymode_drops", "proxymode_tail", "proxymode_forward",
                   "lf_blocked_guard", "lf_guest_guard", "proxymode_tproxy",
                   "lf_host_egress_guard", "lf_host_direct", "lf_tailnet_guard", "lf_strict_reply_guard",
                   "lf_lease_output", "lf_lease_input", "lf_lease_forward", "lf_lease_ingress"}
-LEASE_SETS = {"dns_plaintext4": 4, "dns_split4": 4, "dns_split6": 6, "b_authorization": None}
+LEASE_SETS = {"dns_plaintext4": 4, "dns_split4": 4, "dns_split6": 6, "b_authorization": None,
+              "source_recovery4": 4, "source_recovery6": 6}
 
 
 def lease_set(obj):
@@ -31,6 +32,17 @@ def lease_set(obj):
         if obj['name'] == 'b_authorization':
             if address_value not in ('ipv4', 'ipv6', 2, 10):
                 raise ValueError('invalid authorization family')
+            continue
+        if obj['name'].startswith('source_recovery'):
+            parts = address_value.get('concat', []) if isinstance(address_value, dict) else []
+            if (len(parts) != 4 or timeout > 60000 or not isinstance(parts[0], str)
+                    or not re.fullmatch(r'[a-zA-Z0-9_.:-]{1,15}', parts[0])
+                    or type(parts[3]) is not int or not 1 <= parts[3] <= 65535):
+                raise ValueError('invalid source recovery lease')
+            for part in parts[1:3]:
+                address = ipaddress.ip_address(part)
+                if address.version != LEASE_SETS[obj["name"]] or address.is_multicast or address.is_unspecified:
+                    raise ValueError('invalid source recovery address')
             continue
         if obj['name'].startswith('dns_split'):
             parts = address_value.get('concat', []) if isinstance(address_value, dict) else []

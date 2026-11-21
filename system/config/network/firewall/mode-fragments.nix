@@ -30,6 +30,10 @@ in {
 
     # Leaving Mode C: the guard must be empty or its drop would refuse everything.
     flush chain inet lf_filter lf_blocked_guard
+    ${lib.optionalString config.my.proxy.runtimeRouting ''
+    flush set inet lf_filter source_recovery4
+    flush set inet lf_filter source_recovery6
+    ''}
     flush chain inet lf_filter lf_tailnet_guard
     flush chain inet lf_filter lf_strict_reply_guard
     ${hostDirectGuard}
@@ -142,6 +146,7 @@ in {
     ${lib.optionalString vmTproxy "flush chain ip lf_mangle proxymode_tproxy"}
 
     flush chain inet lf_filter lf_blocked_guard
+    ${lib.optionalString config.my.proxy.runtimeRouting "add rule inet lf_filter lf_blocked_guard meta mark 0x4c460003 ct mark 0x4c460003 accept"}
     ${lib.optionalString tunnelEnabled ''
     ${probe "lf_blocked_guard" "accept"}
     add rule inet lf_filter lf_blocked_guard ${outer} accept

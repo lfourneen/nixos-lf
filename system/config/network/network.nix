@@ -113,6 +113,7 @@ let
   # A process outside that trusted set that binds one of these can shadow the
   # real listener while it restarts.
   reservedListenerPorts = (import ./lib/reserved-ports.nix { inherit lib; ports = port; })
+    ++ lib.optional config.my.proxy.runtimeRouting (toString port.sourceRecoveryDns)
     ++ lib.optional (config.my.proxy.ipTunnel != null) (toString config.my.proxy.ipTunnel.listenPort);
   coreSocket = "meta skuid { 0, ${toString m.uids.clashCore} } socket mark ${coreMark} meta mark ${coreMark}";
 
@@ -460,6 +461,11 @@ in
           source = pkgs.writeShellScript "nm-proxy-net-wake" ''
             case "$2" in
               up|down|connectivity-change|dhcp4-change|dhcp6-change)
+                ${lib.optionalString config.my.proxy.runtimeRouting ''
+                if [ "$1" = "${wireless}" ] && [ -e /run/proxy-mode/source-recovery ]; then
+                  ${pkgs.systemd}/bin/systemctl start --no-block clash-source-recovery-revoke.service
+                fi
+                ''}
                 ${pkgs.systemd}/bin/systemctl start --no-block proxy-net-wake.service 2>/dev/null || true
                 ;;
             esac
@@ -482,6 +488,11 @@ in
       runHook = ''
         case "$reason" in
           BOUND|RENEW|REBIND|REBOOT|EXPIRE|FAIL|NAK|NOCARRIER|CARRIER|STOP|BOUND6|RENEW6|REBIND6|EXPIRE6|ROUTERADVERT)
+            ${lib.optionalString config.my.proxy.runtimeRouting ''
+            if [ -e /run/proxy-mode/source-recovery ]; then
+              ${pkgs.systemd}/bin/systemctl --no-ask-password start --no-block clash-source-recovery-revoke.service
+            fi
+            ''}
             ${pkgs.systemd}/bin/systemctl --no-ask-password start --no-block proxy-net-wake.service 2>/dev/null || true
             ;;
         esac
@@ -494,12 +505,13 @@ in
     };
   };
 
-  # dhcpcd runs without root. Its exit hook may only start this fixed wakeup
-  # coordinator, not manage arbitrary units or change their properties.
+  # The unprivileged dhcpcd exit hook starts only these fixed network units.
   security.polkit.extraConfig = ''
     polkit.addRule(function(action, subject) {
       if (subject.user == "dhcpcd" && action.id == "org.freedesktop.systemd1.manage-units"
-          && action.lookup("unit") == "proxy-net-wake.service" && action.lookup("verb") == "start") {
+          && (action.lookup("unit") == "proxy-net-wake.service"
+              ${lib.optionalString config.my.proxy.runtimeRouting ''|| action.lookup("unit") == "clash-source-recovery-revoke.service"''})
+          && action.lookup("verb") == "start") {
         return polkit.Result.YES;
       }
     });
@@ -778,12 +790,34 @@ in
 
       table inet lf_filter {
         ${lib.optionalString config.my.proxy.coreNetns ''include "${config.my.proxy.coreNetworkPolicy}/filter.nft"''}
-        # Only the elements of these three named sets are runtime leases.
+        # Only the elements of the declared lease sets are mutable.
         # Their type, flags, timeout ceiling and every referencing rule are verified.
         set dns_plaintext4 { type ipv4_addr; flags timeout; timeout 120s; }
         set dns_split4 { type ifname . ipv4_addr; flags timeout; timeout 120s; }
         set dns_split6 { type ifname . ipv6_addr; flags timeout; timeout 120s; }
         set b_authorization { type nf_proto; flags timeout; timeout 120s; size 2; }
+        ${lib.optionalString config.my.proxy.runtimeRouting ''
+        set source_recovery4 { type ifname . ipv4_addr . ipv4_addr . inet_service; flags timeout; timeout 60s; size 256; }
+        set source_recovery6 { type ifname . ipv6_addr . ipv6_addr . inet_service; flags timeout; timeout 60s; size 256; }
+        chain lf_source_recovery_output {
+          type filter hook output priority -199; policy accept;
+          meta mark 0x4c460003 meta mark set 0
+          ct direction original meta skuid . tcp dport { ${toString m.uids.clashFetch} . 443, ${toString m.uids.clashRecoveryDns} . ${toString port.dot} } jump lf_source_recovery_grant
+          meta skuid ${toString m.uids.clashRecoveryDns} oifname != "lo" counter drop
+          ct mark 0x4c460003 counter drop
+        }
+        chain lf_source_recovery_grant {
+          meta oifname . ip saddr . ip daddr . tcp dport @source_recovery4 ct mark set 0x4c460003 meta mark set 0x4c460003 accept
+          meta oifname . ip6 saddr . ip6 daddr . tcp dport @source_recovery6 ct mark set 0x4c460003 meta mark set 0x4c460003 accept
+        }
+        chain lf_source_recovery_input {
+          type filter hook input priority -5; policy accept;
+          meta mark 0x4c460003 meta mark set 0
+          ct direction reply ct mark 0x4c460003 ct protocol tcp meta iifname . ct original ip saddr . ct original ip daddr . ct original proto-dst @source_recovery4 meta mark set 0x4c460003 accept
+          ct direction reply ct mark 0x4c460003 ct protocol tcp meta iifname . ct original ip6 saddr . ct original ip6 daddr . ct original proto-dst @source_recovery6 meta mark set 0x4c460003 accept
+          ct mark 0x4c460003 counter drop
+        }
+        ''}
         chain lf_lease_output { type filter hook output priority -197; policy accept; }
         chain lf_lease_input { type filter hook input priority -3; policy accept; }
         chain lf_lease_forward { type filter hook forward priority -2; policy accept; }
@@ -809,6 +843,8 @@ in
         chain lf_local_dns_guard {
           type filter hook output priority -198; policy accept;
           ${lib.optionalString config.my.proxy.runtimeRouting ''
+          oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.sourceRecoveryDns} meta skuid != { 0, ${toString m.uids.clashFetch} } counter drop
+          oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.sourceRecoveryDns} meta skuid != ${toString m.uids.clashRecoveryDns} counter drop
           oifname "lo" meta l4proto { tcp, udp } th dport ${toString port.coreRealDns} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
           oifname "lo" meta l4proto { tcp, udp } th sport ${toString port.coreRealDns} meta skuid != { 0, ${toString dnsmasqUid} } counter drop
           ''}
@@ -994,6 +1030,7 @@ in
         # DoH shares 443 and stays addressable (see docs/dns.md).
         chain lf_dns_egress_guard {
           type filter hook output priority -196; policy accept;
+          ${lib.optionalString config.my.proxy.runtimeRouting "meta mark 0x4c460003 ct mark 0x4c460003 accept"}
           ${lib.concatStringsSep "\n" dotRules}
           ${coreSocket} meta l4proto { tcp, udp } th dport ${toString port.dot} accept
           meta skuid != 0 meta l4proto { tcp, udp } th dport ${toString port.dot} counter drop

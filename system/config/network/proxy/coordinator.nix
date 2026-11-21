@@ -327,22 +327,12 @@ let
     ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/clash-verge-stage.py} initialize-boot /run/proxy-mode || exit 1
     lock_state() { $FLOCK -x -w 10 9 || exit 1; }
     unlock_state() { forget_snapshot; $FLOCK -u 9; }
-    ${lib.optionalString config.my.proxy.runtimeRouting ''
-    recovery_deadline=/run/proxy-mode/source-recovery-deadline
-    recovery_open() {
-      local limit uptime
-      limit=$($CAT "$recovery_deadline" 2>/dev/null) || return 1
-      read -r uptime _ < /proc/uptime
-      [[ "$limit" =~ ^[0-9]{1,12}$ && "''${uptime%.*}" -lt "$limit" ]]
-    }
-    ''}
     read_intent() {
       local requested
       requested=$($CAT "$INTENT" 2>/dev/null) || requested=auto
       ${lib.optionalString config.my.proxy.runtimeRouting ''
-      if [ "$requested" = source-recovery ]; then
-        if recovery_open; then requested=direct; else requested=proxy; fi
-      fi
+      # An interrupted recovery from an older generation retains proxy intent.
+      if [ "$requested" = source-recovery ]; then requested=proxy; fi
       ''}
       echo "$requested"
     }
@@ -385,7 +375,7 @@ let
     # must not leave the guard off for long -- and long when settled in direct,
     # where nothing is loaded and events still drive transitions.
     cap_for() {
-      if [ "$1" = direct ] && [ -z "$ARP_SYNC" ] ${lib.optionalString config.my.proxy.runtimeRouting ''&& [ ! -e "$recovery_deadline" ]''}; then
+      if [ "$1" = direct ] && [ -z "$ARP_SYNC" ]; then
         echo 60
       else
         echo 5
@@ -691,12 +681,6 @@ NFT_OFF
       mode=$($CAT "$STATUS" 2>/dev/null || true)
       reason=$($CAT "$REASON" 2>/dev/null || true)
       prev="$mode"
-      ${lib.optionalString config.my.proxy.runtimeRouting ''
-      if [ "$($CAT "$INTENT" 2>/dev/null)" = source-recovery ] && ! recovery_open; then
-        atomic_write "$INTENT" proxy || { unlock_state; return 1; }
-        rm -f "$recovery_deadline"
-      fi
-      ''}
       intent=$(read_intent)
       decision_core=$(core_stamp)
       decision_digest=""
@@ -999,40 +983,10 @@ NFT_OFF
         $SYSTEMCTL kill -s WINCH --kill-whom=main proxy-mode.service 2>/dev/null || true
         exit 0
         ;;
-      ${lib.optionalString config.my.proxy.runtimeRouting ''
-      --enter-source-recovery)
+      --request-proxy|--request-direct)
         lock_state
-        if [ "$($CAT "$INTENT" 2>/dev/null)" != source-recovery ] || ! recovery_open || $IS_CLASH_ON; then
-          unlock_state; exit 1
-        fi
-        mode=direct; reason=source-recovery
-        if ! load_complete direct; then unlock_state; exit 1; fi
-        publish_state || exit 1
-        unlock_state
-        request_wake
-        exit 0
-        ;;
-      ''}
-      --request-proxy|--request-direct${lib.optionalString config.my.proxy.runtimeRouting "|--request-source-recovery"})
-        lock_state
-        case "$1" in
-          --request-proxy) intent=proxy ;;
-          ${lib.optionalString config.my.proxy.runtimeRouting ''
-          --request-source-recovery)
-            if [ "$(read_intent)" != proxy ] || [ "$($CAT "$STATUS" 2>/dev/null)" != blocked ]; then
-              unlock_state; exit 1
-            fi
-            read -r uptime _ < /proc/uptime
-            atomic_write "$recovery_deadline" "$(( ''${uptime%.*} + 75 ))" || exit 1
-            intent=source-recovery
-            ;;
-          ''}
-          *) intent=direct ;;
-        esac
+        if [ "$1" = --request-proxy ]; then intent=proxy; else intent=direct; fi
         atomic_write "$INTENT" "$intent" || exit 1
-        ${lib.optionalString config.my.proxy.runtimeRouting ''
-        if [ "$intent" != source-recovery ]; then rm -f "$recovery_deadline"; fi
-        ''}
         # Arm C before starting/stopping the core. GUI/start failures leave the
         # requested proxy state protected; off becomes A only after core exit.
         if ! load_complete blocked; then unlock_state; exit 1; fi
@@ -1157,7 +1111,7 @@ NFT_OFF
             [ "$initial_mode" = blocked ] && [ "$(cat /run/proxy-mode/intent)" = proxy ] \
               || { echo 'Source recovery requires Mode C with proxy intent'; exit 1; }
             systemctl is-active --quiet proxy-mode.service \
-              || { echo 'Start proxy-mode.service before opening a temporary direct window'; exit 1; }
+              || { echo 'Start proxy-mode.service before recovering a source'; exit 1; }
             (umask 077; : >> /run/proxy-mode/source-refresh-job.lock)
             exec 7>>/run/proxy-mode/source-refresh-job.lock
             flock -x -w 5 7 || { echo 'Source download is busy. Retry recovery after it finishes.'; exit 1; }
@@ -1174,7 +1128,6 @@ NFT_OFF
           transaction_epoch=""
           transaction_target="$2"
           transaction_step=initialize
-          direct_window=0
           egress_args=()
           if [ "$#" = 3 ]; then egress_args=("$3"); fi
           transaction_failed() {
@@ -1188,8 +1141,8 @@ NFT_OFF
                 | jq -r 'if .last_proxy_health.ok then .reasons[:3] | join(", ")
                          else (.last_proxy_health.reason // "health unavailable") + "/" + (.last_proxy_health.failure_stage // "unknown") end' || true)
             fi
-            if [ "$direct_window" = 1 ] || { [ "$(cat /run/proxy-mode/intent)" = proxy ] \
-              && { [ -z "$transaction_epoch" ] || [ "$transaction_epoch" = "$(${config.my.proxy.routingCommand} view | jq -r .routing_epoch)" ]; }; }; then
+            if [ "$(cat /run/proxy-mode/intent)" = proxy ] \
+              && { [ -z "$transaction_epoch" ] || [ "$transaction_epoch" = "$(${config.my.proxy.routingCommand} view | jq -r .routing_epoch)" ]; }; then
               ${modeScript} --request-proxy || echo 'Check proxy-status for policy enforcement failure' >&2
               ${config.my.proxy.routingCommand} recover || true
               systemctl start --no-block proxy-net-wake.service || true
@@ -1197,7 +1150,7 @@ NFT_OFF
             echo "Routing switch failed: $transaction_target ($transaction_step''${diagnostic:+: $diagnostic})"
             ${lib.optionalString config.my.proxy.controlledSources ''
             if [ "$transaction_step" = health ] && [ "$(cat /run/proxy-mode/status)" = blocked ]; then
-              echo 'Retry with clash-on. If the accepted source is unusable, sudo proxy-control recover refreshes it during a temporary direct window.'
+              echo 'Retry with clash-on. If the accepted source is unusable, sudo proxy-control recover refreshes it while application traffic stays blocked.'
             fi
             ''}
           }
@@ -1212,20 +1165,17 @@ NFT_OFF
           fi
           if [ "$recovery" = 1 ]; then
             transaction_step='recovery-protection'
-            echo 'Source recovery temporarily enables direct access for applications while downloading.'
-            direct_window=1
-            ${modeScript} --request-source-recovery
+            ${modeScript} --request-proxy
             systemctl stop clash-verge.service
             ${config.my.proxy.routingCommand} stop-ip-tunnel
-            ${modeScript} --enter-source-recovery
+            ${config.my.proxy.coreNetworkCommand} routes-off
             transaction_step='recovery-download'
             export LF_SOURCE_GENERATION
-            LF_SOURCE_GENERATION=$(timeout --kill-after=2s 52s ${config.my.proxy.sourceCommand} refresh --generation)
+            LF_SOURCE_GENERATION=$(timeout --kill-after=2s 60s ${config.my.proxy.sourceCommand} recover)
             [[ "$LF_SOURCE_GENERATION" =~ ^[a-f0-9]{64}$ ]]
           fi
           transaction_step=protection
           ${modeScript} --request-proxy
-          direct_window=0
           if [ "$recovery" = 1 ]; then flock -u 7; fi
           transaction_step=stop
           systemctl stop clash-verge.service

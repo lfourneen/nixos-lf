@@ -211,11 +211,12 @@ On GUI upgrades, run `proxy-gui` and `proxy-gui-vm` to check real IPC, page cont
 Runtime routing uses two immutable policy/health/audit bundles and one root-selected symlink.
 Keep the operator → source → authorization → policy lock order; probes run without the policy lock and recheck the routing epoch and policy digest before committing.
 Only a complete mixed TCP, fake-IP TCP, DNS, listener and configuration proof may apply a submode or renew its kernel lease; proxy-only additionally requires real-address DNS through the core validator.
-Source downloads recheck selection, registration and policy/epoch after releasing the source lock for network waits.
+Normal source downloads recheck selection, registration and policy/epoch after releasing the source lock for network waits. Explicit recovery holds the registration lock during its bounded download and keeps C active.
 Preserve original Rule data and pinned nodes in the digested `source-data.json`, with separate accepted snapshots per source and submode.
 Policy transitions close old core/relay flows, flush resolver caches and retain fake-IP domain mappings across restarts.
 A source start waits for the newly started helper's IPC listener; startup delay alone must not restart that helper. Existing-core recovery retains the unit restart for a failed IPC transport.
 The separate `lf_routing` table must enforce and verify the declared node tuples even after a base firewall reload; established direct replies grant no exception.
+Recovery checks the same expiring tuple on output and on replies. The routing table permits only packets marked by those checks. The VM freezes the recovery command and coordinator to verify kernel expiry on an established connection.
 Run `proxy-routing` and `proxy-routing-vm` when changing these paths.
 
 The dnsmasq patch is an inline `--replace-fail` in `network.nix`.

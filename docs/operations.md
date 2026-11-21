@@ -123,10 +123,10 @@ With runtime routing enabled, first retry `clash-on` from C. If the accepted sna
 sudo proxy-control recover
 ```
 
-This command requires C with proxy intent. The coordinator verifies the direct firewall policy before the worker fetches the registered source with TLS certificate validation.
-Ordinary applications have direct access during this window. Public DNS uses authenticated DoT, and the supervisor tracks a 75-second recovery deadline.
-The command returns to C before staging the downloaded candidate under the requested routing policy. B requires the normal content audit and health checks.
-Download failure or interruption closes the direct window and retains the accepted baseline.
+This command requires C with proxy intent. C continues to block ordinary application and guest internet access throughout the download.
+A dedicated resolver validates DNSSEC and uses the configured authenticated DoT upstreams. The download worker uses pinned addresses for registered HTTPS origins, validates their TLS certificates and follows only exact registered redirects.
+The firewall limits recovery traffic by service identity, physical interface, source address, destination and port. The kernel lease expires within 55 seconds and cuts existing recovery connections. Uplink change notifications and suspend revoke it early.
+The command revokes the lease before staging the candidate under the requested routing policy. Download failure keeps C and retains the accepted baseline. B requires the normal content audit and health checks.
 For `proxy-only`, the download must still contain the selected fixed exit. To adopt a different exit from the source, follow the exit selection workflow below.
 On installations without runtime routing, use the manual source workflow from A.
 

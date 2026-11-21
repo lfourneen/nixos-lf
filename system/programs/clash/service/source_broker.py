@@ -1,6 +1,6 @@
 """Root-only source registration and publication. Secrets never enter argv/logs."""
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import fcntl
 import hashlib
 import importlib.util
@@ -311,6 +311,10 @@ def download_window(settings):
             fcntl.flock(download, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise TimeoutError('another source download is in progress') from None
+        # Keep the selected registration fixed throughout a direct recovery.
+        if settings.get('_recover'):
+            yield
+            return
         fcntl.flock(lock, fcntl.LOCK_UN)
         try:
             yield
@@ -345,11 +349,11 @@ def refresh_generation(settings, root):
     registry = json.loads(raw)
     policy_bytes = Path(settings['policy']).read_bytes()
     routing = Path(settings['routing_state']).read_bytes() if settings.get('routing_state') else None
-    request = json.dumps(dict(registry=registry, policy=json.loads(policy_bytes),
+    request = dict(registry=registry, policy=json.loads(policy_bytes),
                               egress_id=json.loads(routing).get('egress_requested') if routing else None,
                               resolver=settings.get('resolver'),
                               sanitize_insecure=registry['id'] in authorized_sources(settings),
-                              **renderer_settings(settings))).encode()
+                              **renderer_settings(settings))
     argv = [settings['setpriv'], '--reuid=clash-fetch', '--regid=clash-fetch', '--clear-groups',
             '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs',
             settings['python'], '-I', settings['worker']]
@@ -357,8 +361,16 @@ def refresh_generation(settings, root):
         resource.setrlimit(resource.RLIMIT_FSIZE, (48 * 1024 * 1024,) * 2)
         resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
     with download_window(settings):
-        with tempfile.TemporaryFile() as output:
-            process = subprocess.run(argv, input=request, stdout=output, stderr=subprocess.DEVNULL,
+        recovery = nullcontext()
+        if settings.get('_recover'):
+            options = settings['recovery']
+            worker = load_module('source_recovery_worker', settings['worker'])
+            recovery = load_module('source_recovery', options['module']).open_recovery(options, worker, registry)
+            request['resolver'] = options['resolver']
+        with recovery as pinned, tempfile.TemporaryFile() as output:
+            if pinned is not None:
+                request['pinned_downloads'] = pinned
+            process = subprocess.run(argv, input=json.dumps(request).encode(), stdout=output, stderr=subprocess.DEVNULL,
                                     timeout=50, env={'PATH': '', 'SSL_CERT_FILE': settings['ca']}, preexec_fn=limits)
             output.seek(0)
             data = output.read(48 * 1024 * 1024 + 1)
@@ -763,6 +775,7 @@ def main():
             p.add_argument('--digest', required=True)
             p.add_argument('--previous', required=True, help='current digest, or none for first registration')
     sub.add_parser('refresh').add_argument('--generation', action='store_true')
+    sub.add_parser('recover')
     automatic = sub.add_parser('automatic')
     automatic.add_argument('--request', action='store_true')
     sub.add_parser('diff', help='read-only comparison of local source snapshots')
@@ -782,7 +795,7 @@ def main():
     state_root(root)
     review = review_module(settings) if args.action == 'diff' else None
     with (root / 'source.lock').open('a') as lock:
-        if args.action in ('diff', 'add', 'use'):
+        if args.action in ('diff', 'add', 'use', 'recover'):
             acquire(lock)
         else:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -826,10 +839,11 @@ def main():
             shutil.rmtree(path)
             print('inactive source revoked; other sources retained')
             return
-        if args.action == 'refresh':
+        if args.action in ('refresh', 'recover'):
             settings['_fetch_lock'] = lock
+            settings['_recover'] = args.action == 'recover'
             generation = refresh(settings, selected(root))
-            if args.generation:
+            if args.action == 'recover' or args.generation:
                 _, stage, _ = refresh_context(settings)
                 print(stage.snapshot_digest(generation))
             else:

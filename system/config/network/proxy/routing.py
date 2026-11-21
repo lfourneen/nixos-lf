@@ -322,6 +322,7 @@ def firewall(settings, mode):
         result += ' }\n'
     result += f'''chain lf_routing_input {{ type filter hook input priority -4; policy accept;
  iifname "lo" return
+ iifname {uplinks} meta mark 0x4c460003 ct mark 0x4c460003 return
  iifname {dev} ct direction reply ct state established,related ct mark & 0x80000000 != 0 return
  iifname {dev} ip6 hoplimit 255 icmpv6 type {{ nd-neighbor-solicit, nd-neighbor-advert }} return
  iifname {uplinks} udp sport 67 udp dport 68 return
@@ -334,6 +335,7 @@ def firewall(settings, mode):
     result += ' counter drop\n}\n'
     result += f'''chain lf_routing_output {{ type filter hook postrouting priority 101; policy accept;
  oifname "lo" return
+ meta iif 0 oifname {uplinks} meta mark 0x4c460003 ct mark 0x4c460003 return
  meta iif 0 oifname {dev} meta l4proto {{ tcp, udp }} return
 {tunnel_out}
 '''

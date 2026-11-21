@@ -127,6 +127,7 @@ def recover_source(runtime):
         assert (runtime / 'config-digest').read_text() == digest
     finally:
         unavailable.unlink()
+    recovery_window(runtime, 'expire')
     change = Path('/run/managed-source-change')
     change.touch()
     try:
@@ -135,6 +136,76 @@ def recover_source(runtime):
         assert status()['ready'] and status()['routing_applied'] == 'rules'
     finally:
         change.unlink()
+
+
+def recovery_window(runtime, outcome):
+    marker = Path('/run/managed-source-recover-hold')
+    active = Path('/run/managed-source-recover-active')
+    unit = f'routing-recover-{outcome}.service'
+    uid = run('id', '-u', 'clash-fetch').stdout.strip()
+    wire = ('ip', 'netns', 'exec', 'outside', 'nft')
+    run(*wire, '-f', '-', input='''
+table inet recovery_wire {
+ chain incoming { type filter hook prerouting priority -300; policy accept;
+  iifname "peer0" tcp dport { 18080, 18082 } counter
+ }
+}
+''')
+    marker.touch()
+    try:
+        run('systemd-run', '--no-block', f'--unit={unit}', 'proxy-control', 'recover')
+        wait(active.exists, 18)
+        assert status()['mode'] == 'blocked'
+        assert (runtime / 'intent').read_text().strip() == 'proxy'
+        assert '1.1.1.1 . 443' in run('nft', 'list', 'set', 'inet', 'lf_filter',
+                                     'source_recovery4').stdout
+        for identity in (uid, '1000'):
+            for port in (443, 18080):
+                # The node IP equals the subscription IP in this fixture.
+                # Only the source downloader may open the leased HTTPS port.
+                result = run('setpriv', f'--reuid={identity}', '--clear-groups', 'curl',
+                             '--noproxy', '*', '-ksS', '--max-time', '1',
+                             f'https://1.1.1.1:{port}/outside-probe', required=False)
+                assert (result.returncode == 0) == (identity == uid and port == 443), result
+        for target in ('http://203.0.113.10:18082/', 'http://[2001:db8:dead::1]:18082/'):
+            for prefix in (['setpriv', '--reuid=1000', '--clear-groups'],
+                           ['ip', 'netns', 'exec', 'routing-guest-240']):
+                assert run(*prefix, 'curl', '--noproxy', '*', '-fsS', '--max-time', '1',
+                           target, required=False).returncode != 0
+        assert 'counter packets 0 bytes 0' in run(*wire, 'list', 'table', 'inet', 'recovery_wire').stdout
+        if outcome == 'expire':
+            # Freeze both userspace paths so only the kernel clock can revoke.
+            with Path('/tmp/recovery-stream').open('wb') as output:
+                stream = subprocess.Popen(['setpriv', f'--reuid={uid}', '--clear-groups', 'curl',
+                                           '--noproxy', '*', '-ksSN', '--max-time', '70',
+                                           'https://1.1.1.1/recovery-stream'], stdout=output)
+                try:
+                    wait(lambda: output.tell() > 20, 5)
+                    run('systemctl', 'freeze', 'proxy-mode.service', unit)
+                    try:
+                        wait(lambda: '1.1.1.1 . 443' not in run(
+                            'nft', 'list', 'set', 'inet', 'lf_filter', 'source_recovery4').stdout, 62)
+                        assert (runtime / 'source-recovery').exists()
+                        assert run('setpriv', f'--reuid={uid}', '--clear-groups', 'curl',
+                                   '--noproxy', '*', '-ksS', '--max-time', '1',
+                                   'https://1.1.1.1/outside-probe', required=False).returncode != 0
+                        received = output.tell()
+                        time.sleep(.5)
+                        assert output.tell() == received and stream.poll() is None
+                    finally:
+                        run('systemctl', 'thaw', 'proxy-mode.service', unit)
+                finally:
+                    stream.terminate()
+                    stream.wait(timeout=5)
+        else:
+            run('systemctl', 'start', 'clash-source-recovery-revoke.service')
+            assert not (runtime / 'source-recovery').exists()
+    finally:
+        marker.unlink(missing_ok=True)
+        run('systemctl', 'stop', unit)
+        active.unlink(missing_ok=True)
+        run(*wire, 'delete', 'table', 'inet', 'recovery_wire')
+    assert status()['mode'] == 'blocked'
 
 
 def old_peer():
@@ -344,6 +415,11 @@ table inet routing_wire {
     wait(lambda: status()['ready'])
     last = status()
     assert last['routing_applied'] == last['routing_requested']
+    route('proxy-only')
+    run('systemctl', 'stop', 'clash-verge.service')
+    wait(lambda: status()['mode'] == 'blocked', timeout=20)
+    recovery_window(runtime, 'revoke')
+    assert status()['routing_requested'] == 'proxy-only'
     route('proxy-only')
     interrupt_waiting_switch(runtime)
     recover_source(runtime)

@@ -1,11 +1,12 @@
 { config, lib, ... }:
 
 let
-  ports = import ../lib/reserved-ports.nix { inherit lib; ports = config.my.machine.ports; };
+  ports = (import ../lib/reserved-ports.nix { inherit lib; ports = config.my.machine.ports; })
+    ++ lib.optional config.my.proxy.runtimeRouting (toString config.my.machine.ports.sourceRecoveryDns);
 
   infrastructure = [
     "clash-core-localhost" "clash-core-loopback" "clash-dns-application"
-    "clash-dns-infrastructure" "clash-strict" "dhcpcd" "gost-relay"
+    "clash-dns-infrastructure" "clash-source-recovery-dns" "clash-strict" "dhcpcd" "gost-relay"
     "proxy-real-dns" "clash-real-dns"
     "socket-guest-dns" "unbound" "nscd" "wpa_supplicant" "clamav-freshclam"
   ];

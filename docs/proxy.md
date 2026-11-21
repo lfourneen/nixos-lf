@@ -89,7 +89,7 @@ In B it starts the downloader after 90 continuous seconds of verified health for
 A mapped GUI request uses the same download gate. In A the download runs directly and prepares the source for the next proxy startup.
 In B a successful download queues its exact candidate for application. If another import or rollback is in progress, the apply service retries with that candidate after rechecking the selection, registration and digest.
 Foreground core startup can finish while the background request is waiting or downloading. `clash-off` cancels queued downloads and applications.
-With runtime routing, an explicit recovery command can fetch the registered source through a temporary A window when its accepted snapshot cannot restore B. See [recover a registered source](operations.md#recover-a-registered-source).
+With runtime routing, an explicit recovery command can fetch the registered source under a short kernel lease while C continues to block application traffic. See [recover a registered source](operations.md#recover-a-registered-source).
 A first import without an accepted baseline uses the available candidate and the ordinary health observation window.
 Stopping and restarting does not waive structural checks.
 

@@ -12,13 +12,13 @@ OWNED = re.compile(r"\b(?:(?:inet|ip|ip6)\s+(?:lf_[A-Za-z0-9_]+|mihomo)|arp\s+lf
 ARP_ELEMENTS = re.compile(r"^\s*(?:(?:add|delete) element|flush set) arp lf_arp (?:observe|enforce|gateways|bindings)\b")
 LEASE_ELEMENT = re.compile(
     r"^\s*(?:add|delete) element inet lf_filter "
-    r"(?:dns_plaintext4|dns_split4|dns_split6|b_authorization)\s+\{")
+    r"(?:dns_plaintext4|dns_split4|dns_split6|b_authorization|source_recovery[46])\s+\{")
 
 
 def needs_wake(line):
     # Broker renewals are data, not policy drift. Definitions and every other
     # rule/object change still wake supervision; rules.py validates lease bounds.
-    if re.fullmatch(r'\s*flush set inet lf_filter b_authorization\s*', line):
+    if re.fullmatch(r'\s*flush set inet lf_filter (?:b_authorization|source_recovery[46])\s*', line):
         return False
     return bool(OWNED.search(line) and not LEASE_ELEMENT.match(line) and not ARP_ELEMENTS.match(line))
 

@@ -44,7 +44,11 @@ def transition(settings, action, root=Path("/run"), run=subprocess.run):
             raise ValueError("unknown sleep action")
         # Keep the marker on any failure. The independent resume service retries
         # after sleep.target is inactive, including a failed ExecStart.
-        run([settings["nft"], "-f", "-"], input=REVOKE, text=True,
+        revoke = REVOKE
+        if settings.get("source_recovery"):
+            (root / "proxy-mode/source-recovery").unlink(missing_ok=True)
+            revoke += "flush set inet lf_filter source_recovery4\nflush set inet lf_filter source_recovery6\n"
+        run([settings["nft"], "-f", "-"], input=revoke, text=True,
             capture_output=True, timeout=5, check=True)
         # A pre-sleep proof cannot be replayed after resume, even when kernel
         # timeout clocks paused while asleep.

@@ -31,6 +31,7 @@ let
     split_cidrs = lib.optionals config.my.hardening.directEgress.privateRoutes (m.privateV4 ++ m.ulaV6);
     runtime = "/run/dns-upstream";
     allow_plaintext = config.my.proxy.dnsEncryption != "strict";
+    source_recovery = config.my.proxy.runtimeRouting;
   });
 
   # Plaintext resolvers used only inside the bounded Mode-A window, and only

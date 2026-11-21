@@ -98,13 +98,13 @@ Localhost compatibility and the GUI channel use [separate Unix relays](proxy.md#
 
 | Mode | Entry | Application egress | Default DNS upstream |
 |---|---|---|---|
-| A / `direct` | Direct boot policy, explicit `clash-off`, or explicit source recovery | Direct access | Validating Unbound DoT, with bounded plaintext recovery |
+| A / `direct` | Direct boot policy or explicit `clash-off` | Direct access | Validating Unbound DoT, with bounded plaintext recovery |
 | B / `proxy` | Proxy intent, authorized core, required TUN routes and health proof | Proxy, explicit exceptions, or drop | Managed fake-IP or validated real addresses with the WireGuard exit |
 | C / `blocked` | Proxy requested but not ready, crashed or unhealthy | Blocked except recovery and link infrastructure | Unbound. External DoT is cut, eligible cached answers are served |
 
 `proxy-mode` follows root-written, boot-scoped intent.
 Closing the GUI leaves proxy intent in place. A core stop or crash with proxy intent puts the host in C.
-Use `clash-off` to request A, or open a temporary A window to [recover a registered source](operations.md#recover-a-registered-source).
+Use `clash-off` to request A. To fetch the selected source while C stays active, see [recover a registered source](operations.md#recover-a-registered-source).
 Starting a GUI alone cannot authorize A → B.
 `my.proxy.bootMode="proxy"` installs C before physical networking and waits for B.
 The default is `"direct"`.

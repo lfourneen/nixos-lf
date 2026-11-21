@@ -53,6 +53,18 @@ def source():
     class Handler(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
         def do_GET(self):
+            if SETTINGS.get('routing') and self.path == '/recovery-stream':
+                self.send_response(200)
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.close_connection = True
+                try:
+                    for _ in range(700):
+                        self.wfile.write(b'heartbeat\n')
+                        time.sleep(.1)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
             if self.path.startswith('/echo?'):
                 body = self.path.split('?', 1)[1].encode()
                 self.send_response(200)
@@ -68,6 +80,11 @@ def source():
             if Path('/run/managed-source-unavailable').exists():
                 self.send_error(503)
                 return
+            if SETTINGS.get('routing') and self.path == '/one' and Path('/run/managed-source-recover-hold').exists():
+                Path('/run/managed-source-recover-active').touch()
+                deadline = time.monotonic() + 70
+                while Path('/run/managed-source-recover-hold').exists() and time.monotonic() < deadline:
+                    time.sleep(.1)
             if SETTINGS.get('egress') and Path('/run/managed-source-hold').exists():
                 Path('/run/managed-source-fetching').touch()
                 deadline = time.monotonic() + 30
@@ -90,7 +107,10 @@ def source():
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # The recovery fixture deliberately cancels in-flight requests.
         def log_message(self, *args):
             pass
     # Bootstrap resolves to 1.1.1.1 while B's application resolver uses

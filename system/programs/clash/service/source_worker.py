@@ -14,6 +14,7 @@ import socket
 import ssl
 import sys
 import time
+from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
 import yaml
@@ -151,11 +152,20 @@ def real_resolver(settings):
     backend.nameservers, backend.port = [address], port
     backend.timeout = 1
     backend.cache = dns.resolver.Cache()
+    blocked = {name.lower() for name in settings.get('blocked', ())}
+    if settings.get('blocked_file'):
+        blocked.update(Path(settings['blocked_file']).read_text().splitlines())
+    exceptions = {name.lower() for name in settings.get('exceptions', ())}
 
     def lookup(host, port, *, type=socket.SOCK_STREAM):
         try:
             addresses = [ipaddress.ip_address(host)]
         except ValueError:
+            suffix = host.lower().rstrip('.')
+            while suffix and suffix not in exceptions:
+                if suffix in blocked:
+                    raise socket.gaierror(socket.EAI_NONAME, 'filtered DNS name')
+                _, _, suffix = suffix.partition('.')
             addresses = []
             deadline = time.monotonic() + 4
             for kind in ('A', 'AAAA'):
@@ -555,8 +565,12 @@ def step(phase, function, *args, **kwargs):
 def prepare(request, download=None, resolver=socket.getaddrinfo):
     registry, policy = request['registry'], request['policy']
     if download is None:
+        pinned = request.get('pinned_downloads')
+        def download_resolver(host, port, *, type):
+            return [(0, type, 0, '', (address, port)) for address in pinned.get(host, ())]
+
         def download(spec, deadline, budget):
-            return fetch(spec, deadline, budget, resolver=resolver)
+            return fetch(spec, deadline, budget, resolver=resolver if pinned is None else download_resolver)
     deadline, budget = time.monotonic() + 40, [TOTAL]
     data = step('fetch', download, registry['subscription'], deadline, budget)
     document = step('parse', load, data)

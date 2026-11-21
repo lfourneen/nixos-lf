@@ -229,6 +229,22 @@ class SourceTests(unittest.TestCase):
             w.prepare(request, resolver=resolver)
         self.assertEqual(hosts, ['source.example', 'proxy.example'])
 
+    def test_recovery_fetch_uses_pinned_answers_and_node_lookup_grants_no_download(self):
+        request = {'registry': {'id': 'fixture', 'subscription': {'url': 'https://source.example/sub'}},
+                   'policy': {}, 'pinned_downloads': {'source.example': ['2606:4700:4700::1111']}}
+        resolver = unittest.mock.Mock(side_effect=public)
+
+        def download(spec, deadline, budget, **kwargs):
+            pinned = kwargs['resolver']
+            self.assertEqual(w.public_addresses(pinned, 'source.example', 443), ['2606:4700:4700::1111'])
+            with self.assertRaises(w.Refused):
+                w.public_addresses(pinned, 'proxy.example', 443)
+            return json.dumps(DOC).encode()
+
+        with patch.object(w, 'fetch', side_effect=download):
+            w.prepare(request, resolver=resolver)
+        self.assertEqual([call.args[0] for call in resolver.call_args_list], ['proxy.example'])
+
     def test_ua_negotiation_on_the_same_endpoint(self):
         class Connection:
             sock = None
