@@ -340,6 +340,23 @@ class SourceTests(unittest.TestCase):
         with self.assertRaises(w.Refused):
             w.render(dict(DOC, **{'rule-providers': {'remote': {'url': 'https://rules.example/'}}}), {}, {})
 
+    def test_managed_delay_configuration_replaces_subscription_targets(self):
+        target = 'https://fixture.example:8443/one?policy=root'
+        policy = {'lf-private-targets': {'delay-test-url': target}}
+        group = dict(DOC['proxy-groups'][0], type='fallback',
+                     url='https://other.fixture/foreign', interval=1, timeout=60000,
+                     **{'expected-status': '503'})
+        second = dict(DOC['proxy-groups'][0], name='Second', interval=10)
+        document = dict(DOC, **{'proxy-groups': [group, second]})
+        rendered = w.load(w.render(document, {}, policy))['proxy-groups']
+        self.assertEqual(rendered[0], dict(DOC['proxy-groups'][0], type='fallback',
+                                          url=target, interval=300, timeout=5000))
+        self.assertEqual(rendered[1], dict(DOC['proxy-groups'][0], name='Second',
+                                          url=target, interval=0, timeout=5000))
+        # Rendering an accepted effective group under the same policy is stable.
+        document['proxy-groups'] = rendered[:2]
+        self.assertEqual(w.load(w.render(document, {}, policy))['proxy-groups'], rendered)
+
     def test_anytls_nodes_pin_with_tls_identity(self):
         node = {'name': 'a', 'type': 'anytls', 'server': 'any.example', 'port': 443, 'password': 'test-only'}
         document = dict(DOC, proxies=[node],
@@ -352,20 +369,20 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(out['proxies'][0]['servername'], 'any.example')
         self.assertEqual(out['proxies'][0]['sni'], 'any.example')
 
-    def test_insecure_nodes_are_dropped_unless_explicitly_allowed(self):
+    def test_unchecked_tls_nodes_are_removed_from_opted_in_sources_before_pinning(self):
         insecure = dict(NODE, name='insecure', **{'skip-cert-verify': True})
-        allowed = dict(NODE, name='allowed', **{'skip-cert-verify': True})
-        document = dict(DOC, proxies=[NODE, insecure, allowed],
+        nested = dict(NODE, name='nested', **{'tls-opts': {'skip_cert_verify': True}})
+        document = dict(DOC, proxies=[NODE, insecure, nested],
                         **{'proxy-groups': [{'name': 'P', 'type': 'select',
-                                             'proxies': ['n', 'insecure', 'allowed']}]})
-        pinned, dropped = w.pin_servers(json.dumps(document).encode(), public, ['allowed'], True)
+                                             'proxies': ['n', 'insecure', 'nested']}]})
+        pinned, dropped = w.pin_servers(json.dumps(document).encode(), public, sanitize_insecure=True)
         out = w.load(pinned)
-        self.assertEqual(dropped, 1)
-        self.assertEqual([node['name'] for node in out['proxies']], ['n', 'allowed'])
-        self.assertEqual(out['proxy-groups'][0]['proxies'], ['n', 'allowed'])
-        kept, dropped = w.pin_servers(json.dumps(document).encode(), public, ['allowed'], False)
+        self.assertEqual(dropped, 2)
+        self.assertEqual([node['name'] for node in out['proxies']], ['n'])
+        self.assertEqual(out['proxy-groups'][0]['proxies'], ['n'])
+        kept, dropped = w.pin_servers(json.dumps(document).encode(), public)
         self.assertEqual(dropped, 0)
-        self.assertEqual([node['name'] for node in w.load(kept)['proxies']], ['n', 'insecure', 'allowed'])
+        self.assertEqual([node['name'] for node in w.load(kept)['proxies']], ['n', 'insecure', 'nested'])
 
     def test_ech_query_nodes_stay_out_of_the_system_leaf(self):
         queried = dict(NODE, name='ech', **{'ech-opts': {'enable': True, 'query-server-name': 'cloudflare-ech.com'}})

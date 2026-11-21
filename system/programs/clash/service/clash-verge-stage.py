@@ -420,6 +420,11 @@ def run_audit(settings, directory, baseline):
     return value
 
 
+def source_revocation(settings):
+    root = settings.get('source_root')
+    return read_record(Path(root) / 'revoking.json') if root else {}
+
+
 def source_directory(settings, identity=None):
     root = Path(settings['source_root'])
     if identity is not None:
@@ -429,9 +434,13 @@ def source_directory(settings, identity=None):
     elif (root / 'selected').is_symlink():
         target = (root / 'selected').resolve(strict=True)
     else:
+        if (root / 'registry-migrated').exists() or not (root / 'registry.json').exists():
+            raise ValueError('no selected source')
         return root  # Existing single-source installations migrate on broker use.
     if target.parent != root / 'sources' or not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', target.name) or target.is_symlink():
         raise ValueError('source selection')
+    if source_revocation(settings).get('source_id') == target.name:
+        raise ValueError('source revocation is in progress')
     info = target.stat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
         raise ValueError('source directory permissions')
@@ -1058,6 +1067,8 @@ def stage_locked(settings, config, validate):
         fcntl.flock(lock, fcntl.LOCK_EX)
         if (state / 'intent').read_text().strip() != 'proxy':
             raise ValueError('start Clash with clash-on; proxy intent is required')
+        if source_revocation(settings).get('protect'):
+            raise ValueError('source revocation is in progress')
         complete_commit(runtime, state, settings)
         window = state / 'authorize-window'
         authorized = False
@@ -1255,6 +1266,8 @@ def verify_refresh(settings, restart=None):
                 return
             with (state / 'authorization.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
+                if source_revocation(settings).get('protect'):
+                    return
                 complete_commit(runtime, state, settings)
                 recovery = state / 'profile-refresh-restart.json'
                 record = read_record(pending_path)

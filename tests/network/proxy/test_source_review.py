@@ -126,6 +126,14 @@ class ComparisonTests(unittest.TestCase):
         after = dict(before, server='8.8.8.8')
         self.assertEqual(r.node_changes({'proxies': [before]}, {'proxies': [after]}), ([], []))
 
+    def test_unlisted_node_options_are_reported_without_names_or_values(self):
+        before = {'name': 'node', 'udp': False}
+        after = dict(before, udp=True, **{'fixture-secret-key': 'fixture-secret-value'})
+        nodes, removed = r.node_changes({'proxies': [before]}, {'proxies': [after]})
+        self.assertEqual(nodes, [{'name': 'node', 'added': False, 'changes': [
+            {'field': 'additional-options', 'hidden': True}]}])
+        self.assertEqual(removed, [])
+
     def test_terminal_output_wraps_unicode_and_removes_control_characters(self):
         report = dict(source='one', baseline='1' * 64, candidate='2' * 64,
             before_nodes=1, after_nodes=1, audit={'deny': {'node_identity': 1}}, audit_current=True, nodes=[{'name': '节点' * 40 + '\x1b[31m', 'added': False,

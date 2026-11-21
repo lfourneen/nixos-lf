@@ -290,7 +290,7 @@ def provider_reject_refresh():
         assert response.status == 200
         for _ in range(20):
             line = response.readline(65536)
-            if b'ProviderSource' in line and b'explicit certificate-validation exception' in line:
+            if b'ProviderSource' in line and b'requires TLS certificate validation' in line:
                 return
         raise AssertionError('no certificate-policy rejection for provider refresh')
     finally:

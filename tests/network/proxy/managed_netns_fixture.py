@@ -85,6 +85,16 @@ def source():
             if Path('/run/managed-source-unavailable').exists():
                 self.send_error(503)
                 return
+            hold = Path('/run/managed-revocation-hold')
+            try:
+                paused_path = hold.read_text()
+            except FileNotFoundError:
+                paused_path = None
+            if self.path == paused_path:
+                Path('/run/managed-revocation-fetching').touch()
+                deadline = time.monotonic() + 40
+                while hold.exists() and time.monotonic() < deadline:
+                    time.sleep(.1)
             if SETTINGS.get('routing') and self.path == '/one' and Path('/run/managed-source-recover-hold').exists():
                 Path('/run/managed-source-recover-active').touch()
                 deadline = time.monotonic() + 70
@@ -187,10 +197,27 @@ def advance_refresh_window(state, stage):
 
 
 def refresh():
-    for host in ('source.fixture.example', 'source-node.fixture.example'):
-        addresses = {item[4][0] for item in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)}
-        assert addresses and all(ipaddress.ip_address(ip) in ipaddress.ip_network('198.18.0.0/16')
-                                 for ip in addresses), (host, addresses)
+    state = Path('/run/proxy-mode')
+    stage = stage_tool()
+    def application_dns():
+        policy = json.loads((state / 'state.json').read_text())
+        health = stage.read_record(state / 'health.json')
+        try:
+            if (not ready() or health.get('ok') is not True
+                    or health.get('policy_version') != policy['policy_version']
+                    or health.get('digest') != (state / 'config-digest').read_text().strip()):
+                return False
+            answers = {host: {item[4][0] for item in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)}
+                       for host in ('source.fixture.example', 'source-node.fixture.example')}
+        except (FileNotFoundError, socket.gaierror):
+            return False
+        if not ready() or json.loads((state / 'state.json').read_text())['policy_version'] != policy['policy_version']:
+            return False
+        for host, addresses in answers.items():
+            assert addresses and all(ipaddress.ip_address(ip) in ipaddress.ip_network('198.18.0.0/16')
+                                     for ip in addresses), (host, addresses)
+        return True
+    wait(application_dns, 45)
     denied = subprocess.run(['setpriv', f'--reuid={USER.pw_uid}', '--clear-groups', 'dig',
                              '+time=1', '+tries=1', '@127.0.0.1', '-p', '1056',
                              'source.fixture.example', 'A'], capture_output=True, timeout=5)
@@ -498,6 +525,100 @@ def switch():
     print('Actual TLS registration, source worker, approved GUI source switch and core restart passed')
 
 
+def revoke():
+    state = Path('/run/proxy-mode')
+    root = Path('/var/lib/clash-source')
+    stage = stage_tool()
+    settings = json.loads(Path(SETTINGS['stageSettings']).read_text())
+    initial = json.loads(run('clash-source', 'list').stdout)
+    identity = initial['active_source']
+    assert identity and identity == initial['selected'], initial
+    other, = [item['id'] for item in initial['sources'] if item['id'] != identity]
+    active_snapshot = (state / 'authorized-config').read_text()
+    core_pid = stage.service_request(settings, 'GET', '/status')['core_pid']
+
+    run('clash-source', 'use', '--select-only', other)
+    mismatch = json.loads(run('clash-source', 'list').stdout)
+    assert (mismatch['selected'], mismatch['active_source']) == (other, identity), mismatch
+    inactive = json.loads(run('clash-source', 'revoke', other).stdout)
+    assert inactive['active_source'] == identity and inactive['upstream_signature'] == 'not-verified', inactive
+    assert (root / 'selected').resolve().name == identity
+    assert (state / 'authorized-config').read_text() == active_snapshot
+    assert stage.service_request(settings, 'GET', '/status')['core_pid'] == core_pid
+    browser_request()
+
+    tls = ssl.create_default_context(cafile=str(Path(SETTINGS['tls']) / 'ca.pem'))
+    stream = http.client.HTTPSConnection('127.0.0.1', 7897, timeout=6, context=tls)
+    stream.set_tunnel('source.fixture.example', 443)
+    stream.request('GET', '/echo?before-revoke')
+    assert stream.getresponse().read() == b'before-revoke' and stream.sock is not None
+    lease = ['nft', '-j', 'list', 'set', 'inet', 'lf_filter', 'b_authorization']
+    def lease_elements():
+        return next(item['set'] for item in json.loads(run(*lease).stdout)['nftables'] if 'set' in item).get('elem', [])
+    assert lease_elements(), 'B must hold kernel authorization before revocation'
+
+    run('systemctl', 'stop', 'clash-source-apply.path')
+    stage.atomic_record(state / 'source-apply.json', dict(binding=dict(source_id=identity),
+        at=time.time()), mode=0o600)
+    hold = Path('/run/managed-revocation-hold')
+    hold.write_text('/' + identity)
+    process = subprocess.Popen(['clash-source', 'refresh'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        wait(Path('/run/managed-revocation-fetching').exists, 20)
+        revision = next(item['revision'] for item in initial['sources'] if item['id'] == identity)
+        active = json.loads(run('clash-source', 'revoke', identity, '--revision', revision).stdout)
+        assert active['active_source'] is None and active['result'] == 'revoked', active
+        assert state_is('blocked') and not lease_elements()
+        assert (state / 'intent').read_text().strip() == 'proxy'
+        assert all(not (state / name).exists() for name in (
+            'authorized-config', 'config-digest', 'source-apply.json', 'source-gui-request.json'))
+        assert not (root / 'selected').is_symlink() and not (root / 'sources' / identity).exists()
+        assert not (Path(settings['runtime']) / 'effective').exists()
+        assert subprocess.run(['systemctl', 'is-active', '--quiet', 'clash-verge.service'],
+            timeout=5, check=False).returncode != 0
+        try:
+            stream.request('GET', '/echo?after-revoke')
+            reply = stream.getresponse().read()
+        except (OSError, http.client.HTTPException):
+            pass
+        else:
+            assert reply != b'after-revoke', 'revoked TLS connection carried application traffic'
+        browser_request(False)
+    finally:
+        hold.unlink(missing_ok=True)
+        stream.close()
+        output, error = process.communicate(timeout=60)
+    assert process.returncode != 0, (output, error)
+    assert not (root / 'sources' / identity).exists()
+
+    run('systemctl', 'start', 'clash-source-apply.path', 'clash-verge.service')
+    def helper_without_core():
+        try:
+            return stage.service_request(settings, 'GET', '/status', timeout=1).get('core_pid') is None
+        except (OSError, ValueError, http.client.HTTPException):
+            return False
+    wait(helper_without_core, 25)
+    assert state_is('blocked') and not lease_elements() and not (state / 'authorized-config').exists()
+    status = json.loads(run('clash-source', 'list').stdout)
+    assert status['selected'] is None and status['active_source'] is None and status['sources'] == [], status
+    print('Inactive selection kept the current core. Active revocation cut B, discarded a live fetch and survived helper restart.')
+
+
+def revoke_direct():
+    state = Path('/run/proxy-mode')
+    registration = Path('/run/managed-source-definition.json')
+    review = json.loads(run('clash-source', 'review', registration).stdout)
+    run('clash-source', 'register', registration, '--digest', review['digest'], '--previous', 'none')
+    status = json.loads(run('clash-source', 'list').stdout)
+    assert status['selected'] == 'two' and status['active_source'] is None, status
+    before = json.loads((state / 'state.json').read_text())
+    run('clash-source', 'revoke', 'two', '--revision', review['digest'])
+    after = json.loads((state / 'state.json').read_text())
+    assert before['mode'] == after['mode'] == 'direct'
+    assert before['policy_version'] == after['policy_version']
+    print('Revoking a selected source in Mode A kept its direct firewall policy.')
+
+
 if __name__ == '__main__':
     {'source': source, 'setup': setup, 'refresh': refresh, 'recover': recover, 'strict': strict,
-     'stream': stream_server, 'switch': switch}[sys.argv[1]]()
+     'stream': stream_server, 'switch': switch, 'revoke': revoke, 'revoke-direct': revoke_direct}[sys.argv[1]]()

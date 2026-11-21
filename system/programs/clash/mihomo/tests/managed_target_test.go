@@ -39,7 +39,6 @@ func TestLFManagedAuthenticatedHTTPTransport(t *testing.T) {
 	defer ca.ResetCertificate()
 	if err := lfguard.Configure(map[string]any{
 		"prefixes": []string{"10.0.0.0/8"}, "require-protected-node-transport": true,
-		"insecure-proxy-exceptions": []string{"secure"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +76,7 @@ func TestLFManagedAuthenticatedHTTPTransport(t *testing.T) {
 	}
 	node["skip-cert-verify"] = true
 	if _, err := ParseProxy(node); err == nil {
-		t.Fatal("named certificate exception bypassed the transport floor")
+		t.Fatal("certificate verification bypassed the transport floor")
 	}
 }
 

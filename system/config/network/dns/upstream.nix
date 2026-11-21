@@ -165,7 +165,7 @@ in
     after = [ "systemd-resolved.service" ] ++ lib.optional config.services.tailscale.enable "tailscaled-set.service";
     serviceConfig = {
       Type = "oneshot";
-      ExecStart = "${pkgs.python3}/bin/python3 ${./resolved_policy.py} ${resolvedSettings}";
+      ExecStart = "${pkgs.python3}/bin/python3 ${./resolved_policy.py} ${config.my.proxy.resolvedPolicySettings}";
       TimeoutStartSec = 20;
       RuntimeDirectory = "netsec-tailnet";
       RuntimeDirectoryPreserve = true;

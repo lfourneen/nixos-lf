@@ -117,7 +117,7 @@ class RegistryTests(unittest.TestCase):
             return SimpleNamespace(returncode=0)
         with patch.object(b.subprocess, 'run', side_effect=download):
             for content, selected, dropped in (
-                    (b'one\none\n', source, 1), (b'one\n', self.root / 'sources/two', 0),
+                    (b'one\none\n', source, 2), (b'one\n', self.root / 'sources/two', 0),
                     (b'one\nbad id\n', source, 0), (b'one\n\xff', source, 0), (None, source, 0)):
                 with self.subTest(content=content, selected=selected.name):
                     if content is None:
@@ -130,8 +130,8 @@ class RegistryTests(unittest.TestCase):
                     config = audit.load(generation / 'clash-verge.yaml')
                     findings = audit.audit(config, settings={'insecure_exceptions': ['named']})
                     self.assertEqual(result['dropped'], dropped)
-                    self.assertIn('named', {node['name'] for node in config['proxies']})
-                    self.assertEqual(findings['deny'], {} if dropped else {'certificate': 1})
+                    self.assertEqual('named' in {node['name'] for node in config['proxies']}, not dropped)
+                    self.assertEqual(findings['deny'], {} if dropped else {'certificate': 2})
 
     def test_network_wait_releases_publication_lock_and_rechecks_registration_and_selection(self):
         self.register('one')
@@ -161,6 +161,14 @@ class RegistryTests(unittest.TestCase):
                 b.refresh(settings, source)
             self.assertEqual((source / 'current').readlink(), current)
             b.atomic(source / 'registry.json', original)
+            def re_registered(*args, **kwargs):
+                result = download(*args, **kwargs)
+                b.atomic(source / 'registry.json', original)
+                return result
+            with patch.object(b.subprocess, 'run', side_effect=re_registered), self.assertRaises(b.RequestChanged):
+                b.refresh(settings, source)
+            self.assertEqual((source / 'current').readlink(), current)
+
             def switched(*args, **kwargs):
                 result = download(*args, **kwargs)
                 b.select(self.root, self.root / 'sources/two')
@@ -411,6 +419,98 @@ class RegistryTests(unittest.TestCase):
         self.assertTrue((selected / 'approved/settled.json').is_file())
         b.migrate(self.root)
         self.assertEqual(b.selected(self.root), selected)
+
+    def test_revoking_selected_legacy_source_in_a_resumes_retired_directory_cleanup(self):
+        data = b.canonical(json.dumps({'id': 'legacy', 'subscription': {'url': 'https://source.example/'}}))
+        b.atomic(self.root / 'registry.json', data)
+        state, runtime = self.root / 'state', self.root / 'runtime'
+        state.mkdir()
+        runtime.mkdir()
+        (state / 'intent').write_text('direct')
+        settings = dict(state=str(state), runtime=str(runtime), source_root=str(self.root))
+        with patch.object(b, 'refresh_context', return_value=(refresh_tool, stage_tool, settings)), \
+                patch.object(b.subprocess, 'run') as commands:
+            with patch.object(b.shutil, 'rmtree', side_effect=OSError('fixture interrupted cleanup')), \
+                    self.assertRaisesRegex(OSError, 'interrupted cleanup'):
+                b.revoke_source({}, self.root, 'legacy', b.digest(data))
+            self.assertEqual(b.pending_revocation(self.root)['protect'], False)
+            self.assertTrue((self.root / 'sources/.revoked-legacy/registry.json').is_file())
+            self.assertIsNone(b.requested_source(self.root))
+            result = b.revoke_source({}, self.root, 'legacy', b.digest(data))
+            self.assertEqual(result['result'], 'revoked')
+            self.assertIsNone(result['active_source'])
+            commands.assert_not_called()
+        b.migrate(self.root)
+        self.assertIsNone(b.requested_source(self.root))
+        self.assertFalse((self.root / 'sources/.revoked-legacy').exists())
+        self.assertEqual(b.pending_revocation(self.root), {})
+        with self.assertRaisesRegex(ValueError, 'no selected source'):
+            stage_tool.source_directory(settings)
+
+    def test_active_revocation_protects_before_retiring_old_revision_and_is_retriable(self):
+        active_registry = self.register('one')
+        two = self.register('two')
+        state, runtime = self.root / 'state', self.root / 'runtime'
+        state.mkdir()
+        (state / 'boot-id').write_text('00000000-1111-2222-3333-444444444444')
+        (state / 'intent').write_text('proxy')
+        snapshots = runtime / 'snapshots'
+        candidate = snapshots / 'candidate'
+        candidate.mkdir(parents=True)
+        (candidate / 'clash-verge.yaml').write_text('proxies: []\n')
+        manifest = dict(source_id='one', revision=b.digest(active_registry))
+        (candidate / 'source-manifest.json').write_text(json.dumps(manifest))
+        snapshot = stage_tool.snapshot_digest(candidate)
+        active = snapshots / snapshot
+        candidate.rename(active)
+        (runtime / 'effective').symlink_to(active)
+        for name in ('config-digest', 'authorized-config'):
+            (state / name).write_text(snapshot)
+        new_registry = self.register('one', 'replacement', b.digest(active_registry))
+        b.select(self.root, self.root / 'sources/two')
+        (state / 'source-apply.json').write_text('{"binding":{"source_id":"one"}}')
+        (state / 'profile-refresh-commit.json').write_text(json.dumps(dict(target=snapshot)))
+        settings = dict(state=str(state), runtime=str(runtime), source_root=str(self.root))
+
+        fail_stop = True
+        actions = []
+        def command(argv, **kwargs):
+            action = argv[-2:]
+            actions.append(action)
+            self.assertEqual(b.pending_revocation(self.root)['revision'], b.digest(new_registry))
+            self.assertTrue((self.root / 'sources/one/registry.json').is_file())
+            self.assertTrue(active.is_dir())
+            if action[0] == 'start':
+                with (state / 'authorization.lock').open('a') as observer, self.assertRaises(BlockingIOError):
+                    fcntl.flock(observer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                for name in ('config-digest', 'authorized-config'):
+                    (state / name).unlink(missing_ok=True)
+            else:
+                with (state / 'authorization.lock').open('a') as observer:
+                    fcntl.flock(observer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if fail_stop:
+                    raise b.subprocess.CalledProcessError(1, argv)
+
+        with patch.object(b, 'refresh_context', return_value=(refresh_tool, stage_tool, settings)), \
+                patch.object(b.subprocess, 'run', side_effect=command):
+            with self.assertRaisesRegex(ValueError, 'revision changed'):
+                b.revoke_source({'systemctl': '/fixed/systemctl'}, self.root, 'one', b.digest(active_registry))
+            with self.assertRaises(b.subprocess.CalledProcessError):
+                b.revoke_source({'systemctl': '/fixed/systemctl'}, self.root, 'one', b.digest(new_registry))
+            self.assertTrue((self.root / 'revoking.json').exists())
+            fail_stop = False
+            result = b.revoke_source({'systemctl': '/fixed/systemctl'}, self.root, 'one', b.digest(new_registry))
+        self.assertEqual(actions, [['start', 'clash-source-revoke.service'], ['stop', 'clash-verge.service']] * 2)
+        self.assertEqual(result['result'], 'revoked')
+        self.assertIsNone(result['active_source'])
+        self.assertFalse(active.exists())
+        self.assertFalse((runtime / 'effective').is_symlink())
+        self.assertFalse((state / 'source-apply.json').exists())
+        self.assertFalse((state / 'profile-refresh-commit.json').exists())
+        self.assertFalse((self.root / 'revoking.json').exists())
+        self.assertFalse((self.root / 'sources/one').exists())
+        self.assertEqual(b.selected(self.root).name, 'two')
+        self.assertEqual((self.root / 'sources/two/registry.json').read_bytes(), two)
 
 
 if __name__ == '__main__':

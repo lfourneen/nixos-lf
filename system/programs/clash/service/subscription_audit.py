@@ -55,15 +55,53 @@ def load(path):
     return value
 
 
-def enabled(value):
-    return value is True or (isinstance(value, str) and value.lower() in ('true', 'yes', '1', 'on'))
-
-
 def insecure(value):
     if isinstance(value, dict):
-        return any((key.lower().replace('_', '-') == 'skip-cert-verify' and enabled(child))
-                   or insecure(child) for key, child in value.items())
+        for key, child in value.items():
+            if key.lower().replace('_', '-') == 'skip-cert-verify' and not (
+                    child is False or type(child) in (int, float) and child == 0 or
+                    isinstance(child, str) and child in ('0', 'f', 'F', 'false', 'False', 'FALSE')):
+                return True
+            if insecure(child):
+                return True
     return isinstance(value, list) and any(insecure(child) for child in value)
+
+
+NODE_IDENTITY = ('type', 'port', 'servername', 'sni', 'public-key', 'name-cert-verify',
+                 'fingerprint', 'ca', 'ca-str', 'certificate')
+NODE_AUTHENTICATION = ('password', 'username', 'uuid', 'private-key', 'token', 'auth', 'auth-str',
+                       'psk', 'obfs-password', 'short-id')
+
+
+def canonical_fields(node):
+    fields = {}
+    for key, value in node.items():
+        name = key.lower().replace('_', '-')
+        if name in fields:
+            raise InvalidYaml('yaml_structure')
+        fields[name] = value
+    return fields
+
+
+def node_policy(node):
+    fields = canonical_fields(node)
+    endpoint = fields.get('lf-source-server', fields.get('server'))
+    identity = [endpoint, *(fields.get(key) for key in NODE_IDENTITY)]
+    authentication = [fields.get(key) for key in NODE_AUTHENTICATION]
+    transport = {key: value for key, value in fields.items()
+                 if key not in NODE_IDENTITY and key not in NODE_AUTHENTICATION
+                 and key not in ('name', 'server', 'lf-source-server')}
+    reality = transport.get('reality-opts')
+    if isinstance(reality, dict):
+        remaining = canonical_fields(reality)
+        identity.append(remaining.pop('public-key', None))
+        authentication.append(remaining.pop('short-id', None))
+        transport['reality-opts'] = remaining
+    else:
+        identity.append(None)
+        authentication.append(None)
+    return tuple(json.dumps(value, sort_keys=True, allow_nan=False)
+                 for value in (identity, authentication, transport))
 
 
 def graph(document):
@@ -92,8 +130,11 @@ def route(document, host, suffix=False):
             return 'unknown'
         if name in nodes:
             kind = nodes[name].get('type')
+            if not isinstance(kind, str) or not kind:
+                return 'unknown'
+            kind = kind.lower()
             return ('direct' if kind in ('direct', 'compatible') else 'reject' if kind == 'reject'
-                    else 'unknown' if kind in ('pass', 'dns') else 'proxy')
+                    else 'unknown' if kind in ('pass', 'dns', 'rematch') else 'proxy')
         group = groups.get(name)
         if not group or any(group.get(key) for key in ('use', 'include-all', 'include-all-proxies',
                                                        'include-all-providers', 'filter', 'exclude-filter')):
@@ -121,6 +162,8 @@ def route(document, host, suffix=False):
         if kind not in ('DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD') or len(parts) != 3:
             return 'unknown'
         pattern = parts[1].lower().rstrip('.')
+        if not pattern:
+            return 'unknown'
         if suffix:
             # Overapproximate every subdomain, rather than inferring a suffix
             # guarantee from its apex and a few sample names. Mixed outcomes
@@ -152,24 +195,28 @@ def audit(candidate, baseline=None, settings=None):
     try:
         nodes, groups, providers = graph(candidate)
         old_nodes, _, _ = graph(baseline) if baseline is not None else ({}, {}, {})
-        exceptions = set(settings.get('insecure_exceptions', []))
         allowed = [ipaddress.ip_network(n) for n in settings.get('allowed_server_cidrs', [])]
+        strict = settings.get('strict_semantics')
+        previous = {name: node_policy(node) for name, node in old_nodes.items()} if strict else {}
+        previous_variants = set(previous.values())
+        changes = ('node_identity', 'node_authentication', 'node_transport')
         for node in nodes.values():
-            old = old_nodes.get(node.get('name'))
-            if settings.get('strict_semantics'):
+            if strict:
                 if node.get('type') in ('http', 'socks5') and not node.get('tls') and (node.get('username') or node.get('password')):
                     deny['plaintext_credentials'] += 1
-                if old:
-                    if (old.get('lf-source-server', old.get('server')) != node.get('lf-source-server', node.get('server')) or
-                            any(old.get(k) != node.get(k) for k in ('type', 'port', 'servername', 'sni', 'public-key'))):
-                        deny['node_identity'] += 1
-                        changed_nodes.add(node['name'])
-                    if any(old.get(k) != node.get(k) for k in ('password', 'username', 'uuid', 'private-key', 'token')):
-                        deny['node_authentication'] += 1
-                        changed_nodes.add(node['name'])
-                    if any(old.get(k) != node.get(k) for k in ('tls', 'network', 'plugin', 'plugin-opts', 'ws-opts', 'grpc-opts', 'reality-opts')):
-                        deny['node_transport'] += 1
-                        changed_nodes.add(node['name'])
+                current = node_policy(node)
+                if node['name'] in previous:
+                    categories = [category for category, old, new in
+                                  zip(changes, previous[node['name']], current) if old != new]
+                elif baseline is not None and current not in previous_variants:
+                    # A new alias with identical permissions is harmless.
+                    # A different leaf has no name-bound authorization baseline.
+                    categories = changes
+                else:
+                    categories = ()
+                if categories:
+                    deny.update(categories)
+                    changed_nodes.add(node['name'])
             server = node.get('server')
             if isinstance(server, str):
                 try:
@@ -179,7 +226,7 @@ def audit(candidate, baseline=None, settings=None):
                 if ip is not None and (ip.is_multicast or (
                         not ip.is_global and not any(ip in net for net in allowed))):
                     deny['private_server'] += 1
-            if insecure(node) and node['name'] not in exceptions:
+            if insecure(node):
                 deny['certificate'] += 1
         if not nodes and not providers:
             deny['empty_nodes'] += 1
@@ -215,7 +262,11 @@ def audit(candidate, baseline=None, settings=None):
                 if after:
                     deny[category] += 1
         sensitive = [domain.lower().rstrip('.') for domain in settings.get('sensitive_domains', [])]
-        protected = {domain.lower().rstrip('.'): route for domain, route in settings.get('protected_routes', {}).items()}
+        declarations = settings.get('protected_routes', {})
+        protected = {domain.lower().rstrip('.'): route for domain, route in declarations.items()}
+        if len(protected) != len(declarations) or any(not domain or outcome not in ('proxy', 'direct', 'reject')
+                                                     for domain, outcome in protected.items()):
+            raise InvalidYaml('yaml_structure')
         # Include explicitly mentioned subdomains, so an override below a
         # user-listed sensitive suffix cannot be hidden by testing only its apex.
         uncertain = set()
@@ -228,7 +279,7 @@ def audit(candidate, baseline=None, settings=None):
         targets = set(sensitive)
         for document in (candidate, baseline or {}):
             for rule in document.get('rules') or []:
-                parts = rule.split(',') if isinstance(rule, str) else []
+                parts = [part.strip() for part in rule.split(',')] if isinstance(rule, str) else []
                 if len(parts) >= 3 and parts[0].upper() in ('DOMAIN', 'DOMAIN-SUFFIX'):
                     domain = parts[1].lower().rstrip('.')
                     if any(domain == d or domain.endswith('.' + d) for d in sensitive):

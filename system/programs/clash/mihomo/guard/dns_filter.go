@@ -1,6 +1,8 @@
 package dns
 
 import (
+	"context"
+
 	"github.com/metacubex/mihomo/component/lfguard"
 	icontext "github.com/metacubex/mihomo/context"
 	D "github.com/miekg/dns"
@@ -20,13 +22,39 @@ func lfBlockedReply(request *D.Msg) *D.Msg {
 	return nil
 }
 
-func lfDomainFilter(next handler) handler {
+// Match at query time and bypass the public cache and synthetic mappings.
+// Changes to the authenticated tailnet do not require restarting the core.
+func lfExchangeMagicDNS(ctx context.Context, request *D.Msg, ipv6 bool) (*D.Msg, bool, error) {
+	if len(request.Question) != 1 || request.Question[0].Qclass != D.ClassINET {
+		return nil, false, nil
+	}
+	question := request.Question[0]
+	endpoint := lfguard.MagicDNSEndpoint(question.Name)
+	if endpoint == "" {
+		return nil, false, nil
+	}
+	if !ipv6 && question.Qtype == D.TypeAAAA {
+		return handleMsgWithEmptyAnswer(request), true, nil
+	}
+	magic := newClient(endpoint, nil, "udp", nil, nil, "DIRECT")
+	reply, err := magic.ExchangeContext(ctx, request)
+	if reply != nil {
+		reply.AuthenticatedData = false
+		setMsgTTL(reply, 0)
+	}
+	return reply, true, err
+}
+
+func lfDomainFilter(next handler, ipv6 bool) handler {
 	return func(ctx *icontext.DNSContext, request *D.Msg) (*D.Msg, error) {
 		if reply := lfBlockedReply(request); reply != nil {
 			return reply, nil
 		}
 		if lfguard.Managed() && len(request.Question) != 1 {
 			return new(D.Msg).SetRcode(request, D.RcodeFormatError), nil
+		}
+		if reply, matched, err := lfExchangeMagicDNS(ctx, request, ipv6); matched {
+			return reply, err
 		}
 		// Validate before hosts/cache/fake-IP can turn a bogus name into a
 		// synthetic success. Negative and failed verdicts are returned intact.

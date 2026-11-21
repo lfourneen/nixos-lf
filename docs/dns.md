@@ -332,7 +332,9 @@ A local resolver identity failure enters `resolver-error` and cannot open plaint
 
 [resolved_policy.py](../system/config/network/dns/resolved_policy.py) excludes the managed TUN from resolved's default selection.
 Tailscale automatic DNS/routes remain disabled.
-Only the authenticated tailnet's current MagicDNS suffix routes to its resolver with `DefaultRoute=no`.
+Resolved installs the current authenticated tailnet's suffix on its link with `DefaultRoute=no`. In Rules B the core uses the same authenticated suffix to choose MagicDNS before public DNS caching or fake-IP synthesis. Other `.ts.net` names follow ordinary managed DNS.
+The core returns MagicDNS records without public DNSSEC validation. A tailnet change or logout updates the routes without a core restart.
+The firewall keeps queries to the MagicDNS resolver address on the tailnet interface, including when a default route is available on a physical uplink.
 Literal peer addresses and this verified suffix retain intentional private access.
 The host gateway binds local resolver endpoints.
 Serving LAN/tailnet clients requires a separate listener, client ACL and answer-routing policy.

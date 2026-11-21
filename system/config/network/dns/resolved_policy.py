@@ -44,6 +44,8 @@ def reconcile_tailnet(settings, check=False, run=subprocess.run):
         command(settings["ip"], "link", "show", "dev", interface)
     except subprocess.CalledProcessError:
         # The interface is gone, so the tailnet really is absent: revoke.
+        if check and path.exists():
+            raise ValueError("tailnet DNS authorization remains after interface loss")
         if not check:
             path.unlink(missing_ok=True)
         return
@@ -51,9 +53,19 @@ def reconcile_tailnet(settings, check=False, run=subprocess.run):
         try:
             status = json.loads(command(tailnet["cli"], "status", "--json", "--peers=false",
                                         timeout=TAILNET_STATUS_TIMEOUT))
-            suffix = (status.get("CurrentTailnet") or {}).get("MagicDNSSuffix", "").lower().rstrip(".")
-            if status.get("BackendState") == "Running" and (status.get("CurrentTailnet") or {}).get("MagicDNSEnabled") is True and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.ts\.net", suffix):
-                domain = suffix
+            if not isinstance(status, dict) or not isinstance(status.get("BackendState"), str):
+                raise ValueError("tailnet backend state missing")
+            if status["BackendState"] == "Running":
+                current = status.get("CurrentTailnet")
+                if not isinstance(current, dict) or not isinstance(current.get("MagicDNSEnabled"), bool):
+                    raise ValueError("tailnet DNS state missing")
+                if current["MagicDNSEnabled"]:
+                    suffix = current.get("MagicDNSSuffix")
+                    if not isinstance(suffix, str):
+                        raise ValueError("tailnet DNS suffix missing")
+                    suffix = suffix.lower().removesuffix(".")
+                    if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.ts\.net", suffix):
+                        domain = suffix
         except (subprocess.SubprocessError, ValueError):
             # Unreadable status is not a verdict: keep the last authenticated
             # route. Treating a slow CLI as "absent" reverted the link and
@@ -82,6 +94,7 @@ def reconcile_tailnet(settings, check=False, run=subprocess.run):
             command(settings["resolvectl"], "dns", interface, tailnet["resolver"])
             command(settings["resolvectl"], "domain", interface, domain)
         command(settings["resolvectl"], "default-route", interface, "no")
+        command(settings["resolvectl"], "flush-caches")
     if domain:
         temporary = path.with_suffix(".tmp")
         temporary.write_text(domain + "\n")

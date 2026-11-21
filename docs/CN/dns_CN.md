@@ -315,7 +315,9 @@ Dispatcher 在首次改写 profile 前发布完整备份并同步所在目录。
 本地监听身份失败进入 `resolver-error`，也不能开启明文回退。
 
 [resolved_policy.py](../../system/config/network/dns/resolved_policy.py) 将受管 TUN 排除在 resolved 默认选择外。
-Tailscale 自动 DNS/路由关闭，仅已认证 tailnet 的当前 MagicDNS 后缀条件路由到其解析器，设 `DefaultRoute=no`。
+Tailscale 自动 DNS/路由关闭。resolved 在尾网接口登记当前已认证的后缀，设 `DefaultRoute=no`。Rules B 的核心也用同一后缀，在查询公网 DNS 缓存或生成 fake-IP 之前选择 MagicDNS。其他 `.ts.net` 名称走普通受管 DNS。
+核心返回 MagicDNS 记录时跳过公网 DNSSEC 验证。切换或退出尾网后会更新解析路由，无需重启核心。
+防火墙将发往 MagicDNS 解析器地址的查询限定在尾网接口，物理上行有默认路由时也适用。
 
 字面 peer 地址和验证后的后缀保留有意的私网访问。
 宿主网关绑定本地解析端点。

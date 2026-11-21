@@ -6,6 +6,10 @@ let
       guiFixtureConfig = (self.nixosConfigurations.lfour.extendModules {
         modules = [ ({ lib, ... }: {
           my.machine.desktopUser = lib.mkForce "gui-fixture";
+          my.proxy.delayTestUrl = lib.mkForce "https://source.fixture.example:17443/speed?policy=root";
+          my.proxy.nodeProbeUrls = lib.mkForce [ "http://node.fixture.example:8080/" ];
+          my.proxy.tunProbeName = lib.mkForce "tun.fixture.example";
+          my.proxy.tunProbeNames = lib.mkForce [ "tun.fixture.example" "cp.cloudflare.com" ];
           users.users.gui-fixture = {
             isNormalUser = true;
             uid = 1107;

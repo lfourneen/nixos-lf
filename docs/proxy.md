@@ -102,6 +102,7 @@ Routine updates require no manual review.
 The reusable `my.proxy.subscriptionAuditAutoApprove` option defaults to an empty list, which disables automatic approval.
 Automatic approval requires controlled sources, `profileRefreshPolicy="auto"`, `subscriptionAudit="enforce"` and an accepted baseline.
 Every deny category must belong to the configured list, and there must be no unresolved findings.
+The audit compares permissions across node names. An alias of an unchanged leaf retains its existing classification. A new leaf without equivalent permissions must qualify for all three approval categories.
 Private or metadata addresses, certificate-validation bypasses, plaintext credentials, unauthorized hosts overrides, protected-route changes and malformed input continue to block import.
 Sensitive-route changes in either direction are also excluded from automatic approval.
 
@@ -136,6 +137,8 @@ Automatic content checks can reject identifiable risks, but cannot establish who
 A domain comparison cannot distinguish an operator rotation from a malicious replacement.
 TLS protects authenticated content, while ECH and separate profiles do not hide accounts, destination IPs or timing.
 An operator can still log or collude.
+
+The desktop controller exposes the core's live logs and connection metadata, including destination names and proxy chains. The root helper keeps its core log files under `/var/lib/clash-verge-service/logs` in a root-only state directory. Its file rotation uses a 10 MiB limit and a file-count setting of eight. The system journal has a separate retention policy.
 
 ## Components and identities
 
@@ -271,11 +274,11 @@ The worker runs offline as `clash-validate`, without capabilities, after `-t` an
 `off` disables only this additional check.
 The managed parser and digest checks always apply.
 
-The audit checks node server addresses, unauthorized `skip-cert-verify`, empty groups, invalid group references, YAML key structure, hosts mappings and provider configuration changes.
+The audit checks node server addresses, `skip-cert-verify`, empty groups, invalid group references, YAML key structure, hosts mappings and provider configuration changes.
 Historical comparisons use the last settled YAML.
+Use `subscriptionAuditProtectedRoutes` to specify the required route class for an exact domain, including on first import. Use `sensitiveDomains` to compare the route classes of a suffix against the accepted profile.
 Mutable provider contents retain the separate trust model described below.
-For controlled sources, the transport check excludes certificate-verification bypasses even when a node appears in `my.proxy.insecureProxyExceptions`.
-The Sops-encrypted `insecure_sources` allowlist still controls early removal of unlisted `skip-cert-verify` leaves before node-address resolution.
+The Sops-encrypted `insecure_sources` allowlist controls early removal of `skip-cert-verify` leaves before node-address resolution.
 The worker limits the combined loss from resolution failures and literal loopback placeholders to one fifth of the remaining nodes, rounded down with a minimum limit of one.
 Use one registered source ID per line. Blank lines and duplicate IDs are valid.
 A missing or unreadable file, invalid UTF-8 or any malformed ID disables sanitizing for every source.
@@ -346,7 +349,7 @@ See [DNS](dns.md) for split DNS, native MagicDNS and literal-IP boundaries.
 
 | Controller operation | Managed behavior |
 |---|---|
-| GET / HEAD / OPTIONS | Allowed, including GUI delay tests |
+| GET / HEAD / OPTIONS | Read access. Delay requests also enforce the managed endpoint and request limits |
 | PUT / DELETE `/proxies/<name>` | Select or release a proxy choice in rules. Runtime proxy-only returns 403; root controls exit changes |
 | DELETE `/connections` or `/connections/<id>` | Close connections |
 | PATCH `/configs` | An empty patch, `mode`, or `tun` is discarded with 204 and never applied. A patch containing any other field returns 403 |
@@ -358,20 +361,18 @@ Core mode is fixed by the system-rendered profile; the managed parser also pins 
 Both the GUI forwarder and the direct controller socket cross the same unconditional gate, independent of policy state.
 New controller write endpoints require an explicit policy decision when upgrading the core.
 
+The desktop and automatic group and provider tests use the exact HTTPS endpoint in `my.proxy.delayTestUrl`, including its path and query. Tests refuse redirects and share a bounded dial budget. The desktop can test individual provider nodes. Bulk provider health checks are refused. The supervisor has separate slots for health tests sent directly over the Unix controller as root. The fixed exit stays selected during its delay test.
+
 ## Subscription trust in compatibility mode
 
 `my.proxy.subscriptionTrust="source"` accepts proxy providers as trusted, mutable sources.
 `"fixed"` refuses providers so inline node contents belong to the authorized YAML snapshot.
-Preflight reports inline-node and provider counts, source hosts and requested certificate exceptions without subscription URLs or credentials.
+Preflight reports inline-node and provider counts, source hosts and TLS verification requests without subscription URLs or credentials.
 For controlled sources, run `sudo proxy-control preflight` to read the root-owned source state.
 
 For compatibility imports outside controlled sources, the global merge script filters inline nodes with `skip-cert-verify` enabled and removes their group references.
-Exact names in `my.proxy.insecureProxyExceptions` are kept.
 An emptied group without provider members stops configuration generation.
-The core applies the same exception list after per-profile extensions and provider overrides.
-
-Certificate exceptions match the leaf name.
-A provider replacing a node's server under the same name retains that exception.
+The core rejects certificate verification bypasses after per-profile extensions and provider overrides. Keep `my.proxy.insecureProxyExceptions` empty and configure a trusted certificate or CA on the node.
 `remoteTargetGrants` with mutable providers additionally requires `allowDynamicRemoteGrants=true`.
 Fixed mode binds inline node contents to each authorized import.
 
@@ -575,7 +576,7 @@ These rules apply to application traffic reaching the core, usually in B.
 In A, Gost and native sockets follow the A firewall policy and retain literal HTTP portal access.
 C blocks ordinary applications before the core, so local and remote grants cannot reopen access.
 
-Internal bootstrap, proxy-endpoint transport and `#DIRECT` MagicDNS have separate infrastructure permissions.
+Internal bootstrap, proxy-endpoint transport and authenticated MagicDNS have separate infrastructure permissions.
 Rule-routed DNS does not inherit them.
 Native LAN and guest forwarding also have separate policies.
 The core can administer only its private network namespace.

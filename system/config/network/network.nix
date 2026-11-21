@@ -858,6 +858,8 @@ in
         }
         chain lf_dns_guard {
           type filter hook output priority -199; policy accept;
+          # If the tailnet route disappears, its resolver cannot move to a physical uplink.
+          ip daddr ${m.magicDns} oifname != "${config.services.tailscale.interfaceName}" meta l4proto { tcp, udp } th dport 53 counter drop
           meta skuid ${toString dnsmasqUid} oifname != "lo" meta l4proto { tcp, udp } th dport 53 jump dns_egress
           ${lib.optionalString (config.my.proxy.dnsEncryption == "strict") ''
           ${lib.optionalString config.my.hardening.tailscale.magicDns ''${coreSocket} oifname "${config.services.tailscale.interfaceName}" ip daddr ${m.magicDns} meta l4proto { tcp, udp } th dport 53 accept''}

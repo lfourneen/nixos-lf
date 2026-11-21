@@ -96,6 +96,7 @@ B 中下载成功会按候选摘要排队应用。如果导入或回滚正在进
 可复用选项 `my.proxy.subscriptionAuditAutoApprove` 默认为空列表，即关闭自动批准。
 自动批准要求启用受控来源、`profileRefreshPolicy="auto"`、`subscriptionAudit="enforce"`，且已有接受基线。
 所有 deny 类别都必须属于配置列表，并且不能有未确定的审计结果。
+审计跨节点名称比较权限。仅改名且权限相同的节点沿用原有判定。没有等价权限基线的新节点必须同时满足三类自动批准条件。
 私网或元数据地址、跳过证书验证、明文凭据、未经本地许可的 hosts 覆盖、受保护路由变化及格式错误仍阻断导入。
 敏感路由两个方向的变化也不参与自动批准。
 
@@ -130,6 +131,8 @@ HTTPS 证书检查认证下载连接。
 域名差异无法区分运营方轮换与恶意替换。
 TLS 保护认证后的内容。
 ECH 和独立 profile 不隐藏账号、目标 IP 或时间特征，也不能禁止运营方记录或串通。
+
+桌面控制器可读取核心的实时日志和连接元数据，包括目标名称与代理链。root helper 将核心日志文件写入仅 root 可访问的状态目录 `/var/lib/clash-verge-service/logs`，按 10 MiB 上限和八个文件的设置轮转。系统 journal 采用独立的保留策略。
 
 ## 组件与身份
 
@@ -257,11 +260,11 @@ GUI 单独更新数据库不会触发导入。
 worker 在 `-t` 与快照提交之间离线运行，身份为无 capabilities 的 `clash-validate`。
 `off` 只关闭附加检查，受管解析器与摘要检查始终有效。
 
-检查范围包括节点 server 地址、未获授权的 `skip-cert-verify`、空组、无效组引用、YAML 键结构、hosts 映射和 provider 配置变化。
+检查范围包括节点 server 地址、`skip-cert-verify`、空组、无效组引用、YAML 键结构、hosts 映射和 provider 配置变化。
 历史比较使用最近 settled 的 YAML。
+用 `subscriptionAuditProtectedRoutes` 声明指定域名所需的路由类别，首次导入也会检查。用 `sensitiveDomains` 比较后缀相对于已接受配置的路由类别。
 可变 provider 内容仍遵循下文的独立信任模型。
-受控来源的传输检查会剔除绕过证书校验的节点，`my.proxy.insecureProxyExceptions` 中的具名节点也适用此要求。
-Sops 加密的 `insecure_sources` 清单控制是否在解析节点地址之前提前删除启用了 `skip-cert-verify` 且未获具名例外的节点。
+Sops 加密的 `insecure_sources` 清单控制是否在解析节点地址前提前删除启用了 `skip-cert-verify` 的节点。
 解析失败与回环 IP 字面量占位节点共用过滤后节点数五分之一的丢弃上限，向下取整，上限至少为一个。
 每行写一个已登记的来源 ID，允许空行和重复 ID。
 文件缺失、无法读取、UTF-8 无效或任一 ID 格式错误时，所有来源的清洗授权均失效。
@@ -320,7 +323,7 @@ Rule providers 固定为空，geodata 自动更新关闭，无条件 `MATCH,DIRE
 
 | 控制操作 | 受管行为 |
 |---|---|
-| GET / HEAD / OPTIONS | 允许，包括 GUI 延迟测试 |
+| GET / HEAD / OPTIONS | 可读取。测速还须符合受管端点和请求限额 |
 | PUT / DELETE `/proxies/<name>` | rules 中选择或释放代理选择。运行时 proxy-only 返回 403，出口由 root 控制 |
 | DELETE `/connections` 或 `/connections/<id>` | 关闭连接 |
 | PATCH `/configs` | 空补丁、`mode` 或 `tun` 返回 204 且不应用；补丁含其它字段时返回 403 |
@@ -332,6 +335,8 @@ Rule providers 固定为空，geodata 自动更新关闭，无条件 `MATCH,DIRE
 GUI forwarder 和直接控制器 socket 均经过同一项无条件限制，与策略状态无关。
 升级新增写端点时需明确决定权限。
 
+桌面测速和分组、provider 的自动测速共用 `my.proxy.delayTestUrl` 指定的 HTTPS 端点，包含精确路径及查询参数。测速拒绝跳转并共用受限拨号预算。桌面可对 provider 的单个节点测速，整 provider 的健康检查请求会被拒绝。监督器以 root 身份直连 Unix 控制器发起的健康测试有独立配额。固定出口测速期间保留已选择的节点。
+
 重启时，若生成配置仅系统拥有的 `mode` 和 `tun` 字段不同，则复用已接受快照；其它变化仍需 `clash-on`。
 Root 策略同时指定共享域名过滤文件、附加名单与例外。
 核心在 hosts/缓存/fake-IP 前检查 DNS，在 TCP/UDP 拨号前检查应用目标，使 HTTP/SOCKS 代解析使用与系统 DNS 相同的名单。
@@ -342,15 +347,12 @@ split DNS、原生 MagicDNS 和字面 IP 边界见 [DNS](dns_CN.md)。
 
 `my.proxy.subscriptionTrust="source"` 将 proxy provider 视为可信的可更新来源。
 `"fixed"` 禁止 provider，使内联节点内容纳入授权 YAML 快照。
-预检显示内联节点数、provider 数、来源主机和申请的证书例外数量，不输出订阅 URL 或凭据。
+预检显示内联节点数、provider 数、来源主机和证书校验选项统计。订阅 URL 和凭据保持私有。
 启用受控来源时，使用 `sudo proxy-control preflight` 读取 root 所有的来源状态。
 
 对于受控来源之外的兼容导入，全局 merge 脚本过滤内联节点中启用 `skip-cert-verify` 的节点，并移除分组中的对应引用。
-`my.proxy.insecureProxyExceptions` 点名的节点保留。
 没有 provider 成员的分组被清空时，配置生成终止。
-核心在 per-profile 扩展和 provider override 处理后应用同一份例外名单。
-
-证书例外按叶节点名称匹配，provider 用同名节点替换服务器时沿用该例外。
+核心在处理 per-profile 扩展和 provider override 后拒绝绕过证书校验。将 `my.proxy.insecureProxyExceptions` 保持为空，为节点配置可信证书或 CA。
 可变 provider 与 `remoteTargetGrants` 并用还需 `allowDynamicRemoteGrants=true`。
 固定模式将内联节点内容绑定到每次授权导入。
 
@@ -545,11 +547,7 @@ fake-IP 池只表示路由身份，不能成为实际出站目标。
 A 的 Gost 和原生 socket 使用 A 的防火墙策略，保留字面 HTTP 门户访问。
 C 在核心之前阻断普通应用，本地及远程授权都不能重新放行。
 
-内部引导、代理端点传输及 `#DIRECT` MagicDNS 有独立的基础设施权限，按规则路由的 DNS 不继承这些例外。
-原生 LAN 和访客转发也有各自策略。
-核心只能管理私有网络命名空间，宿主网络由 root 服务管理。
-
-内部引导、代理端点传输及 `#DIRECT` MagicDNS 有独立的基础设施权限，按规则路由的 DNS 不继承这些例外。
+内部引导、代理端点传输及已认证 MagicDNS 有独立的基础设施权限，按规则路由的 DNS 不继承这些例外。
 原生 LAN 和访客转发也有各自策略。
 核心只能管理私有网络命名空间，宿主网络由 root 服务管理。
 

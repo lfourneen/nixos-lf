@@ -19,7 +19,8 @@ replace(root / "listener/sing_tun/prepare.go", 'case N.NetworkICMP: // our fork 
 # Filter before hosts/fake-IP and before resolver cache/transport selection.
 # The second hook also covers proxy-endpoint/bootstrap resolver queries.
 replace(root / "dns/middleware.go", '\tvar middlewares []middleware',
-        '\tvar middlewares []middleware\n\tmiddlewares = append(middlewares, lfDomainFilter)')
+        '\tvar middlewares []middleware\n'
+        '\tmiddlewares = append(middlewares, func(next handler) handler { return lfDomainFilter(next, mapper.ipv6) })')
 replace(root / "dns/middleware.go", '\t\t\tcase D.TypeSVCB, D.TypeHTTPS:\n\t\t\t\treturn handleMsgWithEmptyAnswer(r), nil',
         '\t\t\tcase D.TypeSVCB, D.TypeHTTPS:\n'
         '\t\t\t\tif lfServiceRecords() { return next(ctx, r) }\n'
@@ -27,7 +28,8 @@ replace(root / "dns/middleware.go", '\t\t\tcase D.TypeSVCB, D.TypeHTTPS:\n\t\t\t
 replace(root / "dns/resolver.go",
         'func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, err error) {',
         'func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, err error) {\n'
-        '\tif reply := lfBlockedReply(m); reply != nil { return reply, nil }')
+        '\tif reply := lfBlockedReply(m); reply != nil { return reply, nil }\n'
+        '\tif reply, matched, err := lfExchangeMagicDNS(ctx, m, r.ipv6); matched { return reply, err }')
 # Managed geodata must come from the authorized snapshot. Even a missing or
 # damaged database must not trigger an unaudited network replacement in -t.
 replace(root / "component/geodata/init.go",
@@ -40,6 +42,7 @@ replace(root / "constant/metadata.go", "type Metadata struct {",
         '\tLFGuarded bool `json:"-"`\n'
         '\tLFCandidates []netip.Addr `json:"-"`\n'
         '\tLFLocalTarget bool `json:"-"`\n'
+        '\tLFDelay bool `json:"-"`\n'
         '\tLFEgressDirect bool `json:"-"`\n'
         '\tLFEgressProxy string `json:"-"`')
 dns_dialer = root / "tunnel/dns_dialer.go"
@@ -96,6 +99,39 @@ replace(root / "adapter/adapter.go", '\tconn, err := p.ProxyAdapter.DialContext(
 replace(root / "adapter/adapter.go", 'func (p *Proxy) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {',
         'func (p *Proxy) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {\n'
         '\tswitch p.Type() { case C.Selector, C.Fallback, C.URLTest, C.LoadBalance: return p.ProxyAdapter.DialContext(ctx, metadata) }')
+replace(root / "adapter/adapter.go",
+        'func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {',
+        'func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {\n'
+        '\tctx, done, err := lfguard.BeginDelay(ctx, url)\n'
+        '\tif err != nil { return 0, err }\n'
+        '\tdefer done()')
+replace(root / "adapter/adapter.go", '\tinstance, err := p.DialContext(ctx, &addr)',
+        '\taddr.LFDelay = lfguard.ManagedDelay()\n\tinstance, err := p.DialContext(ctx, &addr)')
+replace(root / "adapter/adapter.go", '\t_ = resp.Body.Close()\n\n\tif unifiedDelay {',
+        '\t_ = resp.Body.Close()\n\tif addr.LFDelay && resp.StatusCode >= 300 && resp.StatusCode < 400 {\n'
+        '\t\treturn 0, fmt.Errorf("managed delay test refused a redirect")\n\t}\n\n\tif unifiedDelay {')
+replace(root / "adapter/outboundgroup/groupbase.go", '''	proxies := gb.GetProxies(false)
+	for _, proxy := range proxies {
+		proxy := proxy
+		wg.Add(1)
+		go func() {
+			delay, err := proxy.URLTest(ctx, url, expectedStatus)''', '''	proxies := gb.GetProxies(false)
+	slots := make(chan struct{}, 10)
+probe:
+	for _, proxy := range proxies {
+		select {
+		case <-ctx.Done():
+			break probe
+		case slots <- struct{}{}:
+		}
+		proxy := proxy
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-slots }()
+			delay, err := proxy.URLTest(ctx, url, expectedStatus)''')
+replace(root / "adapter/outboundgroup/groupbase.go", '\n\n\t\t\twg.Done()\n\t\t}()\n\t}\n\twg.Wait()',
+        '\n\t\t}()\n\t}\n\twg.Wait()')
 replace(root / "adapter/parser.go", '"fmt"', '"fmt"\n\t"github.com/metacubex/mihomo/component/lfguard"')
 replace(root / "adapter/parser.go", 'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {',
         'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {\n'
@@ -216,6 +252,79 @@ replace(root / "hub/route/configs.go", "general := executor.GetGeneral()",
 # builds; controller writes remain gated independently of policy state.
 replace(root / "hub/route/server.go", "\tr := chi.NewRouter()\n\tcors.Apply(r)",
         "\tr := chi.NewRouter()\n\tlfPolicyUse(r)\n\tcors.Apply(r)")
+replace(root / "hub/route/server.go", '\t\tunixServer = server',
+        '\t\tserver.ConnContext = lfControllerPeer\n\t\tunixServer = server')
+replace(root / "hub/route/proxies.go", '\n\t"strconv"\n\t"time"\n', '\n')
+replace(root / "hub/route/proxies.go", '\n\t"github.com/metacubex/mihomo/common/utils"', '')
+replace(root / "hub/route/proxies.go", '''	query := r.URL.Query()
+	url := query.Get("url")
+	timeout, err := strconv.ParseInt(query.Get("timeout"), 10, 16)
+	if err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrBadRequest)
+		return
+	}
+
+	expectedStatus, err := utils.NewUnsignedRanges[uint16](query.Get("expected"))
+	if err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrBadRequest)
+		return
+	}
+
+	proxy := r.Context().Value(CtxKeyProxy).(C.Proxy)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(timeout))
+	defer cancel()
+
+	delay, err := proxy.URLTest(ctx, url, expectedStatus)
+	if ctx.Err() != nil {''', '''	call := lfStartDelay(w, r, "")
+	if call == nil { return }
+	defer call.stop()
+	proxy := r.Context().Value(CtxKeyProxy).(C.Proxy)
+	delay, err := proxy.URLTest(call.ctx, call.target, call.expected)
+	if call.ctx.Err() != nil {''')
+replace(root / "hub/route/groups.go", '\n\t"context"\n\t"strconv"\n\t"time"\n', '')
+replace(root / "hub/route/groups.go", '\n\t"github.com/metacubex/mihomo/common/utils"', '')
+replace(root / "hub/route/groups.go", '''	if selectAble, ok := proxy.Adapter().(outboundgroup.SelectAble); ok && proxy.Type() != C.Selector {
+		selectAble.ForceSet("")
+		cachefile.Cache().SetSelected(proxy.Name(), "")
+	}
+
+	query := r.URL.Query()
+	url := query.Get("url")
+	timeout, err := strconv.ParseInt(query.Get("timeout"), 10, 32)
+	if err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrBadRequest)
+		return
+	}
+
+	expectedStatus, err := utils.NewUnsignedRanges[uint16](query.Get("expected"))
+	if err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Millisecond*time.Duration(timeout))
+	defer cancel()
+
+	dm, err := group.URLTest(ctx, url, expectedStatus)''', '''	call := lfStartDelay(w, r, proxy.Name())
+	if call == nil { return }
+	defer call.stop()
+	if selectAble, ok := proxy.Adapter().(outboundgroup.SelectAble); ok && proxy.Type() != C.Selector {
+		selectAble.ForceSet("")
+		cachefile.Cache().SetSelected(proxy.Name(), "")
+	}
+	dm, err := group.URLTest(call.ctx, call.target, call.expected)''')
+replace(root / "hub/route/provider.go", '\t"context"',
+        '\t"context"\n\n\t"github.com/metacubex/mihomo/component/lfguard"')
+replace(root / "hub/route/provider.go", 'func healthCheckProvider(w http.ResponseWriter, r *http.Request) {',
+        'func healthCheckProvider(w http.ResponseWriter, r *http.Request) {\n'
+        '\tif lfguard.ManagedDelay() {\n'
+        '\t\tlfRefuseDelay(w, r, http.StatusForbidden, "test individual provider nodes through the managed delay endpoint")\n'
+        '\t\treturn\n\t}')
 # Weak decoding renders a float as a string with 'E' notation, so a JSON
 # round-tripped port such as 7898 becomes "7.898E+03" and the listener range
 # parser rejects the whole profile. Format like upstream mapstructure instead.
@@ -241,6 +350,7 @@ source = Path(__file__).parent.parent
 (root / "hub/executor/lf_dns_transport.go").write_text((source / "controller/dns_transport.go").read_text())
 (root / "component/lfguard").mkdir()
 (root / "component/lfguard/guard.go").write_text((source / "guard/target_guard.go").read_text())
+(root / "component/lfguard/delay.go").write_text((source / "guard/delay.go").read_text())
 (root / "component/lfguard/validated_answers.go").write_text((source / "guard/validated_answers.go").read_text())
 (root / "component/lfguard/validated_answers_test.go").write_text((source / "guard/validated_answers_test.go").read_text())
 (root / "component/lfguard/guard_test.go").write_text((source / "guard/target_guard_test.go").read_text())
@@ -251,10 +361,12 @@ source = Path(__file__).parent.parent
 (root / "tunnel/lf_managed_udp_test.go").write_text((source / "tests/managed_udp_test.go").read_text())
 (root / "tunnel/lf_managed_dns_test.go").write_text((source / "tests/managed_dns_test.go").read_text())
 (root / "config/lf_managed.go").write_text((source / "config/managed_profile.go").read_text())
+(root / "config/lf_delay.go").write_text((source / "config/delay.go").read_text())
 (root / "config/lf_managed_test.go").write_text((source / "config/managed_profile_test.go").read_text())
 (root / "hub/route/lf_managed.go").write_text((source / "controller/managed_route.go").read_text())
 (root / "hub/route/lf_managed_test.go").write_text((source / "controller/managed_route_test.go").read_text())
 (root / "hub/route/lf_policy.go").write_text((source / "controller/policy_middleware.go").read_text())
+(root / "hub/route/lf_delay.go").write_text((source / "controller/delay.go").read_text())
 (root / "hub/route/lf_policy_test.go").write_text((source / "controller/policy_middleware_test.go").read_text())
 (root / "config/lf_managed_rules_test.go").write_text((source / "config/managed_rules_test.go").read_text())
 

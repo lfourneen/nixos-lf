@@ -206,9 +206,8 @@ in
   };
 
   # Global extension script (after Merge, before per-profile extensions):
-  # (1) drop subscription leaves that disable TLS verification unless
-  # my.proxy.insecureProxyExceptions names them; the core applies the same
-  # exact-name rule to whatever remains; (2) replace DNS with the managed
+  # (1) drop subscription leaves that disable TLS verification; the core
+  # checks every remaining leaf when it is loaded; (2) replace DNS with the managed
   # object; (3) prepend forcedProxyDomains via the catch-all group. The core
   # validates later per-profile extensions too, so a leaf re-added by one of
   # them still fails closed at startup.
@@ -219,10 +218,6 @@ in
       const DELAY_TEST_URL = ${builtins.toJSON osConfig.my.proxy.delayTestUrl};
       const PROXY_ONLY = ${lib.boolToString osConfig.my.proxy.proxyOnly};
       const REMOTE_ONLY_CATCH_ALL = ${lib.boolToString osConfig.my.proxy.remoteOnlyCatchAll};
-      // Same source of truth as the core's managed policy: the merge filter
-      // deletes an insecure leaf only when this list does not name it.
-      const INSECURE_PROXY_EXCEPTIONS = ${builtins.toJSON osConfig.my.proxy.insecureProxyExceptions};
-
       function httpsHealthChecks(config) {
         const insecure = url => url == null || url === "" ||
           (typeof url === "string" && /^http:\/\//i.test(url));
@@ -243,12 +238,8 @@ in
         }
       }
 
-      // The managed core refuses the whole profile when any leaf disables TLS
-      // certificate validation (skip-cert-verify). Drop such leaves and prune
-      // the group members so the rest starts, but keep a leaf whose exact name
-      // is in my.proxy.insecureProxyExceptions: that same name is the core's
-      // explicit exception, so the two layers cannot disagree. A leaf kept
-      // here for any other reason still fails closed in the core.
+      // Prune leaves with unchecked TLS and their group references before the
+      // managed core validates the profile.
       function insecureValue(value) {
         if (value === false || value === 0) return false;
         if (typeof value === "string") {
@@ -281,14 +272,13 @@ in
         const dropped = [];
         const kept = [];
         for (const proxy of proxies) {
-          if (proxy && typeof proxy === "object" && disablesTLS(proxy) &&
-              !(typeof proxy.name === "string" && INSECURE_PROXY_EXCEPTIONS.indexOf(proxy.name) !== -1)) {
+          if (proxy && typeof proxy === "object" && disablesTLS(proxy)) {
             if (typeof proxy.name === "string") dropped.push(proxy.name);
             continue;
           }
           kept.push(proxy);
         }
-        if (dropped.length === 0) return;
+        if (kept.length === proxies.length) return;
         config.proxies = kept;
 
         const groups = config["proxy-groups"];

@@ -16,6 +16,37 @@ import (
 	D "github.com/miekg/dns"
 )
 
+func TestMagicDNSFollowsAuthenticatedSuffix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "domain")
+	p := &policy{MagicDNSSuffixFile: path}
+	for _, suffix := range []string{"alpha.ts.net", "beta.ts.net"} {
+		if err := os.WriteFile(path, []byte(suffix+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{suffix, "peer." + suffix} {
+			if !p.matchesMagicDNS(name) {
+				t.Fatal("missed current suffix", name)
+			}
+		}
+		for _, name := range []string{"ts.net", "unrelated.ts.net", "not" + suffix, suffix + ".example", `peer\.` + suffix} {
+			if p.matchesMagicDNS(name) {
+				t.Fatal("matched unrelated suffix", name)
+			}
+		}
+	}
+	p.SingleEgress = true
+	if p.matchesMagicDNS("peer.beta.ts.net") {
+		t.Fatal("single egress inherited MagicDNS")
+	}
+	p.SingleEgress = false
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if p.matchesMagicDNS("peer.beta.ts.net") {
+		t.Fatal("revoked suffix still matched")
+	}
+}
+
 func TestSharedDomainFilter(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "domains")
 	if err := os.WriteFile(file, []byte("ads.example\nmetrics.home.arpa\n_under.example\n"), 0600); err != nil {
@@ -449,7 +480,7 @@ func TestValidatedCandidatesFallbackAndIsolation(t *testing.T) {
 	}
 }
 
-func TestProviderNodesRequireCertificateExceptions(t *testing.T) {
+func TestProviderNodesRequireCertificateValidation(t *testing.T) {
 	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"}})
 	defer Configure(nil)
 	if CheckProxy(map[string]any{"name": "node", "skip-cert-verify": true}) == nil {
@@ -458,17 +489,17 @@ func TestProviderNodesRequireCertificateExceptions(t *testing.T) {
 	if CheckProxy(map[string]any{"name": "node", "tls": map[string]any{"skip-cert-verify": true}}) == nil {
 		t.Fatal("nested insecure node accepted")
 	}
-	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"}, "insecure-proxy-exceptions": []string{"node"}})
-	if err := CheckProxy(map[string]any{"name": "node", "skip-cert-verify": true}); err != nil {
-		t.Fatal(err)
+	if err := Configure(map[string]any{"prefixes": []string{"10.0.0.0/8"}, "insecure-proxy-exceptions": []string{"node"}}); err == nil {
+		t.Fatal("obsolete TLS exception was accepted")
 	}
-	// A name exception intentionally follows a same-named node, including
-	// a provider replacing its server; it is not a server identity pin.
-	if err := CheckProxy(map[string]any{"name": "node", "server": "changed.example", "skip-cert-verify": true}); err != nil {
-		t.Fatal("same-name exception did not follow its documented scope:", err)
+	if CheckProxy(map[string]any{"name": "node", "server": "changed.example", "skip-cert-verify": true}) == nil {
+		t.Fatal("same-named replacement disabled verification")
 	}
 	if CheckProxy(map[string]any{"name": "replacement", "skip-cert-verify": true}) == nil {
-		t.Fatal("exception crossed node names")
+		t.Fatal("renamed replacement disabled verification")
+	}
+	if err := CheckProxy(map[string]any{"name": "node", "skip-cert-verify": false}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -494,9 +525,9 @@ func TestStrictInletRejectsDirectAndPrivate(t *testing.T) {
 	}
 }
 
-func TestPlaintextCredentialsCannotUseCertificateException(t *testing.T) {
+func TestManagedPlaintextCredentialsAreRefused(t *testing.T) {
 	ConfigureT(t, map[string]any{"prefixes": []string{"10.0.0.0/8"},
-		"reject-plaintext-credentials": true, "insecure-proxy-exceptions": []string{"test"}})
+		"reject-plaintext-credentials": true})
 	for _, kind := range []string{"http", "socks5"} {
 		node := map[string]any{"name": "test", "type": kind, "username": "fixture", "password": "dummy"}
 		if CheckProxy(node) == nil {

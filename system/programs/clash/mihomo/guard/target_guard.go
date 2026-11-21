@@ -35,6 +35,8 @@ type wireguardRelay struct {
 }
 
 type policy struct {
+	DelayTestURL               string          `json:"delay-test-url"`
+	HealthTestURLs             []string        `json:"health-test-urls"`
 	ValidatorPorts             []uint16        `json:"validator-ports"`
 	PreviousDNS                map[string]any  `json:"previous-dns"`
 	LocalDNSSEC                string          `json:"local-dnssec"`
@@ -50,6 +52,7 @@ type policy struct {
 	Prefixes                   []string        `json:"prefixes"`
 	AllowedDomains             []string        `json:"allowed-domains"`
 	MagicDNSSuffixFile         string          `json:"magic-dns-suffix-file"`
+	MagicDNSResolver           netip.Addr      `json:"magic-dns-resolver"`
 	BlockedDomainsFile         string          `json:"blocked-domains-file"`
 	BlockedDomains             []string        `json:"blocked-domains"`
 	BlockExceptions            []string        `json:"blocked-domain-exceptions"`
@@ -106,6 +109,9 @@ func strictInlet(p *policy, m *C.Metadata) bool {
 
 func CheckDirect(metadata *C.Metadata) error {
 	p := current.Load()
+	if p != nil && metadata.LFDelay {
+		return fmt.Errorf("managed delay test requires a remote proxy")
+	}
 	if p != nil && !infrastructure(metadata) && metadata.DstIP.Unmap().IsLoopback() {
 		for _, port := range p.ValidatorPorts {
 			if metadata.DstPort == port {
@@ -158,6 +164,12 @@ func Configure(value map[string]any) error {
 	if len(p.Prefixes) == 0 {
 		return fmt.Errorf("managed target guard requires private prefixes")
 	}
+	if err := validateDelayPolicy(p); err != nil {
+		return err
+	}
+	if len(p.InsecureProxyExceptions) != 0 {
+		return fmt.Errorf("managed proxy requires verified TLS certificates; node-name exceptions are unsupported")
+	}
 	if p.LocalDNSSEC != "" {
 		host, port, err := net.SplitHostPort(p.LocalDNSSEC)
 		number, portErr := strconv.Atoi(port)
@@ -179,6 +191,10 @@ func Configure(value map[string]any) error {
 	}
 	if p.MagicDNSSuffixFile != "" && p.MagicDNSSuffixFile != "/run/netsec-tailnet/domain" {
 		return fmt.Errorf("invalid MagicDNS context path")
+	}
+	if p.MagicDNSSuffixFile != "" && (!p.MagicDNSResolver.Is4() ||
+		p.MagicDNSResolver.IsLoopback() || !p.MagicDNSResolver.IsGlobalUnicast()) {
+		return fmt.Errorf("invalid MagicDNS resolver")
 	}
 	for _, text := range p.LocalTargetCIDRs {
 		prefix, err := internalPrefix(text)
@@ -320,24 +336,38 @@ func CheckDomain(host string) error {
 	return nil
 }
 
+// MagicDNSEndpoint admits only the suffix observed on the authenticated tailnet.
+func MagicDNSEndpoint(host string) string {
+	p := current.Load()
+	if p == nil || !p.matchesMagicDNS(strings.ToLower(strings.TrimSuffix(host, "."))) {
+		return ""
+	}
+	return netip.AddrPortFrom(p.MagicDNSResolver, 53).String()
+}
+
+func (p *policy) matchesMagicDNS(host string) bool {
+	if p.MagicDNSSuffixFile == "" || p.ProxyOnly || p.SingleEgress || !strings.HasSuffix(host, ".ts.net") {
+		return false
+	}
+	// The root-only resolved policy unit revokes this file on a tailnet
+	// change or logout, including when the interface disappears.
+	data, err := os.ReadFile(p.MagicDNSSuffixFile)
+	if err != nil || len(data) > 63+len(".ts.net")+1 {
+		return false
+	}
+	domain := strings.TrimSpace(string(data))
+	tailnet, ok := strings.CutSuffix(domain, ".ts.net")
+	return ok && !strings.Contains(tailnet, ".") && validDomain(domain) &&
+		D.IsSubDomain(D.Fqdn(domain), D.Fqdn(host))
+}
+
 func (p *policy) allows(host string) bool {
 	for _, domain := range p.AllowedDomains {
 		if host == domain || strings.HasSuffix(host, "."+domain) {
 			return true
 		}
 	}
-	if p.MagicDNSSuffixFile != "" {
-		// This file is maintained by the root-only resolved policy unit, and
-		// revoked when the authenticated tailnet changes or disappears.
-		if data, err := os.ReadFile(p.MagicDNSSuffixFile); err == nil && len(data) <= 254 {
-			domain := strings.TrimSpace(string(data))
-			if validDomain(domain) && strings.HasSuffix(domain, ".ts.net") &&
-				(host == domain || strings.HasSuffix(host, "."+domain)) {
-				return true
-			}
-		}
-	}
-	return false
+	return p.matchesMagicDNS(host)
 }
 
 // IsGlobalUnicast includes several non-public and transition ranges. This is
@@ -460,7 +490,7 @@ func CheckEgress(m *C.Metadata, direct bool, leaf string) error {
 		return fmt.Errorf("managed target guard: unsafe or unpinned target")
 	}
 	m.LFEgressDirect, m.LFEgressProxy = direct, leaf
-	if strictInlet(p, m) && p.blocked(ip) {
+	if (strictInlet(p, m) || m.LFDelay) && p.blocked(ip) {
 		return fmt.Errorf("strict inlet refuses private targets")
 	}
 	if !p.blocked(ip) {
@@ -779,17 +809,11 @@ func CheckProxy(mapping map[string]any) error {
 		}
 		return nil
 	}
-	name, _ := mapping["name"].(string)
 	kind, _ := mapping["type"].(string)
 	tls, _ := mapping["tls"].(bool)
 	if p.RejectPlaintextCredentials && (kind == "http" || kind == "socks5") && !tls {
 		if mapping["username"] != nil && mapping["username"] != "" || mapping["password"] != nil && mapping["password"] != "" {
 			return fmt.Errorf("managed proxy refuses plaintext authentication")
-		}
-	}
-	for _, allowed := range p.InsecureProxyExceptions {
-		if name == allowed {
-			return nil
 		}
 	}
 	var inspect func(any) bool
@@ -836,7 +860,7 @@ func CheckProxy(mapping map[string]any) error {
 		return false
 	}
 	if inspect(mapping) {
-		return fmt.Errorf("managed proxy requires an explicit certificate-validation exception")
+		return fmt.Errorf("managed proxy requires TLS certificate validation")
 	}
 	return nil
 }

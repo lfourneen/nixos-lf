@@ -45,7 +45,6 @@ let
         # so they resolve through whatever local resolver owns the name.
         "*.lan" "*.local" "*.localhost" "*.test" "*.home.arpa" "*.internal"
         "*.wlan" "*.intranet" "*.private" "*.domain" "*.home" "*.host" "*.corp"
-        "+.ts.net"
 
         # QQ file downloads need real DNS answers for Hermes' SSRF check.
         # This exact-host filter changes DNS only; routing stays rule-driven.
@@ -72,10 +71,7 @@ let
       } // lib.genAttrs [ "+.google.com" "+.googleapis.com" "+.googleapis.cn" "+.googlevideo.com"
         "+.gstatic.com" "+.youtube.com" "+.youtu.be" "+.facebook.com" "+.twitter.com"
         "+.x.com" "+.github.com" "+.githubusercontent.com" "+.openai.com" "+.chatgpt.com"
-        "+.anthropic.com" ] (_: [ "https://1.1.1.1/dns-query" ])
-        // lib.optionalAttrs config.my.hardening.tailscale.magicDns {
-          "+.ts.net" = [ "udp://${m.magicDns}:53#DIRECT" ];
-        };
+        "+.anthropic.com" ] (_: [ "https://1.1.1.1/dns-query" ]);
     };
 
 in
@@ -120,9 +116,7 @@ in
       default-nameserver = [ "tcp://127.0.0.1:${toString m.ports.socketGuestDns}#DIRECT" ];
       proxy-server-nameserver = [ "tcp://127.0.0.1:${toString m.ports.socketGuestDns}#DIRECT" ];
       nameserver = [ "tcp://127.0.0.1:${toString m.ports.unbound}#DIRECT" ];
-      nameserver-policy = lib.optionalAttrs config.my.hardening.tailscale.magicDns {
-        "+.ts.net" = [ "udp://${m.magicDns}:53#DIRECT" ];
-      };
+      nameserver-policy = { };
 
       use-system-hosts = false;
     };
@@ -135,6 +129,8 @@ in
     default = {
       lf-dns-transport = if p.localDnssec then p.managedDnsTransport else null;
       lf-private-targets = {
+        delay-test-url = p.delayTestUrl;
+        health-test-urls = p.nodeProbeUrls;
         previous-dns = lib.optionalAttrs p.localDnssec (encryptedDns // { use-system-hosts = true; });
         local-dnssec = if p.localDnssec then "127.0.0.1:${toString m.ports.unbound}" else "";
         validator-ports = lib.optionals p.localDnssec [ m.ports.unbound m.ports.socketGuestDns
@@ -161,7 +157,9 @@ in
         remote-target-grants = p.remoteTargetGrants;
         nat64-prefixes = p.nat64Prefixes;
         fake-ip-prefix = p.fakeIpNet;
-        magic-dns-suffix-file = if config.my.hardening.tailscale.magicDns then "/run/netsec-tailnet/domain" else "";
+        magic-dns-resolver = m.magicDns;
+        magic-dns-suffix-file = if config.services.tailscale.enable && config.my.hardening.tailscale.magicDns
+          then "/run/netsec-tailnet/domain" else "";
       };
 
       listeners = lib.optional p.strictBrowser {

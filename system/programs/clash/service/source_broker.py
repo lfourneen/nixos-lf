@@ -33,6 +33,14 @@ def read_private(path, maximum=1024 * 1024):
         return data
 
 
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def atomic(path, data, mode=0o600):
     fd, name = tempfile.mkstemp(prefix='.new-', dir=path.parent)
     try:
@@ -42,11 +50,7 @@ def atomic(path, data, mode=0o600):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(name, path)
-        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(parent)
-        finally:
-            os.close(parent)
+        sync_directory(path.parent)
     finally:
         Path(name).unlink(missing_ok=True)
 
@@ -154,23 +158,34 @@ def selected(root):
     return target
 
 
+def requested_source(root):
+    return selected(root) if (root / 'selected').is_symlink() else None
+
+
+def pending_revocation(root):
+    try:
+        return json.loads(read_private(root / 'revoking.json'))
+    except FileNotFoundError:
+        return {}
+
+
 def select(root, path):
     (path / 'review.json').unlink(missing_ok=True)
     temporary = root / '.selected'
     temporary.unlink(missing_ok=True)
     temporary.symlink_to(Path('sources') / path.name)
     temporary.replace(root / 'selected')
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    sync_directory(root)
 
 
 def migrate(root):
     """Copy the legacy single source before atomically selecting its new home."""
     (root / 'sources').mkdir(mode=0o700, exist_ok=True)
-    if (root / 'selected').is_symlink() or not (root / 'registry.json').exists():
+    migrated = root / 'registry-migrated'
+    if migrated.exists() or not (root / 'registry.json').exists():
+        return
+    if (root / 'selected').is_symlink():
+        atomic(migrated, b'1\n')
         return
     identity = json.loads(read_private(root / 'registry.json'))['id']
     if not isinstance(identity, str) or not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', identity):
@@ -195,6 +210,7 @@ def migrate(root):
             if pending.exists():
                 shutil.rmtree(pending)
     select(root, source_path(root, identity))
+    atomic(migrated, b'1\n')
 
 
 def gui_choice(settings, root):
@@ -233,6 +249,8 @@ def gui_choice(settings, root):
 
 def register(root, data, expected, previous):
     identity = json.loads(data)['id']
+    if pending_revocation(root).get('source_id') == identity:
+        raise ValueError('finish revoking this source before registering it again')
     path = root / 'sources' / identity
     if path.is_symlink():
         raise ValueError('source directory')
@@ -345,8 +363,15 @@ def renderer_settings(settings):
 
 
 def refresh_generation(settings, root):
-    raw = read_private(root / 'registry.json')
+    source_store = Path(settings.get('root', root))
+    selection_path = source_store / 'selected' if settings.get('_fetch_lock') is not None else None
+    registration = root / 'registry.json'
+    raw = read_private(registration)
+    revision = file_stamp(registration)
+    selection = file_stamp(selection_path) if selection_path is not None else None
     registry = json.loads(raw)
+    if pending_revocation(source_store).get('source_id') == registry['id']:
+        raise RequestChanged('source revocation is in progress')
     policy_bytes = Path(settings['policy']).read_bytes()
     routing = Path(settings['routing_state']).read_bytes() if settings.get('routing_state') else None
     request = dict(registry=registry, policy=json.loads(policy_bytes),
@@ -379,9 +404,11 @@ def refresh_generation(settings, root):
         check()
     # Downloading grants no authority. Registration and selection can change
     # while the worker runs, so reject its result before touching generations.
-    if read_private(root / 'registry.json') != raw or (settings.get('_fetch_lock') is not None
-            and selected(Path(settings['root'])) != settings.get('_expected_selection', root)):
-        raise ValueError('source registration or selection changed during download')
+    if (file_stamp(registration) != revision or read_private(registration) != raw or
+            selection_path is not None and (file_stamp(selection_path) != selection or
+                requested_source(source_store) != settings.get('_expected_selection', root)) or
+            pending_revocation(source_store).get('source_id') == registry['id']):
+        raise RequestChanged('source registration or selection changed during download')
     if Path(settings['policy']).read_bytes() != policy_bytes or (routing is not None
             and Path(settings['routing_state']).read_bytes() != routing):
         raise ValueError('routing changed during download')
@@ -603,6 +630,14 @@ def acquire(stream, operation=fcntl.LOCK_EX):
             time.sleep(.05)
 
 
+def file_stamp(path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    return info.st_ino, info.st_ctime_ns
+
+
 def confirm_add(settings, root, lock, identity):
     catalog = settings['catalog']
     values = definitions(read_private(catalog), identity)
@@ -638,7 +673,7 @@ def prepare_manual(settings, root, lock, identity, revision):
     path = source_path(root, identity)
     if revision is not None and digest(read_private(path / 'registry.json')) != revision:
         raise DefinitionError('source revision changed')
-    refresh(dict(settings, _fetch_lock=lock, _expected_selection=selected(root)), path)
+    refresh(dict(settings, _fetch_lock=lock, _expected_selection=requested_source(root)), path)
     candidate = stage.snapshot_digest((path / 'current').resolve(strict=True))
     select(root, path)
     return manual, stage, stage_settings, candidate, mode
@@ -648,6 +683,170 @@ def refresh_context(settings):
     stage_settings = json.loads(Path(settings['stageSettings']).read_text())
     manual = load_module('source_manual_refresh', settings['manual_refresh'])
     return manual, manual.module('source_stage', stage_settings['snapshot_tool']), stage_settings
+
+
+def effective_source(settings, stage):
+    state, runtime = Path(settings['state']), Path(settings['runtime'])
+    digest_file, authority = state / 'config-digest', state / 'authorized-config'
+    if not digest_file.exists() and not authority.exists():
+        return None
+    effective = runtime / 'effective'
+    snapshot = stage.verify(effective, digest_file, authority, fast=True)
+    manifest = stage.read_record(effective / 'source-manifest.json')
+    identity, revision = manifest.get('source_id'), manifest.get('revision')
+    if (not isinstance(identity, str) or not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', identity)
+            or not isinstance(revision, str) or not re.fullmatch('[a-f0-9]{64}', revision)):
+        raise ValueError('effective source identity is unavailable')
+    return dict(id=identity, revision=revision, snapshot=snapshot)
+
+
+def cancel_revoked_requests(state, manual, stage, identity, reset):
+    with manual.queue_lock(state):
+        gui = state / 'source-gui-request.json'
+        application = state / 'source-apply.json'
+        gui_binding = stage.read_record(gui)
+        if reset or identity in (gui_binding.get('source'), gui_binding.get('previous')):
+            gui.unlink(missing_ok=True)
+        if reset or stage.read_record(application).get('binding', {}).get('source_id') == identity:
+            application.unlink(missing_ok=True)
+            (state / 'source-apply-status.json').unlink(missing_ok=True)
+        if reset:
+            for name in ('source-refresh-pending', 'source-refresh-ready', 'source-refresh-stable.json',
+                         'source-fetch.json'):
+                (state / name).unlink(missing_ok=True)
+
+
+def purge_revoked_snapshots(settings, stage, identity, stopped):
+    state, runtime = Path(settings['state']), Path(settings['runtime'])
+    effective = runtime / 'effective'
+    if stopped:
+        stage.clear_refresh(state, runtime, discard_commit=True)
+        for name in ('source.json', 'profile-refresh.json', 'snapshot-verification.json'):
+            (state / name).unlink(missing_ok=True)
+    elif stage.read_record(state / 'source.json').get('source_id') == identity:
+        (state / 'source.json').unlink()
+
+    def belongs(directory):
+        return stage.read_record(directory / 'source-manifest.json').get('source_id') == identity
+
+    snapshots = runtime / 'snapshots'
+    stale = {path for path in snapshots.iterdir()
+             if path.is_dir() and not path.is_symlink() and belongs(path)} if snapshots.is_dir() else set()
+    digests = {path.name for path in stale}
+    if stopped or belongs(effective):
+        if effective.is_symlink():
+            effective.unlink()
+        elif effective.is_dir():
+            stale.add(effective)
+            if belongs(effective):
+                digests.add(stage.snapshot_digest(effective))
+
+    for name in ('profile-refresh-settled.json', 'profile-refresh-pin.json', 'profile-refresh-restart.json'):
+        path = state / name
+        if stage.read_record(path).get('digest') in digests:
+            path.unlink()
+
+    # An unrelated candidate may finish its observation, but can no longer
+    # roll back to the revoked source.
+    for name in ('profile-refresh-verifying.json', 'profile-refresh-commit.json'):
+        path = state / name
+        document = stage.read_record(path)
+        commit = name == 'profile-refresh-commit.json'
+        record = document.get('record', {}) if commit else document
+        if (document.get('target') if commit else record.get('digest')) in digests:
+            path.unlink()
+        elif record.get('previous_digest') in digests:
+            record.update(previous=None, previous_digest='', previous_snapshot_at=0)
+            stage.atomic_record(path, document, mode=0o600)
+    report = state / 'profile-refresh.json'
+    verdict = stage.read_record(report)
+    if verdict.get('result') == 'verifying' and verdict.get('digest') in digests:
+        report.unlink()
+    for path in stale:
+        shutil.rmtree(path)
+
+
+def revoke_source(settings, root, identity, expected):
+    manual, stage, stage_settings = refresh_context(settings)
+    state = Path(stage_settings['state'])
+    with (state / 'operator.lock').open('a') as operator, (root / 'source.lock').open('a') as source:
+        acquire(operator)
+        acquire(source)
+        migrate(root)
+        with (state / 'authorization.lock').open('a') as authority:
+            acquire(authority)
+            return revoke_locked(settings, root, manual, stage, stage_settings, authority, identity, expected)
+
+
+def revoke_locked(settings, root, manual, stage, stage_settings, authority, identity, expected):
+    if not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', identity):
+        raise DefinitionError('invalid source id')
+    pending = pending_revocation(root)
+    if pending and pending['source_id'] != identity:
+        raise DefinitionError('finish the pending source revocation first')
+    state, retired = Path(stage_settings['state']), root / 'sources' / ('.revoked-' + identity)
+    path = root / 'sources' / identity
+    if path.exists() or not pending:
+        path = source_path(root, identity)
+        revision = digest(read_private(path / 'registry.json'))
+    else:
+        revision = pending['revision']
+    if (expected is not None and revision != expected or pending and revision != pending['revision']):
+        raise DefinitionError('source revision changed')
+    unsafe_authority = False
+    try:
+        active = effective_source(stage_settings, stage)
+    except (OSError, ValueError):
+        active, unsafe_authority = None, True
+    same_boot = (pending.get('protect') and pending.get('boot_id') == stage.boot_id(state)
+                 and (state / 'intent').read_text().strip() == 'proxy')
+    stop = bool(unsafe_authority or active is not None and active['id'] == identity or same_boot)
+    # Keep a durable record through the directory rename and cleanup, even
+    # when the source had no runtime authority.
+    atomic(root / 'revoking.json', json.dumps(dict(source_id=identity, revision=revision, protect=stop,
+        boot_id=stage.boot_id(state) if stop else None)).encode())
+    if stop:
+        # A restarted helper cannot stage a source while protection is active.
+        subprocess.run([settings['systemctl'], 'start', 'clash-source-revoke.service'], check=True, timeout=25)
+        fcntl.flock(authority, fcntl.LOCK_UN)
+        subprocess.run([settings['systemctl'], 'stop', 'clash-verge.service'], check=True, timeout=45)
+        acquire(authority)
+        active = None
+
+    was_selected = requested_source(root) == path
+    cancel_revoked_requests(state, manual, stage, identity, stop or was_selected)
+    purge_revoked_snapshots(stage_settings, stage, identity, stop)
+    legacy = root / 'registry.json'
+    if legacy.exists() and json.loads(read_private(legacy))['id'] == identity:
+        for name in ('current', 'generations', 'approved', 'approval.json', 'review.json', 'status.json'):
+            old = root / name
+            if old.is_dir() and not old.is_symlink():
+                shutil.rmtree(old)
+            else:
+                old.unlink(missing_ok=True)
+        legacy.unlink()
+        sync_directory(root)
+    if was_selected:
+        # When a rejected selection fell back to another registered source,
+        # keep that selection only if it still matches the active revision.
+        active_path = root / 'sources' / active['id'] if active else None
+        if active_path and (active_path / 'registry.json').exists() and digest(
+                read_private(active_path / 'registry.json')) == active['revision']:
+            select(root, active_path)
+        else:
+            (root / 'selected').unlink()
+            sync_directory(root)
+    if path.exists():
+        if retired.is_dir():
+            shutil.rmtree(retired)
+        path.rename(retired)
+        sync_directory(path.parent)
+    if retired.is_dir():
+        shutil.rmtree(retired)
+    (root / 'revoking.json').unlink(missing_ok=True)
+    sync_directory(root)
+    return dict(requested_source=identity, revision=revision, result='revoked',
+                active_source=active['id'] if active else None, upstream_signature='not-verified')
 
 
 def gui_binding(settings, root, manual, stage, stage_settings):
@@ -782,17 +981,26 @@ def main():
     choose = sub.add_parser('use')
     choose.add_argument('id')
     choose.add_argument('--revision')
+    choose.add_argument('--select-only', action='store_true', help='select a registered source without starting a core')
     sub.add_parser('add', help='review, register, fetch and verify a source from the private catalog').add_argument('id')
     sub.add_parser('list')
     sub.add_parser('gui-select')
     revoke = sub.add_parser('revoke')
     revoke.add_argument('id')
+    revoke.add_argument('--revision', help='require this registered revision')
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise ValueError('root required')
     settings = json.loads(Path(args.settings).read_text())
     root = Path(settings['root'])
     state_root(root)
+    if args.action == 'revoke':
+        try:
+            outcome = revoke_source(settings, root, args.id, args.revision)
+        except subprocess.SubprocessError:
+            raise DefinitionError('source revocation did not finish; check clash-source-revoke.service and retry') from None
+        print(json.dumps(outcome))
+        return
     review = review_module(settings) if args.action == 'diff' else None
     with (root / 'source.lock').open('a') as lock:
         if args.action in ('diff', 'add', 'use', 'recover'):
@@ -804,8 +1012,10 @@ def main():
             with (state / 'authorization.lock').open('a') as authorization:
                 acquire(authorization)
                 try:
-                    source = selected(root) if (root / 'selected').is_symlink() else root
-                    report = review.compare(settings, source, read_private)
+                    source = requested_source(root)
+                    if source is None and ((root / 'registry-migrated').exists() or not (root / 'registry.json').exists()):
+                        raise DefinitionError('no selected source')
+                    report = review.compare(settings, source or root, read_private)
                 except review.ReviewError as error:
                     print(str(error), file=sys.stderr)
                     raise SystemExit(1)
@@ -813,8 +1023,13 @@ def main():
             return
         migrate(root)
         if args.action == 'list':
-            active = selected(root).name if (root / 'selected').is_symlink() else None
-            stage_settings = json.loads(Path(settings['stageSettings']).read_text())
+            requested = requested_source(root)
+            _, stage, stage_settings = refresh_context(settings)
+            try:
+                active = effective_source(stage_settings, stage)
+            except (OSError, ValueError):
+                active = None
+            verification = stage.read_record(Path(stage_settings['state']) / 'profile-refresh.json')
             mode = None
             if stage_settings.get('routing_state'):
                 mode = json.loads(Path(stage_settings['routing_state']).read_text()).get('routing_requested')
@@ -823,7 +1038,11 @@ def main():
             def settled(path):
                 folder = path / 'approved' / mode if mode else path / 'approved'
                 return json.loads(read_private(folder / 'settled.json'))['digest'] if (folder / 'settled.json').exists() else None
-            print(json.dumps({'selected': active, 'sources': [
+            print(json.dumps({'selected': requested.name if requested else None,
+                              'active_source': active['id'] if active else None,
+                              'active_revision': active['revision'] if active else None,
+                              'verification': verification.get('result'),
+                              'upstream_signature': 'not-verified', 'sources': [
                 {'id': path.name, 'revision': digest(read_private(path / 'registry.json')),
                  'settled_digest': settled(path)}
                 for path in sorted((root / 'sources').iterdir()) if re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', path.name) and not path.is_symlink()]}))
@@ -832,12 +1051,14 @@ def main():
             if request_gui(settings, root):
                 print('registered source queued for download')
             return
-        if args.action == 'revoke':
+        if args.action == 'use' and args.select_only:
+            if pending_revocation(root).get('source_id') == args.id:
+                raise DefinitionError('source revocation is in progress')
             path = source_path(root, args.id)
-            if selected(root) == path:
-                raise ValueError('select another registered source before revocation')
-            shutil.rmtree(path)
-            print('inactive source revoked; other sources retained')
+            if args.revision is not None and digest(read_private(path / 'registry.json')) != args.revision:
+                raise ValueError('source revision changed')
+            select(root, path)
+            print(json.dumps(dict(requested_source=path.name, result='selected')))
             return
         if args.action in ('refresh', 'recover'):
             settings['_fetch_lock'] = lock
@@ -850,6 +1071,12 @@ def main():
                 print('source candidate prepared; runtime validation remains required')
             return
         if args.action == 'automatic':
+            requested = requested_source(root)
+            pending = pending_revocation(root)
+            if requested is None or pending.get('protect') or pending.get('source_id') == requested.name:
+                manual, _, stage_settings = refresh_context(settings)
+                manual.cancel_automatic(stage_settings)
+                return
             automatic_refresh(settings, root, lock, requested=args.request)
             return
         if args.action in ('review', 'register'):

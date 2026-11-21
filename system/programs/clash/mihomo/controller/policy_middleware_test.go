@@ -2,6 +2,8 @@ package route
 
 import (
 	"bytes"
+	"context"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,75 @@ import (
 	"github.com/metacubex/http"
 	"github.com/metacubex/mihomo/component/lfguard"
 )
+
+func TestLFManagedDelayControllerRequiresExactURLAndRootPeer(t *testing.T) {
+	target := "https://probe.fixture:8443/check?fixed=1"
+	health := "http://internal-probe.fixture/ready"
+	if err := lfguard.Configure(map[string]any{
+		"prefixes": []string{"10.0.0.0/8"}, "delay-test-url": target,
+		"health-test-urls": []string{health},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lfguard.Configure(nil) })
+	for _, tt := range []struct {
+		target  string
+		group   string
+		timeout string
+		root    bool
+		want    int
+	}{
+		{target, "", "10000", false, 0},
+		{target, "Selector", "2000", false, 0},
+		{"http://probe.fixture:8443/check?fixed=1", "", "10000", false, 403},
+		{"https://probe.fixture:8444/check?fixed=1", "", "10000", false, 403},
+		{"https://probe.fixture:8443/check?fixed=2", "Selector", "10000", false, 403},
+		{"https://probe.fixture:8443/other?fixed=1", "", "10000", false, 403},
+		{health, "lf-remote", "1200", false, 403},
+		{health, "lf-remote", "1200", true, 0},
+		{health, "lf-remote", "1201", true, 403},
+		{health, "other", "1200", true, 403},
+		{target, "Selector", "10001", false, 400},
+	} {
+		query := url.Values{"url": {tt.target}, "timeout": {tt.timeout}}.Encode()
+		req, err := http.NewRequest(http.MethodGet, "/group/lf-remote/delay?"+query, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Forwarded-For", "127.0.0.1")
+		if tt.root {
+			req = req.WithContext(context.WithValue(req.Context(), lfControllerRoot{}, true))
+		}
+		rec := &lfPolicyRecorder{}
+		if call := lfStartDelay(rec, req, tt.group); call != nil {
+			call.stop()
+		}
+		if rec.code != tt.want {
+			t.Fatalf("%+v: status %d, body %s", tt, rec.code, rec.body.String())
+		}
+	}
+	req, err := http.NewRequest(http.MethodGet, "/group/Selector/delay?"+url.Values{
+		"url": {target}, "timeout": {"5000"},
+	}.Encode(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := lfStartDelay(&lfPolicyRecorder{}, req, "Selector")
+	if call == nil {
+		t.Fatal("first desktop group test refused")
+	}
+	defer call.stop()
+	rec := &lfPolicyRecorder{}
+	if call := lfStartDelay(rec, req, "Selector"); call != nil || rec.code != 429 {
+		t.Fatalf("overlapping desktop group test accepted: %d", rec.code)
+	}
+	if internal := lfStartDelay(&lfPolicyRecorder{}, req.WithContext(
+		context.WithValue(req.Context(), lfControllerRoot{}, true)), "lf-remote"); internal != nil {
+		// A long desktop-style timeout also consumes the ordinary group budget.
+		internal.stop()
+		t.Fatal("root desktop-style request bypassed the group limit")
+	}
+}
 
 type lfPolicyRecorder struct {
 	code int

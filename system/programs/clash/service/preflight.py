@@ -30,12 +30,10 @@ def subscription_check(document, policy):
     proxies, providers = document.get('proxies') or [], document.get('proxy-providers') or {}
     if not isinstance(proxies, list) or not isinstance(providers, dict):
         raise ValueError('invalid node/provider structure')
-    exceptions = policy.get('insecure-proxy-exceptions', [])
     insecure = [p for p in proxies if disables_tls(p)]
-    rejected = sum(not isinstance(p, dict) or p.get('name') not in exceptions for p in insecure)
     issues = []
-    if rejected:
-        issues.append(f'{rejected} inline nodes disable TLS certificate verification without an exception')
+    if insecure:
+        issues.append(f'{len(insecure)} inline nodes disable TLS certificate verification')
     if not proxies and not providers:
         issues.append('no configured nodes or providers')
     if providers and policy.get('subscription-trust') == 'fixed':
@@ -53,9 +51,9 @@ def subscription_check(document, policy):
                 issues.append('invalid provider URL')
     return {'inline_nodes': len(proxies), 'mutable_sources': len(providers),
             'certificate_exceptions_requested': len(insecure),
-            'certificate_exceptions_allowed': len(insecure) - rejected,
-            'certificate_exceptions_rejected': rejected, 'provider_hosts': sorted(hosts),
-            'named_certificate_exceptions': len(exceptions),
+            'certificate_exceptions_allowed': 0,
+            'certificate_exceptions_rejected': len(insecure), 'provider_hosts': sorted(hosts),
+            'named_certificate_exceptions': 0,
             'provider_contents': 'runtime-validation' if providers else 'none'}, issues
 
 
@@ -99,7 +97,7 @@ def inspect_unlocked(settings):
     if policy_issues:
         return {'ready': False, 'phase': 'prepare-policy', 'issues': policy_issues,
                 'subscription': subscription,
-                'next_action': 'Regenerate the GUI profile with the managed Script.js; use exact-name exceptions only for deliberately trusted nodes.'}
+                'next_action': 'Use nodes with verified TLS certificates or regenerate the GUI profile with the managed Script.js.'}
     phase = 'prepare-assets' if issues else 'prepared'
     if not issues and settings.get('managed_core'):
         try:
@@ -142,7 +140,7 @@ def inspect_unlocked(settings):
             issues.append('managed profile validation unavailable')
     return {'ready': not issues, 'phase': phase, 'issues': issues,
             'scope': 'configuration', 'subscription': subscription,
-            'warnings': ['Provider contents are validated at load/refresh. Named certificate exceptions also follow same-named provider replacements.']
+            'warnings': ['Provider contents and certificate verification are checked at load and refresh.']
                         if subscription['mutable_sources'] else [],
             'next_action': 'clash-on' if not issues else 'Check required assets and the root-only /run/proxy-mode/preflight.log; regenerate the GUI profile and rerun preflight.'}
 

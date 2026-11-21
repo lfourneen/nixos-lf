@@ -46,7 +46,7 @@ preferences() {
     '!!null') ;;
     '!!str')
       current=$(yq '.default_latency_test' "$target") || return 1
-      [[ -z "${current//[[:space:]]/}" ]] || return 0
+      [[ "$current" != "$1" ]] || return 0
       ;;
     *) return 1 ;;
   esac

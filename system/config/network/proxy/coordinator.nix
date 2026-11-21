@@ -990,15 +990,27 @@ NFT_OFF
         $SYSTEMCTL kill -s WINCH --kill-whom=main proxy-mode.service 2>/dev/null || true
         exit 0
         ;;
-      --request-proxy|--request-direct)
+      --request-proxy|--request-direct|--revoke-source)
         lock_state
-        if [ "$1" = --request-proxy ]; then intent=proxy; else intent=direct; fi
+        if [ "$1" = --request-direct ]; then intent=direct; else intent=proxy; fi
         atomic_write "$INTENT" "$intent" || exit 1
         # Arm C before starting/stopping the core. GUI/start failures leave the
         # requested proxy state protected; off becomes A only after core exit.
         if ! load_complete blocked; then unlock_state; exit 1; fi
         mode=blocked; reason=request
+        if [ "$1" = --revoke-source ]; then
+          # The source broker holds operator, source and authority locks.
+          # Invalidate health's authorization while still holding the policy
+          # lock, so a new probe cannot reopen B before the old core stops.
+          rm -f /run/proxy-mode/authorize-window /run/proxy-mode/authorized-config \
+            /run/proxy-mode/config-digest /run/proxy-mode/effective-config-sha256 \
+            /run/proxy-mode/effective-config.json /run/proxy-mode/health.json || exit 1
+          reason=source-revoked
+        fi
         publish_state
+        ${lib.optionalString config.my.proxy.runtimeRouting ''
+        if [ "$1" = --revoke-source ]; then "$ROUTING" stop-ip-tunnel || exit 1; fi
+        ''}
         unlock_state
         request_wake
         exit 0

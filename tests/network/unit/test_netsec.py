@@ -1026,6 +1026,8 @@ class TailnetDnsTests(unittest.TestCase):
                     self.assertFalse(path.exists(), 'stale exception must be revoked first')
                     values.update(dns=[], domain=[], **{'default-route': 'yes'})
                     output = ''
+                elif argv[1] == 'flush-caches':
+                    output = ''
                 elif len(argv) > 3:
                     values[argv[1]] = argv[3] if argv[1] == 'default-route' else list(argv[3:])
                     output = ''
@@ -2276,8 +2278,8 @@ class SubscriptionAndStatusTests(unittest.TestCase):
         document = {'proxies': [{'name':'safe'}, {'name':'allowed','skip-cert-verify':True},
                                  {'name':'rejected','tls':{'skip_cert_verify':True}}]}
         summary, issues = preflight.subscription_check(document, {'insecure-proxy-exceptions':['allowed']})
-        self.assertEqual(summary['certificate_exceptions_allowed'], 1)
-        self.assertEqual(summary['certificate_exceptions_rejected'], 1)
+        self.assertEqual(summary['certificate_exceptions_allowed'], 0)
+        self.assertEqual(summary['certificate_exceptions_rejected'], 2)
         self.assertEqual(len(issues), 1)
         self.assertNotIn('allowed', issues[0])
 

@@ -1,14 +1,18 @@
 """Real registered-source routing switches and outer-wire evidence in the VM."""
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
 from pathlib import Path
+import runpy
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import threading
 import time
+from urllib.parse import quote, urlencode
 
 
 def run(*args, timeout=100, required=True, **kwargs):
@@ -242,14 +246,112 @@ def old_client():
             pass
 
 
+DELAY_PATH = '/speed?policy=root'
+DELAY_TARGET = 'https://source.fixture.example:17443' + DELAY_PATH
+DELAY_RECORDS = Path('/run/netsec-delay-records.jsonl')
+DELAY_HOLD = Path('/run/netsec-delay-hold')
+DELAY_REDIRECT = Path('/run/netsec-delay-redirect')
+DELAY_READY = Path('/run/netsec-delay-ready')
+
+
+def delay_origin():
+    class Handler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            record = (self.path, self.client_address[0], self.connection.getsockname()[0])
+            with DELAY_RECORDS.open('a') as output:
+                output.write(json.dumps(record) + '\n')
+            deadline = time.monotonic() + 12
+            while DELAY_HOLD.exists() and time.monotonic() < deadline:
+                time.sleep(.05)
+            redirect = self.path == DELAY_PATH and DELAY_REDIRECT.exists()
+            self.send_response(302 if redirect else 204)
+            if redirect:
+                self.send_header('Location', '/unapproved')
+            self.end_headers()
+
+    tls_path = Path(json.loads(Path('/etc/netsec-managed.json').read_text())['tls'])
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(tls_path / 'trusted.pem', tls_path / 'trusted.key')
+    server = ThreadingHTTPServer(('0.0.0.0', 17443), Handler)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    DELAY_READY.touch()
+    server.serve_forever()
+
+
+def check_delay_controls(mode):
+    health = 'http://node.fixture.example:8080/'
+    desktop = runpy.run_path('/etc/netsec_desktop.py')
+    uid, front = desktop['USER'].pw_uid, desktop['SOCKET']
+    direct = '/run/clash-verge-rev/core/mihomo.sock'
+    group = 'Choice' if mode == 'rules' else 'lf-remote'
+
+    def speed(route, name, target, milliseconds=10000, root=False):
+        select = [] if root else ['setpriv', f'--reuid={uid}', '--clear-groups']
+        query = urlencode({'url': target, 'timeout': milliseconds})
+        result = run(*select, 'curl', '--noproxy', '*', '--max-time', '13', '-sS', '-w', '\n%{http_code}',
+                     '--unix-socket', direct if root else front,
+                     '-H', 'X-Forwarded-For: 127.0.0.1',
+                     f'http://localhost/{route}/{quote(name, safe="")}/delay?{query}', timeout=16)
+        body, status = result.stdout.rsplit('\n', 1)
+        return int(status), json.loads(body)
+
+    def records():
+        return [json.loads(line) for line in DELAY_RECORDS.read_text().splitlines()] if DELAY_RECORDS.exists() else []
+
+    initial = len(records())
+    single = speed('proxies', 'Fixture', DELAY_TARGET)
+    whole = speed('group', group, DELAY_TARGET)
+    assert single[0] == 200 and single[1]['delay'] > 0, (mode, single)
+    assert whole[0] == 200 and whole[1]['Fixture'] > 0, (mode, whole)
+    delivered = records()[initial:]
+    assert len(delivered) == 2 and all(path == DELAY_PATH and peer == local for path, peer, local in delivered), delivered
+
+    for target in (DELAY_TARGET.replace('https:', 'http:'), DELAY_TARGET.replace('17443', '17444'),
+                   DELAY_TARGET.replace('/speed', '/unapproved'), DELAY_TARGET.replace('policy=root', 'policy=other'),
+                   DELAY_TARGET.replace('source.fixture.example', 'other.fixture.example')):
+        assert speed('proxies', 'Fixture', target)[0] == 403, target
+        assert speed('group', group, target)[0] == 403, target
+    assert speed('proxies', 'Fixture', DELAY_TARGET, 10001)[0] == 400
+    assert speed('group', 'lf-remote', health, 1200)[0] == 403
+    assert speed('proxies', 'DIRECT', DELAY_TARGET)[0] == 503
+    assert len(records()) == initial + 2
+    if mode == 'rules':
+        # Exercise the exact privileged fallback path also used by health.py.
+        wait(lambda: speed('group', 'lf-remote', health, 1200, root=True)[0] == 200, timeout=15)
+        DELAY_REDIRECT.touch()
+        try:
+            assert speed('proxies', 'Fixture', DELAY_TARGET)[0] == 503
+            assert [entry[0] for entry in records()[initial + 2:]] == [DELAY_PATH]
+        finally:
+            DELAY_REDIRECT.unlink(missing_ok=True)
+
+        before = len(records())
+        DELAY_HOLD.touch()
+        with ThreadPoolExecutor(max_workers=18) as executor:
+            jobs = [executor.submit(speed, 'proxies', 'Fixture', DELAY_TARGET) for _ in range(18)]
+            try:
+                wait(lambda: any(job.done() and job.result()[0] == 429 for job in jobs), timeout=6)
+                wait(lambda: len(records()) >= before + 1, timeout=5)
+                assert len(records()) <= before + 10, records()[before:]
+            finally:
+                DELAY_HOLD.unlink(missing_ok=True)
+            results = [job.result()[0] for job in jobs]
+        assert 429 in results and 200 in results and set(results) <= {200, 429}, results
+    print(f'{mode}: exact desktop delay URL, real leaf, root-only health and request limits verified', flush=True)
+
+
 def check():
     if Path('/etc/netsec-gui-webdriver.json').exists():
+        run('systemd-run', '--unit=netsec-delay-origin', 'ip', 'netns', 'exec', 'outside',
+            sys.executable, __file__, 'delay-origin')
+        wait(DELAY_READY.exists, timeout=25)
         current = status()
         assert current['routing_applied'] == 'rules', current
         for target in ('rules', 'proxy-only'):
             if target != 'rules':
                 route(target)
             run(sys.executable, '/etc/netsec-control.py', 'check_gui_controls')
+            check_delay_controls(target)
             print(run(sys.executable, '/etc/netsec-gui-webdriver.py', 'check', timeout=180).stdout,
                   end='', flush=True)
         route('rules')
@@ -435,4 +537,4 @@ table inet routing_wire {
 
 
 if __name__ == '__main__':
-    {'check': check, 'peer': old_peer, 'client': old_client}[sys.argv[1]]()
+    {'check': check, 'peer': old_peer, 'client': old_client, 'delay-origin': delay_origin}[sys.argv[1]]()

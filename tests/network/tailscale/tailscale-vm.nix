@@ -329,11 +329,12 @@ pkgs.testers.runNixOSTest {
         for suffix in ("", " --tcp"):
             machine.succeed(probe(address, 53, uid=1000) + suffix + " --expect-prefix managed:")
 
-    # Only the managed resolver's approved tailnet route gets MagicDNS.
+    # The resolver stays on the tailnet interface in both egress policies.
     machine.succeed(probe("100.100.100.100", 53, uid=resolve))
     (machine.fail if restricted else machine.succeed)(probe("100.100.100.100", 53, uid=1000))
     machine.succeed("ip route replace 100.100.100.100/32 via 198.51.100.1 dev ens1")
-    (machine.fail if restricted else machine.succeed)(probe("100.100.100.100", 53, uid=resolve))
+    for suffix in ("", " --tcp"):
+        machine.fail(probe("100.100.100.100", 53, uid=resolve) + suffix)
     machine.succeed("ip route replace 100.100.100.100/32 dev tailscale0")
 
     # An approved lease is still required for dnsmasq's direct split DNS.

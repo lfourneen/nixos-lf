@@ -17,7 +17,29 @@ parser.add_argument("--mark", type=int)
 parser.add_argument('--dns-answer')
 parser.add_argument('--rebind', action='store_true')
 parser.add_argument('--ech-config')
+parser.add_argument('--listen-address')
+parser.add_argument('--tailnet-record-label', choices=['public', 'magic'])
 args = parser.parse_args()
+
+
+def tailnet_reply(data):
+    from dns import message, rdatatype, rrset
+
+    query = message.from_wire(data)
+    question = query.question[0]
+    values = {
+        rdatatype.A: args.dns_answer,
+        rdatatype.AAAA: 'fd7a:115c:a1e0::117' if args.tailnet_record_label == 'magic' else '2001:db8::10',
+        rdatatype.HTTPS: f'1 {args.tailnet_record_label}.fixture.example. alpn=h2',
+        rdatatype.TXT: f'"{args.tailnet_record_label}"',
+    }
+    print(f'{args.tailnet_record_label} {question.name} {rdatatype.to_text(question.rdtype)}', flush=True)
+    reply = message.make_response(query)
+    if question.rdtype in values:
+        reply.answer.append(rrset.from_text(question.name, 60, question.rdclass, question.rdtype,
+                                            values[question.rdtype]))
+    return reply.to_wire()
+
 
 if args.mode == "budget":
     runtime = Path('/run/dns-upstream')
@@ -34,9 +56,11 @@ elif args.mode == "lease":
         "plaintext_until": now + args.port, "plaintext": [args.host], "split": [],
     }))
 elif args.mode == "server":
-    stream = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-    stream.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-    stream.bind(("::", int(args.host)))
+    family = socket.AF_INET if args.listen_address else socket.AF_INET6
+    stream = socket.socket(family, socket.SOCK_DGRAM)
+    if family == socket.AF_INET6:
+        stream.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+    stream.bind((args.listen_address or "::", int(args.host)))
     while True:
         data, peer = stream.recvfrom(1024)
         if args.dns_answer and data != b'netsec-fixture':
@@ -46,6 +70,9 @@ elif args.mode == "server":
                 end += data[end] + 1
             end += 5
             name = '.'.join(labels).lower()
+            if args.tailnet_record_label and name.endswith('.ts.net'):
+                stream.sendto(tailnet_reply(data), peer)
+                continue
             if args.ech_config:
                 kind = struct.unpack('!H', data[end - 4:end - 2])[0]
                 print(json.dumps({'name': name, 'type': kind}), flush=True)

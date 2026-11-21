@@ -10,7 +10,38 @@ import (
 	"testing"
 
 	"github.com/metacubex/mihomo/common/yaml"
+	"github.com/metacubex/mihomo/component/lfguard"
 )
+
+func TestLFManagedRemovesLegacyMagicDNS(t *testing.T) {
+	policy := map[string]any{
+		"lf-private-targets":    map[string]any{"magic-dns-resolver": "100.100.100.100"},
+		"dns.fake-ip-filter":    []any{"*.home.arpa"},
+		"dns.nameserver-policy": map[string]any{},
+	}
+	const previous = `{"fake-ip-filter":["*.home.arpa","+.ts.net"],
+		"nameserver-policy":{"+.ts.net":["udp://100.100.100.100:53#DIRECT"]}}`
+	for _, test := range []struct {
+		profile string
+		removed bool
+	}{
+		{previous, true},
+		{strings.Replace(previous, "100.100.100.100", "192.0.2.53", 1), false},
+	} {
+		var raw RawConfig
+		if err := json.Unmarshal([]byte(test.profile), &raw.DNS); err != nil {
+			t.Fatal(err)
+		}
+		if err := lfUpgradeMagicDNS(&raw, policy); err != nil {
+			t.Fatal(err)
+		}
+		fields, err := json.Marshal(raw.DNS)
+		if err != nil || strings.Contains(string(fields), "+.ts.net") == test.removed ||
+			!reflect.DeepEqual(raw.DNS.FakeIPFilter, []string{"*.home.arpa"}) {
+			t.Fatal("unexpected legacy MagicDNS normalization", string(fields), err)
+		}
+	}
+}
 
 func TestLFManagedEmptyPolicyFailsClosed(t *testing.T) {
 	for _, policy := range []string{"null", "{}"} {
@@ -28,6 +59,54 @@ func TestLFManagedEmptyPolicyFailsClosed(t *testing.T) {
 				t.Fatal("empty managed policy was treated as an unmanaged configuration")
 			}
 		})
+	}
+}
+
+func TestLFManagedDelayProfileMigratesCachedGroupsAndProviders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	target := "https://approved.fixture/one?policy=root"
+	value := map[string]any{"lf-private-targets": map[string]any{
+		"prefixes": []string{"10.0.0.0/8"}, "delay-test-url": target,
+	}}
+	contents, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	t.Cleanup(func() { _ = lfguard.Configure(nil) })
+	raw, err := UnmarshalRawConfig([]byte(`
+proxy-groups:
+  - {name: Group, type: fallback, proxies: [Node], URL: 'http://other.fixture', interval: 1, timeout: 60000, expected-status: '503'}
+  - {name: Choice, type: select, proxies: [Node], interval: 1500}
+proxy-providers:
+  other:
+    type: http
+    url: 'https://other.fixture/source'
+    health-check: {enable: true, url: 'https://other.fixture/probe', interval: 2, timeout: 55555}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lfValidateRaw(raw); err != nil {
+		t.Fatal(err)
+	}
+	for i, fields := range []map[string]any{raw.ProxyGroup[0], raw.ProxyGroup[1],
+		raw.ProxyProvider["other"]["health-check"].(map[string]any)} {
+		interval := 300
+		if i == 1 {
+			interval = 0
+		}
+		if fields["url"] != target || fields["interval"] != interval ||
+			fields["timeout"] != 5000 || fields["expected-status"] != "" {
+			t.Fatalf("delay policy not applied to configuration %d: %v", i, fields)
+		}
+	}
+	if raw.ProxyProvider["other"]["url"] != "https://other.fixture/source" ||
+		raw.ProxyProvider["other"]["health-check"].(map[string]any)["enable"] != true {
+		t.Fatal("delay policy changed provider import settings")
 	}
 }
 
@@ -436,6 +515,10 @@ func TestLFManagedPreviousGeneration(t *testing.T) {
 		t.Skip("Nix upgrade fixture not supplied")
 	}
 	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	policy, _, err := lfManagedPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
 	data, err := os.ReadFile(fixture)
 	if err != nil {
 		t.Fatal(err)
@@ -472,8 +555,10 @@ func TestLFManagedPreviousGeneration(t *testing.T) {
 			t.Fatal(err)
 		}
 		dns := document["dns"].(map[string]any)
-		if err := ValidateManagedPatch(map[string]any{"dns": map[string]any{field: dns[field]}}); err == nil {
-			t.Fatalf("runtime PATCH accepted old %s", field)
+		expected := policy["dns."+field]
+		err := ValidateManagedPatch(map[string]any{"dns": map[string]any{field: dns[field]}})
+		if (err == nil) != reflect.DeepEqual(lfCanonical(expected), lfCanonical(dns[field])) {
+			t.Fatalf("runtime PATCH accepted a non-current value or rejected the current %s: %v", field, err)
 		}
 		if field == "fake-ip-filter" {
 			dns[field] = append(dns[field].([]any), "+.attacker.example")

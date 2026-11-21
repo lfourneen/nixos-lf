@@ -51,6 +51,38 @@ class AuditTests(unittest.TestCase):
         after = dict(before, server='8.8.8.8')
         self.assertNotIn('node_identity', self.check(document(nodes=[after]), document(nodes=[before]), strict_semantics=True)['deny'])
 
+    def test_new_node_names_cannot_hide_new_permissions(self):
+        original = document()
+        alias = document(nodes=[dict(NODE, name='alias')], groups=[dict(GROUP, proxies=['alias'])])
+        self.assertEqual(self.check(alias, original, strict_semantics=True)['deny'], {})
+        for changes in ({'server': '8.8.8.8'}, {'PASSWORD': 'rotated-fixture'}, {'udp': True}):
+            with self.subTest(changes=changes):
+                node = dict(NODE, name='alias')
+                if 'PASSWORD' in changes:
+                    node.pop('password')
+                node.update(changes)
+                result = self.check(dict(alias, proxies=[node]), original, strict_semantics=True)
+                self.assertEqual(result['deny'], {'node_identity': 1, 'node_authentication': 1, 'node_transport': 1})
+                self.assertEqual(result['changed_nodes'], 1)
+        self.assertEqual(self.check(alias, strict_semantics=True)['deny'], {})
+
+    def test_authentication_and_other_transport_fields_are_compared(self):
+        old = document(nodes=[dict(NODE, auth='first', udp=True)])
+        new = document(nodes=[dict(NODE, auth='second', udp=False)])
+        result = self.check(new, old, strict_semantics=True)
+        self.assertEqual(result['deny'], {'node_authentication': 1, 'node_transport': 1})
+        self.assertEqual(result['changed_nodes'], 1)
+
+    def test_reality_identity_and_authentication_are_not_ordinary_transport_changes(self):
+        original = dict(NODE, type='vless', **{
+            'reality-opts': {'public-key': 'first-key', 'short-id': 'aabb'}})
+        for options, expected in (
+                ({'PUBLIC_KEY': 'next-key', 'short-id': 'aabb'}, 'node_identity'),
+                ({'public-key': 'first-key', 'SHORT_ID': 'ccdd'}, 'node_authentication')):
+            result = self.check(document(nodes=[dict(original, **{'reality-opts': options})]),
+                                document(nodes=[original]), strict_semantics=True)
+            self.assertEqual(result['deny'], {expected: 1})
+
     def test_private_and_reserved_servers_are_denied(self):
         for server in ('192.168.1.10', '127.0.0.1', '169.254.1.1', '100.64.0.1', '::1',
                        '224.0.0.1', 'ff02::1'):
@@ -62,11 +94,14 @@ class AuditTests(unittest.TestCase):
                              allowed_server_cidrs=['192.168.0.0/16'])
         self.assertEqual(allowed['verdict'], 'pass')
 
-    def test_insecure_nodes_respect_named_exceptions(self):
-        node = dict(NODE, **{'skip-cert-verify': True})
-        self.assertEqual(self.check(document(nodes=[node]))['deny'].get('certificate'), 1)
-        allowed = self.check(document(nodes=[node]), insecure_exceptions=['node'])
-        self.assertEqual(allowed['verdict'], 'pass')
+    def test_certificate_bypass_is_refused_independent_of_leaf_name(self):
+        for flag in (True, 'yes', 1, None, {'unexpected': True}):
+            node = dict(NODE, **{'transport-opts': {'SKIP_CERT_VERIFY': flag}})
+            denied = self.check(document(nodes=[node]), insecure_exceptions=['node'])
+            self.assertEqual(denied['deny'], {'certificate': 1}, flag)
+        for flag in (False, 'false', '0', 0):
+            node = dict(NODE, **{'skip-cert-verify': flag})
+            self.assertEqual(self.check(document(nodes=[node]))['deny'], {}, flag)
 
     def test_hosts_override_requires_root_permission_on_every_import(self):
         baseline = document(hosts={'a.example': '1.1.1.1'})
@@ -146,6 +181,31 @@ class AuditTests(unittest.TestCase):
         candidate = document(rules=['DOMAIN,probe.example,DIRECT', 'MATCH,Proxy'])
         result = self.check(candidate, protected_routes={'probe.example': 'proxy'})
         self.assertEqual(result['deny'].get('protected_route'), 1)
+
+    def test_protected_routes_check_first_import_and_changed_rule_order(self):
+        settings = {'strict_semantics': True, 'protected_routes': {
+            'proxy.example': 'proxy', 'local.example': 'direct', 'blocked.example': 'reject'}}
+        baseline = document(rules=['DOMAIN,local.example,DIRECT', 'DOMAIN,blocked.example,REJECT', 'MATCH,Proxy'])
+        self.assertEqual(self.check(baseline, **settings)['deny'], {})
+        shifted = document(rules=['MATCH,Proxy', *baseline['rules']])
+        for approved in (None, baseline):
+            self.assertEqual(self.check(shifted, approved, **settings)['deny'], {'protected_route': 2})
+        unknown = document(rules=baseline['rules'][:-1])
+        self.assertEqual(self.check(unknown, baseline, **settings)['unknown'], {'route_unknown': 1})
+
+    def test_protected_route_follows_renamed_groups_and_checks_every_leaf(self):
+        settings = {'protected_routes': {'proxy.example': 'proxy'}, 'strict_semantics': True}
+        groups = [dict(GROUP, name='Renamed'), {'name': 'Edge', 'type': 'select', 'proxies': ['Renamed']}]
+        rules = ['MATCH,Edge']
+        candidate = document(rules=rules, groups=groups)
+        self.assertEqual(self.check(candidate, document(), **settings)['verdict'], 'pass')
+        groups[0]['proxies'] = ['DIRECT', 'node']
+        self.assertEqual(self.check(candidate, document(), **settings)['unknown'], {'route_unknown': 1})
+        missing_kind = dict(NODE)
+        missing_kind.pop('type')
+        self.assertEqual(self.check(document(nodes=[missing_kind]), **settings)['unknown'], {'route_unknown': 1})
+        rematch = dict(NODE, type='rematch')
+        self.assertEqual(self.check(document(nodes=[rematch]), **settings)['unknown'], {'route_unknown': 1})
 
     def test_added_probe_requires_proof_only_from_candidate(self):
         baseline = document(rules=['GEOIP,CN,DIRECT', 'MATCH,Proxy'])

@@ -58,7 +58,7 @@ func TestLFManagedValidationPrecedesSyntheticAnswers(t *testing.T) {
 		reply := new(D.Msg).SetReply(r)
 		reply.AuthenticatedData = true
 		return reply, nil
-	})
+	}, true)
 	for _, test := range []struct {
 		name  string
 		code  int

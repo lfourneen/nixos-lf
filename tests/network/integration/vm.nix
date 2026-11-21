@@ -63,8 +63,15 @@ pkgs.testers.runNixOSTest {
                 nameserver = [ "udp://100.67.0.1:15354" ];
                 default-nameserver = [ "100.67.0.1" ];
                 proxy-server-nameserver = [ "udp://100.67.0.1:15354" ];
-                nameserver-policy = { "+.ts.net" = [ "udp://100.67.0.1:15354#DIRECT" ]; };
+                nameserver-policy = { };
                 respect-rules = false;
+              };
+            };
+            managedProfile = profile.options.my.proxy.managedProfile // {
+              default = profile.options.my.proxy.managedProfile.default // {
+                lf-private-targets = profile.options.my.proxy.managedProfile.default.lf-private-targets // {
+                  magic-dns-suffix-file = "/run/netsec-tailnet/domain";
+                };
               };
             };
           };
@@ -255,7 +262,8 @@ pkgs.testers.runNixOSTest {
     environment.etc."netsec-health.py".source = ../../../system/config/network/proxy/health.py;
     environment.etc."netsec-resolved-policy.py".source = ../../../system/config/network/dns/resolved_policy.py;
 
-    environment.etc."netsec-tailnet.json".text = builtins.toJSON {
+    environment.etc."netsec-tailnet.json".source = config.my.proxy.resolvedPolicySettings;
+    my.proxy.resolvedPolicySettings = lib.mkForce (pkgs.writeText "netsec-tailnet-fixture.json" (builtins.toJSON {
       ip = "${pkgs.iproute2}/bin/ip";
       resolvectl = "${pkgs.systemd}/bin/resolvectl";
       tun = "Mihomo";
@@ -266,7 +274,7 @@ pkgs.testers.runNixOSTest {
         domain_file = "/run/netsec-tailnet/domain";
         cli = pkgs.writeShellScript "fixture-tailnet-status" ''cat /run/netsec-tailnet-status.json'';
       };
-    };
+    }));
 
     environment.etc."netsec-events.py".source = ../../../system/config/network/proxy/events.py;
     environment.etc."netsec-events-test.py".source = ./events_fixture.py;
@@ -362,6 +370,9 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     import ipaddress
+    import json
+    import shlex
+    import time
 
     def dot_guard_drops():
         # The guard sits at priority -196, ahead of sing-tun's auto-redirect, so
@@ -496,7 +507,6 @@ pkgs.testers.runNixOSTest {
         # Drop the upstream SYN instead of receiving an immediate refusal, so
         # this measures the stale-answer wait ceiling under a real timeout.
         machine.succeed("nft add table inet stale_timeout; nft 'add chain inet stale_timeout output { type filter hook output priority -202; policy accept; }'; nft add rule inet stale_timeout output ip daddr 127.0.0.2 tcp dport 853 drop")
-        import time, json, shlex
         stale_latencies = []
         for _ in range(6):
             started = time.monotonic()
@@ -729,7 +739,7 @@ pkgs.testers.runNixOSTest {
     # Model remote public hosts, reached through defaults rather than connected
     # or explicit main-table routes (sing-tun intentionally preserves those).
     machine.succeed("ip route del 203.0.113.10/32; ip -n outside -6 addr add 2001:db8:ffff::10/128 dev wifi-peer nodad; ip -6 route replace default via 2001:db8:dead::1 dev wlo1 metric 1")
-    machine.succeed("ip netns exec outside sh -c 'python3 /etc/netsec-dns.py server 15354 --dns-answer 203.0.113.10 --rebind >/tmp/integration-dns.log 2>&1 &'")
+    machine.succeed("ip netns exec outside sh -c '${dnsPython}/bin/python3 /etc/netsec-dns.py server 15354 --dns-answer 203.0.113.10 --rebind --tailnet-record-label public >/tmp/integration-dns.log 2>&1 &'")
     machine.succeed("ip netns exec outside ss -ltn | grep -q ':80 '")
     machine.succeed("ip netns exec outside sh -c 'python3 /etc/netsec-integration.py http6 >/tmp/integration-http6.log 2>&1 &'")
     machine.wait_until_succeeds("ip netns exec outside curl --noproxy '*' -fsS http://[2001:db8:dead::1]:8080/ >/dev/null")
@@ -816,9 +826,71 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"python3 /etc/netsec-dns.py query {address} 15353 --uid 1000")
     machine.succeed("python3 /etc/netsec-integration.py check-node-log")
     machine.succeed("python3 /etc/netsec-integration.py connect-test")
-    # MagicDNS names must retain real IPs so Tailscale's routes can win over
-    # the TUN. Its DNS transport stays DIRECT in rule mode.
-    machine.succeed("dig +short @127.0.0.1 -p 1053 printer.tailfixture.ts.net A | grep -qx 203.0.113.10")
+    with subtest("only the authenticated suffix reaches MagicDNS from resolved and the core"):
+        machine.wait_until_succeeds("jq -e '.mode == \"proxy\"' /run/dns-upstream/state.json")
+        machine.succeed("ip netns add magic-outside; ip link add tailscale0 type veth peer name magic-peer; "
+                        "ip link set magic-peer netns magic-outside; "
+                        "ip addr add 100.100.100.101/24 dev tailscale0; ip link set tailscale0 up; "
+                        "ip -n magic-outside addr add 100.100.100.100/24 dev magic-peer; ip -n magic-outside link set magic-peer up")
+        machine.succeed("systemd-run --unit=netsec-magic-peer ip netns exec magic-outside ${dnsPython}/bin/python3 "
+                        "/etc/netsec-dns.py server 53 --listen-address 100.100.100.100 "
+                        "--dns-answer 100.100.100.117 --tailnet-record-label magic")
+        machine.wait_until_succeeds("ip netns exec magic-outside ss -uln | grep -q '100.100.100.100:53 '", timeout=20)
+
+        def tailnet_status(suffix):
+            status = {"BackendState": "Stopped"}
+            observed = "test ! -e /run/netsec-tailnet/domain"
+            if suffix:
+                status = {"BackendState": "Running", "CurrentTailnet": {
+                    "MagicDNSEnabled": True, "MagicDNSSuffix": suffix,
+                }}
+                observed = f"grep -Fxq {shlex.quote(suffix)} /run/netsec-tailnet/domain"
+            machine.succeed(f"printf '%s' {shlex.quote(json.dumps(status))} >/run/netsec-tailnet-status.new; "
+                            "mv /run/netsec-tailnet-status.new /run/netsec-tailnet-status.json")
+            machine.wait_until_succeeds(
+                f"systemctl start dns-resolved-policy.service && {observed}", timeout=35,
+            )
+
+        def check_magic(name, address, port):
+            for kind, answer in (("A", "100.100.100.117"), ("AAAA", "fd7a:115c:a1e0::117"),
+                                 ("HTTPS", "magic.fixture.example."), ("TXT", '"magic"')):
+                result = machine.succeed(f"dig +time=3 +tries=1 +short @{address} -p {port} {name} {kind}")
+                assert answer in result, (address, name, kind, result)
+                machine.wait_until_succeeds(f"journalctl -u netsec-magic-peer -o cat | grep -Fx 'magic {name}. {kind}'", timeout=10)
+
+        def check_public(name, address, port):
+            for kind, answer in (("A", "198.18."), ("HTTPS", "public.fixture.example."), ("TXT", '"public"')):
+                result = machine.succeed(f"dig +time=3 +tries=1 +short @{address} -p {port} {name} {kind}")
+                assert answer in result, (address, name, kind, result)
+            machine.succeed(f"dig +time=3 +tries=1 @{address} -p {port} {name} AAAA | grep -q 'status: NOERROR'")
+            machine.fail(f"journalctl -u netsec-magic-peer -o cat | grep -F 'magic {name}. '")
+            for kind in ("HTTPS", "TXT"):
+                machine.succeed(f"grep -Fx 'public {name}. {kind}' /tmp/integration-dns.log")
+
+        core_dns = ("127.0.0.1", 1053)
+        system_dns = ("127.0.0.53", 53)
+        tailnet_status("tailfixture.ts.net")
+        check_magic("core.tailfixture.ts.net", *core_dns)
+        check_magic("system.tailfixture.ts.net", *system_dns)
+        check_public("core.other.ts.net", *core_dns)
+        check_public("system.other.ts.net", *system_dns)
+        check_public("sibling.nottailfixture.ts.net", *core_dns)
+        machine.succeed("printf 'unreadable status' >/run/netsec-tailnet-status.json; systemctl start dns-resolved-policy.service")
+        check_magic("status-miss.tailfixture.ts.net", *core_dns)
+        check_magic("status-system.tailfixture.ts.net", *system_dns)
+        tailnet_status("other.ts.net")
+        check_public("rotated.tailfixture.ts.net", *core_dns)
+        check_magic("core.other.ts.net", *core_dns)
+        check_magic("system.other.ts.net", *system_dns)
+        tailnet_status(None)
+        check_public("logout.other.ts.net", *core_dns)
+        check_public("logout-system.other.ts.net", *system_dns)
+        tailnet_status("tailfixture.ts.net")
+        machine.succeed("systemctl stop netsec-magic-peer; ip link del tailscale0; ip netns del magic-outside")
+        machine.wait_until_succeeds(
+            "systemctl start dns-resolved-policy.service && test ! -e /run/netsec-tailnet/domain", timeout=35,
+        )
+        check_public("link-gone.tailfixture.ts.net", *core_dns)
     for name in ("private.core.fixture.example", "mixed.core.fixture.example"):
         machine.fail(f"setpriv --reuid=1000 --clear-groups curl --noproxy \"\" --socks5-hostname 127.0.0.1:7897 -fsS --max-time 3 http://{name}:8080/")
         fake = machine.succeed(f"dig +short @127.0.0.1 -p 1053 {name} A").strip()
@@ -830,7 +902,6 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"curl --noproxy '*' -fsS --unix-socket {socket} -X PATCH -H 'Content-Type: application/json' -d '{{\"mode\":\"global\"}}' http://localhost/configs")
     machine.succeed(f"curl --noproxy '*' -fsS --unix-socket {socket} http://localhost/configs | jq -e '.mode == \"rule\"'")
     machine.fail("curl --noproxy \"\" --socks5-hostname 127.0.0.1:7897 -fsS --max-time 3 http://private.core.fixture.example:8080/")
-    machine.succeed("dig +short @127.0.0.1 -p 1053 other.tailfixture.ts.net A | grep -qx 203.0.113.10")
     machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = proxy && test $(jq -r .ok /run/proxy-mode/health.json) = true", timeout=90)
     machine.succeed(f"curl --noproxy '*' -fsS --unix-socket {socket} -X PATCH -H 'Content-Type: application/json' -d '{{\"mode\":\"rule\"}}' http://localhost/configs")
     # Keep the original table/rules, but make a higher-priority rule win.

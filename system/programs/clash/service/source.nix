@@ -123,6 +123,25 @@ let
     };
   };
 
+  sourceGuardService = description: action: {
+    inherit description;
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${config.my.proxy.modeScript} ${action}";
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectControlGroups = true;
+      ReadWritePaths = [ "/run/proxy-mode" "/run/netsec" ];
+      RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
+      TimeoutStartSec = "20s";
+    };
+  };
+
 in
 {
   options.my.proxy = {
@@ -243,24 +262,10 @@ in
     # Keep network policy capabilities outside the download/parser service.
     # The caller holds operator.lock and waits for this fixed C transaction
     # before it can stop the currently authorized core.
-    systemd.services.clash-source-guard = {
-      description = "Revoke B before activating a checked source";
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${config.my.proxy.modeScript} --request-proxy";
-        NoNewPrivileges = true;
-        CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        ProtectKernelTunables = true;
-        ProtectKernelModules = true;
-        ProtectControlGroups = true;
-        ReadWritePaths = [ "/run/proxy-mode" "/run/netsec" ];
-        RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
-        TimeoutStartSec = "20s";
-      };
-    };
+    systemd.services.clash-source-guard =
+      sourceGuardService "Revoke B before activating a checked source" "--request-proxy";
+    systemd.services.clash-source-revoke =
+      sourceGuardService "Revoke B and the active snapshot authority" "--revoke-source";
 
     systemd.services.clash-source-refresh = downloadService true;
     systemd.services.clash-source-download = downloadService false;

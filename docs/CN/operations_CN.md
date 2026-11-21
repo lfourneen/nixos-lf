@@ -75,9 +75,11 @@ sudo clash-source add SOURCE_ID
 
 底层命令 `review FILE --id SOURCE_ID` 和 `register FILE --id SOURCE_ID --digest REVIEWED_DIGEST --previous PREVIOUS_DIGEST` 仍可使用。首次登记使用 `none` 作为上一修订。不带 `--id` 的 review 可列出清单摘要，多条清单进行 register 时须指定 ID。
 
-更新登记会使该来源的旧下载及批准失效。已运行的核心保留原来源身份，已接受快照保留原修订供审计比较。重新启动或回滚须使用符合当前登记修订的快照。先下载并接受新修订，再离线启动。`sudo clash-source list` 可查看选择、登记修订及已接受摘要。
+更新登记会使该来源的旧下载及批准失效。已运行的核心保留原来源身份，已接受快照保留原修订供审计比较。重新启动或回滚须使用符合当前登记修订的快照。先下载并接受新修订，再离线启动。`sudo clash-source list` 显示选择、活动授权、登记修订、已接受摘要和本地验证结果。
 
-从 Sops 清单删除条目后，已登记副本仍然存在。先选择其他来源，再用 `sudo clash-source revoke SOURCE_ID` 撤销。用 `clash-off` 可立即停止正在运行的回退快照。
+从 Sops 清单删除条目后，已登记副本仍然存在。用 `sudo clash-source revoke SOURCE_ID` 移除本地登记及其排队任务和快照。附加 `--revision REVIEWED_DIGEST` 可限定为指定修订。撤销活动来源会进入 C、清除 B 租约并停止核心。撤销非活动来源会保留现有活动授权。
+
+启用运行时路由时，可在 C 用 `sudo clash-source use SOURCE_ID --select-only` 选择已登记的替代来源，再用 `sudo proxy-control recover` 通过 C 的恢复流程取得该来源。
 
 `clash-source-select.path` 监听 GUI 的 `profiles.yaml`，切换到已映射 UID 会请求对应的登记来源。
 未知 profile 不改变选择。

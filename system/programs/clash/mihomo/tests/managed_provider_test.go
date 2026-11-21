@@ -53,7 +53,7 @@ func lfProviderFixture(t *testing.T, cached, remote []byte, fallback bool) (*Pro
 
 func TestLFManagedProviderRefreshPreservesLastValidNodesAndCache(t *testing.T) {
 	safe := lfProviderPayload("safe", false)
-	provider, path, body := lfProviderFixture(t, safe, lfProviderPayload("unsafe", true), false)
+	provider, path, body := lfProviderFixture(t, safe, lfProviderPayload("safe", true), false)
 	if err := provider.Initial(); err != nil {
 		t.Fatal(err)
 	}

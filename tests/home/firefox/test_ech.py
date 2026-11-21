@@ -56,7 +56,9 @@ def browser(kind):
             client = None
             try:
                 client = driver.Marionette(process, port)
+                client.socket.settimeout(60)
                 client.call("WebDriver:NewSession", {"capabilities": {"alwaysMatch": {"acceptInsecureCerts": False}}})
+                client.socket.settimeout(30)
                 client.call("WebDriver:SetTimeouts", {"pageLoad": 15000})
                 client.call("Marionette:SetContext", {"value": "chrome"})
                 actual = client.execute("""

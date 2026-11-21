@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -167,6 +168,9 @@ func lfValidateRaw(raw *RawConfig) (string, error) {
 	id, err := lfValidate(document, false)
 	if err == nil {
 		err = lfguard.Configure(raw.LFPrivateTargets)
+	}
+	if err == nil && id != "" {
+		lfApplyDelayProfile(raw)
 	}
 	return id, err
 }
@@ -485,9 +489,8 @@ func lfApplyTunExcludes(raw *RawConfig, policy map[string]any) error {
 	return nil
 }
 
-// A generated profile can outlive the Nix generation that produced it. Match
-// each complete pre-MagicDNS value exactly, then add only the currently managed
-// entry. Arbitrary DNS drift is still rejected by the final policy check.
+// Older generated profiles used a blanket MagicDNS entry. Remove only that
+// managed entry before comparing the remaining settings with the root policy.
 func lfUpgradeMagicDNS(raw *RawConfig, policy map[string]any) error {
 	data, err := json.Marshal(raw.DNS)
 	if err != nil {
@@ -506,22 +509,21 @@ func lfUpgradeMagicDNS(raw *RawConfig, policy map[string]any) error {
 	// PATCH with an old value stays rejected.
 	if expected, ok := policy["dns.fake-ip-filter"].([]any); ok {
 		actualList, _ := actual["fake-ip-filter"].([]any)
-		if !reflect.DeepEqual(lfCanonical(actualList), lfCanonical(expected)) &&
+		size := len(actualList)
+		actualList = slices.DeleteFunc(actualList, func(entry any) bool { return entry == "+.ts.net" })
+		if (size != len(actualList) || !reflect.DeepEqual(lfCanonical(actualList), lfCanonical(expected))) &&
 			lfCanonicalSubset(actualList, expected) {
 			upgrade["fake-ip-filter"] = expected
 		}
 	}
-	if expected, ok := policy["dns.nameserver-policy"].(map[string]any); ok {
-		if _, added := expected["+.ts.net"]; added {
-			legacy := map[string]any{}
-			for key, value := range expected {
-				if key != "+.ts.net" {
-					legacy[key] = value
-				}
-			}
-			if reflect.DeepEqual(lfCanonical(actual["nameserver-policy"]), lfCanonical(legacy)) {
-				upgrade["nameserver-policy"] = expected
-			}
+	if _, pinned := policy["dns.nameserver-policy"]; pinned {
+		targets, _ := policy["lf-private-targets"].(map[string]any)
+		address, _ := targets["magic-dns-resolver"].(string)
+		nameservers, _ := actual["nameserver-policy"].(map[string]any)
+		legacy := []any{"udp://" + address + ":53#DIRECT"}
+		if address != "" && reflect.DeepEqual(nameservers["+.ts.net"], legacy) {
+			delete(nameservers, "+.ts.net")
+			upgrade["nameserver-policy"] = nameservers
 		}
 	}
 	if len(upgrade) == 0 {

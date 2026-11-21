@@ -30,13 +30,15 @@ def module(name, path):
 def node_changes(before, after):
     old = {node['name']: node for node in before.get('proxies', [])}
     new = {node['name']: node for node in after.get('proxies', [])}
+    fields = ('logical-server',) + IDENTITY + AUTH + TRANSPORT
+    covered = set(fields) | {'name', 'server', 'lf-source-server'}
     result = []
     for name, node in new.items():
         previous = old.get(name)
         changes = []
         if previous is None:
             previous = {}
-        for field in ('logical-server',) + IDENTITY + AUTH + TRANSPORT:
+        for field in fields:
             if field == 'logical-server':
                 first = previous.get('lf-source-server', previous.get('server'))
                 second = node.get('lf-source-server', node.get('server'))
@@ -46,6 +48,8 @@ def node_changes(before, after):
                 hidden = field in AUTH or field.endswith('-opts')
                 changes.append({'field': field, 'hidden': hidden,
                     **({} if hidden else {'before': first, 'after': second})})
+        if any(previous.get(field) != node.get(field) for field in (previous.keys() | node.keys()) - covered):
+            changes.append({'field': 'additional-options', 'hidden': True})
         if changes:
             result.append({'name': name, 'added': name not in old, 'changes': changes})
     return result, sorted(old.keys() - new.keys())

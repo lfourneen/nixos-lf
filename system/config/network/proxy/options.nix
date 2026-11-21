@@ -48,6 +48,9 @@ in
     assertion = valid;
     message = "my.proxy.fakeIpRange must be an IPv4 CIDR with prefix length 8..30.";
   } {
+    assertion = config.my.proxy.insecureProxyExceptions == [ ];
+    message = "my.proxy.insecureProxyExceptions cannot authorize unchecked TLS by node name. Configure TLS with a verified peer certificate or a trusted CA.";
+  } {
     assertion = !config.my.proxy.transparentApplications || (config.my.proxy.tunMode && config.my.proxy.coreNetns);
     message = "my.proxy.transparentApplications requires the managed core namespace and TUN.";
   } {
@@ -231,7 +234,7 @@ in
   options.my.proxy.sensitiveDomains = lib.mkOption {
     type = lib.types.listOf (lib.types.strMatching "([A-Za-z0-9_-]+\\.)*[A-Za-z0-9_-]+");
     default = [ ];
-    description = "Bare domain suffixes whose proven DIRECT->proxy/reject transition blocks an imported profile. Empty by default; only declare domains whose routing you have already decided.";
+    description = "Bare domain suffixes compared with the accepted profile. Controlled sources refuse any proven route class change. For a required route on first import, use subscriptionAuditProtectedRoutes.";
   };
 
   options.my.proxy.subscriptionAuditAllowedHosts = lib.mkOption {
@@ -266,7 +269,7 @@ in
   options.my.proxy.insecureProxyExceptions = lib.mkOption {
     type = lib.types.listOf lib.types.nonEmptyStr;
     default = [ ];
-    description = "Explicit leaf names allowed to disable TLS certificate validation, including provider nodes.";
+    description = "Deprecated. Must be empty. Managed profiles refuse skip-cert-verify regardless of the leaf name.";
   };
 
   options.my.proxy.allowDynamicRemoteGrants = lib.mkOption {
@@ -405,7 +408,7 @@ in
   options.my.proxy.delayTestUrl = lib.mkOption {
     type = lib.types.strMatching "https://[^[:space:]]+";
     default = "https://www.gstatic.com/generate_204";
-    description = "HTTPS default for unset GUI delay tests and missing or HTTP node/provider health-check URLs.";
+    description = "Exact HTTPS endpoint for managed desktop delay tests and automatic proxy-group and provider checks.";
   };
 
   # Split-routing checks embed these names, so GEOIP,CN would send them direct

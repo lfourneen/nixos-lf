@@ -44,7 +44,8 @@ async function main() {
       const original = `# custom URL\ndefault_latency_test: " ${url} "\n`;
       write(original);
       run();
-      assert.equal(read(), original, "preserve explicit preferences byte for byte");
+      assert.equal(parse().default_latency_test, expected);
+      assert(read().includes("# custom URL"));
     }
     for (const original of ["invalid: [\n", "- unexpected sequence\n", "default_latency_test: false\n"]) {
       write(original);

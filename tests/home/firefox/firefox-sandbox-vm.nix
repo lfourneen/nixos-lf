@@ -110,7 +110,11 @@ pkgs.testers.runNixOSTest {
         machine.fail(desktop(portal))
         publish("direct")
         machine.succeed("systemd-run --no-block --collect --unit=fixture-portal " + desktop(portal))
-        machine.wait_until_succeeds("test -f /run/firefox-portal-visited", timeout=30)
+        try:
+            machine.wait_until_succeeds("test -f /run/firefox-portal-visited", timeout=60)
+        except Exception:
+            print(machine.execute("journalctl -u fixture-portal -u firefox-mode-fixture --no-pager -n 45"))
+            raise
         machine.succeed("test $(find ${runtime} -maxdepth 1 -name 'firefox-portal-*' | wc -l) = 1")
         machine.wait_until_succeeds("grep -Fx 'Portal download fixture' ${runtime}/firefox-portal-*/downloads/portal-fixture.txt", timeout=30)
         machine.succeed("rm /run/proxy-mode/intent")

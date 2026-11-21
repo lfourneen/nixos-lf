@@ -326,12 +326,6 @@ def ech_lookup(node):
     return isinstance(options, dict) and not options.get('config')
 
 
-def insecure_leaf(node):
-    """Match the audit's truthiness for skip-cert-verify."""
-    value = node.get('skip-cert-verify')
-    return value is True or (isinstance(value, str) and value.lower() in ('true', 'yes', '1', 'on'))
-
-
 def transport_fields(node):
     fields = {}
     for key, value in node.items():
@@ -422,7 +416,7 @@ def prune_nodes(document, dropped):
     prune_groups(document, dropped)
 
 
-def normalize(document, payloads):
+def normalize(document, payloads, delay_url=None):
     document = json.loads(json.dumps(document, allow_nan=False))
     # Only subscription routing data survives. Managed listeners/DNS/TUN come
     # exclusively from the immutable Nix policy, never from GUI merge scripts.
@@ -470,11 +464,9 @@ def normalize(document, payloads):
                 raise Refused('group boolean')
         if 'icon' in group and (not isinstance(group['icon'], str) or len(group['icon']) > 2048):
             raise Refused('group icon')
-        if 'url' in group:
+        if 'url' in group and (not delay_url or group['url'] != delay_url):
             endpoint(group['url'], TEST_SCHEMES)
-        elif group['type'] != 'select':
-            raise Refused('group test url')
-        for key, low, high in (('interval', 1, 86400), ('tolerance', 0, 60000),
+        for key, low, high in (('interval', 0, 86400), ('tolerance', 0, 60000),
                                ('timeout', 100, 60000), ('max-failed-times', 1, 100)):
             if key in group and (type(group[key]) is not int or not low <= group[key] <= high):
                 raise Refused('group test bounds')
@@ -497,8 +489,9 @@ def normalize(document, payloads):
 
 def render(document, payloads, policy, forced_domains=(), probe_domains=(), remote_only_catchall=False, source=None,
            egress_id=None):
-    result = normalize(document, payloads)
     targets = policy.get('lf-private-targets', {})
+    delay_url = targets.get('delay-test-url')
+    result = normalize(document, payloads, delay_url)
     proxy_only = targets.get('proxy-only') is True
     require_protected = targets.get('require-protected-node-transport') is True
     tunnel = policy.get('lf-ip-tunnel') if proxy_only and targets.get('single-egress') is True else None
@@ -508,6 +501,12 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
                              if not protected_transport(node) and not wireguard_relay(node, relay)})
     if source is not None:
         source.update(json.loads(json.dumps(result)))
+    if delay_url:
+        for group in result['proxy-groups']:
+            group['url'] = delay_url
+            group['interval'] = 0 if group['type'] == 'select' else max(300, group.get('interval', 300))
+            group['timeout'] = min(5000, group.get('timeout', 5000))
+            group.pop('expected-status', None)
     if require_protected and not tunnel:
         prune_nodes(result, {node['name'] for node in result['proxies'] if wireguard_relay(node, relay)})
     nodes, groups, rules = (result[key] for key in ('proxies', 'proxy-groups', 'rules'))
@@ -613,20 +612,16 @@ def loopback_literal(server):
     return address.is_loopback
 
 
-def pin_servers(config, resolver=socket.getaddrinfo, allowed_insecure=(), sanitize_insecure=False):
+def pin_servers(config, resolver=socket.getaddrinfo, sanitize_insecure=False):
     document = load(config)
     nodes, unavailable, excluded = [], [], []
-    allowed = set(allowed_insecure)
     for node in document['proxies']:
         if node.get('type') not in ('ss', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'http', 'socks5', 'anytls'):
             raise Refused('unsupported node protocol')
         if node.get('plugin') or node.get('dialer-proxy') or node.get('interface-name') or node.get('routing-mark'):
             raise Refused('unsupported node transport')
-        # The managed core refuses unlisted skip-cert-verify leaves. Drop them
-        # only when root authorized this source for sanitizing; otherwise keep
-        # them so the audit and the core guard refuse the candidate. A named
-        # insecure-proxy-exception stays in either case.
-        if sanitize_insecure and insecure_leaf(node) and node.get('name') not in allowed:
+        # Authorized source sanitizing prunes unchecked TLS before DNS pinning.
+        if sanitize_insecure and skips_certificate(node):
             excluded.append(node.get('name'))
             continue
         server, port = node.get('server'), node.get('port')
@@ -693,13 +688,10 @@ def prepare(request, download=None, resolver=socket.getaddrinfo):
             raise Refused('render')
         payloads[name] = step('fetch', download, registered[name], deadline, budget)
         hashes['provider:' + name] = hashlib.sha256(payloads[name]).hexdigest()
-    source = step('render', normalize, document, payloads)
-    targets = policy.get('lf-private-targets') if isinstance(policy, dict) else None
-    listed = targets.get('insecure-proxy-exceptions') if isinstance(targets, dict) else None
-    allowed_insecure = {value for value in listed if isinstance(value, str)} if isinstance(listed, list) else set()
+    source = step('render', normalize, document, payloads,
+                  policy.get('lf-private-targets', {}).get('delay-test-url'))
     pinned_config, dropped = step('pin-addresses', pin_servers, yaml.safe_dump(source).encode(),
-                                  resolver, allowed_insecure,
-                                  request.get('sanitize_insecure') is True)
+                                  resolver, request.get('sanitize_insecure') is True)
     pinned = load(pinned_config)['proxies']
     retained = {node['name'] for node in pinned}
     removed = {node['name'] for node in source['proxies']} - retained

@@ -135,6 +135,7 @@ pkgs.testers.runNixOSTest {
     my.proxy.subscriptionTrust = lib.mkIf managedSources "fixed";
     my.proxy.remoteOnlyCatchAll = managedSources;
     my.proxy.nodeProbeUrls = [ "http://node.fixture.example:8080/" ];
+    my.proxy.delayTestUrl = lib.mkIf guiControls "https://source.fixture.example:17443/speed?policy=root";
     my.proxy.tunProbeName = "tun.fixture.example";
     my.proxy.subscriptionAuditProtectedRoutes."tun.fixture.example" = lib.mkIf (!uniformProxy && !managedSources) "direct";
     my.proxy.healthBudgetSeconds = lib.mkIf assurance 18;
@@ -288,6 +289,7 @@ pkgs.testers.runNixOSTest {
       ++ lib.optionals ipTunnel [ pkgs.wireguard-tools pkgs.iputils pkgs.tcpdump ipTunnelRelay ]
       ++ lib.optional arpProtection pkgs.iputils
       ++ lib.optionals dataplane [ pkgs.conntrack-tools ];
+    virtualisation.cores = lib.mkIf guiControls 4;
     virtualisation.memorySize = if guiControls || egressBrowser != null then 4096 else if ech != null then 3072 else if managedSources then 2048 else 1024;
   };
 
@@ -493,6 +495,9 @@ pkgs.testers.runNixOSTest {
         machine.succeed("proxy-control on")
     except Exception:
         print(machine.execute("journalctl -u clash-verge -u proxy-mode --no-pager -n 60; cat /run/proxy-mode/preflight.log /run/clash-verge-rev/validator.log 2>/dev/null"))
+        ${pkgs.lib.optionalString guiControls ''
+        print(machine.execute("tail -n 50 /var/lib/clash-verge-service/logs/service_latest.log; cat /run/proxy-mode/profile-refresh.json /var/lib/clash-source/selected/status.json 2>/dev/null"))
+        ''}
         raise
     machine.wait_for_file("/run/clash-verge-rev/service.sock")
     machine.succeed("python3 /etc/netsec-control.py start")
@@ -601,6 +606,15 @@ pkgs.testers.runNixOSTest {
             wait_proxy()
         except Exception:
             print(machine.execute("journalctl -u clash-strict -u clash-source-select -u clash-source-download -u clash-source-apply -u clash-source-refresh --no-pager -n 60"))
+            raise
+    with subtest("source revocation uses effective authority and a checked C transaction"):
+        try:
+            print(machine.succeed("python3 -u /etc/netsec-managed.py revoke", timeout=145))
+            machine.succeed("proxy-control off")
+            machine.wait_until_succeeds("test $(jq -r .mode /run/proxy-mode/state.json) = direct", timeout=45)
+            print(machine.succeed("python3 -u /etc/netsec-managed.py revoke-direct", timeout=35))
+        except Exception:
+            print(machine.execute("journalctl -u clash-source-revoke -u clash-source-apply -u clash-verge -u proxy-mode --no-pager -n 100"))
             raise
     ''}
     ${pkgs.lib.optionalString hermesContainers ''

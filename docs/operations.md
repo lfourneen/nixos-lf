@@ -75,9 +75,11 @@ Use `sudo clash-source use SOURCE_ID` to fetch, select and verify an existing re
 
 The lower-level `review FILE --id SOURCE_ID` and `register FILE --id SOURCE_ID --digest REVIEWED_DIGEST --previous PREVIOUS_DIGEST` commands remain available. Use `none` as the previous revision for a new entry. Review without `--id` lists the catalog digests, and registration requires an ID when more than one entry exists.
 
-Replacing a registration invalidates its previous download and approval. A running core keeps its original source identity. The settled snapshot retains its original revision for comparisons, while a new startup or rollback requires a snapshot from the current registration. Download and accept the new revision before relying on offline startup. `sudo clash-source list` reports the selection, registered revisions and settled digests.
+Replacing a registration invalidates its previous download and approval. A running core keeps its original source identity. The settled snapshot retains its original revision for comparisons, while a new startup or rollback requires a snapshot from the current registration. Download and accept the new revision before relying on offline startup. `sudo clash-source list` reports the selection, active authorization, registered revisions, settled digests and local verification result.
 
-Removing an entry from the Sops catalog leaves its registration intact. Select another source before running `sudo clash-source revoke SOURCE_ID`. Use `clash-off` to stop a running fallback immediately.
+Removing an entry from the Sops catalog leaves its registration intact. Run `sudo clash-source revoke SOURCE_ID` to remove the local registration and discard its queued work and snapshots. Use `--revision REVIEWED_DIGEST` to bind the operation to a specific revision. Revoking the active source enters C, clears the B lease and stops its core. Revoking an inactive source leaves the active authorization in place.
+
+With runtime routing, select a registered replacement in C with `sudo clash-source use SOURCE_ID --select-only`. Run `sudo proxy-control recover` to recover the selected source through the existing C recovery path.
 
 The `clash-source-select.path` unit watches the GUI's `profiles.yaml`.
 Switching to a mapped UID requests the corresponding registered source.

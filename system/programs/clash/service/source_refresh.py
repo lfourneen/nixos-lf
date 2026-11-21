@@ -323,6 +323,8 @@ def restart_source(settings, stage, validate=None, activate=None, expected=None,
         with stage.source_lock(settings, blocking=False) as acquired:
             if not acquired:
                 return 'busy'
+            if stage.source_revocation(settings).get('protect'):
+                return 'source revocation in progress'
             if (state / 'intent').read_text().strip() != 'proxy':
                 return 'proxy intent changed'
             if request is not None:
@@ -398,7 +400,12 @@ def verify_selection(settings, stage, candidate, initial_mode, lock_operator):
     def result(outcome, reason=None):
         source = stage.read_record(state / 'source.json')
         mode = stage.read_record(state / 'state.json').get('mode')
-        active = source.get('source_id') if source.get('boot_id') == boot and mode != 'direct' else None
+        try:
+            authorized = (state / 'authorized-config').read_text().strip()
+        except FileNotFoundError:
+            authorized = None
+        active = source.get('source_id') if (source.get('boot_id') == boot and mode != 'direct'
+            and authorized and source.get('snapshot') == authorized) else None
         return dict(result=outcome, reason=reason, active_source=active or None)
 
     activation_failed = False

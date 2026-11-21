@@ -40,11 +40,19 @@ class SourceRefreshTests(unittest.TestCase):
         with self.assertRaisesRegex(stage.RefreshError, 'snapshot mismatch'):
             stage.prepared_source(self.settings, expected)
 
+    def test_interrupted_active_revocation_refuses_a_restart_before_staging(self):
+        stage.atomic_record(self.store / 'revoking.json', dict(source_id='one', protect=True), mode=0o600)
+        validator = Mock()
+        with self.assertRaisesRegex(ValueError, 'revocation is in progress'):
+            stage.stage(self.settings, 'unused', validator)
+        validator.assert_not_called()
+
     def test_manual_selection_uses_verifier_and_ignores_an_older_or_unrelated_verdict(self):
         candidate = 'a' * 64
         now = time.time()
         (self.state / 'state.json').write_text('{"mode":"proxy"}')
-        (self.state / 'source.json').write_text(json.dumps(dict(boot_id=self.boot, source_id='source-one')))
+        (self.state / 'source.json').write_text(json.dumps(dict(
+            boot_id=self.boot, source_id='source-one', snapshot=self.old)))
         audit = self.state / 'profile-refresh.json'
         history = [dict(digest=candidate, result='accepted', at=now - 30),
                    dict(digest='b' * 64, result='accepted', at=now + 1)]
@@ -72,7 +80,8 @@ class SourceRefreshTests(unittest.TestCase):
         def command(argv, **kwargs):
             if argv[-1] == 'on':
                 self.assertEqual(kwargs['env']['LF_SOURCE_GENERATION'], candidate)
-                stage.atomic_record(self.state / 'source.json', dict(boot_id=self.boot, source_id='source-one'))
+                stage.atomic_record(self.state / 'source.json', dict(
+                    boot_id=self.boot, source_id='source-one', snapshot=self.old))
                 stage.atomic_record(self.state / 'profile-refresh.json', dict(boot_id=self.boot,
                     history=[dict(digest=candidate, result='accepted', at=time.time())]))
 
@@ -408,6 +417,21 @@ class SourceRefreshTests(unittest.TestCase):
         value = json.loads((self.source / 'approval.json').read_text())
         self.assertEqual(value['nodes'], 1)
         self.assertEqual(value['categories'], dict(node_identity=1, node_authentication=1, node_transport=1))
+
+    def test_renamed_rotation_respects_all_auto_approval_categories(self):
+        self.enable_automatic()
+        renamed = self.changed.replace('Fixture', 'Renamed')
+        (self.candidate / 'clash-verge.yaml').write_text(renamed)
+        self.settings['audit_auto_approve'] = ['node_identity']
+        self.run_refresh()
+        self.assert_unchanged()
+        self.assertFalse((self.source / 'approval.json').exists())
+        self.settings['audit_auto_approve'] = sorted(stage.AUTO_APPROVAL_CATEGORIES)
+        self.run_refresh()
+        self.activate.assert_called_once()
+        record = json.loads((self.source / 'approval.json').read_text())
+        self.assertEqual(record['nodes'], 1)
+        self.assertEqual(record['categories'], dict(node_identity=1, node_authentication=1, node_transport=1))
 
     def test_first_clash_on_after_reboot_restores_accepted_then_imports_in_background(self):
         self.enable_automatic()

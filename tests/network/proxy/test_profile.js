@@ -74,28 +74,19 @@ for (const test of JSON.parse(fs.readFileSync(process.argv[2], "utf8"))) {
   const encoded = JSON.stringify(tests);
   assert.equal(JSON.stringify(context.main(tests)), encoded, "HTTPS normalization is idempotent");
 
-  // Leaves that disable TLS certificate validation are unusable unless
-  // my.proxy.insecureProxyExceptions names them: the merge filter drops the
-  // rest (and prunes group references) so the profile still starts, while a
-  // named leaf is left for the core's matching exception.
-  const exceptions = test.expected.insecureExceptions || [];
-  const allowed = exceptions.length ? exceptions[0] : null;
+  // The merge filter drops unchecked TLS leaves and their group references.
   const tlsProxies = [
     { name: "keep", type: "vless", "skip-cert-verify": false },
     { name: "drop", type: "hysteria2", "skip-cert-verify": true },
     { name: "nested", type: "ss", plugin: { skip_cert_verify: "true" } },
   ];
   const tlsMembers = ["keep", "drop", "nested"];
-  if (allowed) {
-    tlsProxies.push({ name: allowed, type: "hysteria2", "skip-cert-verify": true });
-    tlsMembers.push(allowed);
-  }
   const tls = context.main({
     proxies: tlsProxies,
     "proxy-groups": [{ name: "select", type: "select", proxies: tlsMembers }],
     rules: ["MATCH,select"],
   });
-  const tlsExpected = allowed ? ["keep", allowed] : ["keep"];
+  const tlsExpected = ["keep"];
   assert.deepEqual(Array.from(tls.proxies).map(proxy => proxy.name), tlsExpected);
   assert.deepEqual(Array.from(tls["proxy-groups"][0].proxies), tlsExpected);
   assert.throws(() => context.main({
