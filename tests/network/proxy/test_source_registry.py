@@ -20,6 +20,21 @@ stage_tool = b.load_module('source_stage', sys.argv.pop(1))
 
 
 class RegistryTests(unittest.TestCase):
+    def test_recovery_flush_failure_leaves_an_invalidated_marker_for_retry(self):
+        recovery = b.load_module('source_recovery', os.environ.get('SOURCE_RECOVERY',
+            Path(worker).with_name('source_recovery.py')))
+        marker = self.root / 'source-recovery'
+        marker.write_text('42\n')
+        failure = b.subprocess.CalledProcessError(1, ['nft'])
+        with patch.object(recovery, 'STATE', self.root), patch.object(recovery, 'ACTIVE', marker), \
+                patch.object(recovery, 'nft', side_effect=[failure, None]) as nft:
+            with self.assertRaises(b.subprocess.CalledProcessError):
+                recovery.revoke({})
+            self.assertNotEqual(marker.read_text(), '42\n')
+            recovery.revoke({})
+            self.assertFalse(marker.exists())
+            self.assertEqual([call.args[1] for call in nft.call_args_list], [recovery.FLUSH] * 2)
+
     def test_add_confirms_replaces_current_revision_and_verifies_after_publication(self):
         self.register('source-one')
         previous = self.register('source-two')

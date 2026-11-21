@@ -58,7 +58,7 @@ def load(path):
 def insecure(value):
     if isinstance(value, dict):
         for key, child in value.items():
-            if key.lower().replace('_', '-') == 'skip-cert-verify' and not (
+            if key.casefold().replace('_', '-') == 'skip-cert-verify' and not (
                     child is False or type(child) in (int, float) and child == 0 or
                     isinstance(child, str) and child in ('0', 'f', 'F', 'false', 'False', 'FALSE')):
                 return True
@@ -76,6 +76,8 @@ NODE_AUTHENTICATION = ('password', 'username', 'uuid', 'private-key', 'token', '
 def canonical_fields(node):
     fields = {}
     for key, value in node.items():
+        if not key.isascii():
+            raise InvalidYaml('yaml_structure')
         name = key.lower().replace('_', '-')
         if name in fields:
             raise InvalidYaml('yaml_structure')
@@ -91,6 +93,10 @@ def node_policy(node):
     transport = {key: value for key, value in fields.items()
                  if key not in NODE_IDENTITY and key not in NODE_AUTHENTICATION
                  and key not in ('name', 'server', 'lf-source-server')}
+    # ParseProxy handles this wrapper with an exact map lookup, outside its
+    # case-insensitive adapter decoder.
+    if 'smux' not in node:
+        transport.pop('smux', None)
     reality = transport.get('reality-opts')
     if isinstance(reality, dict):
         remaining = canonical_fields(reality)

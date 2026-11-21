@@ -1,7 +1,7 @@
 """Issue short-lived, link-bound leases for a root-requested source recovery."""
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import fcntl
 import ipaddress
 import json
@@ -106,25 +106,30 @@ def control(settings, verb):
 def revoke(settings):
     with policy_lock():
         if ACTIVE.exists():
-            ACTIVE.unlink()
-            nft(settings, FLUSH)
+            # Invalidate the broker's version immediately. Keep the marker
+            # visible to the link hooks until the kernel confirms the flush.
+            ACTIVE.write_text('revoked\n')
+        nft(settings, FLUSH)
+        ACTIVE.unlink(missing_ok=True)
 
 
 @contextmanager
 def open_recovery(settings, worker, registry):
     if not settings:
         raise ValueError('source recovery is unavailable')
-    with policy_lock():
-        if ((STATE / 'intent').read_text().strip() != 'proxy'
-                or (STATE / 'status').read_text().strip() != 'blocked'
-                or (STATE.parent / 'dns-policy/sleeping').exists()):
-            raise ValueError('source recovery requires blocked proxy intent')
-        version = (STATE / 'version').read_text()
-        deadline = clock() + 55
-        dot = [(address, settings['dot_port']) for address in settings['dot_addresses']]
-        install(settings, dot, deadline)
-        ACTIVE.write_text(version)
-    try:
+    with ExitStack() as cleanup:
+        with policy_lock():
+            if ((STATE / 'intent').read_text().strip() != 'proxy'
+                    or (STATE / 'status').read_text().strip() != 'blocked'
+                    or (STATE.parent / 'dns-policy/sleeping').exists()):
+                raise ValueError('source recovery requires blocked proxy intent')
+            version = (STATE / 'version').read_text()
+            deadline = clock() + 55
+            dot = [(address, settings['dot_port']) for address in settings['dot_addresses']]
+            cleanup.callback(control, settings, 'stop')
+            cleanup.callback(revoke, settings)
+            ACTIVE.write_text(version)
+            install(settings, dot, deadline)
         control(settings, 'start')
         resolver = worker.real_resolver(settings['resolver'])
         pinned = pinned_addresses(worker, registry, resolver, deadline)
@@ -137,13 +142,6 @@ def open_recovery(settings, worker, registry):
         with policy_lock():
             if clock() >= deadline or ACTIVE.read_text() != version or (STATE / 'version').read_text() != version:
                 raise ValueError('source recovery expired or was revoked')
-    finally:
-        try:
-            with policy_lock():
-                ACTIVE.unlink(missing_ok=True)
-                nft(settings, FLUSH)
-        finally:
-            control(settings, 'stop')
 
 
 if __name__ == '__main__':

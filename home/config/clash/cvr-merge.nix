@@ -257,7 +257,7 @@ in
         }
         if (value && typeof value === "object") {
           for (const key of Object.keys(value)) {
-            if (key.toLowerCase().replace(/_/g, "-") === "skip-cert-verify" && insecureValue(value[key])) {
+            if (/^skip[-_]cert[-_]verify$/iu.test(key) && insecureValue(value[key])) {
               return true;
             }
             if (disablesTLS(value[key])) return true;

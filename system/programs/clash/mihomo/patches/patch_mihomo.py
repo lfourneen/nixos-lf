@@ -107,9 +107,12 @@ replace(root / "adapter/adapter.go",
         '\tdefer done()')
 replace(root / "adapter/adapter.go", '\tinstance, err := p.DialContext(ctx, &addr)',
         '\taddr.LFDelay = lfguard.ManagedDelay()\n\tinstance, err := p.DialContext(ctx, &addr)')
-replace(root / "adapter/adapter.go", '\t_ = resp.Body.Close()\n\n\tif unifiedDelay {',
-        '\t_ = resp.Body.Close()\n\tif addr.LFDelay && resp.StatusCode >= 300 && resp.StatusCode < 400 {\n'
-        '\t\treturn 0, fmt.Errorf("managed delay test refused a redirect")\n\t}\n\n\tif unifiedDelay {')
+# Unified delay may issue a second HEAD on the same connection.
+for indent in ('\t', '\t\t\t'):
+    close = '\n' + indent + '_ = resp.Body.Close()'
+    replace(root / "adapter/adapter.go", close, close + '\n' + indent +
+            'if addr.LFDelay && resp.StatusCode >= 300 && resp.StatusCode < 400 {\n' + indent +
+            '\treturn 0, fmt.Errorf("managed delay test refused a redirect")\n' + indent + '}')
 replace(root / "adapter/outboundgroup/groupbase.go", '''	proxies := gb.GetProxies(false)
 	for _, proxy := range proxies {
 		proxy := proxy

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	C "github.com/metacubex/mihomo/constant"
 	D "github.com/miekg/dns"
@@ -644,15 +645,11 @@ func DialTCP(ctx context.Context, metadata *C.Metadata,
 	return nil, fmt.Errorf("validated destination candidates unavailable: %w", last)
 }
 
-func canonicalTransportKey(key string) string {
-	return strings.ToLower(strings.ReplaceAll(key, "_", "-"))
-}
-
 func strictCertificateChecks(value any) bool {
 	switch object := value.(type) {
 	case map[string]any:
 		for key, nested := range object {
-			if canonicalTransportKey(key) == "skip-cert-verify" && nested != false || !strictCertificateChecks(nested) {
+			if strings.EqualFold(strings.ReplaceAll(key, "_", "-"), "skip-cert-verify") && nested != false || !strictCertificateChecks(nested) {
 				return false
 			}
 		}
@@ -718,7 +715,12 @@ func protectedVMess(fields map[string]any) bool {
 func (p *policy) checkProtectedTransport(mapping map[string]any) bool {
 	fields := make(map[string]any, len(mapping))
 	for key, value := range mapping {
-		key = canonicalTransportKey(key)
+		// Adapter option names are ASCII. Reject ambiguous Unicode aliases
+		// before the upstream case-insensitive decoder interprets them.
+		if strings.ContainsFunc(key, func(r rune) bool { return r > unicode.MaxASCII }) {
+			return false
+		}
+		key = strings.ToLower(strings.ReplaceAll(key, "_", "-"))
 		if _, duplicate := fields[key]; duplicate {
 			return false
 		}

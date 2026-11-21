@@ -27,9 +27,13 @@ func lfApplyDelayProfile(raw *RawConfig) {
 		if provider == nil {
 			continue
 		}
-		check, _ := lfDelayField(provider, "health-check").(map[string]any)
-		if check == nil {
-			check = make(map[string]any)
+		value := lfDelayField(provider, "health-check")
+		check, ok := value.(map[string]any)
+		if !ok {
+			if value != nil {
+				continue // Let the provider decoder report a malformed health-check.
+			}
+			check = map[string]any{"enable": false}
 		}
 		lfConstrainDelay(check, target)
 		provider["health-check"] = check

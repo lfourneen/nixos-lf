@@ -15,7 +15,7 @@ import time
 def disables_tls(value):
     if isinstance(value, dict):
         for key, flag in value.items():
-            if str(key).lower().replace('_', '-') == 'skip-cert-verify':
+            if str(key).casefold().replace('_', '-') == 'skip-cert-verify':
                 if not (flag is False or type(flag) in (int, float) and flag == 0 or
                         isinstance(flag, str) and flag in ('0', 'f', 'F', 'false', 'False', 'FALSE')):
                     return True
@@ -158,17 +158,21 @@ def inspect(settings):
         with snapshot.source_lock(settings):
             if root:
                 try:
-                    directory = snapshot.source_directory(settings)
+                    snapshot.source_directory(settings)
+                except snapshot.NoSelectedSource:
+                    sources = Path(root) / 'sources'
+                    if sources.is_dir() and any(not p.name.startswith('.') and (p / 'registry.json').is_file()
+                                                for p in sources.iterdir()):
+                        return {'ready': False, 'phase': 'prepare-profile',
+                                'issues': ['No registered source is selected'],
+                                'next_action': 'Select a source listed by sudo clash-source list.'}
+                    return {'ready': False, 'phase': 'prepare-source-registration',
+                            'issues': ['Controlled source has not been registered'],
+                            'next_action': 'Register and refresh the controlled source.'}
                 except (FileNotFoundError, ValueError):
                     return {'ready': False, 'phase': 'prepare-profile',
                             'issues': ['Controlled source selection is invalid'],
                             'next_action': 'Check the registered source selection.'}
-                try:
-                    (directory / 'registry.json').stat()
-                except FileNotFoundError:
-                    return {'ready': False, 'phase': 'prepare-source-registration',
-                            'issues': ['Controlled source has not been registered'],
-                            'next_action': 'Register and refresh the controlled source.'}
             return inspect_unlocked(settings)
     except OSError as error:
         issue = {errno.ENOENT: 'Controlled source state directory is missing',

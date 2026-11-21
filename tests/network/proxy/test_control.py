@@ -66,6 +66,16 @@ class ControlledPreflightTests(unittest.TestCase):
             self.assertEqual(preflight.inspect(self.settings), expected)
         inspect.assert_called_once_with(self.settings)
 
+    def test_revocation_can_leave_unselected_registrations(self):
+        remaining = self.root / 'sources' / 'other'
+        remaining.mkdir(parents=True)
+        (remaining / 'registry.json').write_text('{"id":"other"}')
+        (self.root / 'registry-migrated').touch()
+        with patch.object(preflight.os, 'geteuid', return_value=0):
+            self.assertEqual(preflight.inspect(self.settings)['issues'], ['No registered source is selected'])
+            (self.root / 'selected').symlink_to('sources/gone')
+            self.assertEqual(preflight.inspect(self.settings)['issues'], ['Controlled source selection is invalid'])
+
 
 class SnapshotTests(unittest.TestCase):
     def test_snapshot_publication_holds_policy_lock_through_both_authority_writes(self):

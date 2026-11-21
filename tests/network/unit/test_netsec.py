@@ -1079,6 +1079,25 @@ class TailnetDnsTests(unittest.TestCase):
                 resolved_policy.reconcile_tailnet(settings, check=True, run=slow)
             self.assertTrue(path.exists())
 
+    def test_confirmed_change_revokes_core_suffix_while_resolved_is_down(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'domain'
+            settings = {'tun': 'Mihomo', 'ip': 'ip', 'resolvectl': 'resolvectl', 'tailnet': {
+                'enabled': True, 'interface': 'tailscale0', 'cli': 'tailscale',
+                'resolver': '100.100.100.100', 'domain_file': str(path)}}
+            for status in ({'BackendState': 'Stopped'}, {'BackendState': 'Running', 'CurrentTailnet': {
+                    'MagicDNSEnabled': True, 'MagicDNSSuffix': 'next.ts.net'}}):
+                path.write_text('previous.ts.net\n')
+
+                def run(argv, **kwargs):
+                    if argv[0] == 'resolvectl':
+                        raise subprocess.CalledProcessError(1, argv)
+                    return subprocess.CompletedProcess(argv, 0, json.dumps(status), '')
+
+                with self.assertRaises(subprocess.CalledProcessError):
+                    resolved_policy.reconcile(settings, run=run)
+                self.assertFalse(path.exists())
+
     def test_absent_interface_revokes_the_exception(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'domain'

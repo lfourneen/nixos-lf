@@ -254,7 +254,7 @@ in
         print $"(ansi red_bold)Proxy preparation or startup failed. See the status below.(ansi reset)"
         proxy-status
         ${if osConfig.my.proxy.runtimeRouting then ''
-        print "Use sudo proxy-control preflight to check the source. In Mode C, sudo proxy-control recover refreshes it during a temporary direct window."
+        print "Use sudo proxy-control preflight to check the source. In Mode C, sudo proxy-control recover refreshes the registered source while application traffic stays blocked."
         '' else if osConfig.my.proxy.controlledSources then ''
         print "Use sudo proxy-control preflight to check the source and registration."
         '' else ''

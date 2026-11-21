@@ -9,8 +9,10 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/lfguard"
 	C "github.com/metacubex/mihomo/constant"
@@ -22,6 +24,47 @@ type lfTargetLeaf struct {
 	kind   C.AdapterType
 	calls  int
 	target *C.Metadata
+}
+
+type lfDelayTestLeaf struct{ *outbound.Base }
+
+func (p lfDelayTestLeaf) DialContext(ctx context.Context, _ *C.Metadata) (C.Conn, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", p.Addr())
+	if err != nil {
+		return nil, err
+	}
+	return outbound.NewConn(conn, p), nil
+}
+
+func TestLFManagedUnifiedDelayRejectsSecondRedirect(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Location", "/elsewhere")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer server.Close()
+	// The literal health target avoids DNS. The leaf dials only the local fixture.
+	const target = "http://1.1.1.1/latency"
+	if err := lfguard.Configure(map[string]any{
+		"prefixes": []string{"10.0.0.0/8"}, "delay-test-url": "https://example.com/latency",
+		"health-test-urls": []string{target},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer lfguard.Configure(nil)
+	previous := UnifiedDelay.Load()
+	UnifiedDelay.Store(true)
+	defer UnifiedDelay.Store(previous)
+	leaf := lfDelayTestLeaf{outbound.NewBase(outbound.BaseOption{
+		Name: "fixture", Addr: server.Listener.Addr().String(), Type: C.Socks5,
+	})}
+	if _, err := NewProxy(leaf).URLTest(lfguard.WithHealthDelay(context.Background()), target, nil); err == nil || requests.Load() != 2 {
+		t.Fatalf("unified delay made %d requests and returned %v", requests.Load(), err)
+	}
 }
 
 func TestLFManagedAuthenticatedHTTPTransport(t *testing.T) {

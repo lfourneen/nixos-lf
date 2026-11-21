@@ -256,6 +256,7 @@ class SourceTests(unittest.TestCase):
             dict(endpoint, type='socks5', tls=True, UDP=True),
             dict(protected, tls='true'),
             dict(protected, **{'SKIP_CERT_VERIFY': True}),
+            dict(protected, options={'\u017fkip_cert_verify': True}),
             dict(NODE, type='ss', cipher='aes-128-cfb', password='fixture'),
             dict(NODE, type='ss', cipher='aes-128-gcm', password=''),
             dict(NODE, type='vless', tls=True, network='xhttp'),
@@ -296,6 +297,19 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(tunneled['proxies'], [relay])
         self.assertEqual(w.load(w.render(saved, {}, {'lf-private-targets': {
             'require-protected-node-transport': True}}))['proxies'], [secure])
+
+    def test_pruning_distinguishes_rule_payloads_from_targets(self):
+        nodes = [NODE, dict(NODE, name='CN', type='http', tls=False)]
+        groups = [*DOC['proxy-groups'], {'name': 'site.example', 'type': 'select', 'proxies': ['CN']}]
+        rules = ['GEOIP,CN,DIRECT,no-resolve', 'DOMAIN,site.example,P', 'MATCH,P']
+        document = dict(DOC, proxies=nodes, rules=rules, **{'proxy-groups': groups})
+        policy = {'lf-private-targets': {'require-protected-node-transport': True}}
+        result = w.load(w.render(document, {}, policy))
+        self.assertEqual(result['proxies'], [NODE])
+        self.assertEqual(result['rules'][-3:], rules)
+        for rule in ('GEOIP,US,CN,no-resolve', 'OR,((NETWORK,TCP),(NETWORK,UDP)),site.example'):
+            with self.assertRaises(w.Refused):
+                w.render(dict(document, rules=[rule, 'MATCH,P']), {}, policy)
 
     def test_ua_negotiation_on_the_same_endpoint(self):
         class Connection:

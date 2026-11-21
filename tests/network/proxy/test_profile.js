@@ -78,7 +78,7 @@ for (const test of JSON.parse(fs.readFileSync(process.argv[2], "utf8"))) {
   const tlsProxies = [
     { name: "keep", type: "vless", "skip-cert-verify": false },
     { name: "drop", type: "hysteria2", "skip-cert-verify": true },
-    { name: "nested", type: "ss", plugin: { skip_cert_verify: "true" } },
+    { name: "nested", type: "ss", plugin: { "\u017fkip_cert_verify": "true" } },
   ];
   const tlsMembers = ["keep", "drop", "nested"];
   const tls = context.main({

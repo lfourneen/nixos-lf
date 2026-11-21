@@ -329,6 +329,8 @@ def ech_lookup(node):
 def transport_fields(node):
     fields = {}
     for key, value in node.items():
+        if not key.isascii():
+            raise Refused('ambiguous node transport')
         key = key.lower().replace('_', '-')
         if key in fields:
             raise Refused('ambiguous node transport')
@@ -338,7 +340,7 @@ def transport_fields(node):
 
 def skips_certificate(value):
     if isinstance(value, dict):
-        return any((key.lower().replace('_', '-') == 'skip-cert-verify' and child is not False)
+        return any((key.casefold().replace('_', '-') == 'skip-cert-verify' and child is not False)
                    or skips_certificate(child) for key, child in value.items())
     if isinstance(value, list):
         return any(skips_certificate(child) for child in value)
@@ -406,12 +408,25 @@ def protected_transport(node):
     return kind in ('hysteria2', 'tuic', 'anytls') and network == ''
 
 
+def rule_target(rule):
+    # Match Mihomo's ParseRulePayload with a target. Logical and regex rules
+    # can contain commas in the payload and take their target at the end.
+    if not isinstance(rule, str):
+        raise Refused('invalid rule')
+    parts = [part.strip(' ') for part in rule.split(',')]
+    kind = parts[0].upper()
+    if kind in ('MATCH', 'FINAL') and len(parts) >= 2:
+        return parts[1]
+    if len(parts) < 3:
+        raise Refused('invalid rule')
+    if kind in ('NOT', 'OR', 'AND', 'SUB-RULE', 'DOMAIN-REGEX', 'PROCESS-NAME-REGEX', 'PROCESS-PATH-REGEX'):
+        return parts[-1]
+    return parts[2]
+
+
 def prune_nodes(document, dropped):
     if not dropped:
         return
-    for rule in document['rules']:
-        if not isinstance(rule, str) or any(part.strip() in dropped for part in rule.split(',')[1:]):
-            raise Refused('rule requires a rejected node')
     document['proxies'] = [node for node in document['proxies'] if node['name'] not in dropped]
     prune_groups(document, dropped)
 
@@ -588,15 +603,17 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
 def prune_groups(document, dropped):
     """Detach dropped node names; refuse instead of silently rerouting a rule."""
     groups = document.get('proxy-groups') or []
+    targets = {rule_target(rule) for rule in document.get('rules') or []}
+    if targets & dropped:
+        raise Refused('rule requires a rejected node')
     for group in groups:
         group['proxies'] = [ref for ref in group.get('proxies') or [] if ref not in dropped]
     while True:
         empty = {group['name'] for group in groups if not group.get('proxies')}
         if not empty:
             return
-        for rule in document.get('rules') or []:
-            if any(part.strip() in empty for part in rule.split(',')):
-                raise Refused('empty group')
+        if targets & empty:
+            raise Refused('empty group')
         groups[:] = [group for group in groups if group['name'] not in empty]
         for group in groups:
             group['proxies'] = [ref for ref in group['proxies'] if ref not in empty]

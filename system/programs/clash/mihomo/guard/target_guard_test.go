@@ -549,6 +549,7 @@ func TestRequiredNodeTransport(t *testing.T) {
 		{"type": "http", "tls": "true"},
 		{"type": "http", "tls": true, "TLS": true},
 		{"type": "http", "tls": true, "SKIP_CERT_VERIFY": 1},
+		{"type": "http", "tls": true, "options": map[string]any{"\u017fkip_cert_verify": true}},
 		{"type": "ss", "cipher": "none", "password": "test"},
 		{"type": "ss", "cipher": "aes-128-gcm", "password": " "},
 		{"type": "vmess", "cipher": "none", "alterId": 0},

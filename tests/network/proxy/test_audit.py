@@ -73,6 +73,11 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(result['deny'], {'node_authentication': 1, 'node_transport': 1})
         self.assertEqual(result['changed_nodes'], 1)
 
+    def test_mux_wrapper_uses_its_exact_adapter_key(self):
+        old = document(nodes=[dict(NODE, SMUX={'enabled': True})])
+        new = document(nodes=[dict(NODE, smux={'enabled': True})])
+        self.assertEqual(self.check(new, old, strict_semantics=True)['deny'], {'node_transport': 1})
+
     def test_reality_identity_and_authentication_are_not_ordinary_transport_changes(self):
         original = dict(NODE, type='vless', **{
             'reality-opts': {'public-key': 'first-key', 'short-id': 'aabb'}})

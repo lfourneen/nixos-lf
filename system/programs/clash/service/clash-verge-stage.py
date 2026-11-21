@@ -425,6 +425,10 @@ def source_revocation(settings):
     return read_record(Path(root) / 'revoking.json') if root else {}
 
 
+class NoSelectedSource(ValueError):
+    pass
+
+
 def source_directory(settings, identity=None):
     root = Path(settings['source_root'])
     if identity is not None:
@@ -434,8 +438,10 @@ def source_directory(settings, identity=None):
     elif (root / 'selected').is_symlink():
         target = (root / 'selected').resolve(strict=True)
     else:
+        if (root / 'selected').exists():
+            raise ValueError('source selection')
         if (root / 'registry-migrated').exists() or not (root / 'registry.json').exists():
-            raise ValueError('no selected source')
+            raise NoSelectedSource('no selected source')
         return root  # Existing single-source installations migrate on broker use.
     if target.parent != root / 'sources' or not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', target.name) or target.is_symlink():
         raise ValueError('source selection')

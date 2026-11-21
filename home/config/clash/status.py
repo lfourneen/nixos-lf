@@ -286,7 +286,7 @@ def rows(state):
         yield 'Diagnostics', 'sudo proxy-control preflight · proxy-inspect'
         if mode == 'blocked':
             if state.get('routing_schema'):
-                yield 'Recovery', 'Retry clash-on. To refresh in a temporary direct window, run sudo proxy-control recover.'
+                yield 'Recovery', 'Retry clash-on. To refresh the registered source in Mode C, run sudo proxy-control recover.'
             yield 'Helper logs', 'sudo journalctl -b -u clash-verge.service -n 60'
             yield 'Core logs', 'sudo tail -n 60 /var/lib/clash-verge-service/logs/service_latest.log'
     if preflight and not preflight.get('ready'):

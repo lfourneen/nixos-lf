@@ -86,6 +86,9 @@ proxy-providers:
     type: http
     url: 'https://other.fixture/source'
     health-check: {enable: true, url: 'https://other.fixture/probe', interval: 2, timeout: 55555}
+  legacy:
+    type: http
+    url: 'https://legacy.fixture/source'
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +97,8 @@ proxy-providers:
 		t.Fatal(err)
 	}
 	for i, fields := range []map[string]any{raw.ProxyGroup[0], raw.ProxyGroup[1],
-		raw.ProxyProvider["other"]["health-check"].(map[string]any)} {
+		raw.ProxyProvider["other"]["health-check"].(map[string]any),
+		raw.ProxyProvider["legacy"]["health-check"].(map[string]any)} {
 		interval := 300
 		if i == 1 {
 			interval = 0
@@ -105,7 +109,8 @@ proxy-providers:
 		}
 	}
 	if raw.ProxyProvider["other"]["url"] != "https://other.fixture/source" ||
-		raw.ProxyProvider["other"]["health-check"].(map[string]any)["enable"] != true {
+		raw.ProxyProvider["other"]["health-check"].(map[string]any)["enable"] != true ||
+		raw.ProxyProvider["legacy"]["health-check"].(map[string]any)["enable"] != false {
 		t.Fatal("delay policy changed provider import settings")
 	}
 }

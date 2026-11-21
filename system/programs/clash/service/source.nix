@@ -223,6 +223,8 @@ in
         Type = "oneshot";
         ExecStart = "${pkgs.python3}/bin/python3 -I ${./source_recovery.py} ${settings}";
         TimeoutStartSec = 10;
+        Restart = "on-failure";
+        RestartSec = 1;
         NoNewPrivileges = true;
         CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
         ProtectSystem = "strict";

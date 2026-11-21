@@ -73,13 +73,17 @@ def reconcile_tailnet(settings, check=False, run=subprocess.run):
             if check:
                 raise ValueError("tailnet status is unreadable")
             return
+    saved = path.read_text().strip() if path.exists() else ""
+    if not check and saved != domain:
+        # The core reads this authorization independently of resolved. Revoke
+        # a superseded suffix even when resolved cannot answer its first query.
+        path.unlink(missing_ok=True)
     dns = command(settings["resolvectl"], "dns", interface).partition(":")[2].split()
     domains = command(settings["resolvectl"], "domain", interface).partition(":")[2].split()
     route = command(settings["resolvectl"], "default-route", interface).partition(":")[2].strip()
     expected_dns = [tailnet["resolver"]] if domain else []
     expected_domains = [domain] if domain else []
     dirty = dns != expected_dns or domains != expected_domains or route != "no"
-    saved = path.read_text().strip() if path.exists() else ""
     if check:
         if dirty or saved != domain:
             raise ValueError("tailnet DNS differs from the authenticated conditional route")
@@ -94,7 +98,7 @@ def reconcile_tailnet(settings, check=False, run=subprocess.run):
             command(settings["resolvectl"], "dns", interface, tailnet["resolver"])
             command(settings["resolvectl"], "domain", interface, domain)
         command(settings["resolvectl"], "default-route", interface, "no")
-        command(settings["resolvectl"], "flush-caches")
+    command(settings["resolvectl"], "flush-caches")
     if domain:
         temporary = path.with_suffix(".tmp")
         temporary.write_text(domain + "\n")
@@ -102,8 +106,10 @@ def reconcile_tailnet(settings, check=False, run=subprocess.run):
 
 
 def reconcile(settings, check=False, run=subprocess.run):
-    reconcile_tun(settings, check, run)
-    reconcile_tailnet(settings, check, run)
+    try:
+        reconcile_tailnet(settings, check, run)
+    finally:
+        reconcile_tun(settings, check, run)
 
 
 if __name__ == "__main__":
