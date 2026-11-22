@@ -366,6 +366,10 @@ in
 
         # No on-demand pip/npm installs (supply-chain surface; Nix owns deps).
         allow_lazy_installs = false;
+
+        # Allow Mihomo's TUN fake-IP pool through Hermes' SSRF guard.
+        fake_ip_ranges =
+          lib.optional config.my.proxy.transparentApplications config.my.proxy.fakeIpNet;
       };
 
       # Group ids come from QQ_GROUP_ALLOWED_USERS (sops): public repo, other people's groups.
