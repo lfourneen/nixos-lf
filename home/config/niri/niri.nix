@@ -440,6 +440,21 @@ let
       }
     }
 
+    window-rule {
+      match app-id="^catwhale-pet$" title="^Catwhale Pet$"
+      open-floating true
+      open-focused false
+      default-floating-position x=24 y=24 relative-to="bottom-right"
+      opacity 1.0
+      geometry-corner-radius 0
+      clip-to-geometry false
+      draw-border-with-background false
+      background-effect { blur false; }
+      shadow { off; }
+      focus-ring { off; }
+      border { off; }
+    }
+
     // Keyboard binds
     binds {
       Mod+Shift+Slash { show-hotkey-overlay; }
