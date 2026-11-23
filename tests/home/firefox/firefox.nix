@@ -1,9 +1,7 @@
 { pkgs, config, compatConfig, windowsConfig }:
 
 let
-  compatHome = compatConfig.home-manager.users.${compatConfig.my.machine.desktopUser};
-
-  manifest = config: let
+  manifest = config: expectVideoCompat: let
     home = config.home-manager.users.${config.my.machine.desktopUser};
     firefox = home.programs.firefox.finalPackage;
     isolated = pkgs.lib.genAttrs [ "identity" "portal" ] (name:
@@ -20,7 +18,7 @@ let
     routingHealthSettings = config.my.proxy.routingHealthSettings;
     desktopHealthSettings = config.my.proxy.desktopHealthSettings;
     desktopUid = config.users.users.${config.my.machine.desktopUser}.uid;
-    compatPrefs = compatHome.programs.firefox.finalPackage.netsec.prefs;
+    inherit expectVideoCompat;
     policies = home.programs.firefox.policies;
     relayPort = if home.my.firefox.dailyRequireProxy then 18080 else config.my.machine.ports.gostHttp;
     windowsUserAgentDomains = home.my.firefox.windowsUserAgentDomains;
@@ -51,7 +49,8 @@ pkgs.runCommand "firefox-privacy-checks" {
   export XDG_CACHE_HOME="$TMPDIR/firefox-cache"
   mkdir -p "$XDG_CACHE_HOME"
   python3 ${./test_firefox.py}
-  mkdir -p "$out/windows-ua"
-  python3 ${./test_firefox_runtime.py} ${manifest config} "$out"
-  python3 ${./test_firefox_runtime.py} ${manifest windowsConfig} "$out/windows-ua"
+  mkdir -p "$out/video-compat" "$out/windows-ua"
+  python3 ${./test_firefox_runtime.py} ${manifest config false} "$out"
+  python3 ${./test_firefox_runtime.py} ${manifest compatConfig true} "$out/video-compat"
+  python3 ${./test_firefox_runtime.py} ${manifest windowsConfig false} "$out/windows-ua"
 ''

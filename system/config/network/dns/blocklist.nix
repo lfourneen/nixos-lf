@@ -264,9 +264,15 @@ let
     cp ${verified}/names.txt $out
   '';
 
+  exceptions = pkgs.writeText "dnsmasq-blocklist-exceptions" (lib.concatMapStrings
+    (domain: "address=/${lib.toLower domain}/\n") config.my.proxy.blockedDomainExceptions);
+
+  # For identical domains, dnsmasq can prefer address= over server=. Drop
+  # exact conflicts while preserving more specific blocks and the raw snapshot.
   rules = pkgs.runCommand "dnsmasq-dns-blocklist.d" { } ''
     mkdir -p $out
-    cp ${verified}/rules/blocklist.conf $out/blocklist.conf
+    awk 'FILENAME == ARGV[1] { omit[$0] = 1; next } !($0 in omit)' \
+      ${exceptions} ${verified}/rules/blocklist.conf > $out/blocklist.conf
   '';
 
 in

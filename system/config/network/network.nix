@@ -326,9 +326,9 @@ let
   # DNS suffix rules, shared with the managed core's DNS and dial filter.
   # dnsmasq filters gateway queries in A/B; native MagicDNS and explicit
   # split-server delegation retain their separate routing precedence.
-  blockedDomains = lib.unique (lib.filter (d: d != "") config.my.proxy.blockedDomains);
-  blockedDomainExceptions =
-    lib.unique (lib.filter (d: d != "") config.my.proxy.blockedDomainExceptions);
+  blockedDomainExceptions = lib.unique (map lib.toLower config.my.proxy.blockedDomainExceptions);
+  blockedDomains = lib.unique (lib.filter (d: !(lib.elem d blockedDomainExceptions))
+    (map lib.toLower config.my.proxy.blockedDomains));
 
 in
 {

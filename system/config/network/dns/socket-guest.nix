@@ -29,8 +29,8 @@ let
     cache-size=1024
     server=127.0.0.1#${toString (if p.runtimeRouting then m.ports.coreInfrastructureDns else m.ports.unboundInfrastructure)}
     ${lib.concatMapStrings (directory: "conf-dir=${directory}\n") (config.services.dnsmasq.settings.conf-dir or [ ])}
-    ${lib.concatMapStrings (d: "address=/${d}/\n") p.blockedDomains}
-    ${lib.concatMapStrings (d: "server=/${d}/#\n") p.blockedDomainExceptions}
+    ${lib.concatMapStrings (rule: "address=${rule}\n") config.services.dnsmasq.settings.address}
+    ${lib.concatMapStrings (rule: "server=${rule}\n") config.services.dnsmasq.settings.server}
   '';
 
 in

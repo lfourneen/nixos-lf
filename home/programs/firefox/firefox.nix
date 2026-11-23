@@ -119,9 +119,7 @@ let
     "extensions.htmlaboutaddons.recommendations.enabled" = false;
 
     # Referrer / preconnect
-    # Cross-origin Referer stays suppressed unless the compatibility
-    # switch is enabled for media CDNs that reject requests without it.
-    "network.http.referer.XOriginPolicy" = if compat then 0 else 2;
+    "network.http.referer.XOriginPolicy" = 2;
     "network.http.referer.XOriginTrimmingPolicy" = 2;
     "browser.urlbar.speculativeConnect.enabled" = false;
     "browser.places.speculativeConnect.enabled" = false;
@@ -164,6 +162,8 @@ let
   windowsPlatform = "Windows NT 10.0; Win64; x64";
   prefs = sharedPrefs // {
     "browser.download.dir" = dailyDownloads;
+  } // lib.optionalAttrs compat {
+    "network.http.referer.XOriginPolicy" = 0;
   } // lib.optionalAttrs (windowsDomains != [ ]) {
     "privacy.resistFingerprinting.exemptedDomains" = lib.concatStringsSep "," (map lib.toLower windowsDomains);
     "general.useragent.override" = "Mozilla/5.0 (${windowsPlatform}; rv:${firefoxVersion}) Gecko/20100101 Firefox/${firefoxVersion}";

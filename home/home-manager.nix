@@ -1,4 +1,4 @@
-{ osConfig, ... }:
+{ lib, osConfig, ... }:
 
 let
   user = osConfig.my.machine.desktopUser;
@@ -10,6 +10,8 @@ in
   programs.home-manager = {
     enable = true;
   };
+
+  my.firefox.videoSiteCompat = lib.mkDefault true;
 
   # Users settings
   home = {

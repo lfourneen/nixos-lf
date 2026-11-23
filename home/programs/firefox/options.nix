@@ -36,9 +36,9 @@
     type = lib.types.bool;
     default = false;
     description = ''
-      Send the origin-only Referer on cross-origin requests.
-      Some media CDNs reject requests without it; disabled by default so
-      cross-origin Referer stays fully suppressed.
+      Allow daily Firefox to send an origin-only Referer on cross-origin
+      requests when permitted by the page's referrer policy. This applies
+      to all sites in daily Firefox. Some media CDNs require this header.
     '';
   };
 

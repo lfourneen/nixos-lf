@@ -93,7 +93,7 @@ pkgs.testers.runNixOSTest {
     # auxiliary network so the portal fixture really traverses an uplink.
     virtualisation.vlans = [ 9 ];
     my.proxy.nodeProbeUrls = [ "http://node.fixture.example:8080/" ];
-    my.proxy.blockedDomains = [ "ads.fixture.example" "blocked.fixture.test" ];
+    my.proxy.blockedDomains = [ "ads.fixture.example" "blocked.fixture.test" "OK.blocked.fixture.test" ];
     my.proxy.blockedDomainExceptions = [ "ok.blocked.fixture.test" ];
     my.proxy.tunProbeName = "tun.fixture.example";
     my.proxy.subscriptionAuditProtectedRoutes."tun.fixture.example" = "direct";

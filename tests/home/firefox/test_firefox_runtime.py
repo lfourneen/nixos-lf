@@ -77,6 +77,8 @@ for name, expected in {
     assert document["policies"]["ExtensionSettings"] == expected, name
     autoconfig = (isolated / "lib/firefox/mozilla.cfg").read_text()
     assert f'lockPref("browser.download.dir", {json.dumps(isolated_settings[name]["downloads"])});' in autoconfig
+    assert 'lockPref("network.http.referer.XOriginPolicy", 2);' in autoconfig, name
+    assert 'lockPref("network.http.referer.XOriginTrimmingPolicy", 2);' in autoconfig, name
     assert "general.useragent.override" not in autoconfig, name
     assert "privacy.resistFingerprinting.exemptedDomains" not in autoconfig, name
 assert not any((p if isinstance(p, str) else p.get("appId")) in
@@ -87,14 +89,10 @@ for desktop in [manifest["desktop"], *manifest["aliases"]]:
     assert commands and all(line.startswith("Exec=" + str(package) + "/bin/firefox ") for line in commands)
     assert "flatpak run" not in content and "--ProfileManager" not in content
 
-# The compatibility switch must be the only thing that changes the Referer
-# policy; trimming stays origin-only in both modes.
 referer = "network.http.referer.XOriginPolicy"
 trimming = "network.http.referer.XOriginTrimmingPolicy"
-assert manifest["prefs"][referer] == 2
+assert manifest["prefs"][referer] == (0 if manifest["expectVideoCompat"] else 2)
 assert manifest["prefs"][trimming] == 2
-assert manifest["compatPrefs"][referer] == 0
-assert manifest["compatPrefs"][trimming] == 2
 for name in ("text/html", "x-scheme-handler/http", "x-scheme-handler/https"):
     assert manifest["mime"][name] == ["firefox.desktop"]
 archive_bytes = (package / "lib/firefox/browser/omni.ja").read_bytes()
@@ -240,19 +238,19 @@ return prefs;
             record["activePolicies"] = client.execute("return Object.keys(Services.policies.getActivePolicies());")
             assert set(policies) <= set(record["activePolicies"]), set(policies) - set(record["activePolicies"])
             client.call("Marionette:SetContext", {"value": "content"})
-            client.call("WebDriver:Navigate", {"url": "https://privacy-fixture.invalid/"})
+            page = "https://privacy-fixture.invalid/watch?video=fixture"
+            client.call("WebDriver:Navigate", {"url": page})
             record["web"] = client.execute("return JSON.parse(window.result);")
             assert record["web"]["changed"] > 0, record["web"]
             assert record["web"]["timezone"] in {"UTC", "Atlantic/Reykjavik"}
             assert record["web"]["webRTC"] == "undefined"
             assert not record["web"]["webgl"] and not record["web"]["webgpu"]
-            assert "https://privacy-fixture.invalid/" in requests, requests
-            assert record["web"]["userAgent"] == user_agents["https://privacy-fixture.invalid/"]
+            assert page in requests, requests
+            assert record["web"]["userAgent"] == user_agents[page]
             assert "Linux" in record["web"]["userAgent"] and record["web"]["platform"] == "Linux x86_64"
             media = "https://media.example.invalid/pixel.png"
             assert media in referers, referers
-            expect = "https://privacy-fixture.invalid/" \
-                if manifest["prefs"]["network.http.referer.XOriginPolicy"] == 0 else None
+            expect = "https://privacy-fixture.invalid/" if manifest["expectVideoCompat"] else None
             assert referers[media] == expect, referers
             if windows_domains:
                 for domain in windows_domains:

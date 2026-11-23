@@ -268,7 +268,10 @@ let
       browser-privacy = import ./home/firefox/firefox.nix {
         inherit pkgs;
         config = (self.nixosConfigurations.lfour.extendModules {
-          modules = [ ({ lib, ... }: { my.proxy.transparentApplications = lib.mkForce false; }) ];
+          modules = [ ({ lib, ... }: {
+            my.proxy.transparentApplications = lib.mkForce false;
+            home-manager.users.${desktopUser}.my.firefox.videoSiteCompat = false;
+          }) ];
         }).config;
         compatConfig = (self.nixosConfigurations.lfour.extendModules {
           modules = [ ({ lib, ... }: {
@@ -281,7 +284,10 @@ let
         windowsConfig = (self.nixosConfigurations.lfour.extendModules {
           modules = [ ({ lib, ... }: {
             my.proxy.transparentApplications = lib.mkForce false;
-            home-manager.users.${desktopUser}.my.firefox.windowsUserAgentDomains = [ "windows-ua.invalid" ];
+            home-manager.users.${desktopUser}.my.firefox = {
+              videoSiteCompat = false;
+              windowsUserAgentDomains = [ "windows-ua.invalid" ];
+            };
           }) ];
         }).config;
       };

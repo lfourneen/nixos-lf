@@ -17,6 +17,25 @@
   # same 360 endpoints over DoT.
   my.proxy.localDnssec = true;
 
+  my.proxy.blockedDomainExceptions = [
+    # Video APIs and CDN hostnames.
+    "www.bilibili.com"
+    "api.bilibili.com"
+    "bilivideo.com"
+    "bilivideo.cn"
+    "youtubei.youtube.com"
+    "googlevideo.com"
+
+    # The snapshot has more specific entries for these CDN hosts.
+    "r2.sn-gxuo03g-3c2l.googlevideo.com"
+    "r5.sn-q4flrner.googlevideo.com"
+
+    # Short links used by Bilibili, X and YouTube.
+    "b23.tv"
+    "t.co"
+    "youtu.be"
+  ];
+
   my.proxy.authorizationLeaseSeconds = 60;
 
   # Cold foreign DNSSEC validation can outlive the module's 12 s probe budget;
