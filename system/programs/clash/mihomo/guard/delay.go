@@ -3,6 +3,7 @@ package lfguard
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -28,11 +29,28 @@ var (
 )
 
 type healthDelayKey struct{}
+type sessionCheckKey struct{}
 type interactiveDelayKey struct{}
 type backgroundTimeoutKey struct{}
 
 func WithHealthDelay(ctx context.Context) context.Context {
 	return context.WithValue(ctx, healthDelayKey{}, true)
+}
+
+func WithSessionCheck(ctx context.Context, target string) (context.Context, bool) {
+	p := current.Load()
+	if p == nil || !ManagedDelay() || !slices.Contains(p.sessionTargets, target) || !validDelayURL(target, true) {
+		return ctx, false
+	}
+	u, _ := url.Parse(target)
+	if _, err := netip.ParseAddr(u.Hostname()); err != nil {
+		return ctx, false
+	}
+	return context.WithValue(WithHealthDelay(ctx), sessionCheckKey{}, target), true
+}
+
+func SessionCheck(ctx context.Context, target string) bool {
+	return target != "" && ctx.Value(sessionCheckKey{}) == target
 }
 
 func WithInteractiveDelay(ctx context.Context) context.Context {
@@ -98,7 +116,7 @@ func BeginDelay(ctx context.Context, target string) (context.Context, func(), er
 		return ctx, func() {}, nil
 	}
 	health, _ := ctx.Value(healthDelayKey{}).(bool)
-	if !DelayAllowed(target, health) {
+	if !SessionCheck(ctx, target) && !DelayAllowed(target, health) {
 		return ctx, func() {}, fmt.Errorf("managed delay test endpoint is not authorized")
 	}
 	interactive, _ := ctx.Value(interactiveDelayKey{}).(bool)

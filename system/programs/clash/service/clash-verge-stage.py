@@ -579,6 +579,7 @@ def publish_effective(runtime, state):
         source_id=source.get('source_id', ''),
         revision=source.get('revision', ''), response_count=len(source.get('responses', {})),
         dropped=source.get('dropped') if type(source.get('dropped')) is int else 0,
+        drop_counts=source.get('drop_counts', {}),
         snapshot=snapshot_digest(Path(runtime) / 'effective'),
         upstream_signature='not-verified'))
     atomic_record(Path(state) / 'effective-config.json',
@@ -866,10 +867,13 @@ def matches_registration(root, manifest):
 
 
 def current_generation(root):
-    directory = (root / 'current').resolve(strict=True)
+    return registered_generation(root, (root / 'current').resolve(strict=True))
+
+
+def registered_generation(root, directory):
     if directory.parent != root / 'generations' or not re.fullmatch('[0-9a-f]{64}', directory.name):
         raise ValueError('unregistered source generation')
-    info = directory.stat()
+    info = directory.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
         raise ValueError('source generation permissions')
     raw = read_input(directory, 'source-manifest.json', os.geteuid())
@@ -991,7 +995,7 @@ def startup_input(settings):
             current_dir, current = current_generation(source)
         except (OSError, ValueError):
             current = {}
-        if (current.get('local_routing') and current.get('source_data') != manifest.get('source_data')
+        if (current.get('local_routing') and any(current.get(key) != manifest.get(key) for key in ('source_data', 'worker'))
                 and matches_source_policy(settings, current_dir, current)):
             return source_input(settings)
     return dict(settings, gui_data=str(directory), desktop_uid=0, _accepted_startup=True), str(directory / 'clash-verge.yaml')

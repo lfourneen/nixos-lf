@@ -1,4 +1,4 @@
-{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false, routing ? false, guiControls ? false, guiPkgs ? pkgs, egressBrowser ? null, evidenceIdentity ? {}, ipTunnelRelay ? null, arpProtection ? false }:
+{ pkgs, clashPackage, restricted ? false, strictDns ? false, ech ? null, targetPolicy ? false, guests ? false, uniformProxy ? false, refresh ? false, hermesContainers ? false, managedSources ? false, assurance ? false, routing ? false, guiControls ? false, guiPkgs ? pkgs, egressBrowser ? null, evidenceIdentity ? {}, ipTunnelRelay ? null, arpProtection ? false, recoveryOnly ? false }:
 
 let
   desktop = clashPackage.desktopIdentity;
@@ -26,7 +26,7 @@ let
 
 in
 pkgs.testers.runNixOSTest {
-  name = if arpProtection then "proxy-arp-protection" else if ipTunnel then "proxy-ip-tunnel" else if guiControls then "proxy-gui-controls" else if routing then "proxy-runtime-routing" else if assurance then "proxy-authorization-and-dnssec" else if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
+  name = if recoveryOnly then "proxy-routing-recovery" else if arpProtection then "proxy-arp-protection" else if ipTunnel then "proxy-ip-tunnel" else if guiControls then "proxy-gui-controls" else if routing then "proxy-runtime-routing" else if assurance then "proxy-authorization-and-dnssec" else if managedSources then "managed-core-namespace" else if hermesContainers then "hermes-container-network" else if refresh then "managed-profile-refresh" else if uniformProxy then (if ech != null then "browser-ech-uniform" else "proxy-uniform-policy") else if guests then "guest-trust-layers" else if targetPolicy then "proxy-target-authorization" else if ech != null then "browser-ech" else if strictDns then "strict-dns-policy" else if restricted then "restricted-egress-core" else "proxy-control-privileges";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
   nodes.machine = { config, lib, pkgs, ... }: {
     imports = [
@@ -42,7 +42,7 @@ pkgs.testers.runNixOSTest {
             default = let original = profile.options.my.proxy.managedDnsTransport.default;
             in original // lib.optionalAttrs assurance {
               dns = original.dns // {
-                nameserver = [ "https://203.0.113.53/dns-query#Fixture" ];
+                nameserver = [ "https://203.0.113.53/dns-query#${if recoveryOnly then "lf-dns" else "Fixture"}" ];
                 default-nameserver = [ "tls://203.0.113.53:853" ];
                 proxy-server-nameserver = [ "https://203.0.113.53/dns-query#DIRECT" ];
                 nameserver-policy = { };
@@ -70,7 +70,10 @@ pkgs.testers.runNixOSTest {
       ../../../system/programs/gost/default.nix
       ../../../system/config/network/diagnostics/default.nix
       ../../../system/programs/clash/service/runtime.nix
-    ] ++ lib.optional assurance (import ../dns/assurance-config.nix { inherit sourceTls; })
+    ] ++ lib.optional assurance (import ../dns/assurance-config.nix {
+      inherit sourceTls;
+      localProbeAnswers = !recoveryOnly;
+    })
       ++ lib.optional guests ../guests/guest-config.nix
       ++ lib.optional hermesContainers ../guests/hermes-container-config.nix
       ++ lib.optional (ech != null || guiControls || egressBrowser != null) ../../home/firefox/firefox-desktop.nix;
@@ -678,12 +681,22 @@ pkgs.testers.runNixOSTest {
             machine.execute("systemctl stop egress-capture-host.service egress-capture-core.service egress-capture-remote.service")
             machine.copy_from_vm("/tmp/egress-evidence")
     ''}
+    ${pkgs.lib.optionalString (!recoveryOnly) ''
     with subtest("${if guiControls then "GUI controls and root routing ownership" else "root routing transactions, exact outer transports and proxied real DNS"}"):
         try:
             print(machine.succeed("python3 -u /etc/netsec-routing.py check", timeout=1200))
         except Exception:
             print(machine.execute("cat /run/proxy-mode/state.json /run/proxy-mode/routing.json /run/proxy-mode/health.json /run/proxy-mode/routing-firewall.json 2>/dev/null || true; journalctl -u proxy-mode -u clash-verge -u proxy-real-dns -u clash-real-dns --no-pager -n 70; nft -j list table inet lf_routing"))
             raise
+    ''}
+    ${pkgs.lib.optionalString recoveryOnly ''
+    with subtest("failed accepted source, inactive direct routing and cached candidate recovery"):
+        try:
+            print(machine.succeed("python3 -u /etc/netsec-routing.py cached-recovery", timeout=420))
+        except Exception:
+            print(machine.execute("cat /run/proxy-mode/{state,routing,health,health-observations,profile-refresh,source-fetch}.json; journalctl -u proxy-mode -u clash-verge --no-pager -n 60"))
+            raise
+    ''}
     machine.reboot()
     machine.wait_for_unit("proxy-mode.service")
     machine.succeed("jq -e '.routing_requested == \"rules\" and .mode == \"direct\"' /run/proxy-mode/state.json")

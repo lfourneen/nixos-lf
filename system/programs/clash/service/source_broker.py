@@ -362,6 +362,31 @@ def renderer_settings(settings):
                 remote_only_catchall=settings.get('remote_only_catchall', False))
 
 
+def select_generation(root, directory):
+    temporary = root / '.current'
+    temporary.unlink(missing_ok=True)
+    temporary.symlink_to(directory.relative_to(root))
+    temporary.replace(root / 'current')
+
+
+def cached_generation(root, stage, stage_settings):
+    """Recover the recorded download even after a local routing render."""
+    status = json.loads(stage.read_input(root, 'status.json', 0)) if (root / 'status.json').exists() else {}
+    identity = status.get('generation') if status.get('state') == 'fetched' else None
+    if not isinstance(identity, str) or not re.fullmatch('[a-f0-9]{64}', identity):
+        raise ValueError('no cached download for the selected source')
+    directory, manifest = stage.registered_generation(root, root / 'generations' / identity)
+    if (manifest.get('local_routing') or manifest.get('policy') != stage.validator_policy_digest(stage_settings)
+            or not stage.matches_source_policy(stage_settings, directory, manifest)):
+        raise ValueError('cached download does not match the active routing policy')
+    expected = stage.snapshot_digest(directory)
+    accepted = stage.read_record(stage.approved_root(stage_settings, root) / 'settled.json')
+    if accepted.get('digest') == expected:
+        raise ValueError('cached download is already the accepted snapshot')
+    select_generation(root, directory)
+    return expected
+
+
 def refresh_generation(settings, root):
     source_store = Path(settings.get('root', root))
     selection_path = source_store / 'selected' if settings.get('_fetch_lock') is not None else None
@@ -433,6 +458,13 @@ def refresh_generation(settings, root):
                     policy=digest(policy_bytes),
                     renderer_settings=digest(json.dumps(renderer_settings(settings), sort_keys=True).encode()),
                     yaml=digest(config), dropped=dropped, assets={})
+    if 'drop_counts' in result:
+        counts = result['drop_counts']
+        if (not isinstance(counts, dict) or set(counts) != {'unresolved', 'loopback', 'unapproved_tls', 'unapproved_transport'}
+                or any(type(count) is not int or count < 0 for count in counts.values())
+                or sum(counts.values()) != dropped):
+            raise ValueError('renderer drop counts')
+        manifest['drop_counts'] = counts
     generations = root / 'generations'
     generations.mkdir(mode=0o700, exist_ok=True)
     # Bound retained downloaded data. Stage takes source.lock while copying.
@@ -460,10 +492,7 @@ def refresh_generation(settings, root):
             shutil.rmtree(candidate)
         else:
             candidate.rename(destination)
-        temporary = root / '.current'
-        temporary.unlink(missing_ok=True)
-        temporary.symlink_to(Path('generations') / identity)
-        temporary.replace(root / 'current')
+        select_generation(root, destination)
         # Crash-safe publication precedes cleanup; retain one previous source.
         old = sorted((p for p in generations.iterdir() if p != destination and not p.is_symlink()),
                      key=lambda p: p.stat().st_mtime, reverse=True)
@@ -584,10 +613,7 @@ def render_local(settings, root, target, previous):
                 raise ValueError('local source generation mismatch')
         else:
             candidate.rename(destination)
-        temporary = root / '.current'
-        temporary.unlink(missing_ok=True)
-        temporary.symlink_to(Path('generations') / identity)
-        temporary.replace(root / 'current')
+        select_generation(root, destination)
     finally:
         if candidate.exists():
             shutil.rmtree(candidate)
@@ -975,6 +1001,7 @@ def main():
             p.add_argument('--previous', required=True, help='current digest, or none for first registration')
     sub.add_parser('refresh').add_argument('--generation', action='store_true')
     sub.add_parser('recover')
+    sub.add_parser('recover-cached')
     automatic = sub.add_parser('automatic')
     automatic.add_argument('--request', action='store_true')
     sub.add_parser('diff', help='read-only comparison of local source snapshots')
@@ -1003,7 +1030,7 @@ def main():
         return
     review = review_module(settings) if args.action == 'diff' else None
     with (root / 'source.lock').open('a') as lock:
-        if args.action in ('diff', 'add', 'use', 'recover'):
+        if args.action in ('diff', 'add', 'use', 'recover', 'recover-cached'):
             acquire(lock)
         else:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -1059,6 +1086,10 @@ def main():
                 raise ValueError('source revision changed')
             select(root, path)
             print(json.dumps(dict(requested_source=path.name, result='selected')))
+            return
+        if args.action == 'recover-cached':
+            _, stage, stage_settings = refresh_context(settings)
+            print(cached_generation(selected(root), stage, stage_settings))
             return
         if args.action in ('refresh', 'recover'):
             settings['_fetch_lock'] = lock

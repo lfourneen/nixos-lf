@@ -36,8 +36,9 @@ type wireguardRelay struct {
 }
 
 type policy struct {
-	DelayTestURL               string          `json:"delay-test-url"`
-	HealthTestURLs             []string        `json:"health-test-urls"`
+	DelayTestURL               string   `json:"delay-test-url"`
+	HealthTestURLs             []string `json:"health-test-urls"`
+	sessionTargets             []string
 	ValidatorPorts             []uint16        `json:"validator-ports"`
 	PreviousDNS                map[string]any  `json:"previous-dns"`
 	LocalDNSSEC                string          `json:"local-dnssec"`
@@ -147,7 +148,7 @@ func validDomain(domain string) bool {
 	return true
 }
 
-func Configure(value map[string]any) error {
+func Configure(value map[string]any, sessionTargets ...string) error {
 	if value == nil {
 		installPolicy(nil)
 		return nil
@@ -162,6 +163,7 @@ func Configure(value map[string]any) error {
 	if err = decoder.Decode(p); err != nil {
 		return err
 	}
+	p.sessionTargets = sessionTargets
 	if len(p.Prefixes) == 0 {
 		return fmt.Errorf("managed target guard requires private prefixes")
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/metacubex/mihomo/component/lfguard"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
+	"github.com/metacubex/mihomo/transport/socks5"
 )
 
 func TestLFManagedDelayControllerRequiresExactURLAndRootPeer(t *testing.T) {
@@ -120,6 +121,7 @@ type lfDelayFixtureProxy struct {
 	C.Proxy
 	name    string
 	started *atomic.Int32
+	err     error
 }
 
 func (p lfDelayFixtureProxy) Name() string        { return p.name }
@@ -131,7 +133,54 @@ func (p lfDelayFixtureProxy) URLTest(ctx context.Context, url string, _ utils.In
 	}
 	defer done()
 	p.started.Add(1)
+	if p.err != nil {
+		return 0, p.err
+	}
 	return 1, ctx.Err()
+}
+
+func TestLFManagedSessionCheckRequiresRootAndReportsExplicitAuthenticationRejection(t *testing.T) {
+	const target = "https://203.0.113.53/dns-query"
+	if err := lfguard.Configure(map[string]any{
+		"prefixes": []string{"10.0.0.0/8"}, "delay-test-url": "https://probe.fixture/delay",
+	}, target); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lfguard.Configure(nil) })
+	var started atomic.Int32
+	for _, tt := range []struct {
+		root   bool
+		url    string
+		err    error
+		status int
+		result string
+	}{
+		{false, target, nil, 403, ""},
+		{true, "https://203.0.113.53/other", nil, 403, ""},
+		{true, target, nil, 200, `"session":"ok"`},
+		{true, target, socks5.ErrAuth, 200, `"session":"node-auth"`},
+		{true, target, context.DeadlineExceeded, 200, `"session":"session-unavailable"`},
+	} {
+		req, err := http.NewRequest(http.MethodGet, "/proxies/fixture/session?url="+url.QueryEscape(tt.url), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proxy := lfDelayFixtureProxy{started: &started, err: tt.err}
+		ctx := context.WithValue(req.Context(), CtxKeyProxy, C.Proxy(proxy))
+		ctx = context.WithValue(ctx, lfControllerRoot{}, tt.root)
+		recorder := &lfPolicyRecorder{}
+		lfSessionCheck(recorder, req.WithContext(ctx))
+		status := recorder.code
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if status != tt.status || !strings.Contains(recorder.body.String(), tt.result) {
+			t.Fatalf("root=%t target=%q: code=%d body=%s", tt.root, tt.url, recorder.code, recorder.body.String())
+		}
+	}
+	if started.Load() != 3 {
+		t.Fatalf("started=%d", started.Load())
+	}
 }
 
 func TestLFManagedDesktopBatchAndIndividualBurst(t *testing.T) {

@@ -1,4 +1,4 @@
-{ sourceTls }:
+{ sourceTls, localProbeAnswers ? true }:
 { config, lib, pkgs, ... }:
 
 let
@@ -15,10 +15,15 @@ let
       domain-insecure: unsigned.fixture.example.
       domain-insecure: dns-path.fixture.example.
       max-reuse-tcp-queries: 1
+      ${if localProbeAnswers then ''
       local-zone: "node.fixture.example." static
       local-data: "node.fixture.example. 60 IN A 203.0.113.10"
       local-zone: "tun.fixture.example." static
       local-data: "tun.fixture.example. 60 IN A 203.0.113.10"
+      '' else ''
+      domain-insecure: node.fixture.example.
+      domain-insecure: tun.fixture.example.
+      ''}
       ${lib.optionalString config.my.proxy.runtimeRouting ''
       domain-insecure: source.fixture.example.
       domain-insecure: source-node.fixture.example.

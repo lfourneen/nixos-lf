@@ -130,7 +130,7 @@ The recorded leaf must match the current policy graph. Mixed HTTP requires a rem
 Log delivery may take up to 2.5 seconds within the shared deadline.
 The module default shared deadline is 12 seconds; this host sets 18 seconds to fit cold DNSSEC lookups.
 Definite configuration, route or TUN failures block immediately.
-The coordinator gives observation, DNS, leaf and application-resolver failures three consecutive rounds, at least two seconds apart. Leaf recovery and system resolver diagnostics use the same health budget and run only on failure.
+The coordinator gives observation, DNS, leaf and application-resolver failures three consecutive rounds, at least two seconds apart. Leaf recovery, candidate session samples and system resolver diagnostics share the health budget.
 Each fake-IP lookup and TUN DNS self-test uses `my.proxy.healthDnsTimeoutSeconds`, default 3 seconds per attempt, with one retry within the shared deadline.
 
 `data_plane_ok`, `route_ok`, `dns_ok` and `tun_ok` report per-layer results. `null` means unproven or outside the probe's scope.

@@ -18,9 +18,10 @@ import sys
 import tempfile
 import threading
 import time
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 SNAPSHOT_TOOLS = {}
+FAILED_SESSIONS = {'node-auth', 'session-unavailable'}
 
 
 def failure_stage(detail):
@@ -28,6 +29,8 @@ def failure_stage(detail):
     for prefix, stage in (
         ('mixed HTTP request failed', 'mixed-request'),
         ('authorized leaves did not answer', 'leaf-unavailable'),
+        ('sampled leaves rejected authentication', 'node-auth'),
+        ('sampled leaves could not establish', 'session-unavailable'),
         ('managed validator did not resolve', 'validator-dns'),
         ('system resolver did not answer', 'application-dns'),
         ('no exact-source-port route log', 'mixed-route-log'),
@@ -213,6 +216,13 @@ class Probe:
         self.routing = {}
         self.core_mode = 'unknown'
         self.tun_name = None
+        self.sessions = {}
+        self.dns_transport_leaf = None
+
+    def dns_leaf(self, name):
+        self.diagnostics['dns_leaf'] = hashlib.sha256(name.encode()).hexdigest()[:12]
+        observed = self.sessions.get(name)
+        self.diagnostics['dns_leaf_session'] = observed or 'unmeasured'
 
     def remaining(self, maximum):
         remaining = min(maximum, self.deadline - self.clock())
@@ -280,19 +290,31 @@ class Probe:
                     raise
                 time.sleep(wait)
 
-    def alternate_leaves(self, group):
+    def selector(self, group):
         if self.routing.get('egress_requested'):
-            return []
-        record = self.api('/proxies').get('proxies', {}).get(group, {})
+            return None, []
+        if self.settings.get('dns_leaf_group'):
+            record = self.api('/proxies/' + group)
+        else:
+            record = self.api('/proxies').get('proxies', {}).get(group, {})
         members, current = record.get('all'), record.get('now')
         if (record.get('type') != 'Selector' or not isinstance(members, list)
                 or not all(isinstance(name, str) for name in members) or current not in members):
-            return []
+            return None, []
         index = members.index(current)
-        return list(dict.fromkeys(members[index + 1:] + members[:index]))
+        return current, list(dict.fromkeys(members[index + 1:] + members[:index]))
 
     def leaf_candidates(self, url):
-        members = self.alternate_leaves('lf-remote')
+        current, members = self.selector('lf-remote')
+        if current and self.settings.get('session_urls') and not self.sessions and self.dns_transport_leaf not in members:
+            self.sample_sessions([current, *members[:3]])
+        if self.sessions or self.dns_transport_leaf in members:
+            def rank(name):
+                outcome = self.sessions.get(name)
+                if outcome == 'ok' or (outcome is None and name == self.dns_transport_leaf):
+                    return 0
+                return 1 if outcome is None else 2
+            return sorted(members, key=rank)
         if not members or self.deadline - self.clock() < 4:
             return members
         path = '/group/lf-remote/delay?url=' + quote(url, safe='') + '&timeout=1200'
@@ -514,8 +536,11 @@ class Probe:
         if not host:
             raise ProbeFailure("config", "invalid health target URL")
         # Fresh source ports disambiguate the log from other local applications.
-        timeout = self.remaining(min(maximum or self.settings["request_timeout_seconds"],
-                                     self.remaining(30) / self.target_slots))
+        if maximum is None:
+            maximum = self.settings['request_timeout_seconds']
+            if self.settings.get('session_urls'):
+                maximum = min(maximum, max(1, (self.deadline - self.clock() - 7) / self.target_slots))
+        timeout = self.remaining(min(maximum, self.remaining(30) / self.target_slots))
         if self.diagnostics['data_plane_ok'] is None:
             self.diagnostics['data_plane_ok'] = False
         self.diagnostics['route_ok'] = False
@@ -614,15 +639,28 @@ class Probe:
                 failures.append(error)
         raise failures[-1]
 
-    def rotate_leaf(self, log_path, url):
+    def rotate_leaf(self, log_path, url, dns_name=None):
         """Start after the current leaf so unmeasured members get a turn across rounds."""
         urls = list(dict.fromkeys([url, *self.settings['urls']]))
+        dns_leaf, dns_alternatives = self.selector('lf-dns') if dns_name and self.settings.get('dns_leaf_group') else (None, [])
         for name in self.leaf_candidates(url):
             remaining = self.deadline - self.clock()
             if remaining <= 2:
                 break
+            if dns_name and self.sessions.get(name) in FAILED_SESSIONS:
+                continue
             if not self.select_leaf(name):
                 continue
+            if (name in dns_alternatives and (self.sessions.get(dns_leaf) != 'ok' or self.sessions.get(name) == 'ok')
+                    and self.select_leaf(name, 'lf-dns')):
+                dns_leaf = name
+                self.dns_leaf(name)
+                self.diagnostics['dns_leaf_rotated'] = True
+            if dns_name and not self.dns_answer(dns_name):
+                continue
+            if dns_name:
+                self.diagnostics['managed_dns_ok'] = True
+                self.fake_ip_failures.clear()
             limit = min(self.deadline - 1, self.clock() + 2.5)
             self.target_slots = 1
             for target in urls:
@@ -637,32 +675,102 @@ class Probe:
                         raise
         return False
 
-    def dns_answer(self, name, address, port):
-        output = self.command([self.settings['dig'], '+time=2', '+tries=1', '+short',
-                               '@' + address, '-p', str(port), name, 'A'], 2.2)
-        for line in output.splitlines():
+    def dns_answer(self, name):
+        if not self.settings.get('dns_leaf_group'):
+            answer = self.command([self.settings['dig'], '+time=2', '+tries=1', '+short', '@127.0.0.1',
+                                   '-p', str(self.settings['dns_port']), name, 'A'], 2.2)
+            for line in answer.splitlines():
+                try:
+                    if ipaddress.ip_address(line).version == 4:
+                        return True
+                except ValueError:
+                    pass
+            return False
+        # The controller resolver returns real records without the fake-IP middleware.
+        try:
+            response = self.api('/dns/query?' + urlencode(dict(name=name, type='A')), 2.2)
+        except ProbeFailure as error:
+            if error.layer != 'obs':
+                raise
+            return False
+        if response.get('Status') != 0:
+            return False
+        fake = ipaddress.ip_network(self.settings.get('fake_ip_net', '198.18.0.0/15'), strict=False)
+        for record in response.get('Answer') or []:
             try:
-                if ipaddress.ip_address(line).version == 4:
+                address = ipaddress.ip_address(record['data'])
+                if record.get('type') == 1 and address.version == 4 and address not in fake:
                     return True
-            except ValueError:
+            except (KeyError, TypeError, ValueError):
                 continue
         return False
 
-    def recover_dns(self, name):
-        self.diagnostics['managed_dns_ok'] = False
-        def works():
-            return self.dns_answer(name, '127.0.0.1', self.settings['dns_port'])
-        ready = works()
-        if not ready and self.settings.get('dns_leaf_group'):
-            for leaf in self.alternate_leaves('lf-dns'):
+    def sample_sessions(self, names):
+        targets = self.settings.get('session_urls', [])
+        pending = [name for name in names if name not in self.sessions]
+        if not targets or not pending or self.deadline - self.clock() < 2:
+            return
+
+        def sample(name):
+            outcome = None
+            for target in targets:
                 if self.deadline - self.clock() < 2:
                     break
-                ready = self.select_leaf(leaf, 'lf-dns') and works()
-                if ready:
+                path = '/proxies/' + quote(name, safe='') + '/session?' + urlencode(dict(url=target))
+                try:
+                    result = self.api(path, 1.5).get('session')
+                except ProbeFailure as error:
+                    if error.layer != 'obs':
+                        raise
+                    continue
+                if result in ('ok', 'node-auth'):
+                    return result
+                if result == 'session-unavailable':
+                    outcome = result
+            return outcome
+
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            self.sessions.update((name, value) for name, value in zip(pending, workers.map(sample, pending)) if value)
+        measured = list(self.sessions.values())
+        self.diagnostics['leaf_sessions'] = {result: measured.count(result)
+                                            for result in ('ok', 'node-auth', 'session-unavailable')}
+
+    def recover_dns(self, name):
+        self.diagnostics['managed_dns_ok'] = False
+        current, leaves = self.selector('lf-dns') if self.settings.get('dns_leaf_group') else (None, [])
+        if current:
+            self.dns_leaf(current)
+        ready = self.dns_answer(name)
+        if not ready and current:
+            ordered = [current, *leaves]
+            for offset in range(0, len(ordered), 4):
+                if self.deadline - self.clock() < 4:
+                    break
+                batch = ordered[offset:offset + 4]
+                self.sample_sessions(batch)
+                if offset == 0:
+                    batch = batch[1:]
+                self.dns_leaf(current)
+                batch.sort(key=lambda leaf: self.sessions.get(leaf) != 'ok')
+                for leaf in batch:
+                    if self.deadline - self.clock() < 3:
+                        break
+                    outcome = self.sessions.get(leaf)
+                    if outcome in FAILED_SESSIONS or (self.sessions.get(current) == 'ok' and outcome != 'ok'):
+                        continue
+                    if not self.select_leaf(leaf, 'lf-dns'):
+                        continue
+                    current = leaf
+                    self.dns_leaf(leaf)
                     self.diagnostics['dns_leaf_rotated'] = True
+                    if self.dns_answer(name):
+                        ready = True
+                        break
+                if ready:
                     break
         if not ready:
             raise ProbeFailure('dns', 'managed validator did not resolve the probe name')
+        self.dns_transport_leaf = current
         self.diagnostics['managed_dns_ok'] = True
         self.fake_ip_failures.clear()
 
@@ -696,10 +804,16 @@ class Probe:
             name = urlsplit(url).hostname
             if failure_stage(error.detail) != 'mixed-request' or not name or self.deadline - self.clock() < 2:
                 raise
-            self.timed('validator_dns', lambda: self.recover_dns(name))
             recovered = True
+            dns_error = None
+            try:
+                self.timed('validator_dns', lambda: self.recover_dns(name))
+            except ProbeFailure as failure:
+                if failure.layer != 'dns':
+                    raise
+                dns_error = failure
             # A DNS recovery can make the current leaf usable again.
-            if self.diagnostics.get('dns_leaf_rotated'):
+            if not dns_error and self.diagnostics.get('dns_leaf_rotated'):
                 try:
                     self.target_slots = 1
                     self.target(url, log_path, maximum=2.5)
@@ -708,7 +822,14 @@ class Probe:
                         raise
                 else:
                     error = None
-            if error and not self.timed('leaf_recovery', lambda: self.rotate_leaf(log_path, url)):
+            if error and not self.timed('leaf_recovery', lambda: self.rotate_leaf(log_path, url, name if dns_error else None)):
+                observed = set(self.sessions.values())
+                if observed == {'node-auth'}:
+                    raise ProbeFailure('node', 'sampled leaves rejected authentication') from None
+                if observed and 'ok' not in observed:
+                    raise ProbeFailure('node', 'sampled leaves could not establish proxy sessions') from None
+                if dns_error:
+                    raise dns_error from None
                 self.timed('application_path', self.application_path)
                 raise ProbeFailure('node', 'authorized leaves did not answer the mixed request') from None
         def transparent_paths():
@@ -766,6 +887,18 @@ class Probe:
             try:
                 time.sleep(min(0.15, self.remaining(0.15)))
                 self.data_paths(log_path)
+                if self.settings.get('dns_leaf_group') and 'dns_leaf' not in self.diagnostics and self.deadline - self.clock() > 1.5:
+                    try:
+                        leaf, alternatives = self.selector('lf-dns')
+                    except ProbeFailure as error:
+                        if error.layer not in ('obs', 'restarting'):
+                            raise
+                    else:
+                        if leaf:
+                            if (Path(self.settings['runtime']) / 'profile-refresh-verifying.json').exists() \
+                                    and self.deadline - self.clock() > 4:
+                                self.timed('session_sample', lambda: self.sample_sessions([leaf, *alternatives[:2]]))
+                            self.dns_leaf(leaf)
                 self.diagnostics['config_ok'] = False
                 final = check_config(self.api("/configs"), self.settings)
                 if final != fingerprint:

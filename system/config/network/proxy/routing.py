@@ -75,7 +75,7 @@ def selection(settings):
             or type(record.get('routing_epoch')) is not int or record['routing_epoch'] < 1
             or record.get('egress_requested') is not None and not re.fullmatch('[a-f0-9]{64}', str(record['egress_requested']))
             or type(record.get('egress_epoch', 0)) is not int or record.get('egress_epoch', 0) < 0
-            or record.get('routing_phase') not in ('preparing', 'verifying', 'ready', 'failed')
+            or record.get('routing_phase') not in ('preparing', 'verifying', 'ready', 'failed', 'inactive')
             or record.get('boot_id') != (state / 'boot-id').read_text().strip()
             or not re.fullmatch('[a-f0-9]{64}', str(record.get('routing_policy_digest')))):
         raise ValueError('routing authority is missing or inconsistent')
@@ -114,14 +114,20 @@ def initialize(settings, mode=None):
         record, stale = selection(settings)
         # In A there is no live B authority to carry across the switch. Rebind
         # the inactive selection to the new generation's safe default.
-        if not stale or mode != 'direct':
+        if mode != 'direct':
+            return
+        if not stale:
+            if record['routing_phase'] != 'inactive':
+                atomic(state / 'routing.json', dict(record, routing_applied=None, routing_phase='inactive',
+                                                     routing_epoch=record['routing_epoch'] + 1))
             return
         epoch = record['routing_epoch'] + 1
         egress_epoch = record['egress_epoch'] + 1
     activate(settings, 'rules')
     atomic(state / 'routing.json', dict(schema=1, boot_id=(state / 'boot-id').read_text().strip(),
         routing_requested='rules', routing_applied=None, routing_epoch=epoch,
-        routing_policy_digest=sha(Path(settings['policies']['rules']).read_bytes()), routing_phase='verifying',
+        routing_policy_digest=sha(Path(settings['policies']['rules']).read_bytes()),
+        routing_phase='inactive' if mode == 'direct' else 'verifying',
         egress_requested=None, egress_epoch=egress_epoch))
 
 

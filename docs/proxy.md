@@ -77,11 +77,12 @@ The coordinator checks the transport firewall against the staged digest before a
 Without a compatible fallback, C remains in effect.
 An interrupted routing transaction preserves proxy intent and puts unfinished routing back into a verifiable state. Retry with `clash-on`.
 
-When mixed HTTP fails, the health check can test the managed resolver. In rules mode it can switch the `lf-dns` selector to another approved leaf if resolution fails.
-If DNS works and the application leaf still fails, it tries other authorized `lf-remote` members. Delay results can prioritize candidates. When the delay interface returns no usable measurements, it tries members in group order within the health budget.
-A replacement still has to pass a real mixed HTTP request with route proof, then the remaining health checks. Fault diagnostics can also probe the system resolver under an unprivileged desktop UID during B.
+When mixed HTTP fails in rules mode, the health check can query the managed resolver for a real answer and try another authorized `lf-dns` leaf. It can also try other `lf-remote` members within the same deadline. A member shared by both selectors can carry DNS while the health check retries HTTP through that leaf.
+During candidate verification and recovery, the root controller can sample leaf sessions over TLS to the configured literal DoH endpoints. A TLS-authenticated HTTP response proves a session to the endpoint. DNS answers, mixed HTTP, route proof and the remaining checks determine readiness.
+`proxy-status` shows a short identifier for the observed DNS leaf. It reports explicit authentication rejection as `node-auth`, unsuccessful session samples as `session-unavailable`, and unresolved validator probes as `validator-dns` when session evidence stays inconclusive or a sampled session works. Failed samples stay out of DNS recovery for that round and remain available for later checks.
+B can also diagnose the system resolver through an unprivileged desktop UID.
 
-`clash-off` revokes runtime authority while preserving the source's accepted baseline.
+`clash-off` revokes runtime authority and retires the current routing epoch. A reports the routing selection as inactive and retains the source's accepted baseline for later startup.
 With automatic refresh, the next `clash-on` prefers an accepted snapshot that matches the current source revision, managed policy and renderer settings. Reusing it records `restored`.
 It repeats parser, content-audit and digest checks, and fresh live health still gates B.
 The shared blocklist has a stable policy path, so a validated blocklist update does not invalidate the accepted subscription baseline.
@@ -90,7 +91,7 @@ In B it starts the downloader after 90 continuous seconds of verified health for
 A mapped GUI request uses the same download gate. In A the download runs directly and prepares the source for the next proxy startup.
 In B a successful download queues its exact candidate for application. If another import or rollback is in progress, the apply service retries with that candidate after rechecking the selection, registration and digest.
 Foreground core startup can finish while the background request is waiting or downloading. `clash-off` cancels queued downloads and applications.
-With runtime routing, an explicit recovery command can fetch the registered source under a short kernel lease while C continues to block application traffic. See [recover a registered source](operations.md#recover-a-registered-source).
+With runtime routing, an explicit command can apply a downloaded candidate in C or fetch a fresh one under a short kernel lease. See [recover a registered source](operations.md#recover-a-registered-source).
 A first import without an accepted baseline uses the available candidate and the ordinary health observation window.
 Stopping and restarting does not waive structural checks.
 

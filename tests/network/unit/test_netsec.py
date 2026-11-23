@@ -1579,6 +1579,8 @@ class StateTests(unittest.TestCase):
                            {"monotonic_seconds": 579}, {"boot_id": "old-boot"}, {"boot_id": None}):
                 with self.subTest(change=change): self.assertFalse(ready(dict(good, **change))["ready"])
             self.assertFalse(ready({"result": "ok", "version": 1, "checked_at": "1970-01-01"})["ready"])
+            self.assertNotIn('rules verification belongs to a different boot', ready(dict(good, boot_id=None))['reasons'])
+            self.assertIn('rules verification belongs to a different boot', ready(dict(good, boot_id='old-boot'))['reasons'])
 
     def test_degraded_verification_is_reported_without_blocking_readiness(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2421,6 +2423,17 @@ class SubscriptionAndStatusTests(unittest.TestCase):
                          '10 · unresolved, loopback or unapproved TLS')
         value['source_trust']['dropped'] = 0
         self.assertNotIn('Dropped leaves', dict(status.rows(value)))
+
+    def test_status_reports_session_counts_and_dns_selection_separately_from_import_drops(self):
+        status = module('status')
+        rows = dict(status.rows(dict(mode='blocked', target='proxy', source_trust=dict(dropped=3,
+            drop_counts=dict(unresolved=1, loopback=1, unapproved_tls=1)), last_proxy_health={
+                'failure_stage': 'node-auth', 'dns_leaf': 'a' * 12, 'dns_leaf_session': 'node-auth',
+                'leaf_sessions': {'ok': 0, 'node-auth': 1, 'session-unavailable': 2}})))
+        self.assertIn('rejected authentication', rows['Last proxy probe'])
+        self.assertEqual(rows['lf-dns leaf'], 'a' * 12 + ' · Authentication rejected')
+        self.assertEqual(rows['Dropped leaves'], '3 · 1 unresolved, 1 loopback, 1 unapproved TLS')
+        self.assertIn('2 unavailable', rows['Leaf session sample'])
 
     def test_status_separates_approved_update_changes_from_other_warnings(self):
         status = module('status')

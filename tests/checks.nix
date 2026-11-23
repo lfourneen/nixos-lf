@@ -447,6 +447,15 @@ let
         routing = true;
       };
 
+      proxy-routing-recovery-vm = import ./network/proxy/control-vm.nix {
+        inherit pkgs;
+        clashPackage = managedClashPackageFor true;
+        managedSources = true;
+        assurance = true;
+        routing = true;
+        recoveryOnly = true;
+      };
+
       proxy-single-egress-vm = import ./network/proxy/control-vm.nix {
         inherit pkgs;
         clashPackage = managedClashPackageFor true;

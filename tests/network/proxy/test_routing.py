@@ -252,6 +252,18 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual((self.state / 'intent').read_text(), 'proxy')
         enforce.assert_called_once_with(self.settings, 'blocked')
 
+    def test_direct_transition_retires_a_pending_routing_epoch(self):
+        previous = routing.binding(self.settings)
+        self.assertEqual(previous['routing_phase'], 'verifying')
+        routing.initialize(self.settings, 'direct')
+        inactive = routing.binding(self.settings)
+        self.assertEqual(inactive['routing_phase'], 'inactive')
+        self.assertEqual(inactive['routing_requested'], previous['routing_requested'])
+        self.assertEqual(inactive['routing_epoch'], previous['routing_epoch'] + 1)
+        self.assertIsNone(inactive['routing_applied'])
+        routing.initialize(self.settings, 'direct')
+        self.assertEqual(routing.binding(self.settings), inactive)
+
     def test_interrupted_preparation_removes_partial_authority_and_restores_verifying_phase(self):
         record = dict(routing.binding(self.settings), routing_phase='preparing')
         routing.atomic(self.state / 'routing.json', record)

@@ -167,7 +167,7 @@ Each validator forwards over TCP loopback to a private Mihomo transport listener
 These listeners carry raw DNSSEC material without hosts substitution, fake-IP synthesis or reuse of ordinary resolver cache entries.
 
 In `rules`, application transport keeps a domestic split: `geosite:cn` uses 360 DoH over a direct connection, and other names use Cloudflare/Google DoH.
-With controlled sources, foreign queries use `lf-dns`, a separate selector with up to three authorized members of `lf-remote`.
+With controlled sources, foreign queries use `lf-dns`, a separate selector of authorized `lf-remote` leaves. It keeps one leaf per protocol, pinned server address and port, with different server addresses and protocols ahead of repeated addresses.
 The application and DNS selectors pick independently, and `profile.store-selected` keeps their eligible choices across core restarts.
 If the managed resolver fails its health check, the supervisor can try another DNS leaf.
 Configurations without controlled sources retain `respect-rules` selection.

@@ -166,7 +166,10 @@ let
     runtime = "/run/proxy-mode";
     budget_seconds = config.my.proxy.healthBudgetSeconds;
     request_timeout_seconds = config.my.proxy.healthRequestTimeoutSeconds;
-    dns_leaf_group = config.my.proxy.controlledSources && config.my.proxy.localDnssec && !config.my.proxy.proxyOnly;
+    dns_leaf_group = config.my.proxy.controlledSources && config.my.proxy.localDnssec && !config.my.proxy.proxyOnly
+      && lib.any (lib.hasSuffix "#lf-dns") config.my.proxy.managedDnsTransport.dns.nameserver;
+    session_urls = lib.optionals (config.my.proxy.controlledSources && config.my.proxy.localDnssec && !config.my.proxy.proxyOnly)
+      (map (lib.removeSuffix "#lf-dns") (lib.filter (lib.hasSuffix "#lf-dns") config.my.proxy.managedDnsTransport.dns.nameserver));
     application_dns_check = lib.optionals config.services.resolved.enable [
       "${pkgs.systemd}/bin/systemctl" "start" "proxy-application-dns-probe.service"
     ];
@@ -234,6 +237,8 @@ let
     pkgs.writeText "routing-${mode}-health.json" (builtins.toJSON (healthConfig // {
       routing_state = "/run/proxy-mode/routing.json";
       routing_mode = mode;
+      dns_leaf_group = mode == "rules" && healthConfig.dns_leaf_group;
+      session_urls = lib.optionals (mode == "rules") healthConfig.session_urls;
       real_dns_port = if mode != "proxy-only" then null
         else if config.my.proxy.ipTunnel != null then port.coreRealDns else port.socketGuestDns;
       ip_tunnel = if mode == "proxy-only" then config.my.proxy.ipTunnelSettings else null;
@@ -1122,9 +1127,14 @@ NFT_OFF
         routing|recover|on)
           [ "$EUID" = 0 ] || { echo "Use sudo proxy-control $*" >&2; exit 1; }
           recovery=0
+          recovery_source=recover
           keep_selection=0
           if [ "$1" = recover ]; then
-            [ "$#" = 1 ] || { echo 'Usage: sudo proxy-control recover' >&2; exit 2; }
+            case "$#:''${2:-}" in
+              1:) ;;
+              2:--cached) recovery_source=recover-cached ;;
+              *) echo 'Usage: sudo proxy-control recover [--cached]' >&2; exit 2 ;;
+            esac
             recovery=1
             keep_selection=1
           elif [ "$1" = on ]; then
@@ -1172,7 +1182,8 @@ NFT_OFF
             elif [ "$transaction_step" = health ] && [ -z "$diagnostic" ]; then
               diagnostic=$(${pkgs.python3}/bin/python3 ${./state.py} proxy --routing "$transaction_target" --routing-epoch "$transaction_epoch" \
                 | jq -r 'if .last_proxy_health.ok then .reasons[:3] | join(", ")
-                         else (.last_proxy_health.reason // "health unavailable") + "/" + (.last_proxy_health.failure_stage // "unknown") end' || true)
+                         else .last_proxy_health | (.reason // "health unavailable") + "/" + (.failure_stage // "unknown")
+                           + (if .dns_leaf then " · lf-dns " + .dns_leaf + " (" + (.dns_leaf_session // "unmeasured") + ")" else "" end) end' || true)
             fi
             if [ "$(cat /run/proxy-mode/intent)" = proxy ] \
               && { [ -z "$transaction_epoch" ] || [ "$transaction_epoch" = "$(${config.my.proxy.routingCommand} view | jq -r .routing_epoch)" ]; }; then
@@ -1183,7 +1194,7 @@ NFT_OFF
             echo "Routing switch failed: $transaction_target ($transaction_step''${diagnostic:+: $diagnostic})"
             ${lib.optionalString config.my.proxy.controlledSources ''
             if [ "$transaction_step" = health ] && [ "$(cat /run/proxy-mode/status)" = blocked ]; then
-              echo 'Retry with clash-on. If the accepted source is unusable, sudo proxy-control recover refreshes it while application traffic stays blocked.'
+              echo 'Apply the latest downloaded candidate with sudo proxy-control recover --cached, or fetch a fresh candidate with sudo proxy-control recover.'
             fi
             ''}
           }
@@ -1203,8 +1214,9 @@ NFT_OFF
             ${config.my.proxy.routingCommand} stop-ip-tunnel
             ${config.my.proxy.coreNetworkCommand} routes-off
             transaction_step='recovery-download'
+            if [ "$recovery_source" = recover-cached ]; then transaction_step='recovery-cached'; fi
             export LF_SOURCE_GENERATION
-            LF_SOURCE_GENERATION=$(timeout --kill-after=2s 60s ${config.my.proxy.sourceCommand} recover)
+            LF_SOURCE_GENERATION=$(timeout --kill-after=2s 60s ${config.my.proxy.sourceCommand} "$recovery_source")
             [[ "$LF_SOURCE_GENERATION" =~ ^[a-f0-9]{64}$ ]]
           fi
           transaction_step=protection
@@ -1367,7 +1379,7 @@ NFT_OFF
           cat /run/proxy-mode/reason /run/dns-upstream/reason 2>/dev/null || true
           exit 1
           ;;
-        *) echo 'Usage: proxy-control on|off${lib.optionalString config.my.proxy.runtimeRouting "|recover|routing rules|proxy-only"}|migrate-firewall|status [proxy|direct]|wait [proxy|direct]' >&2; exit 2 ;;
+        *) echo 'Usage: proxy-control on|off${lib.optionalString config.my.proxy.runtimeRouting "|recover [--cached]|routing rules|proxy-only"}|migrate-firewall|status [proxy|direct]|wait [proxy|direct]' >&2; exit 2 ;;
       esac
     '';
   };

@@ -22,6 +22,11 @@ REASONS = {'node': 'Authorized proxy leaves failed the HTTP probe', 'dns': 'Mana
            'unauthorized-core': 'Core configuration is not authorized', 'policy-mismatch': 'Kernel policy differs from configuration',
            'policy-repair': 'Repairing policy', 'policy-repair-failed': 'Policy repair failed',
            'policy-repair-backoff': 'Waiting to retry policy repair', 'interrupted': 'Probe cancelled by supervisor'}
+HEALTH_STAGES = {'validator-dns': 'Managed validator did not resolve the probe name',
+                 'node-auth': 'Sampled leaves rejected authentication',
+                 'session-unavailable': 'Sampled proxy sessions unavailable'}
+SESSION_RESULTS = {'ok': 'Session established', 'node-auth': 'Authentication rejected',
+                   'session-unavailable': 'Session unavailable', 'unmeasured': 'Session not sampled'}
 PHASES = {'prepare-policy': 'Certificate or subscription policy rejected', 'prepare-profile': 'Desktop profile missing or invalid',
           'prepare-source-access': 'Controlled source state unavailable',
           'prepare-source-registration': 'Controlled source registration required',
@@ -165,7 +170,11 @@ def rows(state):
     if trust.get('source_id'):
         yield 'Active source', trust['source_id']
     if trust.get('dropped'):
-        yield 'Dropped leaves', f"{trust['dropped']} · unresolved, loopback or unapproved TLS"
+        counts = trust.get('drop_counts', {})
+        detail = ', '.join(f'{count} {reason}' for key, reason in (
+            ('unresolved', 'unresolved'), ('loopback', 'loopback'), ('unapproved_tls', 'unapproved TLS'),
+            ('unapproved_transport', 'unapproved transport')) if (count := counts.get(key)))
+        yield 'Dropped leaves', f"{trust['dropped']} · {detail or 'unresolved, loopback or unapproved TLS'}"
     yield 'Publisher signature', 'Not checked · verification is not implemented'
     fetch = state.get('source_fetch') or {}
     if fetch:
@@ -256,8 +265,13 @@ def rows(state):
     yield 'Enforcement alarm', 'Active · inspection required' if state.get('alarm') else 'None'
     health = state.get('last_proxy_health', {})
     if mode in ('proxy', 'blocked') and health:
-        value = 'Passed' if health.get('ok') else REASONS.get(health.get('reason'), 'Incomplete')
+        value = 'Passed' if health.get('ok') else HEALTH_STAGES.get(health.get('failure_stage'),
+                                                                 REASONS.get(health.get('reason'), 'Incomplete'))
         yield 'Last proxy probe', value + f" · duration {health.get('duration_ms', '?')} ms"
+        if health.get('dns_leaf'):
+            yield 'lf-dns leaf', health['dns_leaf'] + ' · ' + SESSION_RESULTS.get(health.get('dns_leaf_session'), 'Session not sampled')
+        if samples := health.get('leaf_sessions'):
+            yield 'Leaf session sample', f"{samples['ok']} passed · {samples['node-auth']} auth rejected · {samples['session-unavailable']} unavailable"
         fields = [('data_plane_ok', 'Mixed HTTP'), ('route_ok', 'Route'),
                   ('dns_ok', 'TUN DNS'), ('managed_dns_ok', 'Managed DNS'),
                   ('application_dns_ok', 'System DNS'), ('tun_ok', 'TUN')]
@@ -286,7 +300,7 @@ def rows(state):
         yield 'Diagnostics', 'sudo proxy-control preflight · proxy-inspect'
         if mode == 'blocked':
             if state.get('routing_schema'):
-                yield 'Recovery', 'Retry clash-on. To refresh the registered source in Mode C, run sudo proxy-control recover.'
+                yield 'Recovery', 'Apply the latest download with sudo proxy-control recover --cached, or fetch a fresh candidate with sudo proxy-control recover.'
             yield 'Helper logs', 'sudo journalctl -b -u clash-verge.service -n 60'
             yield 'Core logs', 'sudo tail -n 60 /var/lib/clash-verge-service/logs/service_latest.log'
     if preflight and not preflight.get('ready'):

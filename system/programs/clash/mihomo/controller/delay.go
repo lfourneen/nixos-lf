@@ -2,6 +2,7 @@ package route
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/url"
 	"strconv"
@@ -12,6 +13,8 @@ import (
 	"github.com/metacubex/http"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/lfguard"
+	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/socks5"
 	"golang.org/x/sys/unix"
 )
 
@@ -74,6 +77,38 @@ type lfDelayCall struct {
 	stop     func()
 	target   string
 	expected utils.IntRanges[uint16]
+}
+
+func lfSessionCheck(w http.ResponseWriter, r *http.Request) {
+	root, _ := r.Context().Value(lfControllerRoot{}).(bool)
+	if !root || len(r.URL.RawQuery) > 4096 {
+		lfRefuseDelay(w, r, http.StatusForbidden, "session check is not authorized")
+		return
+	}
+	target := r.URL.Query().Get("url")
+	ctx, allowed := lfguard.WithSessionCheck(r.Context(), target)
+	if !allowed {
+		lfRefuseDelay(w, r, http.StatusForbidden, "session check is not authorized")
+		return
+	}
+	proxy := r.Context().Value(CtxKeyProxy).(C.Proxy)
+	switch proxy.Type() {
+	case C.Shadowsocks, C.Socks5, C.Http, C.Vmess, C.Vless, C.Trojan, C.Hysteria2, C.Tuic, C.AnyTLS:
+	default:
+		lfRefuseDelay(w, r, http.StatusForbidden, "session check requires a remote leaf")
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+	defer cancel()
+	_, err := proxy.URLTest(ctx, target, nil)
+	result := "ok"
+	if err != nil {
+		result = "session-unavailable"
+		if errors.Is(err, socks5.ErrAuth) || err.Error() == "HTTP need auth" {
+			result = "node-auth"
+		}
+	}
+	render.JSON(w, r, render.M{"session": result})
 }
 
 func lfRefuseDelay(w http.ResponseWriter, r *http.Request, status int, message string) *lfDelayCall {

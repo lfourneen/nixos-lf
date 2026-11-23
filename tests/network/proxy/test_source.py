@@ -36,18 +36,36 @@ class Response:
 class SourceTests(unittest.TestCase):
     def test_foreign_dns_selector_is_independent_and_uses_only_authorized_leaves(self):
         document = json.loads(json.dumps(DOC))
-        document['proxies'].extend([dict(NODE, name=name) for name in ('b', 'c', 'd')])
+        document['proxies'].extend([dict(NODE, name=name, server=f'203.0.113.{number}')
+                                    for number, name in enumerate(('b', 'c', 'd'), 2)])
         policy = {'lf-dns-transport': {'dns': {'nameserver': ['https://1.1.1.1/dns-query#lf-dns']}},
                   'profile.store-selected': True}
         result = w.load(w.render(document, {}, policy))
         groups = {group['name']: group for group in result['proxy-groups']}
         self.assertEqual(groups['lf-remote']['proxies'], ['n', 'b', 'c', 'd'])
         self.assertEqual(groups['lf-dns'], {'name': 'lf-dns', 'type': 'select', 'hidden': True,
-                                            'proxies': ['b', 'c', 'n']})
+                                            'proxies': ['b', 'n', 'c', 'd']})
         self.assertTrue(result['profile']['store-selected'])
         document['proxy-groups'][0]['proxies'].append('lf-dns')
         with self.assertRaisesRegex(w.Refused, 'reserved group'):
             w.render(document, {}, policy)
+
+    def test_dns_groups_deduplicate_endpoints_and_keep_other_servers_ahead_of_other_ports(self):
+        document = json.loads(json.dumps(DOC))
+        document['proxies'].extend(dict(NODE, name=f'banner-{index}') for index in range(28))
+        document['proxies'].extend([
+            dict(NODE, name='different-port', port=2222),
+            dict(NODE, name='different-server', server='203.0.113.20'),
+            dict(NODE, name='different-transport', type='trojan', server='203.0.113.21'),
+        ])
+        policy = {'lf-dns-transport': {'dns': {'nameserver': ['https://1.1.1.1/dns-query#lf-dns']}}}
+        config = w.load(w.render(document, {}, policy))
+        groups = {group['name']: group['proxies'] for group in config['proxy-groups']}
+        self.assertEqual(groups['lf-dns'], ['different-transport', 'n', 'different-server', 'different-port'])
+        self.assertEqual(len(groups['lf-remote']), 32)
+        document['proxies'] = document['proxies'][:29]
+        config = w.load(w.render(document, {}, policy))
+        self.assertEqual(next(group['proxies'] for group in config['proxy-groups'] if group['name'] == 'lf-dns'), ['n'])
 
     def test_single_egress_flattens_dynamic_groups_and_rejects_lost_identity(self):
         original = json.loads(json.dumps(DOC))

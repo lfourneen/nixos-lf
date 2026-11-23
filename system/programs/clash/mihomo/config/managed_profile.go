@@ -167,7 +167,20 @@ func lfValidateRaw(raw *RawConfig) (string, error) {
 	}
 	id, err := lfValidate(document, false)
 	if err == nil {
-		err = lfguard.Configure(raw.LFPrivateTargets)
+		var targets []string
+		if dns, ok := raw.LFDNSTransport["dns"].(map[string]any); ok && id != "" {
+			// Decode both YAML sequences and the root policy's JSON sequences.
+			data, _ := json.Marshal(dns["nameserver"])
+			var upstreams []string
+			if json.Unmarshal(data, &upstreams) == nil {
+				for _, upstream := range upstreams {
+					if target, group, ok := strings.Cut(upstream, "#"); ok && group == "lf-dns" {
+						targets = append(targets, target)
+					}
+				}
+			}
+		}
+		err = lfguard.Configure(raw.LFPrivateTargets, targets...)
 	}
 	if err == nil && id != "" {
 		lfApplyDelayProfile(raw)

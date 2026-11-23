@@ -1,5 +1,6 @@
 """Real registered-source routing switches and outer-wire evidence in the VM."""
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import json
@@ -141,6 +142,68 @@ def recover_source(runtime):
         assert status()['ready'] and status()['routing_applied'] == 'rules'
     finally:
         change.unlink()
+
+
+def cached_recovery():
+    route('rules')
+    runtime = Path('/run/proxy-mode')
+    source = Path('/var/lib/clash-source/selected')
+    accepted = (runtime / 'config-digest').read_text().strip()
+    settled = source / 'approved/rules/settled.json'
+    wait(lambda: settled.exists() and json.loads(settled.read_text())['digest'] == accepted, timeout=130)
+    run('proxy-control', 'off')
+    run('proxy-control', 'wait', 'direct')
+    peer = json.loads(Path('/run/netsec-node.json').read_text())
+    peer['listeners'][0]['port'] = 18081
+    profile = Path('/run/netsec-recovered-node.json')
+    profile.write_text(json.dumps(peer))
+    core = Path('/etc/netsec-core').read_text().strip()
+    run('systemd-run', '--unit=control-recovered-node', 'ip', 'netns', 'exec', 'outside', core,
+        '-d', '/run/netsec-recovered-node', '-f', profile)
+    wait(lambda: ':18081' in run('ip', 'netns', 'exec', 'outside', 'ss', '-lnt').stdout, timeout=20)
+    candidate = Path('/run/managed-source-cached-fixture')
+    candidate.touch()
+    try:
+        downloaded = run('clash-source', 'refresh', '--generation').stdout.strip()
+    finally:
+        candidate.unlink()
+    run('systemctl', 'stop', 'control-node.service')
+    failure = run('proxy-control', 'on', timeout=120, required=False)
+    assert failure.returncode and 'recover --cached' in failure.stdout, failure
+    blocked = status()
+    assert blocked['mode'] == 'blocked' and blocked['routing_phase'] == 'verifying', blocked
+    assert (runtime / 'config-digest').read_text().strip() == accepted
+    download_record = json.loads((source / 'status.json').read_text())
+    assert (source / 'current').resolve().name != download_record['generation']
+    run('proxy-control', 'off')
+    run('proxy-control', 'wait', 'direct')
+    direct = status()
+    assert direct['ready'] and direct['routing_consistent'] and direct['routing_phase'] == 'inactive', direct
+    assert direct['routing_applied'] is None and direct['routing_epoch'] > blocked['routing_epoch'], direct
+    assert 'rules verification belongs to a different boot' not in direct['reasons'], direct
+
+    # Bring back proxy intent and wait for the old snapshot to fail in C.
+    with subprocess.Popen(['proxy-control', 'on'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, start_new_session=True) as start:
+        try:
+            wait(lambda: status()['mode'] == 'blocked' and status()['routing_phase'] == 'verifying', timeout=35)
+            wait(lambda: status().get('last_proxy_health', {}).get('failure_stage') == 'session-unavailable', timeout=60)
+        finally:
+            start.send_signal(signal.SIGINT)
+            start.communicate(timeout=35)
+    requests = Path('/run/managed-source-requests').read_bytes()
+    run('proxy-control', 'recover', '--cached', timeout=130)
+    assert Path('/run/managed-source-requests').read_bytes() == requests
+    assert (runtime / 'config-digest').read_text().strip() == downloaded
+    result = status()
+    assert result['ready'] and result['mode'] == 'proxy', result
+    recovered = hashlib.sha256(b'Recovered').hexdigest()
+    assert result['sampled_egress_identity'] == recovered[:12], result
+    assert result['last_proxy_health']['dns_leaf'] == recovered[:12], result
+    history = json.loads((runtime / 'health-observations.json').read_text())
+    assert any(item.get('digest') == downloaded and item.get('dns_leaf_rotated')
+               and item.get('leaf_sessions', {}).get('session-unavailable', 0) >= 3 for item in history), history
+    print('Cached recovery stayed in C until the new snapshot proved DNS and HTTP through the usable leaf.', flush=True)
 
 
 def recovery_window(runtime, outcome):
@@ -556,4 +619,4 @@ table inet routing_wire {
 
 if __name__ == '__main__':
     {'check': check, 'peer': old_peer, 'client': old_client, 'delay-origin': delay_origin,
-     'cold-start': cold_start}[sys.argv[1]]()
+     'cold-start': cold_start, 'cached-recovery': cached_recovery}[sys.argv[1]]()

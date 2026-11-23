@@ -126,10 +126,16 @@ def source_trust(root, boot):
     revision = value.get('revision', '')
     source_id = value.get('source_id', '')
     dropped = value.get('dropped')
+    counts = value.get('drop_counts', {})
+    if (not isinstance(counts, dict) or set(counts) - {'unresolved', 'loopback', 'unapproved_tls', 'unapproved_transport'}
+            or any(type(count) is not int or not 0 <= count <= 10000 for count in counts.values())
+            or sum(counts.values()) != dropped):
+        counts = {}
     return {'provenance': value['provenance'],
             'source_id': source_id if isinstance(source_id, str) and re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', source_id) else '',
             'revision': revision[:12] if isinstance(revision, str) and re.fullmatch('[0-9a-f]{64}', revision) else '',
             'dropped': dropped if type(dropped) is int and 0 <= dropped <= 10000 else 0,
+            'drop_counts': counts,
             'upstream_signature': 'not-verified'}
 
 
@@ -368,7 +374,7 @@ def routing_view(root=Path('/run'), policy=None, boot_id=None):
                 or value.get('schema') != 1 or value.get('boot_id') != (boot_id or boot_identity(root)) \
                 or value.get('routing_requested') not in ('rules', 'proxy-only') \
                 or value.get('routing_applied') not in ('rules', 'proxy-only', None) \
-                or value.get('routing_phase') not in ('preparing', 'verifying', 'ready', 'failed') \
+                or value.get('routing_phase') not in ('preparing', 'verifying', 'ready', 'failed', 'inactive') \
                 or type(value.get('routing_epoch')) is not int or value['routing_epoch'] < 1 \
                 or not isinstance(value.get('routing_policy_digest'), str) \
                 or not re.fullmatch('[a-f0-9]{64}', value['routing_policy_digest']):
@@ -465,11 +471,13 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     # and every hard check passed, while an advisory observation did not. Only
     # a failed verdict raises the alarm. Missing/unknown verdicts, stale data,
     # generation/boot mismatches and active alarms still block readiness.
-    if verification.get("result") not in ("ok", "degraded") or verification.get("version") != version:
+    verified_boot = verification.get('boot_id')
+    if (verification.get("result") not in ("ok", "degraded") or verification.get("version") != version
+            or not boot_id or not verified_boot):
         reasons.append("rules not verified for this generation")
     if not fresh(verification.get("monotonic_seconds"), now, verification_maximum):
         reasons.append("rules verification stale")
-    if not boot_id or verification.get("boot_id") != boot_id:
+    if boot_id and verified_boot and verified_boot != boot_id:
         reasons.append("rules verification belongs to a different boot")
     if (root / "netsec/failed").exists():
         reasons.append("enforcement alarm active")

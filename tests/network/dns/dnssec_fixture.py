@@ -49,7 +49,7 @@ def answer(packet, tcp=False, transport='dot'):
         return response.to_wire()
     if request.question and request.question[0].name.to_text() in (
             'source.fixture.example.', 'source-node.fixture.example.', 'source-node-updated.fixture.example.',
-            'domestic.fixture.example.', 'denied.fixture.example.'):
+            'domestic.fixture.example.', 'denied.fixture.example.', 'node.fixture.example.', 'tun.fixture.example.'):
         for question in request.question:
             if question.rdtype == dns.rdatatype.A:
                 address = '1.1.1.1' if question.name.to_text().startswith('source') else '203.0.113.10'

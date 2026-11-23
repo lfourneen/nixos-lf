@@ -112,6 +112,7 @@ Activation enters C before replacing the core through helper IPC, repeats import
 Worker failures identify `fetch`, `parse`, `render` or `pin-addresses`.
 `Subscription download` in `proxy-status` adds a fixed DNS, TLS, connection or HTTP failure category and an HTTP status when available.
 `Subscription download` also reports when a candidate is waiting to apply. `Profile refresh` reports the audit and health verdict.
+`Dropped leaves` counts import exclusions by reason. `Leaf session sample` reports authentication refusals and unavailable sessions observed during bounded runtime checks.
 After authorized TLS filtering, the worker may drop unresolved nodes and literal loopback placeholders up to `max(1, remaining_node_count // 5)`.
 DNS answers containing non-public addresses and other non-public literal endpoints refuse the candidate.
 Fetch/parse/audit failure preserves a valid runtime fallback.
@@ -119,13 +120,20 @@ C stays active if no valid fallback remains.
 
 ### Recover a registered source
 
-With runtime routing enabled, first retry `clash-on` from C. If the accepted snapshot cannot restore B, use this command to refresh the selected source.
+With runtime routing enabled and proxy intent retained in C, apply the selected source's latest downloaded candidate with:
+
+```sh
+sudo proxy-control recover --cached
+```
+
+The command uses the local download and requires it to match the current registration and routing policy. The normal audit and health checks gate B.
+If no compatible download is available, fetch a fresh candidate:
 
 ```sh
 sudo proxy-control recover
 ```
 
-This command requires C with proxy intent. C continues to block ordinary application and guest internet access throughout the download.
+C continues to block ordinary application and guest internet access during both operations.
 A dedicated resolver validates DNSSEC and uses the configured authenticated DoT upstreams. The download worker uses pinned addresses for registered HTTPS origins, validates their TLS certificates and follows only exact registered redirects.
 The firewall limits recovery traffic by service identity, physical interface, source address, destination and port. The kernel lease expires within 55 seconds and cuts existing recovery connections. Uplink change notifications and suspend revoke it early.
 The command revokes the lease before staging the candidate under the requested routing policy. Download failure keeps C and retains the accepted baseline. B requires the normal content audit and health checks.

@@ -240,6 +240,43 @@ class RegistryTests(unittest.TestCase):
         b.register(self.root, data, b.digest(data), previous)
         return data
 
+    def test_cached_recovery_uses_the_recorded_download_and_refuses_stale_authority(self):
+        registry = self.register('one')
+        source = b.selected(self.root)
+        policy = self.root / 'policy.json'
+        policy.write_text('{}')
+        config = b'proxies: []\n'
+        manifest = {'source_id': 'one', 'revision': b.digest(registry), 'yaml': b.digest(config),
+                    'policy': b.digest(policy.read_bytes())}
+        downloaded = source / 'generations' / b.digest(json.dumps(manifest, sort_keys=True).encode())
+        downloaded.mkdir(mode=0o700, parents=True)
+        b.atomic(downloaded / 'source-manifest.json', json.dumps(manifest).encode())
+        b.atomic(downloaded / 'clash-verge.yaml', config)
+        b.atomic(source / 'status.json', json.dumps(dict(state='fetched', generation=downloaded.name)).encode())
+        local = source / 'generations' / ('a' * 64)
+        local.mkdir()
+        b.select_generation(source, local)
+        settings = dict(managed_policy=str(policy))
+        read_input = stage_tool.read_input
+        expected = stage_tool.snapshot_digest(downloaded)
+        with patch.object(stage_tool, 'read_input', side_effect=lambda directory, name, _: read_input(directory, name, os.geteuid())):
+            self.assertEqual(b.cached_generation(source, stage_tool, settings), expected)
+            self.assertEqual((source / 'current').resolve(), downloaded)
+            b.select_generation(source, local)
+            approved = source / 'approved'
+            approved.mkdir()
+            b.atomic(approved / 'settled.json', json.dumps({'digest': expected}).encode())
+            with self.assertRaisesRegex(ValueError, 'already the accepted snapshot'):
+                b.cached_generation(source, stage_tool, settings)
+            policy.write_text('{"changed": true}')
+            with self.assertRaisesRegex(ValueError, 'does not match the active routing policy'):
+                b.cached_generation(source, stage_tool, settings)
+            policy.write_text('{}')
+            b.atomic(source / 'registry.json', json.dumps({'id': 'one', 'subscription': {'url': 'https://fixture.example/new'}}).encode())
+            with self.assertRaisesRegex(ValueError, 'source revision revoked'):
+                b.cached_generation(source, stage_tool, settings)
+            self.assertEqual((source / 'current').resolve(), local)
+
     def test_catalog_preserves_legacy_source_revisions(self):
         legacy = {'id': 'one', 'subscription': {'url': 'https://subscription.example/one'}, 'providers': {}}
         other = dict(legacy, id='two', subscription={'url': 'https://subscription.example/two'})

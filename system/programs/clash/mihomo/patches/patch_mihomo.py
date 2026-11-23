@@ -107,11 +107,16 @@ replace(root / "adapter/adapter.go",
         '\tdefer done()')
 replace(root / "adapter/adapter.go", '\tinstance, err := p.DialContext(ctx, &addr)',
         '\taddr.LFDelay = lfguard.ManagedDelay()\n\tinstance, err := p.DialContext(ctx, &addr)')
+replace(root / "adapter/adapter.go", '\tvar satisfied bool',
+        '\tsessionCheck := lfguard.SessionCheck(ctx, url)\n\tvar satisfied bool')
+replace(root / "adapter/adapter.go", '\t\talive := err == nil',
+        '\t\tif sessionCheck { return }\n\t\talive := err == nil')
+replace(root / "adapter/adapter.go", '\tif unifiedDelay {', '\tif unifiedDelay && !sessionCheck {')
 # Unified delay may issue a second HEAD on the same connection.
 for indent in ('\t', '\t\t\t'):
     close = '\n' + indent + '_ = resp.Body.Close()'
     replace(root / "adapter/adapter.go", close, close + '\n' + indent +
-            'if addr.LFDelay && (resp.StatusCode < 200 || resp.StatusCode >= 300) {\n' + indent +
+            'if addr.LFDelay && !sessionCheck && (resp.StatusCode < 200 || resp.StatusCode >= 300) {\n' + indent +
             '\treturn 0, fmt.Errorf("managed delay test requires a successful response")\n' + indent + '}')
 replace(root / "adapter/outboundgroup/groupbase.go", '\t"context"',
         '\t"context"\n\n\t"github.com/metacubex/mihomo/component/lfguard"')
@@ -283,6 +288,8 @@ replace(root / "hub/route/server.go", '\t\tunixServer = server',
         '\t\tserver.ConnContext = lfControllerPeer\n\t\tunixServer = server')
 replace(root / "hub/route/proxies.go", '\n\t"strconv"\n\t"time"\n', '\n')
 replace(root / "hub/route/proxies.go", '\n\t"github.com/metacubex/mihomo/common/utils"', '')
+replace(root / "hub/route/proxies.go", '\t\tr.Get("/delay", getProxyDelay)',
+        '\t\tr.Get("/delay", getProxyDelay)\n\t\tr.Get("/session", lfSessionCheck)')
 replace(root / "hub/route/proxies.go", '''	query := r.URL.Query()
 	url := query.Get("url")
 	timeout, err := strconv.ParseInt(query.Get("timeout"), 10, 16)

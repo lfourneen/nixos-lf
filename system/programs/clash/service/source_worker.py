@@ -502,6 +502,26 @@ def normalize(document, payloads, delay_url=None):
     return result
 
 
+def dns_leaves(nodes):
+    endpoints, servers, protocols = set(), set(), set()
+    diverse, same_protocol, same_server = [], [], []
+    for node in nodes:
+        protocol, server, port = node['type'], node['server'].lower().rstrip('.'), node['port']
+        endpoint = protocol, server, port
+        if endpoint in endpoints:
+            continue
+        endpoints.add(endpoint)
+        if server in servers:
+            same_server.append(node['name'])
+        elif protocol in protocols:
+            same_protocol.append(node['name'])
+        else:
+            diverse.append(node['name'])
+            protocols.add(protocol)
+        servers.add(server)
+    return diverse + same_protocol + same_server
+
+
 def render(document, payloads, policy, forced_domains=(), probe_domains=(), remote_only_catchall=False, source=None,
            egress_id=None):
     targets = policy.get('lf-private-targets', {})
@@ -557,15 +577,17 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
     if (reserved & names or any(g['name'] in reserved or 'lf-dns' in g['proxies'] for g in groups)
             or any(isinstance(rule, str) and 'lf-dns' in rule.split(',') for rule in rules)):
         raise Refused('reserved group')
-    remote = [n['name'] for n in nodes
-              if n.get('type') not in ('direct', 'compatible', 'reject', 'dns') and not ech_lookup(n)]
+    remote_nodes = [n for n in nodes
+                    if n.get('type') not in ('direct', 'compatible', 'reject', 'dns') and not ech_lookup(n)]
+    remote = [node['name'] for node in remote_nodes]
     if not remote:
         raise Refused('empty nodes')
     groups.append({'name': 'lf-remote', 'type': 'select', 'proxies': [catchall[1]] if proxy_only else remote})
     transport = policy.get('lf-dns-transport') or {}
     if not proxy_only and any(url.endswith('#lf-dns') for url in transport.get('dns', {}).get('nameserver', [])):
+        leaves = dns_leaves(remote_nodes)
         groups.append({'name': 'lf-dns', 'type': 'select', 'hidden': True,
-                       'proxies': remote[1:3] + remote[:1]})
+                       'proxies': leaves[1:2] + leaves[:1] + leaves[2:]})
     # Split-routing and IP-quality checks must not see a direct connection when
     # the subscription sends GEOIP,CN traffic DIRECT. Prepend the registered
     # probe suffixes with the same group the subscription's catch-all selects;
@@ -629,9 +651,9 @@ def loopback_literal(server):
     return address.is_loopback
 
 
-def pin_servers(config, resolver=socket.getaddrinfo, sanitize_insecure=False):
+def pin_servers(config, resolver=socket.getaddrinfo, sanitize_insecure=False, counts=None):
     document = load(config)
-    nodes, unavailable, excluded = [], [], []
+    nodes, unresolved, loopback, excluded = [], [], [], []
     for node in document['proxies']:
         if node.get('type') not in ('ss', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'http', 'socks5', 'anytls'):
             raise Refused('unsupported node protocol')
@@ -647,12 +669,12 @@ def pin_servers(config, resolver=socket.getaddrinfo, sanitize_insecure=False):
         # Some subscription banners use literal loopback endpoints. Keep DNS
         # answers subject to the same public-address checks as other endpoints.
         if loopback_literal(server):
-            unavailable.append(node.get('name'))
+            loopback.append(node.get('name'))
             continue
         try:
             addresses = public_addresses(resolver, server, port)
         except OSError:
-            unavailable.append(node.get('name'))
+            unresolved.append(node.get('name'))
             continue
         node['lf-source-server'] = server
         node['server'] = addresses[0]
@@ -668,9 +690,12 @@ def pin_servers(config, resolver=socket.getaddrinfo, sanitize_insecure=False):
     if not nodes:
         raise Refused('empty nodes')
     # The resolution limit applies to nodes eligible under the TLS policy.
+    unavailable = unresolved + loopback
     if len(unavailable) > max(1, (len(nodes) + len(unavailable)) // 5):
         raise Refused('node resolution')
     dropped = excluded + unavailable
+    if counts is not None:
+        counts.update(unresolved=len(unresolved), loopback=len(loopback), unapproved_tls=len(excluded))
     document['proxies'] = nodes
     prune_groups(document, set(dropped))
     return yaml.safe_dump(document, allow_unicode=True, sort_keys=True).encode(), len(dropped)
@@ -707,8 +732,9 @@ def prepare(request, download=None, resolver=socket.getaddrinfo):
         hashes['provider:' + name] = hashlib.sha256(payloads[name]).hexdigest()
     source = step('render', normalize, document, payloads,
                   policy.get('lf-private-targets', {}).get('delay-test-url'))
-    pinned_config, dropped = step('pin-addresses', pin_servers, yaml.safe_dump(source).encode(),
-                                  resolver, request.get('sanitize_insecure') is True)
+    drop_counts = {}
+    pinned_config, _ = step('pin-addresses', pin_servers, yaml.safe_dump(source).encode(),
+                            resolver, request.get('sanitize_insecure') is True, drop_counts)
     pinned = load(pinned_config)['proxies']
     retained = {node['name'] for node in pinned}
     removed = {node['name'] for node in source['proxies']} - retained
@@ -718,8 +744,9 @@ def prepare(request, download=None, resolver=socket.getaddrinfo):
     config = step('render', render, source, {}, policy, request.get('forced_domains', []),
                   request.get('probe_domains', []), request.get('remote_only_catchall', False),
                   source=accepted_source, egress_id=request.get('egress_id'))
-    dropped += len(source['proxies']) - len(accepted_source['proxies'])
-    return {'yaml': config.decode(), 'responses': hashes, 'dropped': dropped,
+    drop_counts['unapproved_transport'] = len(source['proxies']) - len(accepted_source['proxies'])
+    return {'yaml': config.decode(), 'responses': hashes, 'dropped': sum(drop_counts.values()),
+            'drop_counts': drop_counts,
             'source_data': json.dumps(accepted_source, sort_keys=True, ensure_ascii=False),
             'egress_id': selected_egress(load(config))}
 
