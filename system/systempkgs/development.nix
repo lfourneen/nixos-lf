@@ -43,6 +43,9 @@
     # Go
     go
 
+    # .NET
+    dotnet-sdk
+
     # FPGA / HDL
     verible
     svls
