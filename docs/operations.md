@@ -224,6 +224,7 @@ Starting only `clash-verge` in A does not authorize a core.
 | `proxy-status --plain` | Plain text suitable for logs |
 | `proxy-status --json` | Structured status |
 | `proxy-inspect` | Passive service, link, queue and resource diagnostics |
+| `proxy-inspect --posture` | Listener bindings, declared ingress and local trust settings |
 | `egress-audit` | Additional active network probes |
 
 Use `--no-color` or `NO_COLOR` to disable color in the status panel.
@@ -233,6 +234,17 @@ These are independent permission planes.
 A restricted native policy combined with broad core DIRECT ranges still allows clients reaching that local proxy inlet to use those core ranges.
 For host application LAN restriction, configure both `directEgress.mode="restricted"` and `localTargetCidrs=[]`, then declare the required grants.
 `proxy-inspect` reports command-failure categories and exit codes without exposing arbitrary service stderr.
+
+`proxy-inspect --posture` shows IPv4 and IPv6 listeners in the caller's network namespace.
+It reports binding and identity separately from the declared ingress rules for LAN, tailnet and routed guests.
+The ingress columns describe policy, while live reachability also depends on network state, peer authorization and service configuration.
+A proxy-port hint is a prompt for review. The command does not connect to listeners.
+Use `--json` to include structured results and inspect available Unix socket metadata for the declared control, browser and container endpoints.
+
+For startup trust overrides, use `proxy-inspect --posture --pid PID` or `sudo proxy-inspect --posture --privileged` for the selected system units.
+The report includes only tracked variable names and comparison status. It also shows the system CA bundle digest, SSH state and a summary of available Tailscale settings.
+Unavailable fields remain unknown. Run the command in the desktop session to include its stored proxy mode when available.
+The desktop configuration asserts that OpenSSH stays disabled and that its declared host ingress omits TCP/22.
 
 ## Remote desktop
 

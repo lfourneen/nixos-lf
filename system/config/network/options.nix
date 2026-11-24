@@ -201,6 +201,13 @@
       '';
     };
 
+    hostIngress = lib.mkOption {
+      type = lib.types.attrs;
+      internal = true;
+      readOnly = true;
+      description = "Declared host ingress roles for local diagnostics and host policy checks.";
+    };
+
     tailnetTcpPorts = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "47984" "47989" "48010" ];

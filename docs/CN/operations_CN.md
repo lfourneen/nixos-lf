@@ -220,6 +220,7 @@ A 中仅启动 `clash-verge` 不会授权核心。
 | `proxy-status --plain` | 适合日志的纯文本 |
 | `proxy-status --json` | 结构化状态 |
 | `proxy-inspect` | 服务、链路、队列和资源的被动诊断 |
+| `proxy-inspect --posture` | 监听绑定、声明的入站策略和本机信任状态 |
 | `egress-audit` | 额外的主动网络探测 |
 
 `--no-color` 或 `NO_COLOR` 可关闭状态面板的颜色。
@@ -228,6 +229,17 @@ A 中仅启动 `clash-verge` 不会授权核心。
 这些权限相互独立：原生 restricted 与宽泛核心 DIRECT 范围并用时，连接本地代理入口的客户端仍可使用核心授权。
 限制宿主应用访问内网时，应同时审阅 `directEgress.mode="restricted"` 和 `localTargetCidrs=[]`，再声明必需授权。
 `proxy-inspect` 报告命令失败分类及退出码，不输出任意服务 stderr。
+
+`proxy-inspect --posture` 查看调用者所在网络命名空间的 IPv4 和 IPv6 监听。
+它分别显示绑定和身份，以及 LAN、tailnet 和路由访客的入站声明。
+入站列描述策略，实际可达性还取决于网络状态、对端授权和服务配置。
+代理端口提示用于人工复核，命令不会连接监听端口。
+用 `--json` 获取结构化结果，并查看声明的控制器、浏览器和容器 Unix socket 元数据。
+
+用 `proxy-inspect --posture --pid PID` 查看特定进程的启动环境，或用 `sudo proxy-inspect --posture --privileged` 检查指定系统单元。
+报告只列跟踪的变量名及比对状态，还提供系统 CA bundle 摘要、SSH 状态和可读取的 Tailscale 设置摘要。
+无法读取的字段显示未知。需查看已保存的桌面代理模式时，从桌面会话运行。
+桌面配置通过断言保持 OpenSSH 关闭，并检查声明的宿主入站端口不含 TCP/22。
 
 ## 远程桌面
 

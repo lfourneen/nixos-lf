@@ -13,6 +13,7 @@ let
       ../../../system/config/network/firewall/bootstrap.nix
       ../../../system/config/network/firewall/alert.nix
       ../../../system/config/network/firewall/verify.nix
+      ../../../system/config/network/diagnostics
     ];
 
     users.users.lfour = { isNormalUser = true; uid = 1000; };
@@ -22,6 +23,10 @@ let
     users.users.dhcpcd = { isSystemUser = true; group = "dhcpcd"; };
     my.proxy.bootMode = bootMode;
     services.avahi.enable = lib.mkForce false;
+    my.hardening.guestNetworks.${config.my.machine.vmBridge} = {
+      sourceCidrs = [ config.my.machine.vmSubnet "fd42:122::/64" ];
+      gateways = [ config.my.machine.vmAddress "fd42:122::1" ];
+    };
     networking.interfaces.ens1.useDHCP = lib.mkForce false;
     networking.networkmanager.unmanaged = [ "interface-name:eth*" ];
 
@@ -41,6 +46,7 @@ let
     environment.etc."firewall-expected".source = config.my.proxy.expectedRules;
     environment.etc."firewall-check".source = config.my.proxy.rulesCheck;
     environment.etc."firewall-static".source = pkgs.writeText "lf-static-rules.nft" config.networking.nftables.ruleset;
+    environment.etc."posture-fixture.py".source = ./posture_fixture.py;
     environment.etc."snapshot-nft".source = pkgs.writeShellScript "snapshot-nft" ''
       if [ "$*" = "-j list ruleset" ] && [ -f /run/snapshot-test/result ]; then
         if mkdir /run/snapshot-test/capture 2>/dev/null; then
@@ -210,6 +216,71 @@ pkgs.testers.runNixOSTest {
                 assert_mode(machine, mode)
 
         if mode == "direct":
+            with subtest("live TCP/22 and unknown listeners are refused across ingress roles"):
+                roles = [
+                    ("lan", "ens1", "198.51.100.1/24", "198.51.100.2/24",
+                     "2001:db8:12::1/64", "2001:db8:12::2/64"),
+                    ("tail", "tailscale0", "100.64.0.1/24", "100.64.0.2/24",
+                     "fd7a:115c:a1e0::1/64", "fd7a:115c:a1e0::2/64"),
+                    ("guest", "virbr0", "192.168.122.1/24", "192.168.122.2/24",
+                     "fd42:122::1/64", "fd42:122::2/64"),
+                ]
+                fixture = "python3 /etc/posture-fixture.py"
+                sentinel = "fixture-private-credential"
+                private_ca = "/tmp/fixture-private-ca"
+                machine.succeed("systemd-run --unit=posture-fixture "
+                                f"--setenv=HTTPS_PROXY=http://test:{sentinel}@127.0.0.1:8788 "
+                                f"--setenv=NODE_EXTRA_CA_CERTS={private_ca} {fixture} server")
+                machine.wait_until_succeeds(f"{fixture} client 127.0.0.1 22", timeout=10)
+                machine.succeed(f"{fixture} client ::1 22")
+                for role, host, host4, peer4, host6, peer6 in roles:
+                    machine.succeed(f"ip netns add {role}; ip link add {host} type veth peer name peer netns {role}; "
+                                    f"ip addr add {host4} dev {host}; ip -6 addr add {host6} dev {host} nodad; "
+                                    f"ip -n {role} addr add {peer4} dev peer; ip -n {role} -6 addr add {peer6} dev peer nodad; "
+                                    f"ip link set {host} up; ip -n {role} link set peer up")
+                    for address in (host4.split("/")[0], host6.split("/")[0]):
+                        machine.succeed(f"{fixture} client {address} 22")
+                        for port in (22, 18080):
+                            machine.fail(f"ip netns exec {role} {fixture} client {address} {port}")
+
+                # The same live destination is reachable when the policy is
+                # deliberately opened on the physical test link.
+                machine.succeed("nft insert rule inet lf_filter input 'iifname \"ens1\" tcp dport 22 accept'")
+                machine.succeed(f"ip netns exec lan {fixture} client 198.51.100.1 22")
+                machine.succeed(f"ip netns exec lan {fixture} client 2001:db8:12::1 22")
+                machine.succeed("/etc/firewall-mode --once")
+                assert_mode(machine, mode)
+
+                pid = machine.succeed("systemctl show -p MainPID --value posture-fixture.service").strip()
+                cmd = f"proxy-inspect --posture --json --pid {pid}"
+                output = machine.succeed(cmd)
+                assert sentinel not in output and private_ca not in output, output
+                report = json.loads(output)
+                assert report["scope"]["host_namespace_confirmed"] is True
+                assert report["openssh"]["tcp_22"] is True
+                assert report["openssh"]["declared_tcp_22"] == {"lan": False, "tailnet": False, "guests": []}
+                assert report["openssh"]["units"]["sshd.service"]["load"] == "not-found"
+                assert report["ca_bundle"]["generation_match"] is True
+                rows = {(row["family"], row["port"]): row for row in report["listeners"] if row["protocol"] == "tcp"}
+                for family in (4, 6):
+                    assert (family, 18080) in rows, report
+                    listener = rows[family, 18080]
+                    assert listener["binding"] == "wildcard" and listener["declaration"] == "unlisted"
+                    assert listener["ingress_policy"] == {"lan": "denied", "tailnet": "denied", "guests": "denied"}
+                assert rows[4, 8788]["binding"] == "loopback" and rows[4, 8788]["proxy_port_hint"]
+                assert rows[4, 8788]["declaration"] == "unlisted"
+                assert rows[4, 33332]["declaration"] == "identity-mismatch"
+                assert rows[4, 33333]["declaration"] == "binding-mismatch"
+                env = report["environment"]["processes"][0]
+                assert env["available"] and {item["name"] for item in env["variables"]} >= {"HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"}
+                public = json.loads(machine.succeed(f"setpriv --reuid=1000 --clear-groups {cmd}"))
+                assert not public["environment"]["processes"][0]["available"]
+                journal = machine.succeed("journalctl -u posture-fixture --output=cat")
+                assert sentinel not in journal and private_ca not in journal
+                machine.succeed("systemctl stop posture-fixture.service")
+                for role, host, *_ in roles:
+                    machine.succeed(f"ip link delete {host}; ip netns delete {role}")
+
             with subtest("full snapshots remain private during capture and recover after interruption"):
                 machine.succeed(
                     "mkdir -m 0700 /run/snapshot-test; "

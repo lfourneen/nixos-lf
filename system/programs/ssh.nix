@@ -11,7 +11,7 @@
   };
 
   # Enable the OpenSSH daemon. DEPENDS ON:
-  #  - network.nix: uncomment the LAN/tailnet `tcp dport 22` firewall rules
+  #  - Review the desktop assertions and declared ingress in system/config/network.
   #  - secrets.yaml already holds ssh_host_ed25519_key + ssh_authorized_keys
   #    (add/rotate with: sops set system/secrets/secrets.yaml).
   #    btrfs-rollback wipes /etc every boot, so host keys MUST come from sops

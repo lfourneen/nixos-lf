@@ -36,24 +36,19 @@ let
   trustedLanCidrs = [
   ];
 
-  # Ports a trusted peer may reach.
-  hostServices = src: ''
-    ${src} udp dport 5353 accept                            # mDNS/Avahi
-    ${src} tcp dport 53317 accept                           # LocalSend
-    ${src} udp dport 53317 accept
-    ${src} tcp dport { 3389, 5900 } accept                  # RDP / VNC
-    ${src} tcp dport { 47984, 47989, 48010 } accept         # Sunshine streaming
-    ${src} udp dport { 47998, 47999, 48000, 48002, 48010 } accept
-    ${src} tcp dport 25565 accept                           # Minecraft
-    # ${src} tcp dport 22 accept                            # SSH (ssh.nix)
-  '';
+  trustedLanPorts = {
+    tcp = [ 53317 3389 5900 47984 47989 48010 25565 ];
+    udp = [ 5353 53317 47998 47999 48000 48002 48010 ];
+  };
   
   # The AP uses its own guest role; a Wi-Fi client remains an uplink.
   hotspotEnable = config.my.hardening.hotspot.enable;
   tailnetTcp = lib.concatStringsSep ", " config.my.hardening.tailnetTcpPorts;
   tailnetUdp = lib.concatStringsSep ", " config.my.hardening.tailnetUdpPorts;
   trustedLanSrc = ''iifname { "${wired}", "${wireless}" } ip saddr { ${join trustedLanCidrs} }'';
-  trustedLanRules = lib.optionalString (trustedLanCidrs != []) (hostServices trustedLanSrc);
+  trustedLanRules = lib.optionalString (trustedLanCidrs != [ ]) (lib.concatMapStrings
+    (protocol: ''${trustedLanSrc} ${protocol} dport { ${join (map toString trustedLanPorts.${protocol})} } accept
+    '') [ "tcp" "udp" ]);
 
   # TUN captures all L3 traffic (mihomo owns DNS/QUIC); false = plain
   # HTTP-proxy model. Toggles the per-app guards below. Single source of
@@ -415,6 +410,24 @@ in
   ];
 
   # The mode-dependent rules are applied by proxy-mode.service (see proxy/coordinator.nix).
+  my.hardening.hostIngress = {
+    tailnet = {
+      tcp = config.my.hardening.tailnetTcpPorts;
+      udp = config.my.hardening.tailnetUdpPorts;
+    };
+    guests = map (n: {
+      inherit (n) interface gateways hostTcpPorts hostUdpPorts;
+    }) guestPolicy.networks;
+    lan = {
+      tcp = lib.optionals (trustedLanCidrs != [ ]) trustedLanPorts.tcp;
+      udp = lib.optionals (trustedLanCidrs != [ ]) trustedLanPorts.udp;
+      transportPort = tailscalePort;
+    };
+    privateProxyPorts = lib.optionals transparentApplications [
+      port.gostHttp port.gostRedirect port.mihomoMixed port.mihomoStrict port.mihomoTproxy
+    ];
+  };
+
   my.proxy.proxyModeRules = proxyModeRules;
   my.proxy.blockedModeRules = blockedModeRules;
 

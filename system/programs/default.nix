@@ -15,8 +15,7 @@
     ./nix-ld.nix
     ./prgs.nix
     #./rustdesk.nix
-    # SSH is intentionally off; enabling it also needs the `tcp dport 22` rule
-    # in system/config/network/network.nix.
+    # The desktop SSH policy is declared in system/config/network/host.nix.
     #./ssh.nix
     ./sops.nix
     ./steam.nix

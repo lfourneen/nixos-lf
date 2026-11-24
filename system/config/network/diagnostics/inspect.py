@@ -174,9 +174,29 @@ def main():
     view = parser.add_mutually_exclusive_group()
     view.add_argument("--policy-only", action="store_true")
     view.add_argument("--drops", action="store_true")
+    view.add_argument("--posture", action="store_true", help="show listeners and trust settings")
+    parser.add_argument("--json", action="store_true", help="output the posture view as JSON")
+    parser.add_argument("--privileged", action="store_true", help="include selected units' startup environment keys")
+    parser.add_argument("--pid", type=int, action="append", default=[], help="inspect selected startup environment keys")
     parser.add_argument("--deep", action="store_true")
     args = parser.parse_args()
     settings = read_json(args.settings)
+    if (args.json or args.privileged or args.pid) and not args.posture:
+        parser.error('--json, --privileged and --pid require --posture')
+    if args.posture:
+        if args.sample_seconds or args.deep:
+            parser.error('--posture cannot be combined with --sample-seconds or --deep')
+        if len(args.pid) > 8 or any(pid <= 0 for pid in args.pid):
+            parser.error('--pid accepts up to eight positive process IDs')
+        spec = importlib.util.spec_from_file_location('network_posture', settings['posture']['script'])
+        posture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(posture)
+        report = posture.collect(settings, command, read_json, pids=args.pid, privileged=args.privileged)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print('\n'.join(posture.format_report(report)))
+        return 0
     if args.drops:
         if args.sample_seconds or args.deep:
             parser.error('--drops cannot be combined with --sample-seconds or --deep')

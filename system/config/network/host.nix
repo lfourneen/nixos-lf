@@ -1,6 +1,27 @@
-{ config, ... }:
+{ config, lib, ... }:
 
+let
+  ingress = config.my.hardening.hostIngress;
+  includesSsh = port:
+    let
+      match = builtins.match "[[:space:]]*([0-9]+)([[:space:]]*-[[:space:]]*([0-9]+))?[[:space:]]*" (toString port);
+    in match != null && lib.toIntBase10 (builtins.elemAt match 0) <= 22
+      && lib.toIntBase10 (lib.defaultTo (builtins.elemAt match 0) (builtins.elemAt match 2)) >= 22;
+
+in
 {
+  assertions = [
+    {
+      assertion = !config.services.openssh.enable;
+      message = "The desktop host does not provide OpenSSH.";
+    }
+    {
+      assertion = !lib.any includesSsh (ingress.tailnet.tcp ++ ingress.lan.tcp)
+        && !lib.any (guest: lib.any includesSsh guest.hostTcpPorts) ingress.guests;
+      message = "The desktop host does not declare TCP/22 ingress.";
+    }
+  ];
+
   # This host trusts its configured subscription sources. Reusable modules and
   # VM fixtures retain the strict option default.
   my.proxy.profileRefreshPolicy = "auto";

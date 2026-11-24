@@ -586,10 +586,26 @@ let
       '';
 
       security-policy-config = let
-        c = self.nixosConfigurations.lfour.config;
+        host = self.nixosConfigurations.lfour;
+        c = host.config;
         ports = c.my.machine.ports;
         activation = c.system.activationScripts."hermes-agent-setup".text;
+        policyAssertion = cfg: message:
+          (pkgs.lib.findFirst (check: check.message == message) { assertion = false; } cfg.assertions).assertion;
+        noSsh = "The desktop host does not provide OpenSSH.";
+        noSshIngress = "The desktop host does not declare TCP/22 ingress.";
+        withSsh = (host.extendModules { modules = [ { services.openssh.enable = true; } ]; }).config;
+        withTailnetSsh = (host.extendModules {
+          modules = [ { my.hardening.tailnetTcpPorts = [ "21-23" ]; } ];
+        }).config;
+        withGuestSsh = (host.extendModules {
+          modules = [ { my.hardening.guestNetworks.${c.my.machine.vmBridge}.hostTcpPorts = [ 22 ]; } ];
+        }).config;
       in
+      assert policyAssertion c noSsh && policyAssertion c noSshIngress;
+      assert !(policyAssertion withSsh noSsh);
+      assert !(policyAssertion withTailnetSsh noSshIngress);
+      assert !(policyAssertion withGuestSsh noSshIngress);
       assert c.services.usbguard.presentDevicePolicy == "apply-policy";
       assert c.services.usbguard.IPCAllowedUsers == [ "root" ];
       assert c.services.usbguard.IPCAllowedGroups == [ "usbguard-admin" ];

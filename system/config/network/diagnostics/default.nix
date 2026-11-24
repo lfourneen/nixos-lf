@@ -1,7 +1,38 @@
-{ pkgs, config, ... }:
+{ pkgs, config, lib, ... }:
 
 let
   statusPython = pkgs.python3.withPackages (p: [ p.pyyaml ]);
+  machine = config.my.machine;
+  proxy = config.my.proxy;
+  desktopUid = config.users.users.${machine.desktopUser}.uid;
+  proxyEnv = import ../proxy/env.nix { inherit lib; };
+
+  environmentKeys = proxyEnv.unsetNames ++ [
+    "NODE_USE_ENV_PROXY" "NODE_EXTRA_CA_CERTS" "SSL_CERT_FILE" "SSL_CERT_DIR"
+    "CURL_CA_BUNDLE" "REQUESTS_CA_BUNDLE" "GIT_SSL_CAINFO"
+  ];
+
+  systemdEnvironment = unit:
+    lib.mapAttrs (_: value: builtins.hashString "sha256" (toString value))
+      (lib.filterAttrs (key: _: builtins.elem key environmentKeys) config.systemd.services.${unit}.environment);
+  units = lib.filter (unit: builtins.hasAttr unit config.systemd.services) [
+    "hermes-agent" "hermes-backend" "gost-relay"
+  ];
+
+  socketUnit = name: let socket = config.systemd.sockets.${name}.socketConfig; in {
+    path = socket.ListenStream;
+    user = socket.SocketUser or "root";
+    group = socket.SocketGroup or null;
+    mode = socket.SocketMode;
+  };
+
+  listener = service: user: protocol: address: port: {
+    inherit service user protocol address port;
+  };
+
+  dualWildcard = service: user: protocol: port:
+    map (address: listener service user protocol address port) [ "0.0.0.0" "::" ];
+
   settings = pkgs.writeText "proxy-inspect.json" (builtins.toJSON {
     state_tool = "${../proxy/state.py}";
     profiles = "${config.users.users.${config.my.machine.desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev/profiles.yaml";
@@ -11,6 +42,40 @@ let
     ethtool = "${pkgs.ethtool}/bin/ethtool";
     nft = "${pkgs.nftables}/bin/nft";
     systemctl = "${pkgs.systemd}/bin/systemctl";
+
+    posture = {
+      script = ./posture.py;
+      listenerModule = ../proxy/listeners.py;
+      listenerSettings = proxy.listenerSettings;
+      ingress = config.my.hardening.hostIngress;
+      caBundle = config.security.pki.caBundle;
+      inherit desktopUid environmentKeys;
+      environmentUnits = lib.genAttrs units systemdEnvironment;
+      tailscale = if config.services.tailscale.enable then lib.getExe config.services.tailscale.package else null;
+      dconf = "${pkgs.dconf}/bin/dconf";
+      declarations =
+        lib.optionals (config.my.hardening.tailscale.ingressPort != null)
+          (dualWildcard "tailscaled" "root" "udp" config.my.hardening.tailscale.ingressPort)
+        ++ lib.optionals config.services.avahi.enable (dualWildcard "avahi-daemon" "avahi" "udp" 5353)
+        ++ lib.optionals config.services.sunshine.enable
+          (dualWildcard "sunshine" machine.desktopUser "tcp" (lib.toIntBase10 (toString (config.services.sunshine.settings.port or 47989))))
+        ++ lib.optionals (config.my.hardening.socketGuestUsers != [ ] || proxy.controlledSources)
+          (map (protocol: (listener "unbound-infrastructure" null protocol "127.0.0.1" machine.ports.unboundInfrastructure)
+            // { uids = [ machine.uids.unboundInfrastructure ]; }) [ "tcp" "udp" ]);
+      unix = lib.optionalAttrs config.programs.clash-verge.enable {
+        core-controller = { path = "/run/clash-verge-rev/core/mihomo.sock"; uid = machine.uids.clashCore; };
+        gui-controller = {
+          path = "/run/user/${toString desktopUid}/clash-verge-rev/verge-mihomo.sock";
+          uid = desktopUid;
+          group = "clash-core";
+          mode = "0600";
+        };
+      } // lib.optionalAttrs (config.systemd.sockets ? clash-strict) {
+        strict-browser = socketUnit "clash-strict";
+      } // lib.optionalAttrs (config.systemd.sockets ? hermes-containers) {
+        hermes-containers = socketUnit "hermes-containers";
+      };
+    };
 
     policy = {
       runtimeRouting = config.my.proxy.runtimeRouting;

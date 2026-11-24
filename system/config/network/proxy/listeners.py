@@ -9,10 +9,11 @@ import subprocess
 import sys
 
 
-def snapshot(ss, protocols, run=subprocess.run):
+def snapshot(ss, protocols, run=subprocess.run, *, family=None):
     sockets = []
     for protocol in sorted(protocols):
-        result = run([ss, '-H', '-lne' + ('t' if protocol == 'tcp' else 'u')],
+        result = run([ss, *([f'-{family}'] if family else []),
+                      '-H', '-lne' + ('t' if protocol == 'tcp' else 'u')],
                      text=True, capture_output=True, timeout=2, check=True)
         for line in result.stdout.splitlines():
             fields = line.split()
@@ -35,6 +36,9 @@ def snapshot(ss, protocols, run=subprocess.run):
                             'uid': int(uid[1]) if uid else 0,
                             'cgroup': cgroup[1] if cgroup else None,
                             'extended': inode is not None})
+            if family == 6:
+                v6only = re.search(r'\bv6only:([01])\b', line)
+                sockets[-1]['ipv6_only'] = v6only[1] == '1' if v6only else None
     return sockets
 
 

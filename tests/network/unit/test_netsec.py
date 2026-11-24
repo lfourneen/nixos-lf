@@ -35,6 +35,7 @@ MODULE_PATHS = {'alerts': 'system/config/network/firewall/alerts.py',
  'guest_policy': 'system/config/network/guests/guest_policy.py',
  'health': 'system/config/network/proxy/health.py',
  'inspect': 'system/config/network/diagnostics/inspect.py',
+ 'posture': 'system/config/network/diagnostics/posture.py',
  'link': 'system/config/network/identity/link.py',
  'link_identity': 'system/config/network/identity/link_identity.py',
  'listeners': 'system/config/network/proxy/listeners.py',
@@ -2491,6 +2492,63 @@ class SubscriptionAndStatusTests(unittest.TestCase):
         status = module('status')
         displayed = dict(status.rows({'ready': True, 'mode': 'proxy', 'target': 'proxy'}))
         self.assertEqual(displayed['Publisher signature'], 'Not checked · verification is not implemented')
+
+
+class PostureTests(unittest.TestCase):
+    def test_unix_metadata_refuses_symlinked_parents(self):
+        posture = module('posture')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real = root / 'real'
+            real.mkdir()
+            (real / 'endpoint').touch()
+            (root / 'link').symlink_to(real, target_is_directory=True)
+            self.assertEqual(posture.unix_status({
+                'direct': {'path': real / 'endpoint'},
+                'linked': {'path': root / 'link' / 'endpoint'},
+            }), {'direct': {'status': 'not-a-socket'}, 'linked': {'status': 'unknown'}})
+
+    def test_scoped_listener_addresses_are_accepted(self):
+        posture = module('posture')
+        self.assertEqual(posture.socket_address('127.0.0.53%lo', 4), '127.0.0.53')
+        self.assertEqual(posture.socket_address('[fe80::1]%wlo1', 6), 'fe80::1')
+        self.assertEqual(posture.socket_address('fe80::1]%wlo1', 6), 'fe80::1')
+
+    def test_tailscale_reports_booleans_without_service_details(self):
+        posture = module('posture')
+        documents = iter([
+            dict(RunSSH=False, CorpDNS=False, RouteAll=True, PrivateNodeKey='fixture-key'),
+            {'Foreground': {'session-id': {
+                'Web': {'private.example': {}}, 'AllowFunnel': {'private.example': True},
+            }}},
+        ])
+
+        def command(_args):
+            return {'available': True, 'output': json.dumps(next(documents))}
+
+        self.assertEqual(posture.tailscale_status(command, '/fake/tailscale'),
+                         dict(ssh=False, accept_dns=False, accept_routes=True, serve=True, funnel=True))
+        empty = posture.tailscale_status(lambda _args: {'available': True, 'output': 'null'}, '/fake/tailscale')
+        self.assertEqual(empty, dict(ssh=None, accept_dns=None, accept_routes=None, serve=False, funnel=False))
+
+    def test_ingress_distinguishes_mode_and_family(self):
+        posture = module('posture')
+        policy = {
+            'lan': {'tcp': [], 'udp': [], 'transportPort': 41641},
+            'tailnet': {'tcp': ['47989'], 'udp': []},
+            'guests': [{'interface': 'vm', 'gateways': ['192.168.122.1'],
+                        'hostTcpPorts': [47989], 'hostUdpPorts': []}],
+            'privateProxyPorts': [33332],
+        }
+        row = dict(binding='wildcard', address='::', ipv6_only=False, protocol='tcp', port=47989)
+        self.assertEqual(posture.ingress_for(row, policy, 'proxy'),
+                         dict(lan='denied', tailnet='listed', guests=['vm']))
+        self.assertEqual(posture.ingress_for(dict(row, ipv6_only=True), policy, 'blocked'),
+                         dict(lan='denied', tailnet='denied', guests='denied'))
+        self.assertEqual(posture.ingress_for(row, policy, 'unknown'), dict.fromkeys(
+            ('lan', 'tailnet', 'guests'), 'unknown'))
+        self.assertEqual(posture.ingress_for(dict(row, protocol='udp', port=41641), policy, 'direct')['lan'],
+                         'marked-transport-only')
 
 
 if __name__ == "__main__":
