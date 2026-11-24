@@ -19,6 +19,50 @@ let
       --prefix PYTHONPATH : ${fixtureDefaults}
   '';
 
+  testPython = pkgs.python3.withPackages (p: [ p.mcp p.pyyaml ]);
+  proxy = import ../../system/config/network/proxy/env.nix { inherit (pkgs) lib; };
+  trustKeys = pkgs.writeText "hermes-trust-keys.json" (builtins.toJSON proxy.trustOverrideNames);
+
+  hostListeners = pkgs.writeText "hermes-host-listeners.py" ''
+    import os
+    from pathlib import Path
+    from select import select
+    import socket
+    import sys
+
+    def listen(family, address):
+        server = socket.socket(family)
+        if family == socket.AF_UNIX and not address.startswith("\0"):
+            Path(address).parent.mkdir(parents=True, exist_ok=True)
+        server.bind(address)
+        server.listen()
+        return server
+
+    Path("/var/lib/hermes/workspace/time-host-fixture").touch()
+    listeners = [
+        listen(socket.AF_UNIX, path) for path in (
+            "/run/user/1000/bus", "/run/hermes-containers/docker.sock",
+            "/run/clash-verge-rev/core/mihomo.sock", "\0hermes-time-fixture",
+        )
+    ] + [listen(socket.AF_INET, ("127.0.0.1", 9222)), listen(socket.AF_INET6, ("::1", 9222))]
+    proxy = listen(socket.AF_INET, ("127.0.0.1", int(sys.argv[1])))
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify:
+        notify.sendto(b"READY=1", os.environ["NOTIFY_SOCKET"])
+    while True:
+        for server in select(listeners + [proxy], [], [])[0]:
+            connection, _ = server.accept()
+            with connection:
+                if server == proxy:
+                    connection.settimeout(2)
+                    with connection.makefile("rb") as request:
+                        absolute = request.readline().startswith(b"GET http://gost-fixture.invalid/")
+                        if absolute:
+                            for line in request:
+                                if line == b"\r\n":
+                                    break
+                            connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\napproved-proxy")
+  '';
+
   probeSkill = pkgs.writeText "probe-hermes-skill.py" ''
     import errno
     import os
@@ -64,19 +108,37 @@ let
     [ "/var/lib/hermes/.hermes/skills" "700" ]
   ];
 
-in
-pkgs.testers.runNixOSTest {
-  name = "hermes-activation";
-
-  node.specialArgs = { inherit inputs; };
-
-  nodes.machine =
-    { lib, ... }:
+  fixture =
+    { config, lib, ... }:
+    let
+      mode = if config.my.proxy.transparentApplications then "transparent" else "compat";
+      ca.SSL_CERT_FILE = config.security.pki.caBundle;
+      approvedProxy = proxy.gostHttpSlash config.my.machine.ports.gostHttp;
+      gatewayEnv = ca // lib.optionalAttrs (mode == "compat") {
+        HTTP_PROXY = approvedProxy;
+        HTTPS_PROXY = approvedProxy;
+        http_proxy = approvedProxy;
+        https_proxy = approvedProxy;
+        NO_PROXY = proxy.noProxy {
+          privateV4 = config.my.machine.privateV4;
+          extra = [ "192.168.1.1" "*.local" ];
+        };
+      };
+      expected = pkgs.writeText "hermes-expected-env.json" (builtins.toJSON [
+        proxy.trustOverrideNames gatewayEnv ca
+      ]);
+      injection = lib.genAttrs proxy.trustOverrideNames (_: "fixture");
+      injectEnv = {
+        PassEnvironment = proxy.trustOverrideNames ++ [ "MANAGER_PROBE" ];
+        EnvironmentFile = "/etc/hermes-env-fixture";
+      };
+    in
     {
       imports = [
         ../../system/config/machine.nix
         inputs.hermes-agent.nixosModules.default
         ../../system/programs/hermes/hermes.nix
+        ../../system/programs/hermes/time.nix
 
         # Host facts that this repository's configuration normally provides.
         {
@@ -85,23 +147,54 @@ pkgs.testers.runNixOSTest {
             default = "/run/secrets/rendered/hermes.env";
           };
           options.my.proxy.transparentApplications = lib.mkEnableOption "transparent application routing";
+          options.my.proxy.fakeIpNet = lib.mkOption {
+            type = lib.types.str;
+            default = "198.18.0.0/16";
+          };
         }
       ];
 
       config = {
         system.stateVersion = "26.05";
+        time.timeZone = "Pacific/Auckland";
         virtualisation.memorySize = 2048;
         services.hermes-agent.package = lib.mkForce (lib.makeOverridable
-          (_: (pkgs.writeShellScriptBin "hermes" "exit 0").overrideAttrs (_: {
+          (_: (pkgs.writeShellScriptBin "hermes" ''
+            exec ${lib.getExe testPython} ${./hermes-startup-probe.py} ${expected} ${mode} "$@"
+          '').overrideAttrs (_: {
             passthru.hermesVenv = fixturePython;
           })) { });
         services.hermes-agent.extraPackages = lib.mkForce [ ];
         services.hermes-agent.restart = lib.mkForce "no";
-        users.users.lfour = { isNormalUser = true; extraGroups = [ "hermes" ]; };
-        systemd.services.hermes-agent.postStart =
-          "${pkgs.python3}/bin/python3 ${probeSkill} agent-skill-ready";
-        systemd.services.hermes-backend.postStart =
-          "${pkgs.python3}/bin/python3 ${probeSkill} backend-skill-ready";
+        users.users.lfour = { uid = 1000; isNormalUser = true; extraGroups = [ "hermes" ]; };
+        systemd.managerEnvironment = injection // { MANAGER_PROBE = "present"; };
+        environment.etc."hermes-env-fixture".text = lib.concatStringsSep "\n" (
+          lib.mapAttrsToList (key: value: "${key}=${value}") (injection // { FILE_PROBE = "present"; })
+        );
+        systemd.services.hermes-fixture-listeners = {
+          wantedBy = [ "multi-user.target" ];
+          before = [ "hermes-agent.service" ];
+          serviceConfig.Type = "notify";
+          script = ''
+            ${lib.getExe' pkgs.util-linux "setpriv"} --reuid=lfour --regid=users --init-groups \
+              ${lib.getExe' pkgs.coreutils "install"} -D -m 0600 ${pkgs.writeText "firefox-fixture-prefs.js" "// fixture"} \
+              /home/lfour/.mozilla/firefox/fixture/prefs.js
+            exec ${lib.getExe pkgs.python3} ${hostListeners} ${toString config.my.machine.ports.gostHttp}
+          '';
+        };
+        systemd.services.hermes-agent = {
+          postStart = "${lib.getExe pkgs.python3} ${probeSkill} agent-skill-ready";
+          serviceConfig = injectEnv // {
+            EnvironmentFile = lib.mkForce [ config.sops.templates."hermes.env".path injectEnv.EnvironmentFile ];
+          };
+        };
+        systemd.services.hermes-backend = {
+          postStart = "${lib.getExe pkgs.python3} ${probeSkill} backend-skill-ready";
+          serviceConfig = injectEnv;
+        };
+        systemd.services."hermes-time@".serviceConfig = injectEnv // {
+          ExecStartPre = "${lib.getExe pkgs.python3} ${./hermes-time-probe.py} ${toString config.my.machine.uids.hermesTime} ${trustKeys}";
+        };
 
         # The service unit uses this file as EnvironmentFile. It holds a dummy
         # value for the test; the real secret comes from sops.
@@ -111,6 +204,13 @@ pkgs.testers.runNixOSTest {
         ];
       };
     };
+in
+pkgs.testers.runNixOSTest {
+  name = "hermes-activation";
+
+  node.specialArgs = { inherit inputs; };
+  nodes.machine = fixture;
+  nodes.transparent.imports = [ fixture { my.proxy.transparentApplications = true; } ];
 
   testScript = ''
     layout = ${builtins.toJSON layout}
@@ -162,6 +262,26 @@ pkgs.testers.runNixOSTest {
         machine.succeed("/run/current-system/activate")
         check_layout()
         assert len(backups()) == 1, backups()
+
+    with subtest("real time MCP and both launch environments"):
+        for vm in (machine, transparent):
+            ready = "/var/lib/hermes/workspace"
+            vm.wait_until_succeeds(f"test -f {ready}/time-mcp-ready -a -f {ready}/backend-env-ready", timeout=30)
+            vm.succeed("${pkgs.python3}/bin/python3 ${./hermes-time-probe.py} host")
+            assert vm.succeed("stat -c '%a %U %G' /run/hermes-time/mcp.sock").strip() == "660 root hermes-time-clients"
+            vm.fail("su -s /bin/sh lfour -c '${pkgs.socat}/bin/socat -u /dev/null UNIX-CONNECT:/run/hermes-time/mcp.sock'")
+            vm.succeed("""
+                set -eu
+                pid=$(systemctl show 'hermes-time@*.service' -p MainPID --value)
+                test \"$(stat -c %u /proc/$pid)\" = 1201
+                test \"$(stat -Lc %d:%i /proc/$pid/cwd)\" = \"$(stat -Lc %d:%i /proc/$pid/root/work)\"
+                test \"$(readlink /proc/$pid/fd/0)\" = \"$(readlink /proc/$pid/fd/1)\"
+                test $(ls /proc/$pid/fd | wc -l) -ge 3
+                if readlink /proc/$pid/fd/* | grep -Eq '^/(home|var|run)/'; then exit 1; fi
+                ${pkgs.python3}/bin/python3 ${./hermes-time-probe.py} process-env \"$pid\" ${trustKeys}
+                bridge=$(pgrep -P \"$(systemctl show hermes-agent -p MainPID --value)\" -x socat)
+                test -z \"$(tr '\\0' '\\n' </proc/$bridge/environ)\"
+            """)
 
     with subtest("managed skill and its parent are pinned inside both units"):
         ready = "/var/lib/hermes/workspace"

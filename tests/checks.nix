@@ -621,6 +621,10 @@ let
       assert c.systemd.services.hermes-agent.serviceConfig.Slice == "hermes.slice";
       assert c.systemd.services.hermes-backend.serviceConfig.Slice == "hermes.slice";
       assert c.systemd.services.hermes-containers.serviceConfig.Slice == "hermes.slice";
+      assert c.systemd.services."hermes-time@".serviceConfig.Slice == "untrusted.slice";
+      assert c.systemd.services."hermes-time@".serviceConfig.RestrictAddressFamilies == [ "AF_UNIX" ];
+      assert c.users.groups.hermes-time-clients.members == [ c.services.hermes-agent.user ];
+      assert !(builtins.elem "hermes-time" c.my.hardening.socketGuestUsers);
       assert c.systemd.slices.hermes.sliceConfig.SocketBindDeny
         == c.systemd.slices.user.sliceConfig.SocketBindDeny;
       assert c.my.secrets.systemAgeKey.enable == true;

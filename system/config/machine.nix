@@ -75,6 +75,7 @@
       gost = lib.mkOption { type = lib.types.int; default = 987; };
       clashLoopback = lib.mkOption { type = lib.types.int; default = 1199; };
       hermesContainers = lib.mkOption { type = lib.types.int; default = 1200; };
+      hermesTime = lib.mkOption { type = lib.types.int; default = 1201; };
     };
 
     # Ports the nftables rules and the services behind them must agree on.

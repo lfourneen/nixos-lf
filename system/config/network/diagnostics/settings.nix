@@ -6,10 +6,7 @@ let
   desktopUid = config.users.users.${machine.desktopUser}.uid;
   proxyEnv = import ../proxy/env.nix { inherit lib; };
 
-  environmentKeys = proxyEnv.unsetNames ++ [
-    "NODE_USE_ENV_PROXY" "NODE_EXTRA_CA_CERTS" "SSL_CERT_FILE" "SSL_CERT_DIR"
-    "CURL_CA_BUNDLE" "REQUESTS_CA_BUNDLE" "GIT_SSL_CAINFO"
-  ];
+  environmentKeys = proxyEnv.trustOverrideNames;
 
   systemdEnvironment = unit:
     lib.mapAttrs (_: value: builtins.hashString "sha256" (toString value))

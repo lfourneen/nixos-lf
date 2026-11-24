@@ -598,7 +598,6 @@ Gateway、dashboard 和 Hermes 登录 shell 将 `DOCKER_HOST` 指向该 API。
 Socket 模式为 0660，仅允许后端账户及 `hermes-container-clients` 成员访问。
 桌面继续使用自己的 Docker 入口。
 直接以 Hermes 运行的本地 terminal、MCP 和浏览器工具仍使用宿主代理策略。
-提交给专用 Docker 后端的工作负载才使用受限账户。
 
 后端清除继承的代理环境变量，使用过滤后的真实地址 DNS。
 A 允许公网 IPv4 直连，B 按宿主公网策略经过受管核心，C 切断应用流量。
@@ -628,6 +627,20 @@ sudo -u hermes env DOCKER_HOST=unix:///run/hermes-containers/docker.sock docker 
 
 递归修改所有权不能代替迁移。
 返回旧后端配置前，先停止专用 daemon 和两个 API unit。
+
+## Hermes time MCP
+
+`time` MCP 保留 stdio 接口，使用 NixOS 配置的时区。桥接进程清空环境后连接 `/run/hermes-time/mcp.sock`，该 socket 仅允许 root 和 `hermes-time-clients` 组访问。
+每条连接由 `untrusted.slice` 中以 `hermes-time` 账户启动的 `hermes-time@.service` 实例处理。服务可访问只读 Nix store 和临时 `/work`，私有网络命名空间内仅允许 Unix socket。
+
+Gateway 和 dashboard 在 systemd 启动时清除继承的代理与 CA 覆盖键，并使用声明的系统 CA bundle。
+兼容模式为 gateway 恢复受管的本地 Gost 代理。联网 MCP 和浏览器工具使用各自声明的选项。
+`proxy-inspect --posture` 报告进程启动环境。Hermes 在进程内加载 profile `.env`，其中的覆盖值可在启动后生效。
+
+```sh
+systemctl status hermes-time.socket
+systemctl list-units 'hermes-time@*.service'
+```
 
 ## 离线恢复
 

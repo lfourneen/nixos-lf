@@ -59,14 +59,26 @@ let
   # Proxy env for MCP servers that reach the network. Hermes only passes the
   # env keys listed per-server (plus safe defaults) to the MCP subprocess, so
   # every network-facing server has to opt the proxy in explicitly.
-  mcpProxyEnv = lib.optionalAttrs explicitProxy {
-    HTTP_PROXY = gostHttp;
-    HTTPS_PROXY = gostHttp;
+  proxyEnvironment = endpoint: {
+    HTTP_PROXY = endpoint;
+    HTTPS_PROXY = endpoint;
     # Lowercase twins: some clients read only these.
-    http_proxy = gostHttp;
-    https_proxy = gostHttp;
+    http_proxy = endpoint;
+    https_proxy = endpoint;
     NO_PROXY = noProxy;
   };
+  mcpProxyEnv = lib.optionalAttrs explicitProxy (proxyEnvironment gostHttp);
+
+  systemTrustEnv.SSL_CERT_FILE = config.security.pki.caBundle;
+  gatewayEnv = systemTrustEnv // lib.optionalAttrs explicitProxy (proxyEnvironment gostHttpSlash);
+
+  # systemd strips overrides from all sources first, including EnvironmentFile.
+  # Restore only the declared values. Keep them in .environment for posture checks.
+  trustedStart = overrides: argv: lib.escapeShellArgs (
+    [ (lib.getExe' pkgs.coreutils "env") ]
+    ++ lib.mapAttrsToList (key: value: "${key}=${value}") overrides
+    ++ argv
+  );
 
   # Agent Mail (Agently / Tencent QQ Mail). The package and its `agently-check`
   # upstream-drift checker live in agently-cli.nix; the skill beside it is
@@ -294,11 +306,6 @@ in
 
         sequential-thinking = {
           command = "${pkgs.mcp-server-sequential-thinking}/bin/mcp-server-sequential-thinking";
-          args = [];
-        };
-
-        time = {
-          command = "${pkgs.mcp-server-time}/bin/mcp-server-time";
           args = [];
         };
 
@@ -582,23 +589,15 @@ in
     after = lib.mkAfter [ "sops-install-secrets.service" ];
     wants = lib.mkAfter [ "sops-install-secrets.service" ];
 
-    environment = lib.optionalAttrs explicitProxy {
-      HTTP_PROXY = gostHttpSlash;
-      HTTPS_PROXY = gostHttpSlash;
-
-      # Lowercase twins: python-requests/httpx and some Go/Rust tooling read
-      # only these. ALL_PROXY is deliberately absent - clients that treat it as
-      # a SOCKS URL break on an http:// value. NO_PROXY matches the host list.
-      http_proxy = gostHttpSlash;
-      https_proxy = gostHttpSlash;
-      NO_PROXY = noProxy;
-    };
+    environment = gatewayEnv;
 
     serviceConfig = skillMounts // {
       User = "hermes";
       Group = "hermes";
       Slice = "hermes.slice";
       EnvironmentFile = config.sops.templates."hermes.env".path;
+      UnsetEnvironment = proxy.trustOverrideNames;
+      ExecStart = lib.mkForce (trustedStart gatewayEnv (common.gatewayArgv cfg));
       ProtectSystem = "strict";
       ProtectHome = lib.mkForce true;
       PrivateTmp = true;
@@ -622,16 +621,21 @@ in
     };
   };
 
-  systemd.services.hermes-backend.serviceConfig = skillMounts // {
-    Slice = "hermes.slice";
-    ProtectHome = lib.mkForce true;
-    ReadWritePaths = lib.mkForce writablePaths;
-    RestrictAddressFamilies = [
-      "AF_INET"
-      "AF_INET6"
-      "AF_UNIX"
-      "AF_NETLINK"
-    ];
+  systemd.services.hermes-backend = {
+    environment = systemTrustEnv;
+    serviceConfig = skillMounts // {
+      Slice = "hermes.slice";
+      UnsetEnvironment = proxy.trustOverrideNames;
+      ExecStart = lib.mkForce (trustedStart systemTrustEnv (common.backendArgv { inherit pkgs cfg; }));
+      ProtectHome = lib.mkForce true;
+      ReadWritePaths = lib.mkForce writablePaths;
+      RestrictAddressFamilies = [
+        "AF_INET"
+        "AF_INET6"
+        "AF_UNIX"
+        "AF_NETLINK"
+      ];
+    };
   };
 }
 

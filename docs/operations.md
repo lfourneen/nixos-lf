@@ -634,7 +634,6 @@ Gateway, dashboard and Hermes login shells set `DOCKER_HOST` to that API.
 Its socket is mode 0660 and restricted to the backend account and `hermes-container-clients` members.
 The desktop keeps its own Docker endpoint.
 Local terminal/MCP/browser tools running directly as Hermes keep the host proxy policy.
-Only workloads submitted to the dedicated Docker backend use its restricted account.
 
 The backend clears inherited proxy variables and uses the filtered real-address DNS path.
 A permits public IPv4 directly, B follows host public routing through the managed core, and C cuts application traffic.
@@ -663,6 +662,22 @@ To migrate the required container data:
 
 A recursive ownership change is not a substitute for this migration.
 Before returning to an older backend configuration, stop the dedicated daemon and both API units.
+
+## Hermes time MCP
+
+The `time` MCP keeps its stdio interface and uses the configured NixOS timezone.
+The stdio bridge clears its environment and connects to `/run/hermes-time/mcp.sock`, accessible to root and the `hermes-time-clients` group.
+Each connection starts a `hermes-time@.service` instance in `untrusted.slice` under the dedicated `hermes-time` account.
+The server has a read-only Nix store, temporary `/work`, and a private network namespace limited to Unix sockets.
+
+The gateway and dashboard clear inherited proxy and CA override keys at systemd startup and use the declared system CA bundle.
+Compatibility mode restores the approved local Gost proxy for the gateway. Networked MCP and browser tools use their declared per-tool options.
+`proxy-inspect --posture` reports the startup environment. Hermes loads its profile `.env` in-process, where overrides can take effect after startup.
+
+```sh
+systemctl status hermes-time.socket
+systemctl list-units 'hermes-time@*.service'
+```
 
 ## Offline recovery
 
