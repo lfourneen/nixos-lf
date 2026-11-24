@@ -325,6 +325,11 @@ func lfManagedProfileDefaults(raw *RawConfig) error {
 	if value, ok := policy["geodata-mode"].(bool); ok {
 		raw.GeodataMode = value
 	}
+	// A cached profile can predate the system's first TPROXY guest interface.
+	if port, ok := policy["tproxy-port"].(float64); ok && raw.TProxyPort == 0 &&
+		port >= 1 && port <= 65535 && port == float64(int(port)) {
+		raw.TProxyPort = int(port)
+	}
 	// Adopt only the known old empty-listener form. Foreign listeners still
 	// fail exact policy validation, and PATCH never performs this upgrade.
 	if len(raw.Listeners) == 0 {

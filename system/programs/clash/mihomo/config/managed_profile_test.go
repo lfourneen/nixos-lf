@@ -731,6 +731,25 @@ func TestLFManagedInjectedListenerPort(t *testing.T) {
 	}
 }
 
+func TestLFManagedTProxyPortUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(path, []byte(`{"tproxy-port":7896}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LF_MANAGED_PROXY_POLICY", path)
+	raw := DefaultRawConfig()
+	if _, err := lfValidateRaw(raw); err != nil || raw.TProxyPort != 7896 {
+		t.Fatalf("managed TPROXY upgrade selected port %d: %v", raw.TProxyPort, err)
+	}
+	raw.TProxyPort = 18080
+	if _, err := lfValidateRaw(raw); err == nil {
+		t.Fatal("accepted a TPROXY port outside the managed policy")
+	}
+	if err := ValidateManagedPatch(map[string]any{"tproxy-port": float64(0)}); err == nil {
+		t.Fatal("PATCH disabled the managed TPROXY port")
+	}
+}
+
 func TestLFManagedNumericListenerPortBounds(t *testing.T) {
 	for _, test := range []struct {
 		name string

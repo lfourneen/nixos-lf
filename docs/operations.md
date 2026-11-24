@@ -617,6 +617,19 @@ Otherwise the default `stable-ssid` retains the same MAC for the same SSID.
 For coordinated changes, declare `my.hardening.wifi.identities`, inspect `network-identity plan UUID`, then disable autoconnect and disconnect before `apply` or `restore`.
 See [Link identity](identity.md) for the complete procedure, wired policies and DHCP state preparation.
 
+## VirtualBox
+
+VirtualBox uses its native driver and graphical interface alongside the existing QEMU/KVM and libvirt tools. Sign in again after activating the configuration to receive `vboxusers` membership in your desktop session.
+
+In the VM network settings, select **Host-only Adapter** and choose `vboxnet0`. Set the guest to use DHCP. If the VirtualBox Network Manager has its built-in DHCP server enabled for `vboxnet0`, disable it so the system DHCP service can provide the lease.
+
+Guests use `192.168.56.1` as their gateway and managed DNS server. Public IPv4 goes direct in A and through TPROXY in healthy B. Mode C blocks public traffic. The restricted policy for `guestNetworks.vboxnet0` governs private targets and host services. Attaching another adapter changes the VM's network paths.
+
+```sh
+systemctl status vboxnet0.service vboxnet-dnsmasq.service
+VBoxManage list hostonlyifs
+```
+
 ## Hermes containers
 
 [`system/programs/hermes/`](../system/programs/hermes) groups the agent configuration, skills, mail CLI and container backend.

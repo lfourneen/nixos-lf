@@ -1228,7 +1228,7 @@ in
 
   # Deliver marked bridge packets locally to mihomo's tproxy socket.
   systemd.services.vm-transparent-proxy = lib.mkIf vmTproxy {
-    description = "TPROXY routing for libvirt VMs";
+    description = "TPROXY routing for selected guest interfaces";
     after = [ "network.target" "nftables.service" ] ++ lib.optional config.my.proxy.coreNetns "clash-core-network.service";
     wants = [ "nftables.service" ];
     wantedBy = [ "multi-user.target" ];

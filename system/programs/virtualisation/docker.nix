@@ -38,7 +38,6 @@ in
     docker.rootless = {
       enable = true;
       setSocketVariable = true;
-
       daemon.settings = {
         registry-mirrors = [
           "https://docker.m.daocloud.io"

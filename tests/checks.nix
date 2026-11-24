@@ -617,6 +617,11 @@ let
       assert c.systemd.coredump.settings.Coredump.ProcessSizeMax == "0";
       assert !(builtins.hasAttr "coredump-clean" c.systemd.services);
       assert c.virtualisation.libvirtd.qemu.runAsRoot == false;
+      assert c.virtualisation.virtualbox.host.enable && c.virtualisation.virtualbox.host.enableHardening;
+      assert c.virtualisation.virtualbox.host.addNetworkInterface && !c.virtualisation.virtualbox.host.enableKvm;
+      assert c.my.hardening.guestNetworks.vboxnet0.trust == "restricted";
+      assert builtins.elem "vboxnet0" c.my.proxy.guestInterfaces;
+      assert builtins.elem "vboxnet0" c.my.proxy.transparentGuestInterfaces;
       assert c.virtualisation.containerd.enable == true;
       assert c.systemd.services.hermes-agent.serviceConfig.Slice == "hermes.slice";
       assert c.systemd.services.hermes-backend.serviceConfig.Slice == "hermes.slice";

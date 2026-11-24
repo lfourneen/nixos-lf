@@ -582,6 +582,19 @@ Gost CONNECT 在核心中是 `HTTPS`。
 修改后需重建并有意导入/重启核心。
 A 字面门户、C 阻断与原生直连授权各自保持独立。
 
+## VirtualBox
+
+VirtualBox 使用原生驱动和图形界面，可与系统已有的 QEMU/KVM、libvirt 分别使用。激活配置后重新登录，让桌面会话取得 `vboxusers` 组权限。
+
+在虚拟机的网络设置中将网卡接到 **仅主机网络（Host-only Adapter）**，接口选择 `vboxnet0`，客户系统使用 DHCP。如果 VirtualBox 的网络管理器为 `vboxnet0` 启用了内置 DHCP，请关闭它，使用系统提供的 DHCP。
+
+访客通过 `192.168.56.1` 获取网关和受管 DNS。A 直连公网 IPv4，健康 B 经 TPROXY，C 阻断公网。私网和宿主服务按 `guestNetworks.vboxnet0` 的受限访客策略开放。接入其它虚拟网卡会改变该虚拟机的联网路径。
+
+```sh
+systemctl status vboxnet0.service vboxnet-dnsmasq.service
+VBoxManage list hostonlyifs
+```
+
 ## Hermes 容器
 
 [`system/programs/hermes/`](../../system/programs/hermes) 集中存放 agent 配置、技能、邮件 CLI 与容器后端。
