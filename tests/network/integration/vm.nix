@@ -80,7 +80,7 @@ pkgs.testers.runNixOSTest {
       ../../../system/config/network/network.nix
       ../../../system/config/network/proxy/coordinator.nix
       ../../../system/config/network/dns/upstream.nix
-      ../../../system/programs/gost/default.nix
+      ../../../system/programs/gost
       ../../../system/config/network/firewall/verify.nix
       ../../../system/config/network/firewall/alert.nix
       ../../../system/config/network/firewall/bootstrap.nix

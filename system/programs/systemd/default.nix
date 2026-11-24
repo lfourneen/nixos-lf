@@ -1,3 +1,6 @@
 {
-  imports = [ ./coredump.nix ./journald.nix ];
+  imports = [
+    ./coredump.nix
+    ./journald.nix
+  ];
 }

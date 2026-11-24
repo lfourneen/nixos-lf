@@ -1,7 +1,7 @@
 {
   imports = [
-    ./hermes.nix
     ./containers.nix
+    ./hermes.nix
     ./time.nix
   ];
 }

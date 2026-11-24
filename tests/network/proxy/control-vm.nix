@@ -67,9 +67,9 @@ pkgs.testers.runNixOSTest {
       ../../../system/config/network/dns/upstream.nix
       ../../../system/config/network/firewall/alert.nix
       ../../../system/config/network/firewall/verify.nix
-      ../../../system/programs/gost/default.nix
-      ../../../system/config/network/diagnostics/default.nix
-      ../../../system/programs/clash/service/runtime.nix
+      ../../../system/programs/gost
+      ../../../system/config/network/diagnostics
+      ../../../system/programs/clash/service
     ] ++ lib.optional assurance (import ../dns/assurance-config.nix {
       inherit sourceTls;
       localProbeAnswers = !recoveryOnly;

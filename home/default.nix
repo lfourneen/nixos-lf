@@ -2,20 +2,16 @@
 
 {
   imports = [
-    # Modules
-    inputs.noctalia.homeModules.default
-    
-    # Home-manager module
+    # Folders
+    ./config
+    ./programs
+    ./userpkgs
+
+    # Files
     ./home-manager.nix
 
-    # Users config
-    ./config
-    
-    # Users programs
-    ./programs
-    
-    # Users packages
-    ./userpkgs
+    # External modules
+    inputs.noctalia.homeModules.default
   ];
 }
 

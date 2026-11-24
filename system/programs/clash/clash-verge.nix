@@ -183,7 +183,7 @@ let
 
 in
 {
-  imports = [ ./service/runtime.nix ];
+  imports = [ ./service ];
 
   # Service mode drops the core to its pinned UID; the firewall permits its mark.
   # Source patches enforce the managed profile and TUN/guest redirect behavior.

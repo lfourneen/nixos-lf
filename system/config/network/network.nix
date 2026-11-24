@@ -333,7 +333,7 @@ in
     ./identity
     ./time.nix
     ./dns/socket-guest.nix
-    ./tailscale/transport.nix
+    ./tailscale
     ./proxy/core-network.nix
   ];
 

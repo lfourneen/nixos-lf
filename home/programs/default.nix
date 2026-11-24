@@ -1,9 +1,12 @@
 {
   imports = [
+    # Folders
+    ./firefox
+
+    # Files
     ./antigravity.nix
     ./codex.nix
     ./easyeda-bridge.nix
-    ./firefox
     ./llm.nix
     # ./opencode.nix
     ./vscode.nix

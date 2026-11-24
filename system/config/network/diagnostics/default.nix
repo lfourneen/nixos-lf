@@ -1,6 +1,6 @@
 {
   imports = [
-    ./commands.nix
     ./accounting.nix
+    ./commands.nix
   ];
 }
