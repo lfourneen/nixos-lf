@@ -114,7 +114,7 @@ let
     hermesConfig = "${hermesHome}/config.yaml";
   });
   skillAudit = pkgs.writeShellScriptBin "hermes-skill-audit" ''
-    exec ${pkgs.python3.withPackages (ps: [ ps.pyyaml ])}/bin/python3 ${../../../home/config/skill-path-audit.py} ${auditSettings} "$@"
+    exec ${pkgs.python3.withPackages (ps: [ ps.pyyaml ])}/bin/python3 ${../../../home/config/agent-skills/skill-path-audit.py} ${auditSettings} "$@"
   '';
 
   # Root-owned state check and layout creation. It only touches fixed entries

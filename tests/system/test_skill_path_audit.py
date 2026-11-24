@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 
-SCRIPT = Path(__file__).resolve().parents[2] / "home/config/skill-path-audit.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "home/config/agent-skills/skill-path-audit.py"
 
 
 class SkillPathAuditTests(unittest.TestCase):

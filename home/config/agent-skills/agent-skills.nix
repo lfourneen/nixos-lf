@@ -6,12 +6,13 @@ let
   # /etc/nixos after scripts/push-to-dir.sh. Editing the skill ships with the
   # next rebuild, like every other file in this repo.
   skills = {
-    safe-delete = ./agent-skills/safe-delete;
-    safe-process-stop = ./agent-skills/safe-process-stop;
-    nix-missing-tool = ./agent-skills/nix-missing-tool;
+    engineering-judgment = ./engineering-judgment;
+    safe-delete = ./safe-delete;
+    safe-process-stop = ./safe-process-stop;
+    nix-missing-tool = ./nix-missing-tool;
   };
   skillRoots = [
-    ".config/opencode/skill"
+    ".config/opencode/skills"
     ".dsh/skills"
     ".codex/skills"
   ];
@@ -28,7 +29,7 @@ let
     }) // lib.genAttrs [
       "${home}/.agents/skills"
       "${home}/.local/share/dsh-tui/skills"
-      "${home}/.config/opencode/skills"
+      "${home}/.config/opencode/skill"
       "${home}/.claude/skills"
       "/etc/codex/skills"
       "/etc/opencode/skills"

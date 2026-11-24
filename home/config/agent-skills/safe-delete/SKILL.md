@@ -1,42 +1,42 @@
 ---
 name: safe-delete
-description: 删除文件、目录或清理缓存时使用。核对删除范围，为用户数据选择回收站，并处理路径、恢复和权限问题。
+description: Use when deleting files or directories or clearing caches. Verify the deletion scope, use the trash for recoverable user data, and handle path, recovery, and permission issues.
 ---
 
-# 安全删除
+# Safe deletion
 
-按数据用途选择删除方式，在任务已授权的范围内执行。
+Choose a deletion method based on what the data is used for. Stay within the scope authorized for the task.
 
-## 确认目标
+## Verify the target
 
-查看目标及父目录，确认路径、文件类型和内容。递归操作还需检查子目录和挂载点，区分用户数据、可再生成的产物及其他项目文件。
+Inspect the target and its parent directory. Confirm the path, file type, and contents. For recursive operations, inspect subdirectories and mount points to distinguish user data, reproducible outputs, and other project files.
 
-- 符号链接：确认要删除链接本身还是其目标；`realpath` 只用于核对位置，不自动替换删除参数。
-- 变量和批量路径：检查空值与展开结果，先形成明确清单，再逐项处理。
-- 删除范围：以实际内容和任务用途判断，目录名为 `cache`、`dist` 或 `node_modules` 也需核对。
+- For a symlink, determine whether the task concerns the link or its target. Use `realpath` to verify the location and keep the original deletion argument unless the target itself is in scope.
+- For variables and batches, check for empty values and inspect the expanded paths. Build an explicit list before operating on each entry.
+- Determine scope from the actual contents and task. A directory named `cache`, `dist`, or `node_modules` still needs inspection.
 
-## 执行删除
+## Deletion methods
 
-用户文件和需要保留恢复机会的数据，显式使用回收站：
+Use the trash for user files and data that should remain recoverable.
 
 ```bash
 trash-put -- "$target"
 ```
 
-明确属于当前任务、可直接丢弃的临时文件、构建产物或缓存，可用 `rm -- "$target"`；删除目录时再增加递归参数。参数加引号，并用 `--` 结束选项。批量查找结果需经过核对，再交给删除命令。
+Use `rm -- "$target"` for disposable temporary files, build outputs, or caches confirmed to be in scope. Add a recursive flag only when deleting a directory. Quote paths and use `--` to end option parsing. Inspect the results of a bulk search before passing them to a deletion command.
 
-`trash-put` 缺失时先补齐工具；移动失败时查明原因，保留原文件，避免自动降级为永久删除。清空回收站只在任务明确要求时执行。
+If `trash-put` is missing, make the tool available first. If moving a file fails, keep it in place and diagnose the failure. Empty the trash only when the task explicitly calls for it.
 
-本机 Nushell 将 `rm` 包装为回收站操作；其他 shell 需要显式使用回收站命令。Python 删除接口、外部 `rm` 等不会被这个包装改写。
+On this machine, Nushell wraps `rm` as a trash operation. Other shells require an explicit trash command. Python deletion APIs and the external `rm` binary retain their usual behavior.
 
-## 验证与恢复
+## Verification and recovery
 
-用 `trash-list` 核对移入回收站的原路径与时间，需要恢复时使用 `trash-restore`。默认 home 回收站在 `${XDG_DATA_HOME:-$HOME/.local/share}/Trash`，文件位于 `files`，恢复信息位于 `info`；其他挂载点可能使用各自的回收站，应以工具记录为准。
+Use `trash-list` to check the original path and deletion time. Use `trash-restore` when recovery is needed. The default home trash is `${XDG_DATA_HOME:-$HOME/.local/share}/Trash`, with trashed files under `files` and recovery metadata under `info`. Other mounts may use their own trash directories. Use the records from the tool to identify the correct one.
 
-直接删除后检查预期目标已移除，父目录和相邻文件仍符合任务范围。说明结果时区分已移入回收站和永久删除。
+After permanent deletion, verify the intended target is gone and that the parent and neighboring paths are consistent with the requested scope. Report whether each target was moved to the trash or permanently deleted.
 
-## 处理权限拒绝
+## Permission errors
 
-暂停失败的删除，检查权限、挂载属性、文件标志和当前客户端的沙箱范围。本机的默认可写路径、受限目录和 immutable 文件见 [本机删除保护](references/local-protection.md)。
+Pause the failed operation and check file permissions, mount settings, file attributes, and the active client's sandbox. See [Local deletion protections](references/local-protection.md) for this machine's writable paths, restricted directories, and immutable files.
 
-确认原因后，在已有授权和客户端权限机制允许的范围内继续。解除 immutable、修改挂载或扩大沙箱范围需要相应授权；目标归属或删除范围不明时，先保留文件并报告缺少的信息。
+Once the cause is known, continue within the existing authorization and the client's permission mechanism. Clearing immutable flags, changing mounts, or extending sandbox access requires the corresponding authorization. If ownership or deletion scope is unclear, keep the target and report what needs to be established.

@@ -26,12 +26,19 @@ class DeploymentTests(unittest.TestCase):
             "home/config/user.nix", "home/config/assets/local.png",
             "overlays/default.nix", "overlays/packages.nix", "system/config/network/network.nix",
             "system/secrets/secrets.yaml",
+            "home/config/agent-skills/agent-skills.nix",
+            "home/config/agent-skills/default.nix",
+            "home/config/agent-skills/skill-path-audit.py",
             "home/config/agent-skills/safe-delete/SKILL.md",
             "home/config/agent-skills/safe-delete/references/local-protection.md",
             "home/config/agent-skills/safe-process-stop/SKILL.md",
             "home/config/agent-skills/nix-missing-tool/SKILL.md",
             "home/config/agent-skills/nix-missing-tool/references/project-flakes.md",
             "home/config/agent-skills/nix-missing-tool/references/native-dependencies.md",
+            "home/config/agent-skills/engineering-judgment/SKILL.md",
+            "home/config/agent-skills/engineering-judgment/references/design-review.md",
+            "home/config/agent-skills/engineering-judgment/references/debugging-and-regression.md",
+            "home/config/agent-skills/engineering-judgment/references/technical-documentation.md",
             "system/programs/hermes/hermes-skills/agently-mail/SKILL.md",
             "system/programs/hermes/hermes-skills/example/SKILL.md",
             "system/programs/hermes/hermes-skills/example/references/guide.md",
@@ -120,7 +127,9 @@ class DeploymentTests(unittest.TestCase):
         deployed_dirs = {str(p.relative_to(self.dest)) for p in self.dest.rglob("*")
                          if p.is_dir()}
         self.assertEqual(deployed_dirs, expected_dirs)
-        for skill in ("safe-delete", "safe-process-stop", "nix-missing-tool"):
+        for skill in (
+            "engineering-judgment", "nix-missing-tool", "safe-delete", "safe-process-stop",
+        ):
             skill_dir = self.dest / "home/config/agent-skills" / skill
             self.assertTrue((skill_dir / "SKILL.md").is_file(), skill_dir)
         references = self.dest / "home/config/agent-skills/nix-missing-tool/references"

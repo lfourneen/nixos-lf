@@ -1,72 +1,72 @@
-# 本机删除保护
+# Local deletion protections
 
-以下路径中的 `~` 表示当前用户的 home，与工作目录无关。路径表描述本机 DSH 启动器的默认范围；普通文件权限、immutable 标志及客户端自己的沙箱还可能进一步限制操作。
+In this reference, `~` refers to the current user's home directory. The path tables describe the default DSH launcher policy on this machine. File permissions, immutable flags, and client sandboxes can impose further restrictions.
 
-## DSH 默认可写路径
+## DSH writable paths
 
-| 用途 | 路径 |
-|---|---|
-| 项目和下载 | `~/Projects`、`~/Downloads` |
-| 应用状态和缓存 | `~/.cache`、`~/.config`、`~/.local`、`~/.dsh` |
-| JavaScript | `~/.npm`、`~/.bun`、`~/.yarn` |
+| Purpose | Paths |
+| --- | --- |
+| Projects and downloads | `~/Projects`, `~/Downloads` |
+| Application state and caches | `~/.cache`, `~/.config`, `~/.local`, `~/.dsh` |
+| JavaScript | `~/.npm`, `~/.bun`, `~/.yarn` |
 | Go | `~/go` |
-| Rust | `~/.cargo`、`~/.rustup` |
-| JVM | `~/.gradle`、`~/.m2` |
-| .NET | `~/.nuget`、`~/.dotnet` |
-| Haskell | `~/.cabal`、`~/.stack`、`~/.ghcup` |
+| Rust | `~/.cargo`, `~/.rustup` |
+| JVM | `~/.gradle`, `~/.m2` |
+| .NET | `~/.nuget`, `~/.dotnet` |
+| Haskell | `~/.cabal`, `~/.stack`, `~/.ghcup` |
 | OCaml | `~/.opam` |
-| Elixir | `~/.mix`、`~/.hex` |
-| Ruby | `~/.gem`、`~/.bundle` |
+| Elixir | `~/.mix`, `~/.hex` |
+| Ruby | `~/.gem`, `~/.bundle` |
 | PHP | `~/.composer` |
 | Conda | `~/.conda` |
-| 开发服务和部署工具 | `~/.kube`、`~/.docker`、`~/.terraform.d` |
-| Android | `~/Android`、`~/.android` |
-| 临时文件和运行接口 | `/tmp`、`/dev`、`/proc`、`/run/user/<当前用户 UID>` |
+| Development and deployment tools | `~/.kube`, `~/.docker`, `~/.terraform.d` |
+| Android | `~/Android`, `~/.android` |
+| Temporary files and runtime interfaces | `/tmp`, `/dev`, `/proc`, `/run/user/<uid>` |
 
-目录须在启动器应用规则时存在。进入其他工作目录不会自动扩大此表；符号链接也不会给表外目标增加写权限。
+Directories must exist when the launcher applies its policy. Access to an unlisted path is independent of the working directory and symlinks pointing to it.
 
-## DSH 默认限制写入的路径
+## DSH write restrictions
 
-上述范围之外默认只允许读取和执行，不允许创建、修改、重命名或删除。常见目标如下：
+Outside the writable paths, DSH allows reads and execution by default. Creation, modification, renaming, and deletion require a write grant.
 
-| 路径 | 默认行为 |
-|---|---|
-| `~/Documents`、`~/Videos`、`~/Music`、`~/Pictures`、`~/Desktop` | 不在 DSH 可写范围内。 |
-| `~/.ssh`、`~/.aws`、`~/.codex`、`~/.agents` | 不在 DSH 可写范围内。 |
-| `~/work`、`~/src`、`~/tmp` 等自行创建的目录 | 不因是工作目录或临时目录就获得写权限。 |
-| `/mnt`、`/media` 下的项目 | 默认没有写权限，需单独核对启动时是否已授予。 |
-| `/etc`、`/var`、`/nix/store` | 不在 DSH 可写范围内，且还受各自的系统权限约束。 |
+| Path | Default policy |
+| --- | --- |
+| `~/Documents`, `~/Videos`, `~/Music`, `~/Pictures`, `~/Desktop` | Outside DSH's writable paths. |
+| `~/.ssh`, `~/.aws`, `~/.codex`, `~/.agents` | Outside DSH's writable paths. |
+| User-created paths such as `~/work`, `~/src`, and `~/tmp` | Require a grant even when used as working or temporary directories. |
+| Projects under `/mnt` or `/media` | Check for an explicit launcher grant. |
+| `/etc`, `/var`, `/nix/store` | Outside DSH's writable paths and subject to system permissions. |
 
-例如，`~/Projects/demo` 属于默认可写范围，`~/work/demo` 不属于。表内的 `.config` 默认可写，但下节列出的凭据文件仍受 immutable 限制。将表外文件移入回收站也需要改动原目录，不会绕过写入限制。
+Moving an item into the trash requires write access to its original directory. The credentials below remain protected by immutable flags even inside a writable directory such as `~/.config`.
 
-此 Landlock 范围适用于经本机启动器运行的 DSH 及其后代。启动时设置 `DSH_NO_LANDLOCK=1` 会跳过该层，`DSH_EXTRA_RW` 可添加可写路径；两者都属于启动前的配置，排障时核对已有设置，不为完成删除自行调整。进程内后来改变同名环境变量不能解除已施加的规则。
+The Landlock policy applies to DSH processes started by this launcher and their descendants. At launch, `DSH_NO_LANDLOCK=1` disables that layer and `DSH_EXTRA_RW` adds writable paths. Inspect the existing launch settings when troubleshooting. Keep the policy in place during deletion. Changing those environment variables inside a running process has no effect on the rules already applied.
 
-单独启动的 Codex、OpenCode 或其他程序不自动受到这份 DSH 路径表约束；按当前客户端给出的可写目录和授权范围操作。反过来，经 DSH 启动并继承规则的子进程，即使程序名不同也仍受该层限制。
+Codex, OpenCode, and other programs launched independently follow their own writable paths and authorization rules. A child process launched under DSH inherits its Landlock policy regardless of the executable name.
 
-## immutable 文件保护
+## Immutable files
 
-本机 home-guard 默认给已有的以下文件设置 immutable 标志：
+The local home guard sets the immutable flag on existing files that match these paths by default.
 
 - `~/.ssh/id_*`
 - `~/.ssh/config`
 - `~/.ssh/authorized_keys`
 - `~/.config/sops/age/keys.txt`
 
-这项文件标志不依赖 DSH；Codex、OpenCode 和普通 shell 也会受其影响。文件带 `i` 时，修改、重命名和删除受限。它不递归锁定 home；`Documents`、`Videos`、`Music` 不在默认 immutable 列表。后来创建的匹配文件要等下一次应用规则。
+The flag applies independently of DSH and restricts modification, renaming, and deletion for all clients. The policy applies to configured targets individually. Newly created matching files pick up the flag the next time the rules run.
 
-用 `lsattr -d -- 目标路径` 检查当前是否带 `i`。目录带 `i` 只说明目录项增删改受限，不能据此认定子文件内容也全部不可修改。
+Use `lsattr -d -- "$target"` to check for `i`. The immutable flag on a directory restricts changes to its entries. Check individual files for their own flags.
 
-`home-guard lock` 和 `unlock` 作用于全部配置目标，没有按路径操作的接口。以普通用户运行时，所有子命令均会调用 sudo，包括 `status`。仅查看标志时使用 `lsattr`；解除保护需有对应授权。
+`home-guard lock` and `home-guard unlock` apply to every configured target. All subcommands, including `status`, invoke sudo when run as a regular user. Use `lsattr` to inspect flags. Obtain the corresponding authorization before clearing protection.
 
-## 回收站和删除命令
+## Trash behavior
 
-本机 Nushell 中的 `rm` 调用 `trash-put`。其他 shell 和程序内部的删除接口保持原有行为；需要回收站时显式调用 `trash-put`。
+The local Nushell `rm` invokes `trash-put`. Other shells and in-process deletion APIs retain their normal behavior. Call `trash-put` explicitly when trashing an item.
 
-home 回收站通常位于 `${XDG_DATA_HOME:-$HOME/.local/share}/Trash`，其中 `files` 保存文件，`info` 保存恢复信息。其他挂载点可能使用自己的回收站，统一用 `trash-list` 核对记录。
+The home trash usually lives at `${XDG_DATA_HOME:-$HOME/.local/share}/Trash`. The `files` directory holds trashed items and `info` holds recovery metadata. Other mounts may use their own trash directories. Use `trash-list` to check records.
 
-## 只读诊断
+## Read-only diagnostics
 
-将 `target` 设置为已核对的绝对目标路径，再检查实际权限：
+Set `target` to the verified absolute path and inspect the effective permissions.
 
 ```bash
 ls -ld -- "$target"
@@ -75,4 +75,4 @@ lsattr -d -- "$target"
 findmnt -T "$target"
 ```
 
-`Permission denied` 与 `Operation not permitted` 都不能单独确定原因，必要时再检查 ACL 及客户端报告的沙箱范围。沙箱内的挂载视图可能不同于宿主机；查询失败时记录尚未确认的事实，再按客户端权限机制处理。
+`Permission denied` and `Operation not permitted` can have different causes. Check ACLs and the client's sandbox if needed. The sandbox's view of mounts can differ from the host's. Record facts that could not be confirmed and use the active client's permission mechanism.

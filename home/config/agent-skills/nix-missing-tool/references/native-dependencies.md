@@ -1,32 +1,32 @@
-# 编译与运行时依赖
+# Build and runtime dependencies
 
-根据错误发生在编译、链接还是程序启动阶段选择处理方法。
+Identify whether the error occurs during compilation, linking, or program startup.
 
-## 编译缺头文件或链接库
+## Missing headers or linker libraries
 
-将编译工具和库放入同一开发环境。以 zlib 为例：
+Place the compiler tools and libraries in the same development environment. This example uses zlib.
 
 ```bash
 nix-shell -p pkg-config zlib --run \
   'cc main.c $(pkg-config --cflags --libs zlib) -o app'
 ```
 
-库包名、pkg-config 模块名和头文件名可能不同，先查包及其输出。手写 derivation 时按构建角色使用 `nativeBuildInputs` 和 `buildInputs`；交叉编译还需区分构建端工具与目标端库。
+The package name, pkg-config module name, and header name can differ. Look up the package and its outputs. In a derivation, use `nativeBuildInputs` and `buildInputs` according to the dependency's role. When cross-compiling, distinguish tools that run on the build machine from libraries for the resulting program.
 
-## 预编译程序无法启动
+## A prebuilt program fails to start
 
-先用 `file` 确认架构和文件类型。脚本检查 shebang；ELF 程序用 `patchelf --print-interpreter`、`patchelf --print-needed` 和 `patchelf --print-rpath` 检查加载器与依赖。
+Use `file` to check the architecture and file type. Inspect a script's shebang. For ELF programs, use `patchelf --print-interpreter`, `patchelf --print-needed`, and `patchelf --print-rpath` to inspect the loader and dependencies.
 
-本机提供 nix-ld，系统库目录为 `/run/current-system/sw/share/nix-ld/lib`。它用于使用系统 ELF 加载器路径的外来二进制；当前环境可直接检查：
+This machine provides nix-ld and the system library directory `/run/current-system/sw/share/nix-ld/lib`. nix-ld supports foreign binaries using the system ELF loader path. Inspect the active environment.
 
 ```bash
 printf 'NIX_LD=%s\nNIX_LD_LIBRARY_PATH=%s\n' "${NIX_LD:-}" "${NIX_LD_LIBRARY_PATH:-}"
 ls -ld -- /run/current-system/sw/share/nix-ld/lib
 ```
 
-将 `patchelf --print-interpreter` 输出的绝对路径作为目标，用 `ls -l -- 加载器路径` 检查它是否存在。路径存在且指向 nix-ld 时使用现有支持；缺库时为该进程补充 `NIX_LD_LIBRARY_PATH`。系统库目录或加载器缺失时，记录当前系统、架构和缺失路径，再选择适用的运行环境。
+Pass the absolute path from `patchelf --print-interpreter` to `ls -l -- <loader-path>`. If it exists and points to nix-ld, reuse that support. If a library is missing, extend `NIX_LD_LIBRARY_PATH` for the affected process. If the loader or system library directory is missing, record the system, architecture, and path before choosing a runtime environment.
 
-下面是临时 `.nix` 文件的示例，按实际缺失库调整并保存到 `/tmp/runtime-libs.nix`：
+Adapt this temporary expression to the missing libraries and save it as `/tmp/runtime-libs.nix`.
 
 ```nix
 let pkgs = import <nixpkgs> { };
@@ -37,10 +37,10 @@ in pkgs.mkShell {
 }
 ```
 
-用 `nix-shell /tmp/runtime-libs.nix --run '/程序的绝对路径'` 调用，与当前目录无关。示例保留了上述系统库目录；目录不存在的环境需去掉该条目并提供实际需要的库。临时表达式无需转成项目 Flake。
+Run `nix-shell /tmp/runtime-libs.nix --run '/absolute/path/to/program'` from any working directory. Drop the system library entry if that path is absent and provide the libraries the program needs. The temporary expression can remain outside the project Flake.
 
-Nix 打包的 Python、Node 等使用 store 中的加载器，不通过 nix-ld，因而不会自动采用 `NIX_LD_LIBRARY_PATH`。这类进程加载额外 `.so` 时优先补齐对应 Nix 包；确需 `LD_LIBRARY_PATH` 时，只在该进程范围加入所需库目录。
+Nix-packaged Python and Node use the store's loader and do not pick up `NIX_LD_LIBRARY_PATH` automatically. Prefer adding the relevant Nix package when these processes load an additional `.so`. If `LD_LIBRARY_PATH` is required, scope it to the affected process and include only the needed library directories.
 
-需要持久打包外来程序时，再选择 `autoPatchelfHook`、wrapper 或 FHS 环境。临时排障保留原二进制，先验证库路径方案。
+When packaging a foreign program persistently, consider `autoPatchelfHook`, a wrapper, or an FHS environment. For temporary troubleshooting, keep the original binary and verify the library-path configuration first.
 
-官方说明：[nix-ld 用法与解释器差异](https://github.com/nix-community/nix-ld#usage)。
+[nix-ld usage and loader behavior](https://github.com/nix-community/nix-ld#usage)

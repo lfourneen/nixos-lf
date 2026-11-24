@@ -1,12 +1,12 @@
 {
   imports = [
-    # floder
+    # folder
+    ./agent-skills
+    ./clash
     ./gnome
     ./niri
 
     # file
-    ./agent-skills.nix
-    ./clash
     ./dconf.nix
     ./neovim.nix
     ./nushell.nix

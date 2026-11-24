@@ -1,0 +1,8 @@
+{ ... }:
+
+{
+  imports = [
+    ./agent-skills.nix
+  ];
+
+}
