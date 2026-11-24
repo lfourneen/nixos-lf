@@ -556,7 +556,7 @@ C 在核心之前阻断普通应用，本地及远程授权都不能重新放行
 
 ## Gost 生命周期
 
-[default.nix](../../system/programs/gost/default.nix) 遵循模式原子状态，绑定前回收旧进程，不使用 `SO_REUSEPORT`，每端点要求唯一监听，并限制文件描述符、内存和任务数。
+[relay.nix](../../system/programs/gost/relay.nix) 遵循模式原子状态，绑定前回收旧进程，不使用 `SO_REUSEPORT`，每端点要求唯一监听，并限制文件描述符、内存和任务数。
 B 信任监督器健康结论并检查 mixed 监听身份。
 以被动 socket 观测代替连接透明入口，自连接检测作为后备。
 

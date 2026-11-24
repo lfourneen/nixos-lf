@@ -11,7 +11,7 @@
 稳定 Nixpkgs 提供 Gost、dnsmasq、Unbound 和 Firefox，Unstable 提供 Mihomo、Clash Verge GUI 和单独打包的 helper。
 GUI、helper 和核心的版本相互独立。
 
-[clash-verge.nix](../../system/programs/clash/clash-verge.nix) 构建定制核心/helper 并装入 GUI 包，[default.nix](../../system/programs/gost/default.nix) 构建定制 relay。
+[clash-verge.nix](../../system/programs/clash/clash-verge.nix) 构建定制核心/helper 并装入 GUI 包，[package.nix](../../system/programs/gost/package.nix) 构建定制 relay。
 
 两者以 `lib.fileset.toSource` 只收集 patcher、Go 代码和测试，避免无关仓库改动重建 Go 包。
 **新增补丁文件或测试时必须更新对应 fileset**，否则文件即使在仓库中也不会进入 builder。
@@ -34,11 +34,11 @@ Rust helper 在 `postPatch` 追加修改，保留继承的 Nixpkgs 处理。
 | dnsmasq | [default.nix](../../system/config/network/network.nix) 内联替换 `src/forward.c` | 返回 strict-order 终端 UDP SERVFAIL/REFUSED，保留 DNSSEC EDE |
 | Firefox 包 | [firefox.nix](../../home/programs/firefox/firefox.nix)、[guard.py](../../home/programs/firefox/guard.py)、[sandbox.py](../../home/programs/firefox/sandbox.py)、[scope.c](../../home/programs/firefox/scope.c) | 不可变 policy/AutoConfig/字体、预检、外层命名空间、过滤总线、门户身份及 Landlock/seccomp。无 Gecko 源码 patch |
 | Unbound / Chrony / 网络 | [default.nix](../../system/config/network/network.nix)、[time.nix](../../system/config/network/time.nix)、[网络模块](../../system/config/network) | 声明策略和仓库自有协调器。没有本地 Unbound/Chrony 源码补丁 |
-| 链路身份 | [default.nix](../../system/config/network/identity/default.nix)、[link_identity.py](../../system/config/network/identity/link_identity.py)、[partition.nix](../../system/hardware/partition.nix) | 协调 profile 身份、私有迁移/恢复、原生有线生命周期与 DHCPv6 共存。无上游源码 patch |
+| 链路身份 | [link-identity.nix](../../system/config/network/identity/link-identity.nix)、[wired.nix](../../system/config/network/identity/wired.nix)、[link_identity.py](../../system/config/network/identity/link_identity.py)、[partition.nix](../../system/hardware/partition.nix) | 协调 profile 身份、私有迁移/恢复、原生有线生命周期与 DHCPv6 共存。无上游源码 patch |
 | 防火墙生命周期 | [default.nix](../../system/config/network/network.nix)、[coordinator.nix](../../system/config/network/proxy/coordinator.nix)、[bootstrap.nix](../../system/config/network/firewall/bootstrap.nix) | 精确表归属、持锁原子替换、失败保留和显式表迁移 |
 | Tailscale 传输 | [transport.nix](../../system/config/network/tailscale/transport.nix)、[tailscale_contract.py](../../system/config/network/tailscale/tailscale_contract.py) | 正常系统构建强制检查上游 socket mark 约定。升级时检查 mark/后备/socket 变化并跑真实 CLI VM。没有 Tailscale 源码补丁 |
 | 直连例外 | [options.nix](../../system/config/network/options.nix)、[default.nix](../../system/config/network/network.nix)、[egress_policy.py](../../system/config/network/firewall/egress_policy.py) | 主体/socket 身份、NAT 前授权、规范 CIDR 校验、时间/DoT 范围及 root/GUI 共享私网排除。比较兼容和受限模式 |
-| 访客信任 | [policy.nix](../../system/config/network/guests/policy.nix)、[guest_policy.py](../../system/config/network/guests/guest_policy.py)、[socket-guest.nix](../../system/config/network/dns/socket-guest.nix)、[default.nix](../../system/programs/virtualisation/default.nix) | 接口/源角色、规范授权、主/委派 UID 归属、NAT 前真实地址 DNS、双向撤销及 rootless 启动器 |
+| 访客信任 | [policy.nix](../../system/config/network/guests/policy.nix)、[guest_policy.py](../../system/config/network/guests/guest_policy.py)、[socket-guest.nix](../../system/config/network/dns/socket-guest.nix)、[docker.nix](../../system/programs/virtualisation/docker.nix) | 接口/源角色、规范授权、主/委派 UID 归属、NAT 前真实地址 DNS、双向撤销及 rootless 启动器 |
 | Sunshine | [sunshine.nix](../../system/programs/sunshine.nix) | 随图形会话提供 Desktop，管理仅本机、关闭 UPnP。保留 CUDA，以禁止本地编译的方式验证所配置 CUDA 缓存中的精确包 |
 
 ## Mihomo
@@ -294,7 +294,7 @@ HTTP-only 探针必须解析出 IPv4 答案，不能仅接受非空诊断或 CNA
 
 ## 链路身份
 
-[default.nix](../../system/config/network/identity/default.nix) 和 [link_identity.py](../../system/config/network/identity/link_identity.py) 使用上游 NetworkManager/systemd/dhcpcd 接口，没有源码补丁。
+[link-identity.nix](../../system/config/network/identity/link-identity.nix)、[wired.nix](../../system/config/network/identity/wired.nix) 和 [link_identity.py](../../system/config/network/identity/link_identity.py) 使用上游 NetworkManager/systemd/dhcpcd 接口，没有源码补丁。
 
 升级时核对实际 nmcli 属性名及枚举格式、两个主机名开关、stable-id 替换量、DHCP 标识和 IPv6 地址生成。
 保留仅含身份字段的备份白名单、私有状态、断开/自动连接守卫及拒绝覆盖手工修改的行为。
@@ -312,7 +312,7 @@ HTTP-only 探针必须解析出 IPv4 答案，不能仅接受非空诊断或 CNA
 ### 源码兼容性检查
 
 [sources.json](../../system/config/network/maintenance/sources.json) 按组件记录维护入口、不变量和回归检查。
-[default.nix](../../system/config/network/maintenance/default.nix) 对实际选定包的源码、可用的 vendored 依赖摘要及主要 Nixpkgs 打包文件生成指纹。
+[fingerprints.nix](../../system/config/network/maintenance/fingerprints.nix) 对实际选定包的源码、可用的 vendored 依赖摘要及主要 Nixpkgs 打包文件生成指纹。
 
 正常系统构建要求这些输入匹配配置的源码基线。
 即使版本号未变，源码或 recipe 改变仍须检查兼容性。

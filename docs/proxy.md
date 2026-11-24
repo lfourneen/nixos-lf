@@ -587,7 +587,7 @@ Root services administer the host.
 
 ## Gost lifecycle
 
-[default.nix](../system/programs/gost/default.nix) follows the mode's atomic state.
+[relay.nix](../system/programs/gost/relay.nix) follows the mode's atomic state.
 It reaps the previous process before binding, avoids `SO_REUSEPORT`, requires exactly one listener per endpoint and limits descriptors, memory and tasks.
 In B it relies on the supervisor's health decision and rechecks the mixed listener identity.
 It uses passive socket observations rather than connecting to the transparent inlet, with a self-loop detector as a backstop.

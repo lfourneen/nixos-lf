@@ -3,6 +3,8 @@
 [English](../layout.md) | 简体中文 | [文档目录](README_CN.md)
 
 `system/` 管理系统服务与策略，`home/` 中的 Home Manager 模块管理桌面和用户应用。
+各模块目录以 `default.nix` 列出导入项，软件包、服务和设置放在被导入的模块中。
+overlay 入口使用直接导入来提供软件包 overlay 函数。
 
 ## 系统与桌面职责
 
@@ -45,7 +47,8 @@ Clash 的 `gui/` 保存系统包的 GUI 启动与默认值处理。
 `service/` 保存 helper 补丁、服务身份、核心启动器、授权快照和准备检查。
 `mihomo/` 按 `patches/`、`guard/`、`config/`、`controller/` 和 `tests/` 组织构建载荷，由软件包 fileset 收集并交给构建期 patcher。
 
-Gost 在自己的程序目录内使用 `patches/`、`src/` 和 `tests/`，默认模块连接软件包与 relay 服务。
+Gost 在自己的程序目录内使用 `patches/`、`src/` 和 `tests/`。
+[package.nix](../../system/programs/gost/package.nix) 构建定制 Gost，[relay.nix](../../system/programs/gost/relay.nix) 定义 relay 服务。
 源码入口及验证命令见[维护手册](maintenance_CN.md)。
 
 ## 测试

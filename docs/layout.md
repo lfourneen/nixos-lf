@@ -4,6 +4,8 @@ English | [简体中文](CN/layout_CN.md) | [Documentation](README.md)
 
 System services and policy live under `system/`.
 Home Manager modules under `home/` configure the desktop and user applications.
+Each module directory uses `default.nix` to list its imports. Put packages, service definitions and settings in the modules it imports.
+The overlay entry uses a direct import to expose the package overlay function.
 
 ## System and desktop responsibilities
 
@@ -50,7 +52,7 @@ Clash's `gui/` contains system package launch/default handling.
 The package fileset collects these payloads for the build-time patchers.
 
 Gost uses `patches/`, `src/` and `tests/` under its own program directory.
-Its default module connects the package to the relay service.
+[package.nix](../system/programs/gost/package.nix) builds the patched Gost used by [relay.nix](../system/programs/gost/relay.nix).
 See [patch maintenance](maintenance.md) for source entrypoints and validation commands.
 
 ## Tests

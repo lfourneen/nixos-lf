@@ -2,12 +2,12 @@
 
 [English](maintenance.md) | 简体中文
 
-本地 overlay 在 [default.nix](default.nix) 注册。AppImage 和便携包在各自的包表达式中
+本地 overlay 在 [packages.nix](packages.nix) 注册。AppImage 和便携包在各自的包表达式中
 固定上游 release 资产及 hash；其它包跟随 [flake.lock](../flake.lock) 中所属的 input。
 
 | 入口 | 自定义与维护 |
 | --- | --- |
-| [default.nix](default.nix) | 锁定的 Niri 26.04 使用固定 hash 的 SHM 录屏回移补丁，此 override 禁用包检查。升级到包含上游合入的源码并验证录屏后可移除。 [Niri #1791](https://github.com/niri-wm/niri/pull/1791) |
+| [packages.nix](packages.nix) | 锁定的 Niri 26.04 使用固定 hash 的 SHM 录屏回移补丁，此 override 禁用包检查。升级到包含上游合入的源码并验证录屏后可移除。 [Niri #1791](https://github.com/niri-wm/niri/pull/1791) |
 | [dsh-desktop-appimage.nix](dsh-desktop-appimage.nix) | ASAR 菜单、内置 pnpm git 安装、解包/执行位和 Landlock 启动器；逐版本检查 JS 锚点、pnpm、sharp WASM 与可执行资源 |
 | [dsh-tui.nix](dsh-tui/dsh-tui.nix) | 预编译 release 提取、原生 DSH 依赖链接、持久化插件 profile 与 FHS 启动器；检查 pkg 资产布局、TUI 支持的宿主版本范围、真实导出/TUI 加载、共享 Cordis 实例和插件持久性，详见[打包与插件指南](dsh-tui/README.md) |
 | [bilibili-appimage.nix](bilibili-appimage.nix) | 桌面命令替换与 Wayland 启动器；核对 desktop 布局和沙箱参数 |

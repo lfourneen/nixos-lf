@@ -58,7 +58,7 @@ class DevicePolicyTest(unittest.TestCase):
         self.assertRegex(text, r'ProcessSizeMax\s*=\s*"0"')
 
     def test_qemu_does_not_run_as_root(self):
-        text = self.read("system/programs/virtualisation/default.nix")
+        text = self.read("system/programs/virtualisation/libvirtd.nix")
         self.assertRegex(text, r"runAsRoot\s*=\s*false")
         self.assertNotRegex(text, r"runAsRoot\s*=\s*true")
 

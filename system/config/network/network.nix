@@ -330,8 +330,7 @@ in
   imports = [
     ./firewall/service-policy.nix
     ./hardening.nix
-    ./identity/default.nix
-    ./identity/arp.nix
+    ./identity
     ./time.nix
     ./dns/socket-guest.nix
     ./tailscale/transport.nix

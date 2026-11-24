@@ -391,19 +391,19 @@
       "upstream": "Docker Hub through two public registry mirrors",
       "update_mode": "rootless dockerd reads daemon.settings.registry-mirrors at start; workload images are pulled by tag unless the caller supplies a digest",
       "current": {
-        "summary": "two registry mirrors in system/programs/virtualisation/default.nix; the repository does not pin workload image digests"
+        "summary": "two registry mirrors in system/programs/virtualisation/docker.nix; the repository does not pin workload image digests"
       },
       "signature": "No daemon content-signature check; mirrors are pull-through caches, so critical workloads need image digests and publisher signatures",
       "fallback": "remove the mirror entries, restart the rootless daemon, and pull through gost; redeploy a known digest",
       "max_patch_delay_days": 7,
-      "review_command": "grep -n -A4 registry-mirrors system/programs/virtualisation/default.nix; docker info --format \"{{json .RegistryConfig.Mirrors}}\"",
+      "review_command": "grep -n -A4 registry-mirrors system/programs/virtualisation/docker.nix; docker info --format \"{{json .RegistryConfig.Mirrors}}\"",
       "pins": [
         {
-          "file": "system/programs/virtualisation/default.nix",
+          "file": "system/programs/virtualisation/docker.nix",
           "pattern": "\"https://docker.m.daocloud.io\"\n"
         },
         {
-          "file": "system/programs/virtualisation/default.nix",
+          "file": "system/programs/virtualisation/docker.nix",
           "pattern": "\"https://hub-mirror.c.163.com\"\n"
         }
       ]

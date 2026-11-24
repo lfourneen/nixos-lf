@@ -13,7 +13,7 @@ Unstable supplies Mihomo, the Clash Verge GUI and its separately packaged helper
 GUI, helper and core versions are independent.
 
 [clash-verge.nix](../system/programs/clash/clash-verge.nix) builds the customized core/helper and places them in the GUI package.
-[default.nix](../system/programs/gost/default.nix) builds the relay package.
+[package.nix](../system/programs/gost/package.nix) builds the relay package.
 Their `lib.fileset.toSource` inputs include only patchers, custom Go code and tests, so unrelated checkout changes do not rebuild those Go packages. **Add any new patch payload/test to the corresponding fileset.** A file present in the checkout but absent from the source set never reaches the builder.
 
 Go patchers run in `postConfigure`, after `buildGoModule` has populated `vendor/`.
@@ -35,11 +35,11 @@ A build failure after an upgrade is a request to compare upstream behavior, not 
 | dnsmasq | [default.nix](../system/config/network/network.nix), inline `src/forward.c` replacement | Return terminal strict-order UDP SERVFAIL/REFUSED, including DNSSEC EDE |
 | Firefox package | [firefox.nix](../home/programs/firefox/firefox.nix), [guard.py](../home/programs/firefox/guard.py), [sandbox.py](../home/programs/firefox/sandbox.py), [scope.c](../home/programs/firefox/scope.c) | Immutable policy/AutoConfig/fonts, preflight, outer namespaces, filtered bus, portal identity and Landlock/seccomp. No Gecko source patch |
 | Unbound / Chrony / networking | [default.nix](../system/config/network/network.nix), [time.nix](../system/config/network/time.nix), [network modules](../system/config/network) | Declarative policy and repository-owned coordinators. No local Unbound/Chrony source patch |
-| Link identity | [default.nix](../system/config/network/identity/default.nix), [link_identity.py](../system/config/network/identity/link_identity.py), [partition.nix](../system/hardware/partition.nix) | Coordinated profile identities, private migration/restore, native wired lifecycle and DHCPv6 coexistence. No upstream source patch |
+| Link identity | [link-identity.nix](../system/config/network/identity/link-identity.nix), [wired.nix](../system/config/network/identity/wired.nix), [link_identity.py](../system/config/network/identity/link_identity.py), [partition.nix](../system/hardware/partition.nix) | Coordinated profile identities, private migration/restore, native wired lifecycle and DHCPv6 coexistence. No upstream source patch |
 | Firewall lifecycle | [default.nix](../system/config/network/network.nix), [coordinator.nix](../system/config/network/proxy/coordinator.nix), [bootstrap.nix](../system/config/network/firewall/bootstrap.nix) | Exact table ownership, locked atomic replacement, failure retention and explicit table migration |
 | Tailscale transport | [transport.nix](../system/config/network/tailscale/transport.nix), [tailscale_contract.py](../system/config/network/tailscale/tailscale_contract.py) | Upstream socket-mark contract enforced by normal system builds. Check mark/fallback/socket behavior and run the real CLI VM on upgrades. No Tailscale source patch |
 | Direct egress | [options.nix](../system/config/network/options.nix), [default.nix](../system/config/network/network.nix), [egress_policy.py](../system/config/network/firewall/egress_policy.py) | Actor/socket identity, pre-NAT grants, canonical CIDR validation, scoped time/DoT and shared root/GUI private exclusions. Compare compatibility and restricted modes |
-| Guest trust | [policy.nix](../system/config/network/guests/policy.nix), [guest_policy.py](../system/config/network/guests/guest_policy.py), [socket-guest.nix](../system/config/network/dns/socket-guest.nix), [default.nix](../system/programs/virtualisation/default.nix) | Interface/source roles, canonical grants, primary/delegated UID ownership, pre-NAT real-address DNS, bidirectional revocation and rootless launcher |
+| Guest trust | [policy.nix](../system/config/network/guests/policy.nix), [guest_policy.py](../system/config/network/guests/guest_policy.py), [socket-guest.nix](../system/config/network/dns/socket-guest.nix), [docker.nix](../system/programs/virtualisation/docker.nix) | Interface/source roles, canonical grants, primary/delegated UID ownership, pre-NAT real-address DNS, bidirectional revocation and rootless launcher |
 | Sunshine | [sunshine.nix](../system/programs/sunshine.nix) | Graphical-session Desktop service, local administration and no UPnP. Retain CUDA, verify the exact package in the configured CUDA cache with local builds disabled |
 
 ## Mihomo
@@ -307,7 +307,7 @@ Keep permission/parse errors distinct from zero counters and keep diagnosis inde
 
 ## Link identity
 
-[default.nix](../system/config/network/identity/default.nix) and [link_identity.py](../system/config/network/identity/link_identity.py) use upstream NetworkManager/systemd/dhcpcd APIs without source patches.
+[link-identity.nix](../system/config/network/identity/link-identity.nix), [wired.nix](../system/config/network/identity/wired.nix) and [link_identity.py](../system/config/network/identity/link_identity.py) use upstream NetworkManager/systemd/dhcpcd APIs without source patches.
 Check actual nmcli property names and enum formatting, both hostname switches, stable-id substitutions, DHCP identifiers and IPv6 address generation.
 Preserve the identity-only backup whitelist, private state, inactive/autoconnect guards and refusal to overwrite manual edits.
 Rebuilds do not apply profile targets automatically.
@@ -323,7 +323,7 @@ The [identity guide](identity.md) covers persistence preparation and reauthoriza
 ### Source compatibility checks
 
 [sources.json](../system/config/network/maintenance/sources.json) groups the maintained entrypoints, invariants and regression checks by component.
-[default.nix](../system/config/network/maintenance/default.nix) fingerprints the selected package sources, available vendored dependency hashes and primary Nixpkgs package recipes.
+[fingerprints.nix](../system/config/network/maintenance/fingerprints.nix) fingerprints the selected package sources, available vendored dependency hashes and primary Nixpkgs package recipes.
 Normal system builds require these inputs to match the configured source baseline.
 A same-version source or recipe change still requires compatibility checks.
 A Mihomo change also selects its vendored sing-tun and SOCKS components.

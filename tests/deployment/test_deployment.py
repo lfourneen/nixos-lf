@@ -24,7 +24,7 @@ class DeploymentTests(unittest.TestCase):
         self.keep = {
             "flake.nix", "flake.lock", ".sops.yaml",
             "home/config/user.nix", "home/config/assets/local.png",
-            "overlays/default.nix", "system/config/network/network.nix",
+            "overlays/default.nix", "overlays/packages.nix", "system/config/network/network.nix",
             "system/secrets/secrets.yaml",
             "home/config/agent-skills/safe-delete/SKILL.md",
             "home/config/agent-skills/safe-delete/references/local-protection.md",

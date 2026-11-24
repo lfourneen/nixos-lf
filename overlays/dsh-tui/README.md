@@ -1,6 +1,6 @@
 # dsh-TUI（Nix 二进制打包）
 
-`dsh-tui.nix` 提供 `pkgs.dsh-tui`，已通过 `overlays/default.nix` 注册并加入
+`dsh-tui.nix` 提供 `pkgs.dsh-tui`，已通过 `overlays/packages.nix` 注册并加入
 `system/systempkgs/tools.nix`。启动命令是 `dsh-tui`，也可用短命令 `dst`。
 
 ## TUI 和 DSH 的来源

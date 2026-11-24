@@ -2,13 +2,13 @@
 
 English | [简体中文](maintenance_CN.md)
 
-Local overlay definitions are registered in [default.nix](default.nix). AppImage and portable
+Local overlay definitions are registered in [packages.nix](packages.nix). AppImage and portable
 packages pin upstream release assets and hashes in their package expressions; other packages
 follow their supplying input in [flake.lock](../flake.lock).
 
 | Entry | Customization / maintenance |
 | --- | --- |
-| [default.nix](default.nix) | The locked Niri 26.04 uses a fixed-hash SHM screencast backport with package checks disabled. Retire the override once the selected source includes the SHM merge and screencasting has been verified. [Niri #1791](https://github.com/niri-wm/niri/pull/1791) |
+| [packages.nix](packages.nix) | The locked Niri 26.04 uses a fixed-hash SHM screencast backport with package checks disabled. Retire the override once the selected source includes the SHM merge and screencasting has been verified. [Niri #1791](https://github.com/niri-wm/niri/pull/1791) |
 | [dsh-desktop-appimage.nix](dsh-desktop-appimage.nix) | ASAR menu changes, bundled pnpm git-install behavior, unpack/executable preservation and Landlock launcher. Review exact JS anchors, bundled pnpm, sharp WASM and executable assets on each AppImage bump |
 | [dsh-tui.nix](dsh-tui/dsh-tui.nix) | Prebuilt release extraction, native DSH dependency links, persistent plugin profile and FHS launcher. Check the pkg asset layout, the host version range the TUI supports, actual host exports/TUI loading, shared Cordis instance and plugin persistence; see [packaging and plugin guide](dsh-tui/README.md) |
 | [bilibili-appimage.nix](bilibili-appimage.nix) | Desktop command replacement and Wayland launcher; verify changed desktop layout and sandbox flags |
