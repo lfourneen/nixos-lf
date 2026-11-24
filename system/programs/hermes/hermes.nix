@@ -83,6 +83,27 @@ let
 
   stateDir = cfg.stateDir;
   hermesHome = "${stateDir}/.hermes";
+  skillRoot = "${hermesHome}/skills";
+  agentlySkill = ./hermes-skills/agently-mail;
+  skillMounts = {
+    # Prevent renaming the skills directory from inside the unit.
+    BindPaths = [ skillRoot ];
+    BindReadOnlyPaths = [ "${agentlySkill}:${skillRoot}/agently-mail" ];
+  };
+  auditSettings = pkgs.writeText "hermes-skill-paths.json" (builtins.toJSON {
+    home = hermesHome;
+    roots.${skillRoot} = {
+      copies.agently-mail = agentlySkill;
+      private = [ "sandbox" ];
+    };
+    names = [ "agently-mail" "sandbox" ];
+    projectRoots = [ ".hermes/skills" ".agents/skills" ];
+    environment.HERMES_HOME = hermesHome;
+    hermesConfig = "${hermesHome}/config.yaml";
+  });
+  skillAudit = pkgs.writeShellScriptBin "hermes-skill-audit" ''
+    exec ${pkgs.python3.withPackages (ps: [ ps.pyyaml ])}/bin/python3 ${../../../home/config/skill-path-audit.py} ${auditSettings} "$@"
+  '';
 
   # Root-owned state check and layout creation. It only touches fixed entries
   # through directory descriptors with O_NOFOLLOW.
@@ -200,7 +221,7 @@ in
 
       # Agently Mail skill: HERMES_HOME/skills/<name>/SKILL.md is indexed into
       # the system prompt and loaded on demand.
-      "skills/agently-mail/SKILL.md" = ./hermes-skills/agently-mail/SKILL.md;
+      "skills/agently-mail/SKILL.md" = agentlySkill + "/SKILL.md";
     };
 
     settings = {
@@ -506,6 +527,7 @@ in
   environment.systemPackages = [
     agently-cli
     agently-check
+    skillAudit
   ];
 
   # Activation validates fixed state paths before rendering as the service user.
@@ -572,7 +594,7 @@ in
       NO_PROXY = noProxy;
     };
 
-    serviceConfig = {
+    serviceConfig = skillMounts // {
       User = "hermes";
       Group = "hermes";
       Slice = "hermes.slice";
@@ -600,7 +622,7 @@ in
     };
   };
 
-  systemd.services.hermes-backend.serviceConfig = {
+  systemd.services.hermes-backend.serviceConfig = skillMounts // {
     Slice = "hermes.slice";
     ProtectHome = lib.mkForce true;
     ReadWritePaths = lib.mkForce writablePaths;

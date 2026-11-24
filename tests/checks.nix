@@ -663,6 +663,13 @@ let
 
       hermes-activation-vm = import ./system/hermes-activation-vm.nix { inherit self; };
 
+      skill-path-audit = pkgs.runCommand "skill-path-audit-tests" {
+        nativeBuildInputs = [ (pkgs.python3.withPackages (ps: [ ps.pyyaml ])) ];
+      } ''
+        python3 ${repoSource}/tests/system/test_skill_path_audit.py
+        touch "$out"
+      '';
+
       security-behavior-vm = import ./system/security-behavior-vm.nix {
         inherit pkgs;
         ports = self.nixosConfigurations.lfour.config.my.machine.ports;

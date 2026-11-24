@@ -19,6 +19,35 @@ let
       --prefix PYTHONPATH : ${fixtureDefaults}
   '';
 
+  probeSkill = pkgs.writeText "probe-hermes-skill.py" ''
+    import errno
+    import os
+    from pathlib import Path
+    import sys
+
+    skills = Path(os.environ["HERMES_HOME"]) / "skills"
+    skill = skills / "agently-mail"
+    deployed = skill / "SKILL.md"
+    expected = Path("${../../system/programs/hermes/hermes-skills/agently-mail/SKILL.md}")
+    assert os.geteuid() != 0
+    assert deployed.read_bytes() == expected.read_bytes()
+    assert os.statvfs(deployed).f_flag & os.ST_RDONLY
+
+    def denied(action, errors):
+        try:
+            action()
+        except OSError as exc:
+            assert exc.errno in errors, exc
+        else:
+            raise AssertionError("managed skill path allowed a mutation")
+
+    denied(lambda: deployed.open("ab").close(), {errno.EACCES, errno.EROFS})
+    denied(lambda: skill.rename(skills / "renamed-agently"), {errno.EBUSY})
+    denied(lambda: skills.rename(skills.with_name("renamed-skills")), {errno.EBUSY})
+    (skills / "fixture-writable").touch()
+    Path("/var/lib/hermes/workspace", sys.argv[1]).touch()
+  '';
+
   layout = [
     [ "/var/lib/hermes/.hermes" "700" ]
     [ "/var/lib/hermes/home" "700" ]
@@ -55,6 +84,7 @@ pkgs.testers.runNixOSTest {
             type = lib.types.str;
             default = "/run/secrets/rendered/hermes.env";
           };
+          options.my.proxy.transparentApplications = lib.mkEnableOption "transparent application routing";
         }
       ];
 
@@ -66,7 +96,12 @@ pkgs.testers.runNixOSTest {
             passthru.hermesVenv = fixturePython;
           })) { });
         services.hermes-agent.extraPackages = lib.mkForce [ ];
+        services.hermes-agent.restart = lib.mkForce "no";
         users.users.lfour = { isNormalUser = true; extraGroups = [ "hermes" ]; };
+        systemd.services.hermes-agent.postStart =
+          "${pkgs.python3}/bin/python3 ${probeSkill} agent-skill-ready";
+        systemd.services.hermes-backend.postStart =
+          "${pkgs.python3}/bin/python3 ${probeSkill} backend-skill-ready";
 
         # The service unit uses this file as EnvironmentFile. It holds a dummy
         # value for the test; the real secret comes from sops.
@@ -118,12 +153,30 @@ pkgs.testers.runNixOSTest {
         manifest = "/var/lib/hermes/.backup/" + entries[0] + "/manifest.txt"
         actual = machine.succeed(f"stat -c '%a %U %G' {manifest}").strip()
         assert actual == "600 root root", actual
-        assert "/var/lib/hermes/.hermes" in machine.succeed(f"cat {manifest}")
+        previous_paths = [
+            line.split("\t", 1)[0] for line in machine.succeed(f"cat {manifest}").splitlines()
+        ]
+        assert "/var/lib/hermes" in previous_paths, previous_paths
 
     with subtest("a second activation is idempotent"):
         machine.succeed("/run/current-system/activate")
         check_layout()
         assert len(backups()) == 1, backups()
+
+    with subtest("managed skill and its parent are pinned inside both units"):
+        ready = "/var/lib/hermes/workspace"
+        machine.wait_until_succeeds(f"test -f {ready}/agent-skill-ready", timeout=10)
+        machine.wait_until_succeeds(f"test -f {ready}/backend-skill-ready", timeout=10)
+        host_skill = "/var/lib/hermes/.hermes/skills/agently-mail/SKILL.md"
+        machine.succeed(f"su -s /bin/sh hermes -c 'echo inert-copy > {host_skill}'")
+        machine.succeed(f"rm {ready}/agent-skill-ready {ready}/backend-skill-ready")
+        machine.succeed("systemctl restart hermes-agent.service hermes-backend.service")
+        machine.succeed(f"test -f {ready}/agent-skill-ready -a -f {ready}/backend-skill-ready")
+        assert machine.succeed(f"cat {host_skill}").strip() == "inert-copy"
+        audit = machine.succeed("su -s /bin/sh hermes -c '/run/current-system/sw/bin/hermes-skill-audit'")
+        assert '"status": "content-mismatch"' in audit, audit
+        assert "inert-copy" not in audit, audit
+        machine.succeed("/run/current-system/activate")
 
     with subtest("legacy root-owned document parents permit unprivileged rendering"):
         parent = "/var/lib/hermes/.hermes/skills/agently-mail"
