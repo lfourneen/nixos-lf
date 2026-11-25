@@ -251,15 +251,15 @@ in
       print $"(ansi yellow_bold)Starting the Clash Verge service and GUI...(ansi reset)"
       let core = (run-status { ^sudo proxy-control on })
       if $core != 0 {
+        ${lib.optionalString (!osConfig.my.proxy.runtimeRouting) ''
         print $"(ansi red_bold)Proxy preparation or startup failed. See the status below.(ansi reset)"
         proxy-status
-        ${if osConfig.my.proxy.runtimeRouting then ''
-        print "Use sudo proxy-control preflight to check the source. In Mode C, use sudo proxy-control recover --cached to apply the latest download or sudo proxy-control recover to fetch a fresh candidate."
-        '' else if osConfig.my.proxy.controlledSources then ''
+        ${if osConfig.my.proxy.controlledSources then ''
         print "Use sudo proxy-control preflight to check the source and registration."
         '' else ''
         job spawn { ^clash-verge }
         print $"Run (ansi yellow_bold)clash-on(ansi reset) again after the GUI has written its profile."
+        ''}
         ''}
         return
       }

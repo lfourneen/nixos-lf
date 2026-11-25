@@ -40,7 +40,7 @@ def failure_stage(detail):
         ('TUN route proof unavailable', 'tun-route-proof'),
         ('recorded leaf no longer', 'selection'),
         ('controller reply unavailable', 'controller'),
-        ('controller socket is restarting', 'controller'),
+        ('controller socket unavailable', 'controller'),
         ('managed DNS did not return', 'fake-ip-dns'),
         ('TUN DNS self-test', 'tun-dns'),
         ('real-address DNS self-test', 'real-address-dns'),
@@ -218,6 +218,12 @@ class Probe:
         self.tun_name = None
         self.sessions = {}
         self.dns_transport_leaf = None
+        self.failure_stages = []
+        self.snapshot = None
+
+    def note_failure(self, stage):
+        if stage != 'unknown' and (not self.failure_stages or self.failure_stages[-1] != stage):
+            self.failure_stages.append(stage)
 
     def dns_leaf(self, name):
         self.diagnostics['dns_leaf'] = hashlib.sha256(name.encode()).hexdigest()[:12]
@@ -272,7 +278,7 @@ class Probe:
         except (OSError, ValueError, http.client.HTTPException) as error:
             if isinstance(error, http.client.RemoteDisconnected) or getattr(error, "errno", None) in (
                     errno.ENOENT, errno.ECONNREFUSED, errno.ECONNRESET, errno.EPIPE):
-                raise ProbeFailure("restarting", "controller socket is restarting") from None
+                raise ProbeFailure('controller-unavailable', 'controller socket unavailable') from None
             raise ProbeFailure("obs", "controller reply unavailable or invalid") from None
         finally:
             if timer is not None:
@@ -286,7 +292,7 @@ class Probe:
                 return self.api('/configs')
             except ProbeFailure as error:
                 wait = min(0.15, deadline - self.clock())
-                if fast or error.layer != 'restarting' or wait <= 0:
+                if fast or error.layer != 'controller-unavailable' or wait <= 0:
                     raise
                 time.sleep(wait)
 
@@ -539,7 +545,7 @@ class Probe:
         if maximum is None:
             maximum = self.settings['request_timeout_seconds']
             if self.settings.get('session_urls'):
-                maximum = min(maximum, max(1, (self.deadline - self.clock() - 7) / self.target_slots))
+                maximum = min(maximum, max(1, (self.deadline - self.clock() - 8) / self.target_slots))
         timeout = self.remaining(min(maximum, self.remaining(30) / self.target_slots))
         if self.diagnostics['data_plane_ok'] is None:
             self.diagnostics['data_plane_ok'] = False
@@ -636,6 +642,7 @@ class Probe:
             except ProbeFailure as error:
                 if error.layer in {"route", "config", "interrupted"}:
                     raise
+                self.note_failure(failure_stage(error.detail))
                 failures.append(error)
         raise failures[-1]
 
@@ -649,9 +656,13 @@ class Probe:
                 break
             if dns_name and self.sessions.get(name) in FAILED_SESSIONS:
                 continue
+            if (dns_name and self.sessions.get(dns_leaf) in FAILED_SESSIONS
+                    and self.sessions.get(name) != 'ok'):
+                continue
             if not self.select_leaf(name):
                 continue
-            if (name in dns_alternatives and (self.sessions.get(dns_leaf) != 'ok' or self.sessions.get(name) == 'ok')
+            if (name in dns_alternatives and (self.sessions.get(dns_leaf) != 'ok'
+                    or self.sessions.get(name) == 'ok' and not self.diagnostics.get('dns_leaf_rotated'))
                     and self.select_leaf(name, 'lf-dns')):
                 dns_leaf = name
                 self.dns_leaf(name)
@@ -735,38 +746,59 @@ class Probe:
         self.diagnostics['leaf_sessions'] = {result: measured.count(result)
                                             for result in ('ok', 'node-auth', 'session-unavailable')}
 
+    def sample_dns_batch(self, current, leaves):
+        """Advance past previously sampled alternatives within the same routing transaction."""
+        if not (self.snapshot and self.routing and self.settings.get('session_urls')):
+            self.sample_sessions([current, *leaves[:3]])
+            return leaves[:3]
+        runtime = Path(self.settings['runtime'])
+        path = runtime / 'dns-leaf-cursor.json'
+        binding = dict(self.routing, boot_id=(runtime / 'boot-id').read_text().strip(), digest=self.snapshot)
+        ordered = [current, *leaves]
+        identities = [hashlib.sha256(name.encode()).hexdigest() for name in ordered]
+        try:
+            record = json.loads(path.read_text())
+            offset = identities.index(record['last']) + 1 if record['binding'] == binding else 0
+        except (OSError, ValueError, KeyError, TypeError):
+            offset = 0
+        alternatives = [name for name in ordered[offset:] + ordered[:offset] if name != current][:3]
+        self.sample_sessions([current, *alternatives])
+        measured = [leaf for leaf in alternatives if leaf in self.sessions]
+        if measured:
+            record = dict(binding=binding, last=hashlib.sha256(measured[-1].encode()).hexdigest())
+            temporary = path.with_suffix('.new')
+            try:
+                temporary.write_text(json.dumps(record))
+                temporary.replace(path)
+            except OSError:
+                pass
+        return alternatives
+
     def recover_dns(self, name):
         self.diagnostics['managed_dns_ok'] = False
         current, leaves = self.selector('lf-dns') if self.settings.get('dns_leaf_group') else (None, [])
         if current:
             self.dns_leaf(current)
         ready = self.dns_answer(name)
-        if not ready and current:
-            ordered = [current, *leaves]
-            for offset in range(0, len(ordered), 4):
-                if self.deadline - self.clock() < 4:
+        if not ready:
+            self.note_failure('validator-dns')
+        if not ready and current and self.deadline - self.clock() >= 4:
+            alternatives = self.sample_dns_batch(current, leaves)
+            self.dns_leaf(current)
+            alternatives.sort(key=lambda leaf: self.sessions.get(leaf) != 'ok')
+            for leaf in alternatives:
+                if self.deadline - self.clock() < 3:
                     break
-                batch = ordered[offset:offset + 4]
-                self.sample_sessions(batch)
-                if offset == 0:
-                    batch = batch[1:]
-                self.dns_leaf(current)
-                batch.sort(key=lambda leaf: self.sessions.get(leaf) != 'ok')
-                for leaf in batch:
-                    if self.deadline - self.clock() < 3:
-                        break
-                    outcome = self.sessions.get(leaf)
-                    if outcome in FAILED_SESSIONS or (self.sessions.get(current) == 'ok' and outcome != 'ok'):
-                        continue
-                    if not self.select_leaf(leaf, 'lf-dns'):
-                        continue
-                    current = leaf
-                    self.dns_leaf(leaf)
-                    self.diagnostics['dns_leaf_rotated'] = True
-                    if self.dns_answer(name):
-                        ready = True
-                        break
-                if ready:
+                outcome = self.sessions.get(leaf)
+                if outcome in FAILED_SESSIONS or (self.sessions.get(current) == 'ok' and outcome != 'ok'):
+                    continue
+                if not self.select_leaf(leaf, 'lf-dns'):
+                    continue
+                current = leaf
+                self.dns_leaf(leaf)
+                self.diagnostics['dns_leaf_rotated'] = True
+                ready = self.dns_answer(name)
+                if ready or outcome == 'ok':
                     break
         if not ready:
             raise ProbeFailure('dns', 'managed validator did not resolve the probe name')
@@ -800,6 +832,7 @@ class Probe:
         try:
             self.attempt_targets(log_path)
         except ProbeFailure as error:
+            self.note_failure(failure_stage(error.detail))
             url = getattr(self, 'last_target', self.settings['urls'][0])
             name = urlsplit(url).hostname
             if failure_stage(error.detail) != 'mixed-request' or not name or self.deadline - self.clock() < 2:
@@ -811,6 +844,7 @@ class Probe:
             except ProbeFailure as failure:
                 if failure.layer != 'dns':
                     raise
+                self.note_failure(failure_stage(failure.detail))
                 dns_error = failure
             # A DNS recovery can make the current leaf usable again.
             if not dns_error and self.diagnostics.get('dns_leaf_rotated'):
@@ -855,6 +889,11 @@ class Probe:
 
     def run(self, fast=False):
         self.routing = self.routing_binding()
+        if not fast and self.settings.get('digest_file'):
+            try:
+                self.snapshot = Path(self.settings['digest_file']).read_text().strip()
+            except FileNotFoundError:
+                pass
         def listeners():
             try:
                 subprocess.run([self.settings['listener_check'], 'core', 'dns'],
@@ -891,7 +930,7 @@ class Probe:
                     try:
                         leaf, alternatives = self.selector('lf-dns')
                     except ProbeFailure as error:
-                        if error.layer not in ('obs', 'restarting'):
+                        if error.layer not in ('obs', 'controller-unavailable'):
                             raise
                     else:
                         if leaf:
@@ -935,15 +974,22 @@ def main():
         result.update(ok=True, reason="", fingerprint=probe.run(fast=fast))
     except ProbeFailure as error:
         result.update(reason=error.layer, detail=error.detail, failure_stage=failure_stage(error.detail))
+        probe.note_failure(result['failure_stage'])
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         result.update(detail=f"probe error: {type(error).__name__}")
     result.update(probe.diagnostics | probe.routing, core_mode=probe.core_mode,
                   exit_identities=probe.exit_identities, route_sources=probe.route_sources,
                   duration_ms=round((time.monotonic() - probe.start) * 1000), layers=probe.timings)
+    if not result['ok']:
+        result['failure_stages'] = probe.failure_stages
+        result['startup_data_failure'] = result['reason'] in ('obs', 'dns', 'node', 'controller-unavailable') and all(
+            result.get(key) is True for key in ('listener_ok', 'config_ok')) and (
+                result['reason'] == 'node' or result.get('data_plane_ok') is False
+                and 'validator-dns' in probe.failure_stages)
     if os.geteuid() == 0 and not fast and result.get('reason') != 'interrupted':
         classification = result.get('reason')
         if classification not in ('node', 'application', 'tun', 'dns', 'config', 'route', 'obs',
-                                  'restarting', 'direct-mode', 'no-tun', 'core-gone'):
+                                  'controller-unavailable', 'direct-mode', 'no-tun', 'core-gone'):
             classification = 'obs'
         if not result['ok']:
             print('proxy health warning: ' + classification, file=sys.stderr)
@@ -951,12 +997,14 @@ def main():
         record.update(probe.diagnostics, route_sources=probe.route_sources)
         record.update(probe.routing, core_mode=probe.core_mode)
         record['failure_stage'] = result.get('failure_stage', 'unknown')
+        if not result['ok']:
+            record['failure_stages'] = result['failure_stages']
         record['at'] = time.time()
         path = None
         try:
             runtime = Path(settings['runtime'])
             record['boot_id'] = (runtime / 'boot-id').read_text().strip()
-            record['digest'] = Path(settings['digest_file']).read_text().strip()
+            record['digest'] = probe.snapshot
             observations = runtime / 'health-observations.json'
             try:
                 history = json.loads(observations.read_text())

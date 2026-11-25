@@ -113,6 +113,7 @@ pkgs.testers.runNixOSTest {
     my.proxy.subscriptionAudit = if refresh || managedSources then "enforce" else "warn";
     my.proxy.controlledSources = managedSources;
     my.proxy.runtimeRouting = routing;
+    my.proxy.startupRecoveryFetch = recoveryOnly;
     my.proxy.transparentApplications = ipTunnel;
 
     my.proxy.ipTunnel = lib.mkIf ipTunnel {
@@ -690,9 +691,9 @@ pkgs.testers.runNixOSTest {
             raise
     ''}
     ${pkgs.lib.optionalString recoveryOnly ''
-    with subtest("failed accepted source, inactive direct routing and cached candidate recovery"):
+    with subtest("failed accepted source, cached and leased startup recovery"):
         try:
-            print(machine.succeed("python3 -u /etc/netsec-routing.py cached-recovery", timeout=420))
+            print(machine.succeed("python3 -u /etc/netsec-routing.py cached-recovery", timeout=680))
         except Exception:
             print(machine.execute("cat /run/proxy-mode/{state,routing,health,health-observations,profile-refresh,source-fetch}.json; journalctl -u proxy-mode -u clash-verge --no-pager -n 60"))
             raise

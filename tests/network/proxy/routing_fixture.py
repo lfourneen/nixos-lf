@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import runpy
+import shutil
 import signal
 import socket
 import ssl
@@ -151,6 +152,11 @@ def cached_recovery():
     accepted = (runtime / 'config-digest').read_text().strip()
     settled = source / 'approved/rules/settled.json'
     wait(lambda: settled.exists() and json.loads(settled.read_text())['digest'] == accepted, timeout=130)
+    download_status = source / 'status.json'
+    accepted_status = download_status.read_bytes()
+    accepted_download = source / 'generations' / json.loads(accepted_status)['generation']
+    retained_download = runtime / 'fixture-accepted-download'
+    shutil.copytree(accepted_download, retained_download)
     run('proxy-control', 'off')
     run('proxy-control', 'wait', 'direct')
     peer = json.loads(Path('/run/netsec-node.json').read_text())
@@ -168,13 +174,44 @@ def cached_recovery():
     finally:
         candidate.unlink()
     run('systemctl', 'stop', 'control-node.service')
-    failure = run('proxy-control', 'on', timeout=120, required=False)
-    assert failure.returncode and 'recover --cached' in failure.stdout, failure
+    failure = run('proxy-control', 'routing', 'rules', timeout=120, required=False)
+    assert failure.returncode and 'health, timeout' in failure.stdout and 'recover --cached' in failure.stdout, failure
     blocked = status()
     assert blocked['mode'] == 'blocked' and blocked['routing_phase'] == 'verifying', blocked
     assert (runtime / 'config-digest').read_text().strip() == accepted
-    download_record = json.loads((source / 'status.json').read_text())
+    download_record = json.loads(download_status.read_text())
     assert (source / 'current').resolve().name != download_record['generation']
+    actual_status = download_status.read_bytes()
+    helper_pid = run('systemctl', 'show', 'clash-verge.service', '-p', 'MainPID', '--value').stdout
+
+    generation = source / 'generations' / download_record['generation']
+    manifest = json.loads((generation / 'source-manifest.json').read_text())
+    manifest['policy'] = '0' * 64
+    incompatible = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+    incompatible_path = generation.with_name(incompatible)
+    shutil.copytree(generation, incompatible_path)
+    (incompatible_path / 'source-manifest.json').write_text(json.dumps(manifest))
+    restore_download = not accepted_download.exists()
+    if restore_download:
+        shutil.copytree(retained_download, accepted_download)
+    try:
+        for record, code in ((None, 'no-download'), (accepted_status, 'already-accepted'),
+                             (json.dumps(dict(download_record, generation=incompatible)).encode(), 'policy-mismatch')):
+            if record is None:
+                download_status.unlink()
+            else:
+                download_status.write_bytes(record)
+            refusal = run('proxy-control', 'recover', '--cached', timeout=20, required=False)
+            assert refusal.returncode and f'recovery-cached: {code}' in refusal.stdout, (code, refusal)
+            assert '--cached' not in refusal.stdout and status()['source_recovery_cache'] == code, refusal
+            assert status()['routing_epoch'] == blocked['routing_epoch']
+            assert run('systemctl', 'show', 'clash-verge.service', '-p', 'MainPID', '--value').stdout == helper_pid
+    finally:
+        download_status.write_bytes(actual_status)
+        shutil.rmtree(incompatible_path)
+        shutil.rmtree(retained_download)
+        if restore_download:
+            shutil.rmtree(accepted_download)
     run('proxy-control', 'off')
     run('proxy-control', 'wait', 'direct')
     direct = status()
@@ -183,27 +220,48 @@ def cached_recovery():
     assert 'rules verification belongs to a different boot' not in direct['reasons'], direct
 
     # Bring back proxy intent and wait for the old snapshot to fail in C.
-    with subprocess.Popen(['proxy-control', 'on'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    with subprocess.Popen(['proxy-control', 'routing', 'rules'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True, start_new_session=True) as start:
         try:
             wait(lambda: status()['mode'] == 'blocked' and status()['routing_phase'] == 'verifying', timeout=35)
             wait(lambda: status().get('last_proxy_health', {}).get('failure_stage') == 'session-unavailable', timeout=60)
         finally:
             start.send_signal(signal.SIGINT)
-            start.communicate(timeout=35)
+            stdout, stderr = start.communicate(timeout=35)
+        assert start.returncode == 130 and 'health, interrupted' in stdout, (stdout, stderr)
+        assert 'mixed-request -> validator-dns' in stdout, stdout
+    interrupted_epoch = status()['routing_epoch']
     requests = Path('/run/managed-source-requests').read_bytes()
-    run('proxy-control', 'recover', '--cached', timeout=130)
+    result = run('proxy-control', 'on', timeout=210)
+    assert 'one same-source recovery (recover-cached)' in result.stdout, result.stdout
     assert Path('/run/managed-source-requests').read_bytes() == requests
     assert (runtime / 'config-digest').read_text().strip() == downloaded
     result = status()
     assert result['ready'] and result['mode'] == 'proxy', result
+    assert result['routing_epoch'] > interrupted_epoch + 1, result
     recovered = hashlib.sha256(b'Recovered').hexdigest()
     assert result['sampled_egress_identity'] == recovered[:12], result
     assert result['last_proxy_health']['dns_leaf'] == recovered[:12], result
     history = json.loads((runtime / 'health-observations.json').read_text())
+    assert any(item.get('digest') == downloaded and not item['ok'] for item in history), history
     assert any(item.get('digest') == downloaded and item.get('dns_leaf_rotated')
                and item.get('leaf_sessions', {}).get('session-unavailable', 0) >= 3 for item in history), history
+    assert (runtime / 'source-refresh-pending').exists() and not (runtime / 'source-refresh-ready').exists()
     print('Cached recovery stayed in C until the new snapshot proved DNS and HTTP through the usable leaf.', flush=True)
+
+    wait(lambda: json.loads(settled.read_text())['digest'] == downloaded, timeout=90)
+    run('systemctl', 'stop', 'control-recovered-node.service')
+    wait(lambda: status()['mode'] == 'blocked', timeout=100)
+    request('domestic.fixture.example', allowed=False)
+    run('systemd-run', '--unit=control-original-node', 'ip', 'netns', 'exec', 'outside', core,
+        '-d', '/run/netsec-original-node', '-f', '/run/netsec-node.json')
+    wait(lambda: ':18080' in run('ip', 'netns', 'exec', 'outside', 'ss', '-lnt').stdout, timeout=20)
+    result = run('proxy-control', 'on', timeout=210)
+    assert 'one same-source recovery (recover)' in result.stdout and status()['ready'], result
+    assert Path('/run/managed-source-requests').read_bytes() == requests + b'/one\n'
+    assert not (runtime / 'source-recovery').exists()
+    assert all('expires' not in run('nft', 'list', 'set', 'inet', 'lf_filter', names).stdout
+               for names in ('source_recovery4', 'source_recovery6'))
 
 
 def recovery_window(runtime, outcome):

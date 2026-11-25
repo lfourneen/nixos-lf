@@ -36,6 +36,7 @@ FETCH_REASONS = frozenset(('dns lookup failed', 'certificate rejected', 'tls fai
     'http rejected', 'encoding unsupported', 'redirect refused', 'destination refused',
     'response limit', 'yaml invalid', 'configuration unsupported', 'node resolution failed', 'worker failure',
     'selected egress unavailable', 'network protection active', 'waiting for healthy proxy', 'waiting for stable proxy'))
+CACHE_RESULTS = ('eligible', 'no-download', 'already-accepted', 'registration-changed', 'policy-mismatch', 'damaged-cache')
 AUDIT_CATEGORIES = frozenset((
     'yaml_structure', 'private_server', 'certificate', 'empty_nodes', 'group_reference',
     'hosts_override', 'provider_change', 'rule_provider_change', 'sensitive_route',
@@ -493,14 +494,33 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     preflight = read(root / 'proxy-mode/preflight.json')
     if preflight.get('boot_id') != boot_id or not fresh(preflight.get('monotonic_seconds'), now, 86400):
         preflight = {}
-    health = read(root / 'proxy-mode/health.json')
+    directory = root / 'proxy-mode'
+    health = read(directory / 'health.json')
+    source = read(directory / 'source.json')
     health_current = health.get('boot_id') == boot_id and fresh(health.get('monotonic_seconds'), now, maximum)
+    if source.get('boot_id') == boot_id and source.get('provenance') == 'controlled-fetch':
+        health_current = health_current and health.get('digest') == source.get('snapshot')
     if routing:
         health_current = health_current and routing['routing_consistent'] and all(health.get(key) == routing[key]
             for key in ('routing_epoch', 'routing_policy_digest'))
         if routing.get('routing_requested') == 'proxy-only' and 'egress_epoch' in routing:
             health_current = health_current and all(health.get(key) == routing[key]
                 for key in ('egress_requested', 'egress_epoch'))
+    cache = read(directory / 'source-recovery-cache.json')
+    cache_result = cache.get('result')
+    if (not boot_id or cache.get('boot_id') != boot_id or not routing
+            or not all(cache.get(key) == routing[key] for key in ('routing_epoch', 'routing_policy_digest'))
+            or cache_result not in CACHE_RESULTS):
+        cache_result = None
+    restored = read(directory / 'profile-refresh.json')
+    data_streak = health.get('startup_data_failure_streak')
+    startup_recovery_needed = (target == 'proxy' and policy.get('mode') == 'blocked' and health_current
+        and routing.get('routing_phase') == 'verifying' and not (root / 'netsec/failed').exists()
+        and health.get('policy_version') == version and fresh(health.get('monotonic_seconds'), now, 35)
+        and health.get('ok') is False and type(data_streak) is int and data_streak >= 2
+        and source.get('boot_id') == restored.get('boot_id') == boot_id and restored.get('result') == 'restored'
+        and restored.get('policy') == 'auto' and bool(health.get('digest'))
+        and health['digest'] == restored.get('digest') == source.get('snapshot'))
     core_mode = health.get('core_mode') if health_current and health.get('core_mode') in ('rule', 'global', 'direct') else 'unknown'
     identity = (health.get('exit_identities') or {}).get('mixed') if health_current else None
     identity = identity[:12] if isinstance(identity, str) and re.fullmatch('[a-f0-9]{64}', identity) else None
@@ -545,7 +565,9 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
             "plaintext_override": dns.get('plaintext_override', False),
             "window_remaining": max(0, round(dns.get('window_until', 0) - now)),
             "last_preflight": preflight,
-            "last_proxy_health": health,
+            "last_proxy_health": health if health_current or not routing else {},
+            "startup_recovery_needed": startup_recovery_needed,
+            "source_recovery_cache": cache_result,
             "profile_refresh": profile_refresh(root, boot=boot_id),
             "source_fetch": source_fetch(root, boot=boot_id),
             "source_trust": source_trust(root, boot_id),

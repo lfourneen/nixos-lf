@@ -78,6 +78,11 @@ in
     description = "Accept only root-registered, controlled subscription generations; ignore GUI candidates. Register privately using clash-source before enabling proxy intent.";
   };
 
+  options.my.proxy.startupRecoveryFetch = lib.mkEnableOption ''
+    one registered-source download in Mode C when an explicitly started accepted
+    snapshot has repeated data-plane failures and lacks a compatible cached update
+  '';
+
   options.my.proxy.transparentApplications = lib.mkEnableOption ''
     native application networking with direct access to local proxy inlets
     restricted to managed services and administrators

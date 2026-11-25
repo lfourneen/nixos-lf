@@ -128,7 +128,7 @@ A is direct access, B is healthy proxy access, and C blocks application traffic 
 Closing the GUI leaves the managed core active. Use `clash-off` to select A.
 Clash Verge is the upstream GUI for node selection and monitoring. The system discards its System Proxy, TUN and core-mode requests.
 Use the system commands to select `rules` or `proxy-only`. Both keep Mihomo in `mode: rule`.
-With `clash-on`, controlled subscriptions prefer their accepted snapshot. Startup fetching waits until B is healthy.
+With `clash-on`, controlled subscriptions prefer their accepted snapshot. Routine startup updates wait for healthy B. An unhealthy restored snapshot can trigger one bounded recovery attempt in C.
 Registered subscriptions also refresh every 30 minutes, with routine node rotation approved automatically.
 Successful updates stay silent. Failures appear in desktop notifications and `proxy-status`.
 See [operations and recovery](docs/operations.md) for source management, diagnostics and offline recovery.

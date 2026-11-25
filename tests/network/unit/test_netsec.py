@@ -730,10 +730,10 @@ class HealthTests(unittest.TestCase):
             with patch.object(health.time, 'sleep', side_effect=sleep):
                 with self.assertRaises(health.ProbeFailure) as failure:
                     probe.initial_config(fast=False)
-            self.assertEqual(failure.exception.layer, 'restarting')
+            self.assertEqual(failure.exception.layer, 'controller-unavailable')
             self.assertEqual(now[0], 2.0)
         with patch.object(probe, 'api', side_effect=[
-                health.ProbeFailure('restarting', 'controller socket is restarting'), {'mode': 'rule'}]) as api:
+                health.ProbeFailure('controller-unavailable', 'controller socket unavailable'), {'mode': 'rule'}]) as api:
             with patch.object(health.time, 'sleep'):
                 self.assertEqual(probe.initial_config(fast=False), {'mode': 'rule'})
             self.assertEqual(api.call_count, 2)

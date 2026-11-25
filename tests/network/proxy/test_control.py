@@ -859,6 +859,30 @@ class HealthLeafTests(unittest.TestCase):
         self.assertFalse(probe.rotate_leaf(None, self.url, self.host))
         self.assertEqual([call.args for call in probe.select_leaf.call_args_list], [('good', 'lf-dns'), ('good',)])
 
+    def test_dns_sampling_advances_after_unavailable_batch_for_same_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            (runtime / 'boot-id').write_text('boot')
+            alternatives = ['bad1', 'bad2', 'bad3', 'good', 'bad4']
+            for epoch, expected in ((1, alternatives[:3]), (1, ['good', 'bad4', 'bad1']), (2, alternatives[:3])):
+                probe = self.probe(runtime=directory, session_urls=['https://203.0.113.53/dns-query'])
+                probe.routing = {'routing_epoch': epoch, 'routing_policy_digest': 'b' * 64}
+                probe.snapshot = 'a' * 64
+                probe.sample_sessions = Mock(side_effect=lambda names: probe.sessions.update(
+                    {name: 'ok' if name == 'good' else 'session-unavailable' for name in names}))
+                self.assertEqual(probe.sample_dns_batch('bad0', alternatives), expected)
+                probe.sample_sessions.assert_called_once_with(['bad0', *expected])
+
+    def test_mixed_and_dns_failures_survive_a_later_controller_disconnect(self):
+        probe = self.probe()
+        probe.attempt_targets = Mock(side_effect=health_probe.ProbeFailure('obs', 'mixed HTTP request failed'))
+        probe.dns_answer = Mock(return_value=False)
+        probe.sample_sessions = Mock(side_effect=health_probe.ProbeFailure('controller-unavailable', 'controller socket unavailable'))
+        with self.assertRaises(health_probe.ProbeFailure) as failure:
+            probe.data_paths(None)
+        probe.note_failure(health_probe.failure_stage(failure.exception.detail))
+        self.assertEqual(probe.failure_stages, ['mixed-request', 'validator-dns', 'controller'])
+
     def test_application_lookup_runs_through_system_stub_in_b_and_reports_failure_separately(self):
         with tempfile.TemporaryDirectory() as directory:
             argv = ['systemctl', 'start', 'proxy-application-dns-probe.service']

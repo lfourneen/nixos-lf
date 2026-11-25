@@ -141,7 +141,7 @@ def system_control_input(settings, data, effective):
     return data
 
 
-def snapshot_digest(directory):
+def snapshot_digest(directory, expected_files=None):
     directory = Path(directory)
     document = {}
     for name in FILES:
@@ -159,6 +159,8 @@ def snapshot_digest(directory):
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 raise ValueError('snapshot input is not a regular file')
             document[name] = hashlib.file_digest(stream, 'sha256').hexdigest()
+    if expected_files is not None and any(document.get(name) != checksum for name, checksum in expected_files.items()):
+        raise ValueError('snapshot input differs from the manifest')
     return hashlib.sha256(json.dumps(document, sort_keys=True).encode()).hexdigest()
 
 
@@ -870,6 +872,10 @@ def current_generation(root):
     return registered_generation(root, (root / 'current').resolve(strict=True))
 
 
+class SourceRevisionChanged(ValueError):
+    pass
+
+
 def registered_generation(root, directory):
     if directory.parent != root / 'generations' or not re.fullmatch('[0-9a-f]{64}', directory.name):
         raise ValueError('unregistered source generation')
@@ -879,7 +885,7 @@ def registered_generation(root, directory):
     raw = read_input(directory, 'source-manifest.json', os.geteuid())
     manifest = json.loads(raw)
     if not matches_registration(root, manifest):
-        raise ValueError('source revision revoked')
+        raise SourceRevisionChanged('source revision revoked')
     if (hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest() != directory.name
             or hashlib.sha256(read_input(directory, 'clash-verge.yaml', os.geteuid())).hexdigest() != manifest.get('yaml')):
         raise RefreshError('snapshot mismatch')

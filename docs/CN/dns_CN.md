@@ -161,7 +161,7 @@ HTTP-only（`tunMode=false`）采用 redir-host。
 `rules` 中应用传输保留国内分流：`geosite:cn` 经 360 DoH 直连解析，其余使用 Cloudflare/Google DoH。
 启用受控来源时，海外查询使用独立的 `lf-dns` 选择组，成员来自授权的 `lf-remote`。每个协议、固定服务器地址和端口组合保留一个叶子，优先排列不同服务器地址和协议的候选。
 应用和 DNS 分别选叶子。`profile.store-selected` 在核心重启后恢复仍符合组成员资格的选择。
-受管解析器的健康检查失败时，监督器可尝试其他 DNS 叶子。
+受管解析器的健康检查失败时，监督器分批抽查获授权的 DNS 叶子。同一快照和路由事务的后续探针继续抽查其他成员。已选中的可用会话可以继续等待 DNSSEC 验证预热。
 未启用受控来源的配置保留 `respect-rules` 选路。
 核心命名空间内 1056 端口的独立引导验证器只负责节点和解析器引导。应用域名及公网拨号目标校验由应用验证器处理。
 国内 DoH 端点来自 `my.machine.mihomoDomesticValidatingDnsUpstreams`，必须回传完整 DNSSEC 材料；默认的 360 端点满足，非验证路径的 AliDNS 不满足。

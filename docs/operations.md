@@ -126,7 +126,8 @@ With runtime routing enabled and proxy intent retained in C, apply the selected 
 sudo proxy-control recover --cached
 ```
 
-The command uses the local download and requires it to match the current registration and routing policy. The normal audit and health checks gate B.
+The command checks the download before stopping the core. The download must differ from the accepted snapshot and match the current registration and routing policy. The normal audit and health checks gate B.
+The command and `proxy-status` report why a checked cache is unavailable.
 If no compatible download is available, fetch a fresh candidate:
 
 ```sh
@@ -178,7 +179,10 @@ This command does not create a recovery generation or alter DNS fallback policy.
 
 Use the Nushell commands `clash-on` and `clash-off`.
 They record privileged intent, manage the GUI/helper lifecycle and wait for coherent state.
-With runtime routing, `clash-on` waits up to 90 seconds after core startup. That window covers DNS and TUN warmup, committing B with a fresh proof for the current routing transaction, and confirming readiness across its dependent services.
+With runtime routing, `clash-on` allows up to 90 seconds per core for DNS and TUN warmup and fresh readiness proof.
+If a restored controlled snapshot repeatedly fails data-plane checks, `clash-on` can try one compatible cached update for the same registration in C.
+This host enables `my.proxy.startupRecoveryFetch`, which allows one scoped download in C when the cache is unavailable. The option defaults to disabled.
+The recovery attempt shares a 210-second readiness deadline measured from the first core startup. Routine updates still wait for 90 seconds of healthy B.
 Closing the GUI leaves proxy intent and the managed core active. Use `clash-off` to stop managed proxy access.
 
 On this host, `clash-rules` and `clash-proxy-only` select a routing submode and request B in one command.

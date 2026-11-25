@@ -22,9 +22,16 @@ REASONS = {'node': 'Authorized proxy leaves failed the HTTP probe', 'dns': 'Mana
            'unauthorized-core': 'Core configuration is not authorized', 'policy-mismatch': 'Kernel policy differs from configuration',
            'policy-repair': 'Repairing policy', 'policy-repair-failed': 'Policy repair failed',
            'policy-repair-backoff': 'Waiting to retry policy repair', 'interrupted': 'Probe cancelled by supervisor'}
-HEALTH_STAGES = {'validator-dns': 'Managed validator did not resolve the probe name',
+HEALTH_STAGES = {'mixed-request': 'Mixed HTTP request failed',
+                 'validator-dns': 'Managed validator did not resolve the probe name',
+                 'controller': 'Controller connection unavailable',
                  'node-auth': 'Sampled leaves rejected authentication',
                  'session-unavailable': 'Sampled proxy sessions unavailable'}
+CACHE_RESULTS = {'eligible': 'Compatible download available', 'no-download': 'No cached download',
+                 'already-accepted': 'Download is already the accepted snapshot',
+                 'registration-changed': 'Source registration or selection changed',
+                 'policy-mismatch': 'Download does not match the routing policy',
+                 'damaged-cache': 'Cached download is missing or damaged'}
 SESSION_RESULTS = {'ok': 'Session established', 'node-auth': 'Authentication rejected',
                    'session-unavailable': 'Session unavailable', 'unmeasured': 'Session not sampled'}
 PHASES = {'prepare-policy': 'Certificate or subscription policy rejected', 'prepare-profile': 'Desktop profile missing or invalid',
@@ -268,6 +275,8 @@ def rows(state):
         value = 'Passed' if health.get('ok') else HEALTH_STAGES.get(health.get('failure_stage'),
                                                                  REASONS.get(health.get('reason'), 'Incomplete'))
         yield 'Last proxy probe', value + f" · duration {health.get('duration_ms', '?')} ms"
+        if not health.get('ok') and len(stages := health.get('failure_stages', [])) > 1:
+            yield 'Probe failure sequence', ' → '.join(HEALTH_STAGES.get(stage, clean(stage)) for stage in stages)
         if health.get('dns_leaf'):
             yield 'lf-dns leaf', health['dns_leaf'] + ' · ' + SESSION_RESULTS.get(health.get('dns_leaf_session'), 'Session not sampled')
         if samples := health.get('leaf_sessions'):
@@ -284,23 +293,29 @@ def rows(state):
         yield 'Last preparation', PHASES.get(preflight.get('phase'), 'Incomplete')
         subscription = preflight.get('subscription', {})
         if subscription:
-            yield 'Profile nodes', f"Inline {subscription.get('inline_nodes', 0)}; providers {subscription.get('mutable_sources', 0)}"
+            yield 'Last preflight nodes', f"Inline {subscription.get('inline_nodes', 0)} · providers {subscription.get('mutable_sources', 0)}"
             yield 'TLS exceptions', f"Allowed by name {subscription.get('certificate_exceptions_allowed', 0)}; rejected {subscription.get('certificate_exceptions_rejected', 0)}"
             if subscription.get('mutable_sources'):
                 yield 'Provider validation', 'Core validates contents at load/refresh; preflight checks configuration'
                 if subscription.get('named_certificate_exceptions'):
                     yield 'Provider trust', 'Named TLS exceptions follow same-named provider replacements'
     if not ready:
-        for reason in state.get('reasons', [])[:10]:
-            translated = {'policy is not proxy': 'Proxy mode', 'policy is not direct': 'Direct mode',
-                          'DNS is not proxy': 'Proxy DNS path', 'direct DNS unavailable': 'Direct DNS availability',
-                          'enforcement alarm active': 'Enforcement alarm clearance', 'rules not verified for this generation': 'Current policy verification',
-                          'rules verification stale': 'Fresh rule verification', 'plaintext window expired': 'A valid plaintext recovery lease'}
-            yield 'Waiting for', translated.get(reason, clean(reason))
+        translated = {'policy is not proxy': 'Proxy mode', 'policy is not direct': 'Direct mode',
+                      'DNS is not proxy': 'Proxy DNS path', 'direct DNS unavailable': 'Direct DNS availability',
+                      'enforcement alarm active': 'Enforcement alarm clearance', 'rules not verified for this generation': 'Current policy verification',
+                      'rules verification stale': 'Fresh rule verification', 'plaintext window expired': 'A valid plaintext recovery lease'}
+        if reasons := state.get('reasons', [])[:10]:
+            yield 'Pending readiness checks', ' · '.join(translated.get(reason, clean(reason)) for reason in reasons)
         yield 'Diagnostics', 'sudo proxy-control preflight · proxy-inspect'
         if mode == 'blocked':
             if state.get('routing_schema'):
-                yield 'Recovery', 'Apply the latest download with sudo proxy-control recover --cached, or fetch a fresh candidate with sudo proxy-control recover.'
+                cache = state.get('source_recovery_cache')
+                if cache in CACHE_RESULTS:
+                    yield 'Cached recovery', CACHE_RESULTS[cache]
+                if cache == 'eligible':
+                    yield 'Recovery', 'Apply the compatible download with sudo proxy-control recover --cached.'
+                else:
+                    yield 'Recovery', 'Fetch with sudo proxy-control recover. To change sources, first run sudo clash-source use SOURCE_ID --select-only.'
             yield 'Helper logs', 'sudo journalctl -b -u clash-verge.service -n 60'
             yield 'Core logs', 'sudo tail -n 60 /var/lib/clash-verge-service/logs/service_latest.log'
     if preflight and not preflight.get('ready'):

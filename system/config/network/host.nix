@@ -27,6 +27,7 @@ in
   my.proxy.profileRefreshPolicy = "auto";
   my.proxy.controlledSources = true;
   my.proxy.runtimeRouting = true;
+  my.proxy.startupRecoveryFetch = true;
   my.proxy.strictBrowser = true;
   my.proxy.transparentApplications = true;
   my.proxy.subscriptionTrust = "fixed";

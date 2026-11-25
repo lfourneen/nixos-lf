@@ -260,6 +260,8 @@ class RegistryTests(unittest.TestCase):
         read_input = stage_tool.read_input
         expected = stage_tool.snapshot_digest(downloaded)
         with patch.object(stage_tool, 'read_input', side_effect=lambda directory, name, _: read_input(directory, name, os.geteuid())):
+            self.assertEqual(b.cached_generation(source, stage_tool, settings, apply=False), expected)
+            self.assertEqual((source / 'current').resolve(), local)
             self.assertEqual(b.cached_generation(source, stage_tool, settings), expected)
             self.assertEqual((source / 'current').resolve(), downloaded)
             b.select_generation(source, local)
@@ -276,6 +278,17 @@ class RegistryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'source revision revoked'):
                 b.cached_generation(source, stage_tool, settings)
             self.assertEqual((source / 'current').resolve(), local)
+
+    def test_cache_status_distinguishes_missing_download_and_broken_record(self):
+        self.register('one')
+        source = b.selected(self.root)
+        with self.assertRaises(b.CacheUnavailable) as missing:
+            b.cached_generation(source, stage_tool, {}, apply=False)
+        self.assertEqual(missing.exception.code, 'no-download')
+        b.atomic(source / 'status.json', b'not JSON')
+        with self.assertRaises(b.CacheUnavailable) as damaged:
+            b.cached_generation(source, stage_tool, {}, apply=False)
+        self.assertEqual(damaged.exception.code, 'damaged-cache')
 
     def test_catalog_preserves_legacy_source_revisions(self):
         legacy = {'id': 'one', 'subscription': {'url': 'https://subscription.example/one'}, 'providers': {}}

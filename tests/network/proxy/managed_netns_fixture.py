@@ -120,7 +120,7 @@ def source():
                     candidate['hosts'] = {'blocked.fixture.example': '1.1.1.1'}
             if self.path == '/one' and Path('/run/managed-source-cached-fixture').exists():
                 good = dict(candidate['proxies'][0], name='Recovered', port=18081)
-                candidates = [dict(good, name=f'Unavailable-{port}', port=port) for port in (18084, 18085, 18086)]
+                candidates = [dict(good, name=f'Unavailable-{port}', port=port) for port in range(18084, 18089)]
                 candidate['proxies'] = [*candidates, good]
                 candidate['proxy-groups'][0]['proxies'] = [node['name'] for node in candidate['proxies']]
             body = json.dumps(candidate).encode()

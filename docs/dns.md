@@ -169,7 +169,7 @@ These listeners carry raw DNSSEC material without hosts substitution, fake-IP sy
 In `rules`, application transport keeps a domestic split: `geosite:cn` uses 360 DoH over a direct connection, and other names use Cloudflare/Google DoH.
 With controlled sources, foreign queries use `lf-dns`, a separate selector of authorized `lf-remote` leaves. It keeps one leaf per protocol, pinned server address and port, with different server addresses and protocols ahead of repeated addresses.
 The application and DNS selectors pick independently, and `profile.store-selected` keeps their eligible choices across core restarts.
-If the managed resolver fails its health check, the supervisor can try another DNS leaf.
+When the managed resolver fails its health check, the supervisor samples a bounded set of authorized DNS leaves. Later probes within the same snapshot and routing transaction continue with other members. A selected leaf with a working session gets time for DNSSEC validation to warm up.
 Configurations without controlled sources retain `respect-rules` selection.
 The separate bootstrap validator on port 1056 inside the core namespace handles node and resolver bootstrap only. The application validator handles application names and public dial target checks.
 The domestic DoH endpoints come from `my.machine.mihomoDomesticValidatingDnsUpstreams` and must return complete DNSSEC material; the default 360 endpoints do, while the non-validating AliDNS path does not.

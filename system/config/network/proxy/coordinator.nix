@@ -667,6 +667,7 @@ NFT_OFF
       fi
       if [ "''${health_streak_digest:-}" != "$health_digest" ] || [ "''${health_streak_version:-}" != "$decision_version" ]; then
         health_failure_streak=0
+        startup_data_failure_streak=0
         health_streak_digest="$health_digest"
         health_streak_version="$decision_version"
       fi
@@ -675,12 +676,17 @@ NFT_OFF
       else
         health_failure_streak=$(( ''${health_failure_streak:-0} + 1 ))
       fi
+      if $JQ -e '.startup_data_failure == true' "$output" >/dev/null; then
+        startup_data_failure_streak=$(( ''${startup_data_failure_streak:-0} + 1 ))
+      else
+        startup_data_failure_streak=0
+      fi
       $JQ --arg digest "$health_digest" --argjson at "$health_at" \
         --argjson monotonic "$proof_time" --arg proof "$proof_id" --argjson version "$decision_version" \
-        --argjson streak "$health_failure_streak" \
+        --argjson streak "$health_failure_streak" --argjson startup_streak "$startup_data_failure_streak" \
         --arg epoch "$proof_epoch" \
         --arg boot "$($CAT /run/proxy-mode/boot-id)" \
-        '. + {digest:$digest, at:$at, boot_id:$boot,monotonic_seconds:$monotonic,proof_id:$proof,policy_version:$version,authorization_epoch:$epoch,failure_streak:$streak}' "$output" > "$output.stamped"
+        '. + {digest:$digest, at:$at, boot_id:$boot,monotonic_seconds:$monotonic,proof_id:$proof,policy_version:$version,authorization_epoch:$epoch,failure_streak:$streak,startup_data_failure_streak:$startup_streak}' "$output" > "$output.stamped"
       mv -f "$output.stamped" /run/proxy-mode/health.json
       rm -f "$output"
       health_gate=$($JQ -r '.reason' /run/proxy-mode/health.json)
@@ -821,7 +827,7 @@ NFT_OFF
                 return 0
               fi
               case "$health_gate" in
-                obs|dns|node|application|restarting) obs_fails=$((obs_fails + 1)) ;;
+                obs|dns|node|application|controller-unavailable) obs_fails=$((obs_fails + 1)) ;;
                 *) obs_fails=0 ;;
               esac
               want_reason="$health_gate"
@@ -1090,7 +1096,7 @@ NFT_OFF
     runtimeInputs = [ pkgs.coreutils pkgs.systemd pkgs.jq pkgs.util-linux pkgs.python3 ];
     text = ''
       wait_policy() {
-        local target="$1" deadline="$2" attempt=0
+        local target="$1" deadline="$2" attempt=0 observation
         shift 2
         local -a routing_args=()
         if [ "$#" = 2 ]; then routing_args=(--routing "$1" --routing-epoch "$2"); fi
@@ -1101,12 +1107,15 @@ NFT_OFF
             return 1
           fi
           ''}
-          if ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} "''${routing_args[@]}" >/dev/null; then
+          if observation=$(${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} "''${routing_args[@]}"); then
             return 0
           fi
-          if (( SECONDS >= deadline )); then return 1; fi
+          if (( SECONDS >= deadline )); then return 124; fi
+          if [ "''${watch_startup_recovery:-0}" = 1 ] && jq -e '.startup_recovery_needed' <<< "$observation" >/dev/null; then
+            return 75
+          fi
           if (( attempt % 10 == 0 )); then
-            ${pkgs.python3}/bin/python3 ${./state.py} "$target" --max-age ${toString config.my.proxy.stateMaxAgeSeconds} --verification-max-age ${toString config.my.proxy.verificationMaxAgeSeconds} "''${routing_args[@]}" >&2 || true
+            echo "$observation" >&2
           fi
           sleep 1
           attempt=$((attempt + 1))
@@ -1129,6 +1138,7 @@ NFT_OFF
           recovery=0
           recovery_source=recover
           keep_selection=0
+          explicit_start=0
           if [ "$1" = recover ]; then
             case "$#:''${2:-}" in
               1:) ;;
@@ -1140,6 +1150,7 @@ NFT_OFF
           elif [ "$1" = on ]; then
             [ "$#" = 1 ] || { echo 'Usage: sudo proxy-control on' >&2; exit 2; }
             keep_selection=1
+            explicit_start=1
           else
             [ "$#" = 2 ] || { [ "$#" = 3 ] && [ "$2" = proxy-only ] && [[ "$3" =~ ^[a-f0-9]{64}$ ]]; } \
               || { echo 'Routing switch failed: expected rules or proxy-only'; exit 2; }
@@ -1171,87 +1182,169 @@ NFT_OFF
           transaction_epoch=""
           transaction_target="$2"
           transaction_step=initialize
+          watch_startup_recovery=0
+          startup_deadline=0
+          recovery_args=()
           egress_args=()
           if [ "$#" = 3 ]; then egress_args=("$3"); fi
+          health_diagnostic() {
+            ${pkgs.python3}/bin/python3 ${./state.py} proxy --routing "$transaction_target" --routing-epoch "$transaction_epoch" \
+              | jq -r --argjson epoch "$transaction_epoch" '
+                  if .routing_epoch != $epoch then "superseded"
+                  elif .last_proxy_health.ok then .reasons[:3] | join(", ")
+                  else .last_proxy_health |
+                    ((.failure_stages // []) | if length == 0 then "" else join(" -> ") end) as $chain
+                    | (if $chain != "" then $chain else (.failure_stage // "no completed probe") end)
+                      + (if .dns_leaf then " · lf-dns " + .dns_leaf + " (" + (.dns_leaf_session // "unmeasured") + ")" else "" end)
+                  end' || true
+          }
+          recovery_hint() {
+            local cache
+            cache=$(jq -r --slurpfile routing /run/proxy-mode/routing.json '
+              select(.boot_id == $routing[0].boot_id and .routing_epoch == $routing[0].routing_epoch
+                and .routing_policy_digest == $routing[0].routing_policy_digest) | .result // empty
+            ' /run/proxy-mode/source-recovery-cache.json 2>/dev/null || true)
+            if [ "$cache" = eligible ]; then
+              echo 'Apply the compatible download with sudo proxy-control recover --cached.'
+            else
+              echo 'Fetch a fresh candidate with sudo proxy-control recover, or select another registered source with sudo clash-source use SOURCE_ID --select-only before recovery.'
+            fi
+          }
           transaction_failed() {
             trap "" ERR INT TERM HUP
             flock -x -w 30 8 || return 1
-            diagnostic=$(jq -r '.code // empty' /run/proxy-mode/routing-failure.json 2>/dev/null || true)
-            if [ "$transaction_step" = initialize ]; then
-              diagnostic=routing-authority-invalid
-            elif [ "$transaction_step" = health ] && [ -z "$diagnostic" ]; then
-              diagnostic=$(${pkgs.python3}/bin/python3 ${./state.py} proxy --routing "$transaction_target" --routing-epoch "$transaction_epoch" \
-                | jq -r 'if .last_proxy_health.ok then .reasons[:3] | join(", ")
-                         else .last_proxy_health | (.reason // "health unavailable") + "/" + (.failure_stage // "unknown")
-                           + (if .dns_leaf then " · lf-dns " + .dns_leaf + " (" + (.dns_leaf_session // "unmeasured") + ")" else "" end) end' || true)
+            local outcome="''${1:-}" diagnostic=""
+            if [ -n "$transaction_epoch" ]; then
+              diagnostic=$(jq -r --argjson epoch "$transaction_epoch" 'select(.routing_epoch == $epoch) | .code // empty' /run/proxy-mode/routing-failure.json 2>/dev/null || true)
+            fi
+            if [ "$transaction_step" = health ] && [ -z "$diagnostic" ]; then diagnostic=$(health_diagnostic); fi
+            if [ "$transaction_step" = recovery-cached ]; then
+              diagnostic=$(jq -r '.result // empty' /run/proxy-mode/source-recovery-cache.json 2>/dev/null || true)
             fi
             if [ "$(cat /run/proxy-mode/intent)" = proxy ] \
+              && [ "$transaction_step" != recovery-cached ] \
               && { [ -z "$transaction_epoch" ] || [ "$transaction_epoch" = "$(${config.my.proxy.routingCommand} view | jq -r .routing_epoch)" ]; }; then
               ${modeScript} --request-proxy || echo 'Check proxy-status for policy enforcement failure' >&2
               ${config.my.proxy.routingCommand} recover || true
               systemctl start --no-block proxy-net-wake.service || true
             fi
-            echo "Routing switch failed: $transaction_target ($transaction_step''${diagnostic:+: $diagnostic})"
+            echo "Routing switch failed: $transaction_target ($transaction_step''${outcome:+, $outcome}''${diagnostic:+: $diagnostic})"
             ${lib.optionalString config.my.proxy.controlledSources ''
-            if [ "$transaction_step" = health ] && [ "$(cat /run/proxy-mode/status)" = blocked ]; then
-              echo 'Apply the latest downloaded candidate with sudo proxy-control recover --cached, or fetch a fresh candidate with sudo proxy-control recover.'
+            if [ "$(cat /run/proxy-mode/status)" = blocked ]; then
+              if [ "$transaction_step" = health ] && [ "$outcome" != interrupted ]; then
+                timeout --kill-after=2s 5s ${config.my.proxy.sourceCommand} check-recovery-cache >/dev/null 2>&1 || true
+              fi
+              recovery_hint
             fi
             ''}
           }
           trap 'transaction_failed; exit 1' ERR
-          trap 'transaction_failed; exit 130' INT
-          trap 'transaction_failed; exit 143' TERM
-          trap 'transaction_failed; exit 129' HUP
+          trap 'transaction_failed interrupted; exit 130' INT
+          trap 'transaction_failed terminated; exit 143' TERM
+          trap 'transaction_failed disconnected; exit 129' HUP
           if [ "$recovery" = 0 ] && ${config.my.proxy.routingCommand} same-ready "$2" "''${egress_args[@]}"; then
             trap - ERR INT TERM HUP
             echo "Routing already active: $2"
             exit 0
           fi
-          if [ "$recovery" = 1 ]; then
-            transaction_step='recovery-protection'
+          while true; do
+            if [ "$recovery" = 1 ]; then
+              export LF_SOURCE_GENERATION
+              if [ "$recovery_source" = recover-cached ]; then
+                transaction_step='recovery-cached'
+                LF_SOURCE_GENERATION=$(timeout --kill-after=2s 10s ${config.my.proxy.sourceCommand} recover-cached "''${recovery_args[@]}")
+              else
+                transaction_step='recovery-protection'
+                ${modeScript} --request-proxy
+                systemctl stop clash-verge.service
+                ${config.my.proxy.routingCommand} stop-ip-tunnel
+                ${config.my.proxy.coreNetworkCommand} routes-off
+                transaction_step='recovery-download'
+                LF_SOURCE_GENERATION=$(timeout --kill-after=2s 60s ${config.my.proxy.sourceCommand} recover "''${recovery_args[@]}")
+              fi
+              [[ "$LF_SOURCE_GENERATION" =~ ^[a-f0-9]{64}$ ]]
+              if [ "$LF_SOURCE_GENERATION" = "''${failed_startup_digest:-}" ]; then
+                transaction_failed 'download matches the failed snapshot'
+                exit 1
+              fi
+            fi
+            transaction_step=protection
             ${modeScript} --request-proxy
+            if [ "$recovery" = 1 ]; then flock -u 7; fi
+            transaction_step=stop
             systemctl stop clash-verge.service
-            ${config.my.proxy.routingCommand} stop-ip-tunnel
-            ${config.my.proxy.coreNetworkCommand} routes-off
-            transaction_step='recovery-download'
-            if [ "$recovery_source" = recover-cached ]; then transaction_step='recovery-cached'; fi
-            export LF_SOURCE_GENERATION
-            LF_SOURCE_GENERATION=$(timeout --kill-after=2s 60s ${config.my.proxy.sourceCommand} "$recovery_source")
-            [[ "$LF_SOURCE_GENERATION" =~ ^[a-f0-9]{64}$ ]]
-          fi
-          transaction_step=protection
-          ${modeScript} --request-proxy
-          if [ "$recovery" = 1 ]; then flock -u 7; fi
-          transaction_step=stop
-          systemctl stop clash-verge.service
-          systemctl restart gost-relay.service
-          transaction_step=prepare
-          ${config.my.proxy.routingCommand} begin "$2" "''${egress_args[@]}"
-          transaction_epoch=$(${config.my.proxy.routingCommand} view | jq -r .routing_epoch)
-          transaction_step=dns
-          systemctl restart dnsmasq.service socket-guest-dns.service
-          ${pkgs.systemd}/bin/resolvectl flush-caches
-          transaction_step=namespace
-          systemctl restart clash-core-network.service
-          transaction_step=helper
-          systemctl start clash-verge.service
-          transaction_step=core
-          ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/clash-verge-stage.py} start-source \
-            ${config.programs.clash-verge.package.stageSettings} ${config.programs.clash-verge.package}/bin/verge-mihomo
-          if [ "$recovery" = 1 ] && [ "$(cat /run/proxy-mode/config-digest)" != "$LF_SOURCE_GENERATION" ]; then
-            echo 'The new source was rejected. Proxy status shows the validation result.' >&2
-            transaction_failed
+            systemctl restart gost-relay.service
+            transaction_step=prepare
+            ${config.my.proxy.routingCommand} begin "$2" "''${egress_args[@]}"
+            transaction_epoch=$(${config.my.proxy.routingCommand} view | jq -r .routing_epoch)
+            transaction_step=dns
+            systemctl restart dnsmasq.service socket-guest-dns.service
+            ${pkgs.systemd}/bin/resolvectl flush-caches
+            transaction_step=namespace
+            systemctl restart clash-core-network.service
+            transaction_step=helper
+            systemctl start clash-verge.service
+            transaction_step=core
+            ${pkgs.python3}/bin/python3 ${../../../programs/clash/service/clash-verge-stage.py} start-source \
+              ${config.programs.clash-verge.package.stageSettings} ${config.programs.clash-verge.package}/bin/verge-mihomo
+            if [ "$recovery" = 1 ] && [ "$(cat /run/proxy-mode/config-digest)" != "$LF_SOURCE_GENERATION" ]; then
+              transaction_failed 'candidate rejected, see proxy-status'
+              exit 1
+            fi
+            flock -u 8
+            systemctl start --no-block proxy-net-wake.service
+            if [ "$recovery" = 0 ] && [ -n "''${LF_SOURCE_GENERATION:-}" ]; then
+              trap - ERR INT TERM HUP
+              exit 0
+            fi
+            transaction_step=health
+            deadline=$((SECONDS + 90))
+            if [ "$startup_deadline" = 0 ]; then startup_deadline=$((SECONDS + 210)); fi
+            if (( deadline > startup_deadline )); then deadline=$startup_deadline; fi
+            ${lib.optionalString config.my.proxy.controlledSources ''
+            if [ "$explicit_start" = 1 ] && [ "$recovery" = 0 ]; then watch_startup_recovery=1; fi
+            ''}
+            if wait_policy proxy "$deadline" "$2" "$transaction_epoch" 2>/dev/null; then break; else wait_result=$?; fi
+            if [ "$wait_result" != 75 ]; then
+              if [ "$wait_result" = 124 ]; then transaction_failed timeout; else transaction_failed superseded; fi
+              exit 1
+            fi
+            watch_startup_recovery=0
+            ${lib.optionalString config.my.proxy.controlledSources ''
+            flock -x -w 30 8
+            observation=$(${pkgs.python3}/bin/python3 ${./state.py} proxy --routing "$2" --routing-epoch "$transaction_epoch" || true)
+            if jq -e --argjson epoch "$transaction_epoch" '.routing_epoch == $epoch and .startup_recovery_needed' <<< "$observation" >/dev/null \
+                && [ "$(cat /run/proxy-mode/intent)" = proxy ]; then
+              failed_startup_digest=$(cat /run/proxy-mode/config-digest)
+              revision=$(jq -er --arg digest "$failed_startup_digest" 'select(.snapshot == $digest) | .revision | select(test("^[0-9a-f]{64}$"))' /run/proxy-mode/source.json)
+              recovery_args=(--revision "$revision")
+              (umask 077; : >> /run/proxy-mode/source-refresh-job.lock)
+              exec 7>>/run/proxy-mode/source-refresh-job.lock
+              if flock -x -w 5 7; then
+                cache_check=0
+                timeout --kill-after=2s 10s ${config.my.proxy.sourceCommand} check-recovery-cache "''${recovery_args[@]}" >/dev/null || cache_check=$?
+                if [ "$cache_check" = 0 ]; then
+                  recovery_source=recover-cached
+                  recovery=1
+                ${lib.optionalString config.my.proxy.startupRecoveryFetch ''
+                elif [ "$cache_check" = 4 ] && jq -e '(.result == "no-download" or .result == "already-accepted" or .result == "damaged-cache" or .result == "policy-mismatch")' /run/proxy-mode/source-recovery-cache.json >/dev/null; then
+                  recovery_source=recover
+                  recovery=1
+                ''}
+                fi
+                if [ "$recovery" = 1 ]; then
+                  echo "Restored snapshot failed ($(health_diagnostic)). Trying one same-source recovery ($recovery_source)."
+                  continue
+                fi
+                flock -u 7
+              fi
+            fi
+            flock -u 8
+            ''}
+            if wait_policy proxy "$deadline" "$2" "$transaction_epoch" 2>/dev/null; then break; else wait_result=$?; fi
+            if [ "$wait_result" = 124 ]; then transaction_failed timeout; else transaction_failed superseded; fi
             exit 1
-          fi
-          flock -u 8
-          systemctl start --no-block proxy-net-wake.service
-          if [ "$recovery" = 0 ] && [ -n "''${LF_SOURCE_GENERATION:-}" ]; then
-            trap - ERR INT TERM HUP
-            exit 0
-          fi
-          transaction_step=health
-          # Include DNS/TUN warmup and the commit of the matching health proof.
-          wait_policy proxy "$((SECONDS + 90))" "$2" "$transaction_epoch" 2>/dev/null
+          done
           if [ "$recovery" = 1 ] && [ "$(cat /run/proxy-mode/config-digest)" != "$LF_SOURCE_GENERATION" ]; then
             echo 'The source changed during recovery. Check proxy-status.' >&2
             exit 1

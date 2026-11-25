@@ -369,22 +369,96 @@ def select_generation(root, directory):
     temporary.replace(root / 'current')
 
 
-def cached_generation(root, stage, stage_settings):
-    """Recover the recorded download even after a local routing render."""
-    status = json.loads(stage.read_input(root, 'status.json', 0)) if (root / 'status.json').exists() else {}
-    identity = status.get('generation') if status.get('state') == 'fetched' else None
-    if not isinstance(identity, str) or not re.fullmatch('[a-f0-9]{64}', identity):
-        raise ValueError('no cached download for the selected source')
-    directory, manifest = stage.registered_generation(root, root / 'generations' / identity)
-    if (manifest.get('local_routing') or manifest.get('policy') != stage.validator_policy_digest(stage_settings)
-            or not stage.matches_source_policy(stage_settings, directory, manifest)):
-        raise ValueError('cached download does not match the active routing policy')
-    expected = stage.snapshot_digest(directory)
-    accepted = stage.read_record(stage.approved_root(stage_settings, root) / 'settled.json')
-    if accepted.get('digest') == expected:
-        raise ValueError('cached download is already the accepted snapshot')
-    select_generation(root, directory)
+CACHE_REFUSALS = {
+    'no-download': 'no cached download for the selected source',
+    'already-accepted': 'cached download is already the accepted snapshot',
+    'registration-changed': 'source revision revoked or selection changed',
+    'policy-mismatch': 'cached download does not match the active routing policy',
+    'damaged-cache': 'cached download is missing or damaged',
+}
+
+
+class CacheUnavailable(DefinitionError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(CACHE_REFUSALS[code])
+
+
+def cached_generation(root, stage, stage_settings, *, apply=True):
+    """Check the actual downloaded generation independently of the current symlink."""
+    try:
+        status = json.loads(stage.read_input(root, 'status.json', 0))
+    except FileNotFoundError:
+        raise CacheUnavailable('no-download') from None
+    except (OSError, ValueError):
+        raise CacheUnavailable('damaged-cache') from None
+    identity = status.get('generation') if isinstance(status, dict) else None
+    if not isinstance(identity, str) or not re.fullmatch('[a-f0-9]{64}', identity) or status.get('state') != 'fetched':
+        raise CacheUnavailable('damaged-cache')
+    try:
+        directory, manifest = stage.registered_generation(root, root / 'generations' / identity)
+        assets = manifest.get('assets', {})
+        if not isinstance(assets, dict) or assets.keys() - stage.ASSETS.keys():
+            raise ValueError('invalid cached assets')
+        expected = stage.snapshot_digest(directory, assets | {'source-data.json': manifest.get('source_data')})
+    except stage.SourceRevisionChanged:
+        raise CacheUnavailable('registration-changed') from None
+    except (OSError, ValueError, TypeError, AttributeError):
+        raise CacheUnavailable('damaged-cache') from None
+    try:
+        if (manifest.get('local_routing') or manifest.get('policy') != stage.validator_policy_digest(stage_settings)
+                or not stage.matches_source_policy(stage_settings, directory, manifest)):
+            raise CacheUnavailable('policy-mismatch')
+        approved = stage.approved_root(stage_settings, root)
+        accepted = stage.read_record(approved / 'settled.json').get('digest')
+    except stage.RefreshError:
+        raise CacheUnavailable('policy-mismatch') from None
+    if accepted == expected:
+        raise CacheUnavailable('already-accepted')
+    if isinstance(accepted, str) and re.fullmatch('[a-f0-9]{64}', accepted):
+        baseline = approved / accepted
+        previous = stage.read_record(baseline / 'source-manifest.json')
+        # Local routing renders can have different provenance with identical inputs.
+        if previous and all(previous.get(key) == manifest.get(key)
+                            for key in ('source_id', 'revision', 'yaml', 'source_data', 'assets')):
+            try:
+                same = not baseline.is_symlink() and stage.snapshot_digest(baseline) == accepted
+            except (OSError, ValueError):
+                same = False
+            if same:
+                raise CacheUnavailable('already-accepted')
+    if apply:
+        select_generation(root, directory)
     return expected
+
+
+def recovery_source(root, revision=None):
+    try:
+        source = selected(root)
+        if (pending_revocation(root).get('source_id') == source.name
+                or revision is not None and digest(read_private(source / 'registry.json')) != revision):
+            raise ValueError('registration changed')
+        return source
+    except (OSError, ValueError, KeyError):
+        raise CacheUnavailable('registration-changed') from None
+
+
+def check_recovery_cache(settings, root, revision=None, *, apply=False):
+    _, stage, stage_settings = refresh_context(settings)
+    state = Path(stage_settings['state'])
+    routing = stage.read_record(state / 'routing.json')
+    outcome = None
+    try:
+        candidate = cached_generation(recovery_source(root, revision), stage, stage_settings, apply=apply)
+        outcome = 'eligible'
+        return candidate
+    except CacheUnavailable as error:
+        outcome = error.code
+        raise
+    finally:
+        if outcome is not None:
+            stage.atomic_record(state / 'source-recovery-cache.json', dict(result=outcome,
+                **{key: routing.get(key) for key in ('boot_id', 'routing_epoch', 'routing_policy_digest')}))
 
 
 def refresh_generation(settings, root):
@@ -1000,8 +1074,8 @@ def main():
             p.add_argument('--digest', required=True)
             p.add_argument('--previous', required=True, help='current digest, or none for first registration')
     sub.add_parser('refresh').add_argument('--generation', action='store_true')
-    sub.add_parser('recover')
-    sub.add_parser('recover-cached')
+    for action in ('recover', 'recover-cached', 'check-recovery-cache'):
+        sub.add_parser(action).add_argument('--revision', help=argparse.SUPPRESS)
     automatic = sub.add_parser('automatic')
     automatic.add_argument('--request', action='store_true')
     sub.add_parser('diff', help='read-only comparison of local source snapshots')
@@ -1030,7 +1104,7 @@ def main():
         return
     review = review_module(settings) if args.action == 'diff' else None
     with (root / 'source.lock').open('a') as lock:
-        if args.action in ('diff', 'add', 'use', 'recover', 'recover-cached'):
+        if args.action in ('diff', 'add', 'use', 'recover', 'recover-cached', 'check-recovery-cache'):
             acquire(lock)
         else:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -1085,19 +1159,30 @@ def main():
             if args.revision is not None and digest(read_private(path / 'registry.json')) != args.revision:
                 raise ValueError('source revision changed')
             select(root, path)
+            _, stage, stage_settings = refresh_context(settings)
+            state = Path(stage_settings['state'])
+            (state / 'source-recovery-cache.json').unlink(missing_ok=True)
+            if stage.read_record(state / 'state.json').get('mode') == 'blocked':
+                try:
+                    check_recovery_cache(settings, root, args.revision)
+                except CacheUnavailable:
+                    pass
             print(json.dumps(dict(requested_source=path.name, result='selected')))
             return
-        if args.action == 'recover-cached':
-            _, stage, stage_settings = refresh_context(settings)
-            print(cached_generation(selected(root), stage, stage_settings))
+        if args.action in ('recover-cached', 'check-recovery-cache'):
+            print(check_recovery_cache(settings, root, args.revision, apply=args.action == 'recover-cached'))
             return
         if args.action in ('refresh', 'recover'):
             settings['_fetch_lock'] = lock
             settings['_recover'] = args.action == 'recover'
-            generation = refresh(settings, selected(root))
+            source = recovery_source(root, args.revision) if settings['_recover'] else selected(root)
+            generation = refresh(settings, source)
             if args.action == 'recover' or args.generation:
-                _, stage, _ = refresh_context(settings)
-                print(stage.snapshot_digest(generation))
+                if settings['_recover'] and args.revision is not None:
+                    print(check_recovery_cache(settings, root, args.revision))
+                else:
+                    _, stage, _ = refresh_context(settings)
+                    print(stage.snapshot_digest(generation))
             else:
                 print('source candidate prepared; runtime validation remains required')
             return
@@ -1141,6 +1226,9 @@ if __name__ == '__main__':
     except SourceFailure as error:
         print(str(error) + '; prior selection and runtime retained', file=sys.stderr)
         raise SystemExit(1)
+    except CacheUnavailable as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(4)
     except DefinitionError as error:
         print(str(error), file=sys.stderr)
         raise SystemExit(1)
