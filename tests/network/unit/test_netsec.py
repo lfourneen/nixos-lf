@@ -1350,6 +1350,34 @@ class LinkTests(unittest.TestCase):
 
 
 class NetworkManagerTests(unittest.TestCase):
+    def test_new_uplink_uses_managed_dns_without_inheriting_split_dns(self):
+        settings = {'interface': 'wlo1', 'discoverUplinks': True, 'excludedInterfaces': ['virbr0', 'tailscale0'],
+                    'exceptions': ['approved'], 'nmcli': 'nmcli', 'resolvectl': 'resolvectl',
+                    'resolver': '127.0.0.1:1054', 'systemctl': 'systemctl'}
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            if 'GENERAL.TYPE' in argv:
+                result = 'ethernet' if argv[-1] == 'enusb0' else 'wireguard'
+            else:
+                result = 'no\nno\n192.0.2.53\n\ncorp\n'
+            return subprocess.CompletedProcess(argv, 0, result, '')
+
+        nm_dns.apply(settings, 'enusb0', 'dhcp6-change', 'ordinary', run)
+        self.assertTrue(any('modify' in argv for argv in calls))
+        self.assertIn(['resolvectl', 'dns', 'enusb0', settings['resolver']], calls)
+        self.assertIn(['resolvectl', 'domain', 'enusb0', '~.'], calls)
+
+        calls.clear()
+        nm_dns.apply(settings, 'enusb0', 'up', 'approved', run)
+        self.assertFalse(any('modify' in argv or 'reapply' in argv or 'systemctl' in argv for argv in calls))
+        self.assertIn(['resolvectl', 'domain', 'enusb0', '~.'], calls)
+        calls.clear()
+        for interface in ('virbr0', 'tailscale0', 'wg0'):
+            nm_dns.apply(settings, interface, 'up', 'ordinary', run)
+        self.assertEqual(calls, [['nmcli', '-g', 'GENERAL.TYPE', 'device', 'show', 'wg0']])
+
     def test_revoke_precedes_activation_and_handles_missing_down_uuid(self):
         calls = []
         def run(argv, **kwargs):

@@ -15,6 +15,8 @@ import (
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/lfguard"
+	"github.com/metacubex/mihomo/component/resolver"
+	"github.com/metacubex/mihomo/component/trie"
 	C "github.com/metacubex/mihomo/constant"
 )
 
@@ -38,7 +40,7 @@ func (p lfDelayTestLeaf) DialContext(ctx context.Context, _ *C.Metadata) (C.Conn
 
 func TestLFManagedUnifiedDelayRejectsSecondRedirect(t *testing.T) {
 	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if requests.Add(1) == 1 {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -47,11 +49,21 @@ func TestLFManagedUnifiedDelayRejectsSecondRedirect(t *testing.T) {
 		w.WriteHeader(http.StatusFound)
 	}))
 	defer server.Close()
-	// The literal health target avoids DNS. The leaf dials only the local fixture.
-	const target = "http://1.1.1.1/latency"
+	if err := ca.AddCertificate(string(server.Certificate().Raw)); err != nil {
+		t.Fatal(err)
+	}
+	defer ca.ResetCertificate()
+	const target = "https://example.com/latency"
+	// Validate a public answer while the fixture leaf connects only to the test server.
+	hosts := trie.New[resolver.HostValue]()
+	if err := hosts.Insert("example.com", resolver.HostValue{IPs: []netip.Addr{netip.MustParseAddr("1.1.1.1")}}); err != nil {
+		t.Fatal(err)
+	}
+	previousHosts := resolver.DefaultHosts
+	resolver.DefaultHosts = resolver.NewHosts(hosts)
+	defer func() { resolver.DefaultHosts = previousHosts }()
 	if err := lfguard.Configure(map[string]any{
-		"prefixes": []string{"10.0.0.0/8"}, "delay-test-url": "https://example.com/latency",
-		"health-test-urls": []string{target},
+		"prefixes": []string{"10.0.0.0/8"}, "delay-test-url": target,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -62,8 +74,12 @@ func TestLFManagedUnifiedDelayRejectsSecondRedirect(t *testing.T) {
 	leaf := lfDelayTestLeaf{outbound.NewBase(outbound.BaseOption{
 		Name: "fixture", Addr: server.Listener.Addr().String(), Type: C.Socks5,
 	})}
-	if _, err := NewProxy(leaf).URLTest(lfguard.WithHealthDelay(context.Background()), target, nil); err == nil || requests.Load() != 2 {
+	if _, err := NewProxy(leaf).URLTest(lfguard.WithInteractiveDelay(context.Background()), target, nil); err == nil || requests.Load() != 2 {
 		t.Fatalf("unified delay made %d requests and returned %v", requests.Load(), err)
+	}
+	requests.Store(0)
+	if _, err := NewProxy(leaf).URLTest(lfguard.WithHealthDelay(context.Background()), target, nil); err != nil || requests.Load() != 1 {
+		t.Fatalf("recovery probe made %d requests and returned %v", requests.Load(), err)
 	}
 }
 

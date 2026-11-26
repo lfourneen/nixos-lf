@@ -548,6 +548,7 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
     if source is not None:
         source.update(json.loads(json.dumps(result)))
     if delay_url:
+        result['unified-delay'] = True
         for group in result['proxy-groups']:
             group['url'] = delay_url
             group['interval'] = 0 if group['type'] == 'select' else max(300, group.get('interval', 300))

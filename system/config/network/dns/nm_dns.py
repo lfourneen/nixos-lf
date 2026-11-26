@@ -1,4 +1,4 @@
-"""Apply DNS policy to the current managed Wi-Fi profile; never read its secrets."""
+"""Apply DNS policy to NetworkManager uplinks without reading profile secrets."""
 
 import json
 import fcntl
@@ -13,6 +13,7 @@ PROPERTIES = ("ipv4.ignore-auto-dns", "ipv6.ignore-auto-dns", "ipv4.dns", "ipv6.
               "ipv4.dns-search", "ipv6.dns-search")
 MANAGED = ["yes", "yes", "", "", "", ""]
 MAX_BACKUP_BYTES = 32768
+UPLINK_TYPES = {"ethernet", "wifi", "gsm", "cdma", "wwan"}
 
 
 class InvalidBackup(ValueError):
@@ -142,9 +143,12 @@ def profile(settings, uuid, action, command, *, missing_ok=False):
 
 
 def apply(settings, interface, action, uuid, run=subprocess.run):
-    if interface != settings["interface"]:
-        return
     if action not in {"pre-up", "pre-down", "down", "up", "dhcp4-change", "dhcp6-change"}:
+        return
+    split_interface = interface == settings["interface"]
+    if not split_interface and (not settings.get('discoverUplinks') or not interface or not uuid
+            or interface in settings.get('excludedInterfaces', [])
+            or action in {'pre-down', 'down'}):
         return
 
     def command(argv, required=True):
@@ -153,13 +157,21 @@ def apply(settings, interface, action, uuid, run=subprocess.run):
             raise RuntimeError("DNS policy command failed: " + argv[0].rsplit("/", 1)[-1])
         return result.stdout.strip()
 
-    if settings['exceptions'] and action in {'pre-up', 'pre-down', 'down'}:
+    if not split_interface and command(
+            [settings['nmcli'], '-g', 'GENERAL.TYPE', 'device', 'show', interface],
+            required=False) not in UPLINK_TYPES:
+        return
+    if split_interface and settings['exceptions'] and action in {'pre-up', 'pre-down', 'down'}:
         command([settings['systemctl'], 'start', 'dns-split-revoke.service'])
     if action in {'pre-down', 'down'} or not uuid:
         return
 
-    exempt = uuid in settings["exceptions"]
-    if 'state' in settings:
+    approved_profile = uuid in settings["exceptions"]
+    exempt = split_interface and approved_profile
+    # A registered split profile appearing on another link retains its
+    # saved properties, but gets only the ordinary active-link resolver.
+    foreign_split = approved_profile and not split_interface
+    if 'state' in settings and not foreign_split:
         if exempt:
             profile(settings, uuid, 'restore', command, missing_ok=True)
         else:
@@ -177,14 +189,14 @@ def apply(settings, interface, action, uuid, run=subprocess.run):
     values = current.split("\n")
     compliant = len(values) >= 2 and all(v in {"yes", "true"} for v in values[:2]) \
         and not any(v for v in values[2:])
-    if not exempt and not compliant and 'state' not in settings:
+    if not exempt and not foreign_split and not compliant and 'state' not in settings:
         argv = [settings["nmcli"], "--wait", "5", "connection", "modify", "uuid", uuid]
         for key in properties:
             argv += [key, "yes" if key.endswith("ignore-auto-dns") else ""]
         command(argv)
     # pre-up can be too early for Device.Reapply; up always reapplies the now
     # compliant profile, including one modified at pre-up in this activation.
-    if action != "pre-up":
+    if action != "pre-up" and not foreign_split:
         command([settings["nmcli"], "--wait", "5", "device", "reapply", interface])
     command([settings["resolvectl"], "dns", interface, settings["resolver"]])
     command([settings["resolvectl"], "domain", interface, *routing_domains])

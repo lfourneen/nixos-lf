@@ -355,7 +355,7 @@ See [DNS](dns.md) for split DNS, native MagicDNS and literal-IP boundaries.
 
 | Controller operation | Managed behavior |
 |---|---|
-| GET / HEAD / OPTIONS | Read access. Delay requests also enforce the managed endpoint and request limits |
+| GET / HEAD / OPTIONS | Read access. Desktop DNS and delay requests that initiate network traffic require B authorization |
 | PUT / DELETE `/proxies/<name>` | Select or release a proxy choice in rules. Runtime proxy-only returns 403; root controls exit changes |
 | DELETE `/connections` or `/connections/<id>` | Close connections |
 | PATCH `/configs` | An empty patch, `mode`, or `tun` is discarded with 204 and never applied. A patch containing any other field returns 403 |
@@ -364,10 +364,13 @@ See [DNS](dns.md) for split DNS, native MagicDNS and literal-IP boundaries.
 
 Rule disabling, provider/geodata/storage changes, restart and upgrade APIs are forbidden.
 Core mode is fixed by the system-rendered profile; the managed parser also pins it to `rule`.
-Both the GUI forwarder and the direct controller socket cross the same unconditional gate, independent of policy state.
+Both controller sockets enforce the write policy. The direct Unix socket identifies root recovery probes by their peer credentials.
 New controller write endpoints require an explicit policy decision when upgrading the core.
 
 Desktop node, group and provider tests use the exact HTTPS endpoint in `my.proxy.delayTestUrl`, including its path and query. The controller maps Verge's built-in fallback URL to that endpoint and caps desktop requests at 10 seconds. Only successful HTTP responses count. Group and provider batches omit built-in direct adapters.
+Desktop DNS queries and delay tests require current B authorization. The controller cancels requests still running when that authorization expires or is revoked. In C, the desktop can still read controller state and existing results. Recovery DNS queries from the root Unix peer use the configured probe names.
+
+The managed core uses Verge's unified delay. When the probe can make a second request on the connection, the figure measures that request. Recovery probes finish on the first successful response. Cold DNS, socket setup and the first TLS handshake still affect the time to first byte for a new application connection.
 
 This host also sets `my.proxy.delayTestFallbackUrl`. If the primary fails and the alternate HTTPS target responds through the expected route in the same successful health round, desktop tests can use the alternate for up to 60 seconds from the start of that proof. A new successful primary observation restores the normal target. The alternate must be in `nodeProbeUrls`. Desktop callers can still request only the primary. `proxy-status` reports fallback use and any observation of the primary's DNS.
 

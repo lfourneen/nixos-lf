@@ -35,12 +35,15 @@ var (
 type healthDelayKey struct{}
 type sessionCheckKey struct{}
 type interactiveDelayKey struct{}
+type desktopDNSKey struct{}
 type interactiveTargetKey struct{}
 type backgroundTimeoutKey struct{}
 
 func WithHealthDelay(ctx context.Context) context.Context {
 	return context.WithValue(ctx, healthDelayKey{}, true)
 }
+
+func HealthDelay(ctx context.Context) bool { return ctx.Value(healthDelayKey{}) == true }
 
 func WithSessionCheck(ctx context.Context, target string) (context.Context, bool) {
 	p := current.Load()
@@ -61,6 +64,12 @@ func SessionCheck(ctx context.Context, target string) bool {
 func WithInteractiveDelay(ctx context.Context) context.Context {
 	return context.WithValue(ctx, interactiveDelayKey{}, true)
 }
+
+func WithDesktopDNS(ctx context.Context) context.Context {
+	return context.WithValue(ctx, desktopDNSKey{}, true)
+}
+
+func DesktopDNS(ctx context.Context) bool { return ctx.Value(desktopDNSKey{}) == true }
 
 func bootSeconds() float64 {
 	var ts unix.Timespec
@@ -188,7 +197,7 @@ func BeginDelay(ctx context.Context, target string) (context.Context, func(), er
 	if !ManagedDelay() {
 		return ctx, func() {}, nil
 	}
-	health, _ := ctx.Value(healthDelayKey{}).(bool)
+	health := HealthDelay(ctx)
 	alternate := ctx.Value(interactiveTargetKey{}) == target && DelayAllowed(target, true)
 	if !alternate && !SessionCheck(ctx, target) && !DelayAllowed(target, health) {
 		return ctx, func() {}, fmt.Errorf("managed delay test endpoint is not authorized")

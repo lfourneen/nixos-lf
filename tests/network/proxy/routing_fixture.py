@@ -371,6 +371,7 @@ DELAY_PATH = '/speed?policy=root'
 DELAY_TARGET = 'https://source.fixture.example:17443' + DELAY_PATH
 DELAY_RECORDS = Path('/run/netsec-delay-records.jsonl')
 DELAY_HOLD = Path('/run/netsec-delay-hold')
+DELAY_COLD = Path('/run/netsec-delay-cold')
 DELAY_REDIRECT = Path('/run/netsec-delay-redirect')
 DELAY_READY = Path('/run/netsec-delay-ready')
 
@@ -394,10 +395,16 @@ def cold_start():
 
 def delay_origin():
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.1'
+        cold = True
+
         def do_HEAD(self):
             record = (self.path, self.client_address[0], self.connection.getsockname()[0])
             with DELAY_RECORDS.open('a') as output:
                 output.write(json.dumps(record) + '\n')
+            if self.cold and DELAY_COLD.exists():
+                time.sleep(.4)
+            self.cold = False
             deadline = time.monotonic() + 12
             while DELAY_HOLD.exists() and time.monotonic() < deadline:
                 time.sleep(.05)
@@ -423,26 +430,39 @@ def check_delay_controls(mode):
     direct = '/run/clash-verge-rev/core/mihomo.sock'
     group = 'Choice' if mode == 'rules' else 'lf-remote'
 
-    def speed(route, name, target, milliseconds=10000, root=False):
+    def controller(path, root=False):
         select = [] if root else ['setpriv', f'--reuid={uid}', '--clear-groups']
-        query = urlencode({'url': target, 'timeout': milliseconds})
         result = run(*select, 'curl', '--noproxy', '*', '--max-time', '13', '-sS', '-w', '\n%{http_code}',
                      '--unix-socket', direct if root else front,
                      '-H', 'X-Forwarded-For: 127.0.0.1',
-                     f'http://localhost/{route}/{quote(name, safe="")}/delay?{query}', timeout=16)
+                     f'http://localhost/{path}', timeout=16)
         body, status = result.stdout.rsplit('\n', 1)
         return int(status), json.loads(body)
+
+    def speed(route, name, target, milliseconds=10000, root=False):
+        query = urlencode({'url': target, 'timeout': milliseconds})
+        return controller(f'{route}/{quote(name, safe="")}/delay?{query}', root=root)
 
     def records():
         return [json.loads(line) for line in DELAY_RECORDS.read_text().splitlines()] if DELAY_RECORDS.exists() else []
 
+    assert controller('configs')[1]['unified-delay'] is True
+    dns_path = 'dns/query?name=node.fixture.example&type=A'
+    assert controller(dns_path)[0] == 200
     initial = len(records())
-    single = speed('proxies', 'Fixture', DELAY_TARGET)
+    DELAY_COLD.touch()
+    started = time.monotonic()
+    try:
+        single = speed('proxies', 'Fixture', DELAY_TARGET)
+        elapsed = (time.monotonic() - started) * 1000
+    finally:
+        DELAY_COLD.unlink(missing_ok=True)
     whole = speed('group', group, DELAY_TARGET)
     assert single[0] == 200 and single[1]['delay'] > 0, (mode, single)
+    assert elapsed - single[1]['delay'] >= 350, (mode, elapsed, single)
     assert whole[0] == 200 and whole[1]['Fixture'] > 0, (mode, whole)
     delivered = records()[initial:]
-    assert len(delivered) == 2 and all(path == DELAY_PATH and peer == local for path, peer, local in delivered), delivered
+    assert len(delivered) == 4 and all(path == DELAY_PATH and peer == local for path, peer, local in delivered), delivered
 
     for target in (DELAY_TARGET.replace('https:', 'http:'), DELAY_TARGET.replace('17443', '17444'),
                    DELAY_TARGET.replace('/speed', '/unapproved'), DELAY_TARGET.replace('policy=root', 'policy=other'),
@@ -453,14 +473,14 @@ def check_delay_controls(mode):
     assert speed('proxies', 'Fixture', 'http://cp.cloudflare.com/generate_204', 15000)[0] == 200
     assert speed('group', 'lf-remote', health, 1200)[0] == 403
     assert speed('proxies', 'DIRECT', DELAY_TARGET)[0] == 503
-    assert [entry[0] for entry in records()[initial:]] == [DELAY_PATH] * 3
+    assert [entry[0] for entry in records()[initial:]] == [DELAY_PATH] * 6
     if mode == 'rules':
         # Exercise the exact privileged fallback path also used by health.py.
         wait(lambda: speed('group', 'lf-remote', health, 1200, root=True)[0] == 200, timeout=15)
         DELAY_REDIRECT.touch()
         try:
             assert speed('proxies', 'Fixture', DELAY_TARGET)[0] == 503
-            assert [entry[0] for entry in records()[initial + 3:]] == [DELAY_PATH]
+            assert [entry[0] for entry in records()[initial + 6:]] == [DELAY_PATH]
         finally:
             DELAY_REDIRECT.unlink(missing_ok=True)
 
@@ -476,6 +496,35 @@ def check_delay_controls(mode):
                 DELAY_HOLD.unlink(missing_ok=True)
             results = [job.result()[0] for job in [*single_jobs, batch]]
         assert results == [200] * 4, results
+        # Freeze only the publisher and move the lease deadline forward in
+        # the isolated fixture so the live held request must be canceled.
+        lease = Path('/run/proxy-mode/authorization.json')
+        staged = lease.with_suffix('.fixture')
+        wait(lambda: json.loads(lease.read_text())['until'] > time.clock_gettime(time.CLOCK_BOOTTIME) + 5,
+             timeout=15)
+        run('systemctl', 'freeze', 'proxy-mode.service')
+        original = lease.read_bytes()
+        DELAY_HOLD.touch()
+        before = len(records())
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                pending = executor.submit(speed, 'proxies', 'Fixture', DELAY_TARGET)
+                wait(lambda: len(records()) > before, timeout=5)
+                expired = dict(json.loads(original), until=time.clock_gettime(time.CLOCK_BOOTTIME) + .4)
+                staged.write_text(json.dumps(expired))
+                staged.replace(lease)
+                assert pending.result(timeout=4)[0] == 504
+            assert controller(dns_path)[0] == 403
+            assert speed('group', group, DELAY_TARGET)[0] == 403
+            assert controller('proxies')[0] == 200
+            assert controller(dns_path, root=True)[0] == 200
+            assert controller('dns/query?name=unapproved.fixture.example&type=A', root=True)[0] == 403
+            assert len(records()) == before + 1, records()[before:]
+        finally:
+            DELAY_HOLD.unlink(missing_ok=True)
+            staged.write_bytes(original)
+            staged.replace(lease)
+            run('systemctl', 'thaw', 'proxy-mode.service')
     print(f'{mode}: exact desktop delay URL, real leaf, root-only health and request limits verified', flush=True)
 
 

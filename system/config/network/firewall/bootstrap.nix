@@ -2,6 +2,7 @@
 
 let
   m = config.my.machine;
+  dnsUplinks = import ./dns-uplinks.nix { inherit config lib; };
   bootstrap = pkgs.writeText "lf-bootstrap.nft" ''
     destroy table inet lf_bootstrap
     table inet lf_bootstrap {
@@ -11,22 +12,31 @@ let
         ct state invalid drop
         ${import ./ndp-validation.nix}
         ct state established,related accept
-        iifname { "${m.wired.name}", "${m.wireless.name}" } udp sport 67 udp dport 68 accept
-        iifname { "${m.wired.name}", "${m.wireless.name}" } udp sport 547 udp dport 546 accept
+        ${dnsUplinks.match "iifname"} udp sport 67 udp dport 68 accept
+        ${dnsUplinks.match "iifname"} udp sport 547 udp dport 546 accept
         meta l4proto icmpv6 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert, packet-too-big, destination-unreachable, time-exceeded } accept
       }
       chain forward {
         type filter hook forward priority -10; policy drop;
+      }
+      chain output {
+        type filter hook output priority -196; policy accept;
+        oifname "lo" accept
+        ${lib.concatMapStringsSep "\n" (rule: "${dnsUplinks.match "oifname"} ${rule}")
+          (dnsUplinks.dotRules config.users.users.unbound.uid "")}
+        # Both DNS modes start with the encrypted upstream. The full
+        # policy owns any subsequent split or portal address leases.
+        meta l4proto { tcp, udp } th dport { 53, ${toString m.ports.dot} } counter drop
       }
     }
   '';
 
 in
 {
-  # First-load failure retains this independent ingress baseline. The complete
+  # First-load failure retains this independent ingress and DNS baseline. The complete
   # static+mode transaction removes it only when the full policy is installed.
   systemd.services.network-firewall-bootstrap = {
-    description = "Install the minimal ingress firewall before physical networking";
+    description = "Install bootstrap ingress and DNS rules before physical networking";
     wantedBy = [ "network-pre.target" ];
     wants = [ "sysinit.target" "network-pre.target" ];
     after = [ "sysinit.target" ];

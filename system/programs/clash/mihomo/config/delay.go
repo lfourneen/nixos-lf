@@ -13,6 +13,8 @@ func lfApplyDelayProfile(raw *RawConfig) {
 	if target == "" {
 		return
 	}
+	// Match Verge's unified timing for previously accepted snapshots as well.
+	raw.UnifiedDelay = true
 	for _, group := range raw.ProxyGroup {
 		if group == nil {
 			continue

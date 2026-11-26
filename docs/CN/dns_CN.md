@@ -26,8 +26,9 @@ DoT 故障时保留缓存/本地回答。
 运行时 proxy-only 的外层边界同时阻断宿主 DoT、split/MagicDNS 路径，C 中也不例外；下述真实地址网关保留核心验证器路径。
 [listeners.py](../../system/config/network/proxy/listeners.py) 共用检查 TCP/UDP 监听地址、UID 和 cgroup。
 
-上行口的明文 DNS 对两种 IP 家族均重定向到 dnsmasq，包括硬编码的私网/门户解析器。
+两种 IP 家族的上行明文 DNS 均重定向到 dnsmasq，包括热插拔网卡和应用硬编码的私网或门户解析器。
 dnsmasq 自身上游和批准的 MagicDNS 走明确策略。
+严格加密 DNS 模式下，启动防火墙在配置上行前拦截外发的 TCP/UDP 53 和 853，仅放行指定 Unbound UID 到已声明 DoT 地址的 TCP 查询。完整策略原子接管，按现行 DNS 租约拦截重定向后仍要发往普通上行的明文 DNS。
 早期 853 guard 允许 root、核心 UID 加 mark 及配置的 Unbound 路径，在 auto-redirect 隐藏原端口前阻断应用独立 DoT/DoQ。
 DoH 与 HTTPS 共用 443，不能据此区分。
 
@@ -294,7 +295,7 @@ GUI 配置在解析时继承它们，控制 API 不能替换。
 
 ## Wi-Fi、split DNS 与 MagicDNS
 
-Wi-Fi DNS 改写将原有的六个 DNS 属性备份到 root 私有的 `/var/lib/netsec-dns-profiles/`。
+NetworkManager 上行 DNS 改写将原有的六个 DNS 属性备份到 root 私有的 `/var/lib/netsec-dns-profiles/`。
 Dispatcher 在首次改写 profile 前发布完整备份并同步所在目录。
 运行 `sudo proxy-dns-profile plan <UUID>` 可查询备份路径、状态及是否可恢复。
 `sudo proxy-dns-profile restore <UUID>` 恢复这些字段且不重连，并拒绝覆盖期间的人工修改。
@@ -303,7 +304,7 @@ Dispatcher 在首次改写 profile 前发布完整备份并同步所在目录。
 批准已有备份的 profile 使用 split DNS 时会恢复其原始 DNS 值。
 备份不包含凭据、路由和身份字段。
 
-[nm_dns.py](../../system/config/network/dns/nm_dns.py) 为受管 Wi-Fi 的两种 IP 家族禁用自动 DNS，清除非预期显式服务器/搜索域，并以 `~.` 将 resolved 固定到本机网关。
+[nm_dns.py](../../system/config/network/dns/nm_dns.py) 为 NetworkManager 受管上行的两种 IP 家族禁用自动 DNS，清除非预期显式服务器和搜索域，并以 `~.` 将 resolved 固定到本机网关。
 明文回退读取原始 DHCP 数据，不读取已改写的有效 DNS 列表。
 有线 dhcpcd 独立处理。
 

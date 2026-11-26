@@ -83,6 +83,8 @@ setpriv --reuid=@clashCore@ --regid=@clashCore@ --clear-groups \
   --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \
   sh -c 'umask 077; mkdir -p "$1/proxies"; touch "$1/cache.db"' sh "$data_dir"
 @python@ @stageTool@ stage @stageSettings@ "$real" "$config"
+LF_CONTROLLER_SNAPSHOT=$(cat /run/proxy-mode/authorized-config)
+export LF_CONTROLLER_SNAPSHOT
 
 if [ -d "/run/user/@desktopUid@" ]; then
   # Operate on a directory descriptor, never chmod/chown a desktop-supplied

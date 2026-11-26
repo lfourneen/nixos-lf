@@ -96,6 +96,9 @@ proxy-providers:
 	if _, err := lfValidateRaw(raw); err != nil {
 		t.Fatal(err)
 	}
+	if !raw.UnifiedDelay {
+		t.Fatal("cached profiles must use the managed unified delay timing")
+	}
 	for i, fields := range []map[string]any{raw.ProxyGroup[0], raw.ProxyGroup[1],
 		raw.ProxyProvider["other"]["health-check"].(map[string]any),
 		raw.ProxyProvider["legacy"]["health-check"].(map[string]any)} {

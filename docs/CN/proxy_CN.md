@@ -329,7 +329,7 @@ Rule providers 固定为空，geodata 自动更新关闭，无条件 `MATCH,DIRE
 
 | 控制操作 | 受管行为 |
 |---|---|
-| GET / HEAD / OPTIONS | 可读取。测速还须符合受管端点和请求限额 |
+| GET / HEAD / OPTIONS | 可读取。会发起网络流量的桌面 DNS 查询和测速需要 B 授权 |
 | PUT / DELETE `/proxies/<name>` | rules 中选择或释放代理选择。运行时 proxy-only 返回 403，出口由 root 控制 |
 | DELETE `/connections` 或 `/connections/<id>` | 关闭连接 |
 | PATCH `/configs` | 空补丁、`mode` 或 `tun` 返回 204 且不应用；补丁含其它字段时返回 403 |
@@ -338,10 +338,13 @@ Rule providers 固定为空，geodata 自动更新关闭，无条件 `MATCH,DIRE
 
 禁用规则、provider/geodata/storage 更新、重启及升级 API 均拒绝。
 核心模式由系统渲染配置固定，受管解析器也会将其固定为 `rule`。
-GUI forwarder 和直接控制器 socket 均经过同一项无条件限制，与策略状态无关。
+两个控制器 socket 采用同一套写入策略。直接 Unix socket 通过对端凭据识别 root 恢复探针。
 升级新增写端点时需明确决定权限。
 
 桌面节点、分组和 provider 测速使用 `my.proxy.delayTestUrl` 指定的 HTTPS 端点，匹配完整路径和查询参数。控制器将 Verge 的内置回退 URL 映射到该端点，桌面请求最多等待 10 秒。只有 HTTP 成功响应计入测速，分组和 provider 批量请求跳过内置直连适配器。
+桌面主动查询 DNS 和测速需要当前 B 授权。授权到期或撤回时，控制器取消仍在进行的请求。C 中仍可读取状态和现有测速结果。通过私有 Unix 入口发起的 root 恢复查询仅使用已配置的探针域名。
+
+受管核心采用 Verge 默认的统一延迟。能复用连接并成功完成第二次请求时，显示该次请求的耗时。恢复探针取得首次成功响应即结束。新建应用连接的首包仍受冷 DNS、拨号和首次 TLS 握手影响。
 
 本机还配置了 `my.proxy.delayTestFallbackUrl`。同一轮监督器探测确认主站失败、备用 HTTPS 站经预期代理响应并通过完整健康检查后，桌面测速可在这份证明的 60 秒有效期内使用备用站。下一次主站成功即恢复原目标。备用站须已列入 `nodeProbeUrls`，桌面请求仍只可指定主站；`proxy-status` 显示备用站及主站解析的观测状态。
 

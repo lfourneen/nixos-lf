@@ -27,8 +27,9 @@ Only root diagnostics and the dnsmasq UID may query internal ports 1053/1055. 10
 In runtime proxy-only, the outer boundary blocks host DoT and split/MagicDNS paths, including while C is active; the real-address gateway below retains the core validator path.
 TCP/UDP listener address, UID and cgroup are checked by the shared [listeners.py](../system/config/network/proxy/listeners.py).
 
-Plain DNS on uplinks, including hardcoded private/portal resolvers, is redirected into dnsmasq for both IP families.
+Plain DNS on uplinks, including hot-plugged interfaces and hardcoded private/portal resolvers, is redirected into dnsmasq for both IP families.
 Its own upstream queries and approved MagicDNS traffic follow explicit policy.
+In strict encrypted DNS mode, the boot firewall blocks external TCP and UDP to ports 53 and 853 before an uplink is configured. The configured Unbound UID can reach the declared DoT addresses over TCP. The full policy replaces the boot firewall atomically and blocks plain DNS still destined for an uplink after redirection, subject to the existing DNS leases.
 An early port-853 guard permits root, the managed core UID plus mark, and the configured Unbound path.
 It blocks independent application DoT/DoQ before auto-redirect can conceal the original port.
 DoH shares HTTPS port 443 and is not distinguished by this rule.
@@ -309,7 +310,7 @@ Upstream sources and snapshot metadata are recorded in the module header and [lo
 
 ## Wi-Fi, split DNS and MagicDNS
 
-Wi-Fi DNS edits save the six original DNS properties in root-private `/var/lib/netsec-dns-profiles/`.
+NetworkManager uplink DNS edits save the six original DNS properties in root-private `/var/lib/netsec-dns-profiles/`.
 The dispatcher publishes and syncs a complete backup before the first profile edit.
 Run `sudo proxy-dns-profile plan <UUID>` to see the backup path, its status and whether it can be restored.
 `sudo proxy-dns-profile restore <UUID>` restores those fields without reconnecting and refuses to overwrite intervening manual edits.
@@ -318,7 +319,7 @@ The dispatcher and restore command refuse profile edits while that backup is inv
 Approving a backed-up profile for split DNS restores its original DNS values.
 Credentials, routes and identity fields are outside the backup.
 
-[nm_dns.py](../system/config/network/dns/nm_dns.py) disables automatically supplied DNS for both families on managed Wi-Fi, clears unwanted explicit servers/search domains and pins resolved to the local gateway with `~.`.
+[nm_dns.py](../system/config/network/dns/nm_dns.py) disables automatically supplied DNS for both families on managed NetworkManager uplinks, clears unwanted explicit servers/search domains and pins resolved to the local gateway with `~.`.
 Fallback discovery reads raw DHCP information rather than this rewritten effective DNS list.
 Wired dhcpcd remains separate.
 

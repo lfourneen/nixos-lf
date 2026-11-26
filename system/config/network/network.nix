@@ -9,6 +9,8 @@ let
   port = m.ports;
   join = lib.concatStringsSep ", ";
   guestPolicy = import ./guests/policy.nix { inherit config lib; };
+  dnsUplinks = import ./firewall/dns-uplinks.nix { inherit config lib; };
+  dnsUplink = dnsUplinks.match "oifname";
   egress = config.my.hardening.directEgress;
   restrictedEgress = egress.mode == "restricted";
   privateEgress = egress.privateRoutes;
@@ -141,9 +143,7 @@ let
   #
   # A literal uid cannot be checked by the evaluator and would silently stop
   # matching the daemon; the pins live in the module body.
-  dotRules = uid: action: lib.concatMap (endpoint: [
-    "meta skuid ${toString uid} ${if lib.hasInfix ":" endpoint.address then "ip6" else "ip"} daddr ${endpoint.address} tcp dport ${toString port.dot} ${action}accept"
-  ]) m.dotEndpoints;
+  inherit (dnsUplinks) dotRules;
   unboundUid = config.users.users.unbound.uid;
   dnsmasqUid = config.users.users.dnsmasq.uid;
   socketDns = config.my.hardening.socketGuestUsers != [ ] || config.my.proxy.controlledSources;
@@ -309,6 +309,8 @@ let
     nmcli = "${pkgs.networkmanager}/bin/nmcli";
     resolvectl = "${pkgs.systemd}/bin/resolvectl";
     interface = wireless;
+    discoverUplinks = true;
+    excludedInterfaces = dnsUplinks.internal;
     exceptions = config.my.proxy.splitDnsProfileUuids;
     resolver = "127.0.0.1:${toString port.dnsmasq}";
     systemctl = "${pkgs.systemd}/bin/systemctl";
@@ -960,10 +962,9 @@ in
           # TPROXY'd bridge traffic, if enabled.
           ${tproxyInputAccept}
 
-          # DHCP client replies on the uplinks, before the martian drop below so an
-          # OFFER/ACK sourced from 0.0.0.0 is not caught by it.
-          iifname { "${wired}", "${wireless}" } udp sport 67 udp dport 68 accept
-          iifname { "${wired}", "${wireless}" } udp sport 547 udp dport 546 accept
+          # DHCP replies on ordinary uplinks, including newly attached links.
+          ${dnsUplinks.match "iifname"} udp sport 67 udp dport 68 accept
+          ${dnsUplinks.match "iifname"} udp sport 547 udp dport 546 accept
 
           # Martian sources on the wired WAN. 100.64.0.0/10 is absent on purpose:
           # this uplink is CGNAT, so those are the ISP's own subscribers.
@@ -1087,6 +1088,15 @@ in
           meta skuid != 0 meta l4proto { tcp, udp } th dport ${toString port.dot} counter drop
         }
 
+        chain lf_dns_uplink_guard {
+          type filter hook output priority -90; policy accept;
+          # Catch remaining external DNS after NAT, including existing flows
+          # whose conntrack entry predates the redirect.
+          ct direction reply return
+          ${dnsUplink} meta l4proto { tcp, udp } th dport 53 meta skuid ${toString dnsmasqUid} jump dns_egress
+          ${dnsUplink} meta l4proto { tcp, udp } th dport 53 counter drop
+        }
+
         # Only NAT may deliver traffic to gost's transparent listener. Reject
         # explicit loopback connects before NAT, preventing recursive self-dials.
         chain redirect_guard {
@@ -1156,8 +1166,7 @@ in
         chain output {
           type nat hook output priority -100; policy accept;
 
-          meta skuid != ${dnsRedirectExemptUidSet} oifname { "${wired}", "${wireless}" } ip daddr != { 127.0.0.0/8, ${m.magicDns} } udp dport 53 redirect to :${toString port.dnsmasq}
-          meta skuid != ${dnsRedirectExemptUidSet} oifname { "${wired}", "${wireless}" } ip daddr != { 127.0.0.0/8, ${m.magicDns} } tcp dport 53 redirect to :${toString port.dnsmasq}
+          meta skuid != ${dnsRedirectExemptUidSet} ${dnsUplink} ip daddr != { 127.0.0.0/8, ${m.magicDns} } meta l4proto { tcp, udp } th dport 53 redirect to :${toString port.dnsmasq}
         }
 
         chain postrouting {
@@ -1194,8 +1203,7 @@ in
         chain output {
           type nat hook output priority -100; policy accept;
 
-          meta skuid != ${dnsRedirectExemptUidSet} oifname { "${wired}", "${wireless}" } ip6 daddr != { ::1 } udp dport 53 redirect to :${toString port.dnsmasq}
-          meta skuid != ${dnsRedirectExemptUidSet} oifname { "${wired}", "${wireless}" } ip6 daddr != { ::1 } tcp dport 53 redirect to :${toString port.dnsmasq}
+          meta skuid != ${dnsRedirectExemptUidSet} ${dnsUplink} ip6 daddr != ::1 meta l4proto { tcp, udp } th dport 53 redirect to :${toString port.dnsmasq}
         }
       }
 

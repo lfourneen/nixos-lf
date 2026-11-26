@@ -390,6 +390,9 @@ pkgs.testers.runNixOSTest {
             print(machine.execute("cat /run/proxy-mode/state.json /run/proxy-mode/health.json; /etc/netsec-tun-check; python3 /etc/netsec-health.py /etc/netsec-health.json --fast; ps -eo pid,cgroup,args; journalctl -u proxy-mode -u clash-verge --no-pager -n 60; cat /tmp/netsec-node.log"))
             raise
 
+    def assert_hotplug_dns_unseen():
+        machine.succeed("ip netns exec hotplug nft -j list counter inet dns_wire dns | jq -e '.nftables[-1].counter.packets == 0'")
+
     start_all()
     machine.wait_for_unit("network-firewall-bootstrap.service")
     machine.fail("modprobe rds")
@@ -416,6 +419,22 @@ pkgs.testers.runNixOSTest {
     machine.succeed("ip route add 203.0.113.10/32 via 100.67.0.1 dev ens1")
     machine.succeed("python3 -m http.server 8080 --bind 0.0.0.0 >/tmp/host-http.log 2>&1 &")
     machine.fail("ip netns exec outside curl --noproxy '*' -fsS --connect-timeout 1 http://100.67.0.2:8080")
+
+    with subtest("bootstrap guards DNS before full policy on a new uplink"):
+        machine.succeed("ip netns add hotplug; ip link add enusb0 type veth peer name hot-peer; ip link set hot-peer netns hotplug; ip link set enusb0 up")
+        machine.succeed("ip -n hotplug addr add 172.30.99.1/24 dev hot-peer; ip -n hotplug addr add 2001:db8:99::1/64 dev hot-peer nodad; ip -n hotplug link set hot-peer up; ip -n hotplug link set lo up; ip addr add 2001:db8:99::2/64 dev enusb0 nodad")
+        machine.succeed("systemd-run --unit=netsec-hotplug-dhcp ip netns exec hotplug ${pkgs.dnsmasq}/bin/dnsmasq --keep-in-foreground --conf-file=/dev/null --port=0 --interface=hot-peer --dhcp-leasefile=/run/netsec-hotplug-dhcp.leases --dhcp-authoritative --dhcp-range=172.30.99.2,172.30.99.8,1h")
+        machine.wait_until_succeeds("ip netns exec hotplug ss -uln | grep -q ':67 '", timeout=20)
+        machine.succeed("dhcpcd -B -1 -4 -t 10 --config /etc/guest-dhcpcd.conf enusb0 && ip -4 addr show dev enusb0 | grep -q 172.30.99.", timeout=30)
+        machine.succeed("systemd-run --unit=netsec-hotplug-portal ip netns exec hotplug ${pkgs.python3}/bin/python3 -m http.server 80 --bind ::")
+        for address in ("172.30.99.1", "[2001:db8:99::1]"):
+            machine.wait_until_succeeds(f"curl --noproxy '*' -fsS --max-time 1 'http://{address}/' >/dev/null", timeout=20)
+        machine.succeed("ip netns exec hotplug nft add table inet dns_wire; ip netns exec hotplug nft add counter inet dns_wire dns; ip netns exec hotplug nft 'add chain inet dns_wire input { type filter hook input priority -300; policy accept; }'; ip netns exec hotplug nft 'add rule inet dns_wire input iifname hot-peer meta l4proto { tcp, udp } th dport { 53, 853 } counter name dns'")
+        for address in ("172.30.99.1", "2001:db8:99::1"):
+            for transport in ("", "+tcp"):
+                machine.fail(f"dig {transport} +time=1 +tries=1 @{address} fixture.test A")
+                machine.fail(f"setpriv --reuid=1000 --clear-groups dig {transport} +time=1 +tries=1 @{address} -p 853 fixture.test A")
+        assert_hotplug_dns_unseen()
 
     machine.succeed("touch /run/allow-full-policy; systemctl reset-failed nftables.service; systemctl start nftables.service; systemctl start proxy-mode.service")
     machine.wait_for_unit("proxy-mode.service")
@@ -459,6 +478,17 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("netsec-rebind-fixture.service")
     machine.wait_for_unit("netsec-dnssec-fixture.service")
     machine.succeed("NETSEC_DNSSEC_PROBE_NAME=signed.fixture.example. python3 /etc/netsec-dnssec-probe.py 1055 | jq -e '.status == \"secure\"'")
+    with subtest("Mode A redirects third uplink DNS and guards the handoff"):
+        for address in ("172.30.99.1", "2001:db8:99::1"):
+            if ":" in address:
+                machine.succeed("ip -4 addr flush dev enusb0")
+            for transport in ("", "+tcp"):
+                machine.succeed(f"setpriv --reuid=1000 --clear-groups dig {transport} +short +time=2 +tries=1 @{address} fixture.test A | grep -qx 192.0.2.42")
+        machine.succeed("nft flush chain ip6 lf_nat output")
+        machine.fail("setpriv --reuid=1000 --clear-groups dig +time=1 +tries=1 @2001:db8:99::1 fixture.test A")
+        assert_hotplug_dns_unseen()
+        machine.succeed("/etc/netsec-mode-script --reload; systemctl stop netsec-hotplug-dhcp.service netsec-hotplug-portal.service; ip link del enusb0; ip netns del hotplug")
+        machine.succeed("setpriv --reuid=1000 --clear-groups dig +short +time=2 +tries=1 @100.67.0.1 fixture.test A | grep -qx 192.0.2.42")
     for transport in ("", "+tcp"):
         response = machine.succeed(f"dig {transport} +dnssec +adflag +time=2 +tries=1 @127.0.0.1 -p 1055 valid.signed.fixture.example A")
         assert "status: NOERROR" in response and " ad" in response, response

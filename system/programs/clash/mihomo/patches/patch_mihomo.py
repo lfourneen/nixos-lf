@@ -29,7 +29,23 @@ replace(root / "dns/resolver.go",
         'func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, err error) {',
         'func (r *Resolver) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.Msg, err error) {\n'
         '\tif reply := lfBlockedReply(m); reply != nil { return reply, nil }\n'
+        '\tif lfguard.DesktopDNS(ctx) && ctx.Err() != nil { return nil, ctx.Err() }\n'
         '\tif reply, matched, err := lfExchangeMagicDNS(ctx, m, r.ipv6); matched { return reply, err }')
+replace(root / "dns/resolver.go", '"context"',
+        '"context"\n\t"github.com/metacubex/mihomo/component/lfguard"')
+# A desktop operation must not detach from its authorization on cancellation,
+# expiry or singleflight retry. Keep ordinary DNS's existing singleflight path.
+replace(root / "dns/resolver.go",
+        'if continueFetch || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {',
+        'if !lfguard.DesktopDNS(ctx) && (continueFetch || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {')
+replace(root / "dns/resolver.go", 'if expireTime.Before(now) {',
+        'if expireTime.Before(now) {\n\t\t\tif lfguard.DesktopDNS(ctx) { return r.exchangeWithoutCache(ctx, m) }')
+replace(root / "dns/resolver.go",
+        'ctx, cancel := context.WithTimeout(context.Background(), resolver.DefaultDNSTimeout) // reset timeout in singleflight',
+        'parent := context.Background()\n\t\tif lfguard.DesktopDNS(ctx) { parent = ctx }\n'
+        '\t\tctx, cancel := context.WithTimeout(parent, resolver.DefaultDNSTimeout)')
+replace(root / "dns/resolver.go", '\tch := r.group.DoChan(q.String(), fn)',
+        '\tif lfguard.DesktopDNS(ctx) { return fn() }\n\tch := r.group.DoChan(q.String(), fn)')
 # Managed geodata must come from the authorized snapshot. Even a missing or
 # damaged database must not trigger an unaudited network replacement in -t.
 replace(root / "component/geodata/init.go",
@@ -126,7 +142,8 @@ replace(root / "adapter/adapter.go", '\tvar satisfied bool',
         '\tsessionCheck := lfguard.SessionCheck(ctx, url)\n\tvar satisfied bool')
 replace(root / "adapter/adapter.go", '\t\talive := err == nil',
         '\t\tif sessionCheck { return }\n\t\talive := err == nil')
-replace(root / "adapter/adapter.go", '\tif unifiedDelay {', '\tif unifiedDelay && !sessionCheck {')
+# Recovery probes need the first successful response within their short deadline.
+replace(root / "adapter/adapter.go", '\tif unifiedDelay {', '\tif unifiedDelay && !lfguard.HealthDelay(ctx) {')
 # Unified delay may issue a second HEAD on the same connection.
 for indent in ('\t', '\t\t\t'):
     close = '\n' + indent + '_ = resp.Body.Close()'
@@ -304,7 +321,7 @@ replace(root / "hub/route/server.go", '\t\tunixServer = server',
 replace(root / "hub/route/proxies.go", '\n\t"strconv"\n\t"time"\n', '\n')
 replace(root / "hub/route/proxies.go", '\n\t"github.com/metacubex/mihomo/common/utils"', '')
 replace(root / "hub/route/proxies.go", '\t\tr.Get("/delay", getProxyDelay)',
-        '\t\tr.Get("/delay", getProxyDelay)\n\t\tr.Get("/session", lfSessionCheck)\n'
+        '\t\tr.Get("/delay", lfDesktopRequest(getProxyDelay, false))\n\t\tr.Get("/session", lfSessionCheck)\n'
         '\t\tr.Get("/selection", lfSelection)\n\t\tr.Put("/selection", lfSelection)\n'
         '\t\tr.Get("/health-delay", lfHealthDelay)')
 replace(root / "hub/route/proxies.go", '\tif err := selector.Set(req.Name); err != nil {',
@@ -369,6 +386,8 @@ replace(root / "hub/route/proxies.go", '''	query := r.URL.Query()
 	if call.ctx.Err() != nil {''')
 replace(root / "hub/route/groups.go", '\n\t"context"\n\t"strconv"\n\t"time"\n', '')
 replace(root / "hub/route/groups.go", '\n\t"github.com/metacubex/mihomo/common/utils"', '')
+replace(root / "hub/route/groups.go", 'r.Get("/delay", getGroupDelay)',
+        'r.Get("/delay", lfDesktopRequest(getGroupDelay, false))')
 replace(root / "hub/route/groups.go", '''	if selectAble, ok := proxy.Adapter().(outboundgroup.SelectAble); ok && proxy.Type() != C.Selector {
 		selectAble.ForceSet("")
 		cachefile.Cache().SetSelected(proxy.Name(), "")
@@ -403,6 +422,10 @@ replace(root / "hub/route/groups.go", '''	if selectAble, ok := proxy.Adapter().(
 	dm, err := group.URLTest(call.ctx, call.target, call.expected)''')
 replace(root / "hub/route/provider.go", '\t"context"',
         '\t"context"\n\n\t"github.com/metacubex/mihomo/component/lfguard"')
+replace(root / "hub/route/provider.go", 'r.Get("/healthcheck", healthCheckProvider)',
+        'r.Get("/healthcheck", lfDesktopRequest(healthCheckProvider, false))')
+replace(root / "hub/route/provider.go", 'r.Get("/healthcheck", getProxyDelay)',
+        'r.Get("/healthcheck", lfDesktopRequest(getProxyDelay, false))')
 replace(root / "hub/route/provider.go", '\tprovider.HealthCheck()\n\trender.NoContent(w, r)', '''	if lfguard.ManagedDelay() {
 		call := lfProviderDelay(w, r, provider.Name())
 		if call == nil { return }
@@ -416,6 +439,10 @@ replace(root / "hub/route/provider.go", '\tprovider.HealthCheck()\n\trender.NoCo
 		provider.HealthCheck()
 	}
 	render.NoContent(w, r)''')
+replace(root / "hub/route/dns.go", 'r.Get("/query", queryDNS)',
+        'r.Get("/query", lfDesktopRequest(queryDNS, true))')
+replace(root / "hub/route/dns.go", 'context.WithTimeout(context.Background(), resolver.DefaultDNSTimeout)',
+        'context.WithTimeout(r.Context(), resolver.DefaultDNSTimeout)')
 # Weak decoding renders a float as a string with 'E' notation, so a JSON
 # round-tripped port such as 7898 becomes "7.898E+03" and the listener range
 # parser rejects the whole profile. Format like upstream mapstructure instead.
@@ -461,6 +488,8 @@ source = Path(__file__).parent.parent
 (root / "hub/route/lf_policy.go").write_text((source / "controller/policy_middleware.go").read_text())
 (root / "hub/route/lf_delay.go").write_text((source / "controller/delay.go").read_text())
 (root / "hub/route/lf_selection.go").write_text((source / "controller/selection.go").read_text())
+(root / "hub/route/lf_desktop_lease.go").write_text((source / "controller/desktop_lease.go").read_text())
+(root / "hub/route/lf_desktop_lease_test.go").write_text((source / "controller/desktop_lease_test.go").read_text())
 (root / "hub/route/lf_selection_test.go").write_text((source / "controller/selection_test.go").read_text())
 (root / "hub/route/lf_policy_test.go").write_text((source / "controller/policy_middleware_test.go").read_text())
 (root / "config/lf_managed_rules_test.go").write_text((source / "config/managed_rules_test.go").read_text())

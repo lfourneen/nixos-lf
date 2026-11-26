@@ -13,6 +13,57 @@ import (
 	D "github.com/miekg/dns"
 )
 
+type desktopTestDNS struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (d desktopTestDNS) Address() string  { return "desktop DNS fixture" }
+func (d desktopTestDNS) ResetConnection() {}
+func (d desktopTestDNS) ExchangeContext(ctx context.Context, _ *D.Msg) (*D.Msg, error) {
+	d.started <- struct{}{}
+	<-ctx.Done()
+	d.stopped <- struct{}{}
+	return nil, ctx.Err()
+}
+
+func TestLFManagedDesktopDNSDoesNotDetachOnCancellation(t *testing.T) {
+	client := desktopTestDNS{make(chan struct{}, 4), make(chan struct{}, 4)}
+	resolver := NewResolverFromClient(client)
+	ctx, cancel := context.WithCancel(lfguard.WithDesktopDNS(context.Background()))
+	defer cancel()
+	query := new(D.Msg).SetQuestion("desktop.example.", D.TypeA)
+	done := make(chan error, 1)
+	go func() {
+		_, err := resolver.ExchangeContext(ctx, query)
+		done <- err
+	}()
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("DNS exchange did not reach its fixture")
+	}
+	cancel()
+	select {
+	case <-client.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("DNS exchange lost its caller context")
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled DNS query reported success")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled DNS exchange did not return")
+	}
+	select {
+	case <-client.started:
+		t.Fatal("canceled DNS exchange continued in the background")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestLFManagedValidationPrecedesSyntheticAnswers(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

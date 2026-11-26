@@ -1,6 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
+  p = config.my.proxy;
   desktopUser = config.my.machine.desktopUser;
   frontDir = "/run/user/${toString config.users.users.${desktopUser}.uid}/clash-verge-rev";
 
@@ -135,5 +136,7 @@ in
       LF_CLASH_CORE_PATH = "${config.programs.clash-verge.package}/bin/verge-mihomo";
       LF_CLASH_GUI_CONFIG = "${config.users.users.${desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml";
       LF_CLASH_CONTROLLED_SOURCE = if config.my.proxy.controlledSources then "1" else "0";
+      LF_CONTROLLER_DNS_TARGETS = builtins.toJSON
+        (p.nodeProbeUrls ++ p.tunProbeNames ++ [ p.tunProbeName p.delayTestUrl ]);
     };
 }
