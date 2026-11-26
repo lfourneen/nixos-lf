@@ -77,10 +77,11 @@ The coordinator checks the transport firewall against the staged digest before a
 Without a compatible fallback, C remains in effect.
 An interrupted routing transaction preserves proxy intent and puts unfinished routing back into a verifiable state. Retry with `clash-on`.
 
-When mixed HTTP fails in rules mode, the health check can query the managed resolver for a real answer and try another authorized `lf-dns` leaf. It can also try other `lf-remote` members within the same deadline. A member shared by both selectors can carry DNS while the health check retries HTTP through that leaf.
+When mixed HTTP fails in Rules mode, the health check can try a small number of authorized DNS and proxy candidates. A temporary selection is committed after the corresponding DNS or HTTP and route checks pass. Failure or timeout restores the previous selection, and a manual selection takes precedence. The TUN check starts with the first completed DNS candidate and cancels the remaining lookups after a verified success.
 During candidate verification and recovery, the root controller can sample leaf sessions over TLS to the configured literal DoH endpoints. A TLS-authenticated HTTP response proves a session to the endpoint. DNS answers, mixed HTTP, route proof and the remaining checks determine readiness.
 `proxy-status` shows a short identifier for the observed DNS leaf. It reports explicit authentication rejection as `node-auth`, unsuccessful session samples as `session-unavailable`, and unresolved validator probes as `validator-dns` when session evidence stays inconclusive or a sampled session works. Failed samples stay out of DNS recovery for that round and remain available for later checks.
 B can also diagnose the system resolver through an unprivileged desktop UID.
+During a remote outage, a valid Rules B lease can continue carrying traffic already allowed by the rules. `proxy-status` shows remote degradation and any observed domestic DNS and DIRECT route results. The existing deadline stays in effect until a complete health proof renews the lease.
 
 When daily Firefox reports a missing server, run `getent ahosts www.bilibili.com` from the desktop and then `curl --noproxy '*' -IsS --max-time 6 https://www.bilibili.com/`. Inspect the matching connection in Verge to see its DIRECT or proxy chain. To exercise the identity browser's Unix relay, CONNECT and certificate validation, run `curl --unix-socket /run/clash-strict/proxy.sock --noproxy '' -x http://localhost:80 -IsS --max-time 6 https://search.nixos.org/`. These requests run only on demand.
 
@@ -119,6 +120,8 @@ Only the dedicated `clash-fetch` account and root can query that port directly.
 The worker still rejects non-public answers and verifies HTTPS certificates.
 A usable DNS family can be used when the other family is unavailable.
 Downloads validate the entire address set before connecting and retry public addresses within one deadline, preserving HTTPS hostname and certificate checks.
+A controlled source can pin up to two alternate public addresses for a TCP-backed node. A failed dial or a 250 ms delay starts the next attempt, with at most two dials active per race. TLS retains the original node identity and certificate policy. Fixed exits can use the additional addresses when the operator selects the identity that includes them. Existing single-address grants, the WireGuard relay and native UDP or QUIC connections continue to use their fixed endpoint.
+Website TCP dials apply the same timing to locally validated destination addresses. The relay sends application data only on the winning connection.
 If no usable answer remains, refresh fails without falling back to system DNS.
 Fresh lookups in Rules use the infrastructure Unbound's DoT path. With `unboundDotInProxy=false`, only eligible cached or local answers are available on that path. Runtime `proxy-only` uses the core application validator. [Resolver paths](dns.md#restricted-socket-guest-dns)
 

@@ -24,6 +24,8 @@ REASONS = {'node': 'Authorized proxy leaves failed the HTTP probe', 'dns': 'Mana
            'policy-repair-backoff': 'Waiting to retry policy repair', 'interrupted': 'Probe cancelled by supervisor'}
 HEALTH_STAGES = {'mixed-request': 'Mixed HTTP request failed',
                  'target-unavailable': 'HTTP targets unavailable after successful proxy sessions',
+                 'remote-outage': 'Remote proxy path unavailable',
+                 'listener-observation': 'Listener observation unavailable',
                  'validator-dns': 'Managed validator did not resolve the probe name',
                  'controller': 'Controller connection unavailable',
                  'node-auth': 'Sampled leaves rejected authentication',
@@ -85,7 +87,7 @@ def stamp(at):
 def auto_update_text(value):
     state = value.get('state')
     if state == 'controlled':
-        return 'root · on startup and every 30m · GUI copy is display-only'
+        return 'root · startup and scheduled · mapped GUI preferences · default 30m'
     if state == 'ok':
         return (f"every {value['interval']}m · last fetch {stamp(value['updated'])}"
                 f" · next ~{stamp(value['next_due'])}")
@@ -168,7 +170,9 @@ def audit_rows(findings, controlled):
 
 def rows(state):
     ready, mode = state.get('ready', False), state.get('mode', 'unknown')
-    yield 'Network status', ('Ready' if ready else 'Protected · waiting for recovery' if mode == 'blocked' else 'Not ready')
+    degraded = ready and mode == 'proxy' and state.get('reason') == 'rules-degraded'
+    yield 'Network status', ('Rules active · remote path degraded' if degraded else 'Ready' if ready else
+                             'Protected · waiting for recovery' if mode == 'blocked' else 'Not ready')
     yield 'Mode', MODES.get(mode, 'Unknown') + '; requested ' + MODES.get(state.get('target'), 'Unknown')
     auto = state.get('auto_update') or {}
     if auto:
@@ -288,7 +292,8 @@ def rows(state):
             yield 'Leaf session sample', f"{samples['ok']} passed · {samples['node-auth']} auth rejected · {samples['session-unavailable']} unavailable"
         fields = [('data_plane_ok', 'Mixed HTTP'), ('route_ok', 'Route'),
                   ('dns_ok', 'TUN DNS'), ('managed_dns_ok', 'Managed DNS'),
-                  ('application_dns_ok', 'System DNS'), ('tun_ok', 'TUN')]
+                  ('application_dns_ok', 'System DNS'), ('tun_ok', 'TUN'),
+                  ('domestic_dns_ok', 'Domestic system DNS'), ('domestic_route_ok', 'Domestic DIRECT route')]
         if any(key in health for key, _ in fields):
             yield 'Probe layers', ' · '.join(label + ': ' +
                 ('Passed' if health.get(key) is True else 'Failed' if health.get(key) is False else 'Not proven')

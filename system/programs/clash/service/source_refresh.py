@@ -98,7 +98,8 @@ def schedule_download(settings, stage, *, consume=False, request=False, verified
             pending.touch(mode=0o600)
         if consume:
             ready.unlink(missing_ok=True)
-        if not pending.exists() and not (state / 'source-gui-request.json').exists():
+        if not any(path.exists() for path in (pending, state / 'source-gui-request.json',
+                                               state / 'source-desktop-refresh.json')):
             if stable.exists() and network_mode(settings, stage)[0] != 'proxy':
                 stable.unlink()
             return False
@@ -132,7 +133,8 @@ def cancel_automatic(settings):
     state = Path(settings['state'])
     with queue_lock(state):
         for name in ('source-refresh-pending', 'source-refresh-ready', 'source-refresh-stable.json',
-                     'source-gui-request.json', 'source-apply.json', 'source-apply-status.json'):
+                     'source-gui-request.json', 'source-apply.json', 'source-apply-status.json',
+                     'source-refresh-attempt.json', 'source-desktop-refresh.json'):
             (state / name).unlink(missing_ok=True)
 
 
@@ -244,6 +246,7 @@ def apply_queued(settings, stage, *, validate=None, activate=None, wait=time.sle
                 path.unlink()
                 stage.atomic_record(state / 'source-apply-status.json', dict(
                     at=at, boot_id=boot,
+                    decision=result if result in ('verifying', 'decided', 'accepted') else 'discarded',
                     result='submitted' if result in ('verifying', 'decided', 'accepted') else 'discarded'))
 
 

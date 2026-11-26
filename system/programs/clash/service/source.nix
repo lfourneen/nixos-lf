@@ -7,6 +7,7 @@ let
   stageSettings = config.programs.clash-verge.package.stageSettings;
   refreshCommand = "${pkgs.python3}/bin/python3 ${./source_refresh.py}";
   guiDirectory = "${config.users.users.${config.my.machine.desktopUser}.home}/.local/share/io.github.clash-verge-rev.clash-verge-rev";
+  guiPort = 45129;
 
   rendererSettings = {
     forced_domains = p.tunProbeNames ++ map (url:
@@ -61,6 +62,7 @@ let
     systemctl = "${pkgs.systemd}/bin/systemctl";
     desktop_uid = config.users.users.${config.my.machine.desktopUser}.uid;
     gui_index = "${guiDirectory}/profiles.yaml";
+    gui_port = guiPort;
     ca = config.security.pki.caBundle;
     resolver = { address = "127.0.0.1"; port = config.my.machine.ports.socketGuestDns; };
     recovery = if p.runtimeRouting then {
@@ -272,6 +274,59 @@ in
     systemd.services.clash-source-refresh = downloadService true;
     systemd.services.clash-source-download = downloadService false;
 
+    systemd.sockets.clash-source-gui = {
+      wantedBy = [ "sockets.target" ];
+      socketConfig = {
+        ListenStream = "/run/clash-source-gui-refresh.sock";
+        Accept = true;
+        MaxConnections = 8;
+        SocketMode = "0600";
+        SocketUser = config.my.machine.desktopUser;
+        RemoveOnStop = true;
+      };
+    };
+
+    systemd.sockets.clash-source-gui-http = {
+      wantedBy = [ "sockets.target" ];
+      socketConfig = {
+        ListenStream = "127.0.0.1:${toString guiPort}";
+        Accept = true;
+        MaxConnections = 8;
+      };
+    };
+
+    systemd.services."clash-source-gui@" = {
+      description = "Receive a refresh request for the selected registered GUI profile";
+      after = [ "proxy-mode.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${command}/bin/clash-source gui-refresh";
+        StandardInput = "socket";
+        StandardOutput = "null";
+        UMask = "0077";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = "read-only";
+        PrivateTmp = true;
+        ReadWritePaths = [ "/var/lib/clash-source" "/run/proxy-mode" ];
+        CapabilityBoundingSet = [ "CAP_DAC_READ_SEARCH" ];
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+        TimeoutStartSec = "360s";
+        MemoryMax = "96M";
+      };
+    };
+
+    systemd.services."clash-source-gui-http@" = {
+      description = "Receive a stock Verge loopback subscription request";
+      after = [ "proxy-mode.service" ];
+      serviceConfig = config.systemd.services."clash-source-gui@".serviceConfig // {
+        ExecStart = "${command}/bin/clash-source gui-refresh-http";
+        RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" ];
+        IPAddressDeny = "any";
+        IPAddressAllow = "localhost";
+      };
+    };
+
     systemd.paths.clash-source-download = {
       wantedBy = [ "multi-user.target" ];
       pathConfig.PathExists = "/run/proxy-mode/source-refresh-ready";
@@ -323,13 +378,30 @@ in
       };
     };
 
+    systemd.services.clash-source-refresh-due = {
+      description = "Queue a scheduled refresh for the selected registered source";
+      after = [ "proxy-mode.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${command}/bin/clash-source refresh-due";
+        UMask = "0077";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = "read-only";
+        PrivateTmp = true;
+        ReadWritePaths = [ "/var/lib/clash-source" "/run/proxy-mode" ];
+        CapabilityBoundingSet = [ "CAP_DAC_READ_SEARCH" ];
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+      };
+    };
+
     systemd.timers.clash-source-refresh = {
       wantedBy = [ "timers.target" ];
       timerConfig = {
-        Unit = "clash-source-request.service";
+        Unit = "clash-source-refresh-due.service";
         OnBootSec = "2min";
-        OnUnitActiveSec = "30min";
-        RandomizedDelaySec = "30s";
+        OnUnitActiveSec = "1min";
+        AccuracySec = "10s";
       };
     };
   }) ];

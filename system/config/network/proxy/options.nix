@@ -416,6 +416,12 @@ in
     description = "Exact HTTPS endpoint for managed desktop delay tests and automatic proxy-group and provider checks.";
   };
 
+  options.my.proxy.rulesDomesticProbeUrl = lib.mkOption {
+    type = lib.types.nullOr (lib.types.strMatching "https?://([A-Za-z0-9.-]+)(:[0-9]+)?(/[^[:space:]]*)?");
+    default = null;
+    description = "Fixed HTTP(S) URL for an advisory system-DNS and actual DIRECT-route check during a Rules outage.";
+  };
+
   options.my.proxy.delayTestFallbackUrl = lib.mkOption {
     type = lib.types.nullOr (lib.types.strMatching "https://[^[:space:]]+");
     default = null;

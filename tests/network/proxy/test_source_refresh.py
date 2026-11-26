@@ -632,7 +632,7 @@ class SourceRefreshTests(unittest.TestCase):
         (self.candidate / 'clash-verge.yaml').write_text(self.original)
         manifest_path = self.candidate / 'source-manifest.json'
         manifest = stage.read_record(manifest_path)
-        manifest.update(responses={'subscription': 'a' * 64}, dropped=1)
+        manifest.update(responses={'subscription': 'a' * 64}, dropped=1, worker='b' * 64)
         manifest_path.write_text(json.dumps(manifest))
         (self.state / 'health.json').write_text('{}')
         before = (self.runtime / 'effective').readlink()

@@ -72,10 +72,11 @@ AnyTLS 只参与 Rule 路由，不列入固定出口候选（单叶子校验器�
 没有兼容的回退快照时保持 C。
 路由事务中断时保留代理意图，并将未完成的路由恢复到可验证状态。可使用 `clash-on` 重试。
 
-Rules 下 mixed HTTP 失败时，健康检查可向受管解析器请求真实地址，并尝试切换到其他已授权的 `lf-dns` 叶子。同一截止时间内还可尝试 `lf-remote` 的其他成员。两组共有的叶子可在重试 HTTP 时同时承担 DNS 传输。
+Rules 下 mixed HTTP 失败时，健康检查可以测试少量已授权的 DNS 和代理候选。临时选点只有在实际 DNS 或 HTTP 与路由检查通过后才提交，失败及超时会恢复原选择。期间的手动选点优先。TUN 先验证最早完成 DNS 的候选，验证成功后取消其余查询。
 验证候选和恢复期间，root 控制器可使用配置中的字面 IP DoH 端点进行 TLS 会话抽查。收到经 TLS 认证的 HTTP 响应可证明该会话已建立。就绪仍由 DNS 应答、实际 mixed HTTP、路由证明及其余检查共同决定。
 `proxy-status` 以短标识显示观测到的 DNS 叶子。明确的认证拒绝显示为 `node-auth`，会话抽查失败显示为 `session-unavailable`。会话证据不明确或样本中存在可用会话时，解析探测失败显示为 `validator-dns`。失败的样本在本轮 DNS 恢复中跳过，后续轮次仍可再次检查。
 B 中也可通过非特权桌面 UID 诊断系统解析器。
+远端故障时，有效的 Rules B 租约可继续承载规则已授权的流量，`proxy-status` 会显示远端降级及已取得的国内解析和 DIRECT 路由结果。降级期间沿用原截止时间，下一轮仍须完整通过才可续租。
 
 普通 Firefox 报“找不到服务器”时，在桌面终端运行 `getent ahosts www.bilibili.com` 检查系统解析，再用 `curl --noproxy '*' -IsS --max-time 6 https://www.bilibili.com/` 检查普通 HTTPS。在 Verge 连接记录中查看该域名本次实际命中的 DIRECT 或代理链。要单独验证身份入口，经同一个 Unix 中继完成 CONNECT 与证书验证：`curl --unix-socket /run/clash-strict/proxy.sock --noproxy '' -x http://localhost:80 -IsS --max-time 6 https://search.nixos.org/`。这些访问仅在手动执行时发生。
 
@@ -113,6 +114,8 @@ B 中下载成功会按候选摘要排队应用。如果导入或回滚正在进
 Worker 仍拒绝非公网答案，并验证 HTTPS 证书。
 一个地址家族不可用时，可以使用另一个家族的有效答案。
 下载先检查完整地址集合，再在同一截止时间内重试公网地址，保留 HTTPS 主机名和证书验证。
+受控来源可为使用 TCP 传输的节点保留最多两个备用公网地址。首次拨号失败或超过 250 毫秒时，可以尝试下一地址，同一拨号最多同时尝试两个。TLS 仍按原节点名称和策略验证。已登记的固定出口必须显式选择包含这些地址的节点身份。既有单地址授权、WireGuard relay 和使用原生 UDP 或 QUIC 的连接继续使用固定端点。
+网站 TCP 的地址也按此方式尝试，但只使用该目标经本地策略验证的地址。只向最终选中的连接转发应用数据。
 没有可用答案时刷新失败，不回退到系统 DNS。
 Rules 中的新查询使用基础设施 Unbound 的 DoT 路径。`unboundDotInProxy=false` 时，该路径只返回符合条件的缓存或本地答案。运行时 `proxy-only` 使用核心应用验证器。[解析路径](dns_CN.md#受限-socket-访客-dns)
 

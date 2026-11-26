@@ -81,6 +81,28 @@ let
   '';
 
   tunProbeName = config.my.proxy.tunProbeName;
+  domesticProbe = config.my.proxy.rulesDomesticProbeUrl;
+  applicationDnsProbe = name: {
+    description = "Check the system DNS stub with an application identity";
+    serviceConfig = {
+      Type = "oneshot";
+      User = config.my.machine.desktopUser;
+      Slice = "untrusted.slice";
+      TimeoutStartSec = 3;
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = "";
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      IPAddressDeny = "any";
+      IPAddressAllow = "localhost";
+      RestrictAddressFamilies = [ "AF_INET" "AF_UNIX" ];
+    };
+    script = ''
+      set -o pipefail
+      ${pkgs.dnsutils}/bin/dig @127.0.0.53 +time=2 +tries=1 +short ${lib.escapeShellArg name} A \
+        | ${pkgs.gnugrep}/bin/grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' >/dev/null
+    '';
+  };
 
   # The core runs as clash-core and owns its control socket outside the desktop
   # user's 0700 runtime directory. An unprivileged forwarder exposes the legacy
@@ -172,6 +194,11 @@ let
       (map (lib.removeSuffix "#lf-dns") (lib.filter (lib.hasSuffix "#lf-dns") config.my.proxy.managedDnsTransport.dns.nameserver));
     application_dns_check = lib.optionals config.services.resolved.enable [
       "${pkgs.systemd}/bin/systemctl" "start" "proxy-application-dns-probe.service"
+    ];
+    domestic_probe_url = domesticProbe;
+    authorization_module = ./authorization.py;
+    domestic_dns_check = lib.optionals (config.services.resolved.enable && domesticProbe != null) [
+      "${pkgs.systemd}/bin/systemctl" "start" "proxy-domestic-dns-probe.service"
     ];
     dns_timeout_seconds = config.my.proxy.healthDnsTimeoutSeconds;
     urls = config.my.proxy.nodeProbeUrls;
@@ -833,7 +860,10 @@ NFT_OFF
                 *) obs_fails=0 ;;
               esac
               want_reason="$health_gate"
-              if [ "$mode" = "proxy" ] && [ "$obs_fails" -gt 0 ] && [ "$obs_fails" -lt 3 ]; then
+              if [ "$health_gate" = rules-degraded ]; then
+                # Validate the old lease again below, under the commit lock.
+                want=proxy
+              elif [ "$mode" = "proxy" ] && [ "$obs_fails" -gt 0 ] && [ "$obs_fails" -lt 3 ]; then
                 want=proxy; want_reason="$health_gate:$obs_fails/3"
               else
                 want=blocked
@@ -870,6 +900,10 @@ NFT_OFF
       fi
       if [ "$want" = proxy ] && [ "$REQUIRE_TUN" = 1 ] && ! tun_ready; then
         want=blocked; want_reason=no-tun
+      fi
+      if [ "$want_reason" = rules-degraded ] &&
+         { [ "$mode" != proxy ] || [ "$AUTHORIZATION_ENABLED" != 1 ] || ! "$AUTHORIZATION" --existing-rules-lease; }; then
+        want=blocked; want_reason=authorization-expired
       fi
       if [ "$want" = proxy ] && [ -n "''${ARP_SYNC:-}" ]; then
         if ! arp_after=$("$ARP_SYNC" sync) || [ "$arp_after" != "$arp_before" ]; then
@@ -972,7 +1006,7 @@ NFT_OFF
 
       # Back off only when the mode is stable and the post-condition holds; any
       # change or mismatch keeps the loop at the fast interval.
-      if [ "$mode" != "$prev" ] || [ "$ok" != "1" ] || [[ "$reason" = *:[12]/3 ]]; then
+      if [ "$mode" != "$prev" ] || [ "$ok" != "1" ] || [[ "$reason" = *:[12]/3 || "$reason" = rules-degraded ]]; then
         changed=1
       else
         changed=0
@@ -990,6 +1024,7 @@ NFT_OFF
       fi
       ${lib.optionalString config.my.proxy.controlledSources ''
       if [ -f /run/proxy-mode/source-refresh-pending ] || [ -f /run/proxy-mode/source-gui-request.json ] \
+         || [ -f /run/proxy-mode/source-desktop-refresh.json ] \
           || [ -f /run/proxy-mode/source-refresh-stable.json ]; then
         if [ "$ok" = 1 ]; then
           source_schedule
@@ -1533,27 +1568,9 @@ in
     ];
     environment.systemPackages = [ proxyControl ];
 
-    systemd.services.proxy-application-dns-probe = lib.mkIf config.services.resolved.enable {
-      description = "Check the system DNS stub with an application identity";
-      serviceConfig = {
-        Type = "oneshot";
-        User = config.my.machine.desktopUser;
-        Slice = "untrusted.slice";
-        TimeoutStartSec = 3;
-        NoNewPrivileges = true;
-        CapabilityBoundingSet = "";
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        IPAddressDeny = "any";
-        IPAddressAllow = "localhost";
-        RestrictAddressFamilies = [ "AF_INET" "AF_UNIX" ];
-      };
-      script = ''
-        set -o pipefail
-        ${pkgs.dnsutils}/bin/dig @127.0.0.53 +time=2 +tries=1 +short ${lib.escapeShellArg tunProbeName} A \
-          | ${pkgs.gnugrep}/bin/grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' >/dev/null
-      '';
-    };
+    systemd.services.proxy-application-dns-probe = lib.mkIf config.services.resolved.enable (applicationDnsProbe tunProbeName);
+    systemd.services.proxy-domestic-dns-probe = lib.mkIf (config.services.resolved.enable && domesticProbe != null)
+      (applicationDnsProbe (builtins.head (builtins.match "https?://([A-Za-z0-9.-]+)(:[0-9]+)?(/[^[:space:]]*)?" domesticProbe)));
 
     # Enforcement follows boot-scoped operator intent and observed core state.
     # Only a deliberate off request clears a previously observed proxy session.

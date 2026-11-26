@@ -5,6 +5,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import socket
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,26 @@ stage_tool = b.load_module('source_stage', sys.argv.pop(1))
 
 
 class RegistryTests(unittest.TestCase):
+    def test_stock_gui_http_requires_token_and_exact_loopback_host(self):
+        token = 'a' * 64
+        request = f'GET /{token}/uid-one HTTP/1.1\r\nHost: 127.0.0.1:45129\r\n\r\n'
+        for message, outcome, status in (
+            (request, 'applied', b'200 OK'),
+            (request, 'retained', b'503 Service Unavailable'),
+            (request.replace(token, 'b' * 64), None, b'404 Not Found'),
+            (request.replace('127.0.0.1', 'invalid.example'), None, b'404 Not Found'),
+        ):
+            client, peer = socket.socketpair()
+            with client, peer, patch.object(b, 'desktop_token', return_value=token), \
+                    patch.object(b, 'desktop_refresh', return_value=outcome) as refresh:
+                client.sendall(message.encode())
+                b.desktop_http({'gui_port': 45129}, self.root, peer)
+                response = client.recv(4096)
+                self.assertTrue(response.startswith(b'HTTP/1.1 ' + status))
+                self.assertEqual(refresh.call_count, int(outcome is not None))
+                if outcome == 'applied':
+                    self.assertIn(b'proxies: []', response)
+
     def test_recovery_flush_failure_leaves_an_invalidated_marker_for_retry(self):
         recovery = b.load_module('source_recovery', os.environ.get('SOURCE_RECOVERY',
             Path(worker).with_name('source_recovery.py')))
@@ -468,6 +489,91 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(attempts, ['stale', 'timeout', 'success', 'success'])
             self.assertEqual(b.selected(self.root).name, 'two')
             self.assertFalse(application.exists(), 'the GUI must not request proxy operation in A')
+
+    def test_native_refresh_joins_inflight_download_and_waits_for_application(self):
+        raw = self.register('one', 'uid-one')
+        state = self.root / 'state'
+        state.mkdir()
+        boot = '00000000-1111-2222-3333-444444444444'
+        (state / 'boot-id').write_text(boot)
+        (state / 'intent').write_text('proxy')
+        stage_tool.atomic_record(state / 'state.json', {'mode': 'proxy'})
+        settings = dict(state=str(state))
+        attempt = dict(boot_id=boot, source='one', revision=b.digest(raw), routing={}, started=42)
+        attempt_path = state / 'source-refresh-attempt.json'
+        application = state / 'source-apply-status.json'
+        result = state / 'profile-refresh.json'
+        candidate = 'a' * 64
+        waits = []
+
+        def wait(_):
+            waits.append(True)
+            self.assertFalse((state / 'source-desktop-refresh.json').exists(), 'joined refresh must not start a second download')
+            stage_tool.atomic_record(attempt_path, dict(attempt, result='downloaded', candidate=candidate, download_at=50))
+            stage_tool.atomic_record(application, dict(boot_id=boot, at=50, result='submitted', decision='verifying'))
+            if len(waits) == 1:
+                stage_tool.atomic_record(result, dict(boot_id=boot, history=[dict(digest=candidate, result='accepted', at=49)]))
+            else:
+                stage_tool.atomic_record(result, dict(boot_id=boot, history=[dict(digest=candidate, result='accepted', at=51)]))
+                (state / 'authorized-config').write_text(candidate)
+                stage_tool.atomic_record(state / 'source.json', dict(boot_id=boot, source_id='one',
+                    revision=b.digest(raw), snapshot=candidate))
+
+        stage_tool.atomic_record(attempt_path, dict(attempt, result='fetching'))
+        with patch.object(b, 'refresh_context', return_value=(refresh_tool, stage_tool, settings)), \
+                patch.object(b, 'gui_index', return_value={'current': 'uid-one'}), refresh_tool.download_job(state):
+            self.assertEqual(b.desktop_refresh(settings, self.root, 'uid-unregistered'), 'select-profile')
+            self.assertEqual(b.desktop_refresh(settings, self.root, 'uid-one', wait=wait), 'applied')
+        self.assertEqual(len(waits), 2)
+        stage_tool.atomic_record(application, dict(boot_id=boot, at=50, result='submitted', decision='decided'))
+        self.assertEqual(b.gui_outcome(state, stage_tool, stage_tool.read_record(attempt_path)), 'retained')
+
+    def test_root_scheduler_uses_mapped_interval_with_gui_closed(self):
+        raw = self.register('one', 'uid-one')
+        state = self.root / 'state'
+        state.mkdir()
+        boot = '00000000-1111-2222-3333-444444444444'
+        (state / 'boot-id').write_text(boot)
+        settings = dict(state=str(state))
+        stage_tool.atomic_record(state / 'source-refresh-attempt.json',
+            dict(boot_id=boot, source='one', revision=b.digest(raw), routing={}, started=100))
+        profile = dict(uid='uid-one', option=dict(update_interval=15))
+        with patch.object(b, 'gui_index', return_value={'items': [profile]}), \
+                patch.object(b.time, 'clock_gettime', return_value=999) as clock:
+            b.refresh_due({}, self.root, refresh_tool, stage_tool, settings)
+            pending = state / 'source-refresh-pending'
+            self.assertFalse(pending.exists())
+            clock.return_value = 1000
+            b.refresh_due({}, self.root, refresh_tool, stage_tool, settings)
+            self.assertTrue(pending.exists())
+            pending.unlink()
+            for options in ({'update_interval': 0}, {'allow_auto_update': False}):
+                profile['option'] = options
+                b.refresh_due({}, self.root, refresh_tool, stage_tool, settings)
+                self.assertFalse(pending.exists())
+
+    def test_native_request_cannot_refresh_a_later_selection(self):
+        self.register('one', 'uid-one')
+        self.register('two', 'uid-two')
+        state = self.root / 'state'
+        state.mkdir()
+        (state / 'boot-id').write_text('00000000-1111-2222-3333-444444444444')
+        (state / 'intent').write_text('proxy')
+        stage_tool.atomic_record(state / 'state.json', {'mode': 'proxy'})
+        settings = dict(state=str(state))
+        path = state / 'source-desktop-refresh.json'
+        def changed(_):
+            self.assertEqual(stage_tool.read_record(path)['source'], 'one')
+            self.assertFalse((state / 'source-refresh-pending').exists())
+            b.select(self.root, self.root / 'sources/two')
+        with patch.object(b, 'refresh_context', return_value=(refresh_tool, stage_tool, settings)), \
+                patch.object(b, 'gui_index', return_value={'current': 'uid-one'}), \
+                patch.object(b, 'refresh', side_effect=AssertionError('stale request attempted a download')):
+            self.assertEqual(b.desktop_refresh(settings, self.root, 'uid-one', wait=changed), 'changed')
+            with (self.root / 'source.lock').open('a') as lock:
+                b.acquire(lock)
+                b.automatic_refresh(settings, self.root, lock)
+        self.assertFalse(path.exists())
 
     def test_legacy_migration_retains_generations_and_approvals(self):
         data = b.canonical(json.dumps({'id': 'legacy', 'subscription': {'url': 'https://source.example/'}}))

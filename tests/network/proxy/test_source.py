@@ -185,8 +185,24 @@ class SourceTests(unittest.TestCase):
                     (socket.AF_INET, 1, 6, '', ('8.8.8.8', 443))]
         config, _ = w.pin_servers(json.dumps(DOC).encode(), resolver)
         self.assertEqual(w.load(config)['proxies'][0]['server'], '8.8.8.8')
+        self.assertEqual(w.load(config)['proxies'][0]['lf-node-alternates'], ['2606:4700:4700::1111'])
         config, _ = w.pin_servers(json.dumps(DOC).encode(), lambda *a,**k: resolver()[0:1])
         self.assertEqual(w.load(config)['proxies'][0]['server'], '2606:4700:4700::1111')
+        self.assertNotIn('lf-node-alternates', w.load(config)['proxies'][0])
+
+    def test_node_alternates_are_bounded_and_do_not_extend_a_legacy_fixed_exit(self):
+        node = dict(NODE, **{'lf-node-alternates': ['169.254.169.254']})
+        def addresses(*args, **kwargs):
+            return [(0, 0, 0, '', (address, 443)) for address in
+                    ('8.8.8.8', '1.1.1.1', '9.9.9.9', '2606:4700:4700::1111')]
+        config, _ = w.pin_servers(json.dumps(dict(DOC, proxies=[node])).encode(), addresses)
+        pinned = w.load(config)['proxies'][0]
+        self.assertEqual(pinned['lf-node-alternates'], ['2606:4700:4700::1111', '8.8.8.8'])
+        legacy = {key: value for key, value in pinned.items() if key != 'lf-node-alternates'}
+        self.assertEqual(w.select_pinned_egress([pinned], w.node_identity(legacy)), legacy)
+        self.assertEqual(w.select_pinned_egress([pinned], w.node_identity(pinned)), pinned)
+        with self.assertRaisesRegex(w.Refused, '^destination$'):
+            w.pin_servers(json.dumps(DOC).encode(), addresses, nat64=['2606:4700:4700::/96'])
 
     def test_failure_diagnostics_use_only_fixed_categories(self):
         for error, reason in ((socket.gaierror('secret-domain'), 'dns lookup failed'),

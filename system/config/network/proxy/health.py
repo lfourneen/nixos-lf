@@ -1,7 +1,7 @@
 """Bounded Mihomo health checks and recovery within managed proxy groups."""
 
 import hashlib
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 import errno
 import importlib.util
@@ -34,6 +34,7 @@ def failure_stage(detail):
         ('sampled leaves could not establish', 'session-unavailable'),
         ('managed validator did not resolve', 'validator-dns'),
         ('system resolver did not answer', 'application-dns'),
+        ('remote path unavailable during an active Rules lease', 'remote-outage'),
         ('no exact-source-port route log', 'mixed-route-log'),
         ('mixed route proof unavailable', 'mixed-route-proof'),
         ('fake-IP TCP probe failed', 'tun-request'),
@@ -49,6 +50,7 @@ def failure_stage(detail):
         ('total probe deadline', 'deadline'),
         ('configuration changed', 'configuration'),
         ('managed TCP/UDP listener', 'listener'),
+        ('listener observation unavailable', 'listener-observation'),
         ('authorized snapshot', 'snapshot'),
         ('cannot verify the authorized snapshot', 'snapshot')):
         if detail.startswith(prefix):
@@ -126,7 +128,7 @@ def check_config(config, settings):
                                      digest_path, settings["authorization_file"], "--fast"],
                                     text=True, capture_output=True, timeout=3, check=False)
         except (OSError, subprocess.SubprocessError) as error:
-            raise ProbeFailure("config", f"cannot verify the authorized snapshot: {error}")
+            raise ProbeFailure("obs", f"cannot verify the authorized snapshot: {error}")
         if result.returncode:
             raise ProbeFailure("config", "authorized snapshot verification failed")
     return hashlib.sha256(json.dumps(view, sort_keys=True).encode()).hexdigest()
@@ -210,6 +212,7 @@ class Probe:
         self.target_slots = 1
         self.fake_ips = {}
         self.fake_ip_failures = {}
+        self.dns_workers = threading.local()
         self.diagnostics = dict.fromkeys(('data_plane_ok', 'dns_ok', 'tun_ok', 'route_ok',
                                          'config_ok', 'listener_ok'))
         self.route_sources = {}
@@ -239,6 +242,23 @@ class Probe:
 
     def command(self, argv, maximum=2.5):
         duration = self.remaining(maximum)
+        cancelled = getattr(self.dns_workers, 'cancelled', None)
+        if cancelled is not None:
+            # A DNS candidate stays scoped to its own child process. A winning
+            # path can cancel the other lookups without waiting for dig's timeout.
+            try:
+                with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True) as child:
+                    deadline = self.clock() + duration
+                    while not cancelled.is_set() and self.clock() < deadline:
+                        try:
+                            stdout, _ = child.communicate(timeout=min(0.05, max(0.001, deadline - self.clock())))
+                            return stdout if child.returncode == 0 else ""
+                        except subprocess.TimeoutExpired:
+                            pass
+                    child.kill()
+            except OSError:
+                pass
+            return ""
         self.last_error = ""
         try:
             result = subprocess.run(argv, capture_output=True, text=True,
@@ -251,8 +271,8 @@ class Probe:
             self.last_error = f"{type(error).__name__}: {error}"[:160]
             return ""
 
-    def api(self, path, maximum=1.0):
-        duration = self.remaining(maximum)
+    def api(self, path, maximum=1.0, *, body=None, cleanup=False):
+        duration = maximum if cleanup else self.remaining(maximum)
         connection = http.client.HTTPConnection("localhost", timeout=duration)
         timer = None
         try:
@@ -265,14 +285,19 @@ class Probe:
                     transport.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
-            timer = threading.Timer(self.remaining(duration), expire)
+            timer = threading.Timer(duration if cleanup else self.remaining(duration), expire)
             timer.daemon = True
             timer.start()
-            connection.request("GET", path)
+            if body is None:
+                connection.request("GET", path)
+            else:
+                connection.request("PUT", path, json.dumps(body), {'Content-Type': 'application/json'})
             response = connection.getresponse()
             value = response.read(8 * 1024 * 1024 + 1)
             if len(value) > 8 * 1024 * 1024:
                 raise ValueError("controller response too large")
+            if response.status == 409 and body is not None:
+                raise ProbeFailure('obs', 'recorded leaf no longer matches the selector generation')
             if response.status != 200:
                 raise ValueError('controller request failed')
             return json.loads(value)
@@ -313,7 +338,7 @@ class Probe:
 
     def leaf_candidates(self, url):
         current, members = self.selector('lf-remote')
-        if current and self.settings.get('session_urls') and not self.sessions and self.dns_transport_leaf not in members:
+        if current and self.settings.get('session_urls') and current not in self.sessions:
             self.sample_sessions([current, *members[:3]])
         if self.settings.get('session_urls') or self.sessions or self.dns_transport_leaf in members:
             def rank(name):
@@ -337,17 +362,33 @@ class Probe:
         return sorted(members, key=lambda name: delays[name] if type(delays.get(name)) is int
                       and delays[name] > 0 else float('inf'))
 
-    def select_leaf(self, name, group='lf-remote'):
+    def selection_binding(self, group, current):
+        path = '/proxies/' + group + '/selection'
+        observed = self.api(path)
+        if observed.get('now') != current or not isinstance(observed.get('token'), str):
+            raise ProbeFailure('obs', 'recorded leaf no longer matches the selector generation')
+        return {'path': path, 'token': observed['token']}
+
+    def try_leaf(self, binding, name, check):
+        trial = self.api(binding['path'], body=dict(action='trial', token=binding['token'], name=name))
+        committed = False
         try:
-            result = subprocess.run([
-                self.settings['curl'], '-fsS', '--max-time', '1.5',
-                '--unix-socket', self.settings['socket'], '-X', 'PUT',
-                '-H', 'Content-Type: application/json', '--data-binary',
-                json.dumps({'name': name}), 'http://localhost/proxies/' + group],
-                capture_output=True, text=True, timeout=self.remaining(2), check=False)
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        return result.returncode == 0
+            result = check()
+            if result:
+                confirmed = self.api(binding['path'], body=dict(action='commit', token=trial['token']))
+                binding['token'] = confirmed['token']
+                committed = True
+            return result
+        finally:
+            if not committed:
+                # Even a killed probe cannot leave its trial in place. Mihomo
+                # also owns the rollback timer if this request cannot arrive.
+                try:
+                    reverted = self.api(binding['path'], 0.45, body=dict(action='rollback', token=trial['token']),
+                                        cleanup=True)
+                    binding['token'] = reverted['token']
+                except ProbeFailure:
+                    binding['token'] = ''
 
     def timed(self, name, callback):
         start = self.clock()
@@ -442,20 +483,9 @@ class Probe:
     def tun_test(self, log_path=None):
         if not self.settings["require_tun"]:
             return
-        failures = []
         self.diagnostics['tun_ok'] = False
-        for name in self.settings.get('tun_probe_names', [self.settings['tun_probe_name']]):
-            try:
-                self.tun_target(name, log_path)
-                self.diagnostics['tun_ok'] = True
-                self.tun_name = name
-                return
-            except ProbeFailure as error:
-                if error.layer in {'config', 'route', 'interrupted'}:
-                    raise
-                failures.append(error)
-        # DNS failures take precedence over a later observation deadline.
-        raise next((error for error in failures if error.layer == 'dns'), failures[-1])
+        self.tun_name = self.application_dns(lambda name: self.tun_target(name, log_path))
+        self.diagnostics['tun_ok'] = True
 
     def fake_ip(self, name):
         if name in self.fake_ips:
@@ -465,7 +495,10 @@ class Probe:
         dig = self.settings['dig']
         timeout = self.settings.get("dns_timeout_seconds", 3)
         network = ipaddress.ip_network(self.settings["fake_ip_net"], strict=False)
+        cancelled = getattr(self.dns_workers, 'cancelled', None)
         for _ in range(2):
+            if cancelled is not None and cancelled.is_set():
+                raise ProbeFailure('interrupted', 'unused DNS candidate cancelled')
             try:
                 answer = self.command([dig, f"+time={int(timeout)}", "+tries=1", "+short", "@127.0.0.1",
                                        "-p", str(self.settings["dns_port"]), name, "A"], timeout)
@@ -485,24 +518,50 @@ class Probe:
         self.fake_ip_failures[name] = error
         raise error
 
-    def application_dns(self):
+    def application_dns(self, check=None):
         if not self.settings.get('require_tun'):
             return
         self.diagnostics['dns_ok'] = False
         failures = []
         names = list(dict.fromkeys(self.settings.get('tun_probe_names', [self.settings['tun_probe_name']])))
-        # Warm every candidate before TUN TCP, without serial cold-query delays.
-        with ThreadPoolExecutor(max_workers=min(4, len(names))) as workers:
-            pending = [workers.submit(self.fake_ip, name) for name in names]
-            for future in pending:
-                try:
-                    future.result()
-                except ProbeFailure as error:
-                    failures.append(error)
-        if not self.fake_ips:
-            raise failures[-1]
+        cancelled = threading.Event()
 
-    def tun_target(self, name, log_path):
+        def lookup(name):
+            self.dns_workers.cancelled = cancelled
+            self.fake_ip(name)
+
+        with ThreadPoolExecutor(max_workers=min(4, len(names))) as workers:
+            pending = {workers.submit(lookup, name): name for name in names}
+            try:
+                while pending:
+                    started = self.clock()
+                    done, _ = wait(pending, timeout=self.remaining(30), return_when=FIRST_COMPLETED)
+                    self.timings['application_dns'] = self.timings.get('application_dns', 0) + round(
+                        (self.clock() - started) * 1000)
+                    if not done:
+                        raise ProbeFailure('obs', 'total probe deadline exhausted')
+                    for future in sorted(done, key=lambda item: names.index(pending[item])):
+                        name = pending.pop(future)
+                        try:
+                            future.result()
+                            if check is not None:
+                                check(name)
+                            return name
+                        except ProbeFailure as error:
+                            if error.layer in {'config', 'route', 'interrupted'}:
+                                raise
+                            failures.append(error)
+            finally:
+                cancelled.set()
+                for future in pending:
+                    future.cancel()
+        raise next((error for error in failures if error.layer == 'dns'), failures[-1])
+
+    def tun_target(self, name, log_path, *, url=None):
+        diagnostic = url is not None
+        url = url or f'http://{name}/'
+        parsed = urlsplit(url)
+        port = parsed.port or (443 if parsed.scheme == 'https' else 80)
         fake_ip = self.fake_ip(name)
         dig = self.settings['dig']
         timeout = self.settings.get("dns_timeout_seconds", 3)
@@ -520,7 +579,8 @@ class Probe:
                 break
         if not answered:
             raise ProbeFailure("dns", "TUN DNS self-test did not answer")
-        self.diagnostics['dns_ok'] = True
+        if not diagnostic:
+            self.diagnostics['dns_ok'] = True
         # A root fake-IP TCP flow is excluded from gost's REDIRECT. It exercises
         # the core's effective TUN/auto-redirect data path as well as DNS hijack.
         # Let the kernel allocate a fresh ephemeral port. A small, repeatedly
@@ -528,15 +588,18 @@ class Probe:
         # redirects share one endpoint and conntrack can then rewrite a port.
         output, records = self.timed('tun_http', lambda: self.request([self.settings["curl"], "--noproxy", "*", "--head", "-sS",
                                "-o", "/dev/null", "--max-time", "2.5", "--max-filesize", "1048576",
-                               "--resolve", name + ":80:" + fake_ip,
-                               "-w", "%{http_code} %{local_port} %{local_ip}", "http://" + name + "/"], 2.7, name, 80))
+                               "--resolve", f"{name}:{port}:{fake_ip}",
+                               "-w", "%{http_code} %{local_port} %{local_ip}", url], 2.7, name, port))
         fields = output.split()
         if len(fields) != 3 or fields[0] not in {"200", "204", "301", "302", "307", "308"} \
                 or not fields[1].isdigit():
             detail = getattr(self, "last_error", "") or output.strip()[:120] or "empty reply"
             raise ProbeFailure("obs", f"fake-IP TCP probe failed for {fake_ip}: {detail}")
-        self.timed('tun_route', lambda: self.prove_route(log_path, name, fields[1], fields[2], records, 'TUN',
-                         self.settings.get('tun_route_classes', {}).get(name, 'proxy')))
+        self.timed('domestic_route' if diagnostic else 'tun_route',
+                   lambda: self.prove_route(log_path, name, fields[1], fields[2], records,
+                          'domestic' if diagnostic else 'TUN',
+                          'direct' if diagnostic else self.settings.get('tun_route_classes', {}).get(name, 'proxy'),
+                          destination_port=port))
 
     def target(self, url, log_path, maximum=None):
         parsed = urlsplit(url)
@@ -662,30 +725,15 @@ class Probe:
 
     def rotate_leaf(self, log_path, url, dns_name=None):
         """Start after the current leaf so unmeasured members get a turn across rounds."""
+        current, members = self.selector('lf-remote')
+        if not members:
+            return False
+        remote = self.selection_binding('lf-remote', current)
         urls = list(dict.fromkeys([url, *self.settings['urls']]))
         dns_leaf, dns_alternatives = self.selector('lf-dns') if dns_name and self.settings.get('dns_leaf_group') else (None, [])
-        for name in self.leaf_candidates(url):
-            remaining = self.deadline - self.clock()
-            if remaining <= 2:
-                break
-            if dns_name and self.sessions.get(name) in FAILED_SESSIONS:
-                continue
-            if (dns_name and self.sessions.get(dns_leaf) in FAILED_SESSIONS
-                    and self.sessions.get(name) != 'ok'):
-                continue
-            if not self.select_leaf(name):
-                continue
-            if (name in dns_alternatives and (self.sessions.get(dns_leaf) != 'ok'
-                    or self.sessions.get(name) == 'ok' and not self.diagnostics.get('dns_leaf_rotated'))
-                    and self.select_leaf(name, 'lf-dns')):
-                dns_leaf = name
-                self.dns_leaf(name)
-                self.diagnostics['dns_leaf_rotated'] = True
-            if dns_name and not self.dns_answer(dns_name):
-                continue
-            if dns_name:
-                self.diagnostics['managed_dns_ok'] = True
-                self.fake_ip_failures.clear()
+        dns = self.selection_binding('lf-dns', dns_leaf) if dns_alternatives else None
+
+        def prove_http(candidate=None):
             limit = min(self.deadline - 1, self.clock() + 2.5)
             self.target_slots = 1
             for target in urls:
@@ -694,10 +742,42 @@ class Probe:
                     break
                 try:
                     self.target(target, log_path, maximum=remaining)
-                    return True
+                    return candidate is None or self.exit_identities.get('mixed') == hashlib.sha256(
+                        candidate.encode()).hexdigest()
                 except ProbeFailure as error:
                     if failure_stage(error.detail) != 'mixed-request':
                         raise
+            return False
+
+        for name in self.leaf_candidates(url):
+            if self.deadline - self.clock() <= 2 or not remote['token']:
+                break
+            if self.sessions.get(name) in FAILED_SESSIONS:
+                continue
+            if dns_name:
+                # Repair the independent DNS path while the application
+                # selector still points at its original leaf.
+                if (name not in dns_alternatives or not dns or not dns['token']
+                        or self.sessions.get(dns_leaf) in FAILED_SESSIONS and self.sessions.get(name) != 'ok'
+                        or not self.try_leaf(dns, name, lambda: self.dns_answer(dns_name))):
+                    continue
+                dns_name = None
+                self.dns_transport_leaf = name
+                self.dns_leaf(name)
+                self.diagnostics['dns_leaf_rotated'] = True
+                self.diagnostics['managed_dns_ok'] = True
+                self.fake_ip_failures.clear()
+                # DNS can restore the original application's full route.
+                if prove_http():
+                    return True
+            if self.sessions.get(current) == 'ok':
+                if self.deadline - self.clock() < 3.5:
+                    break
+                path = '/proxies/' + quote(name, safe='') + '/health-delay?'
+                if not self.api(path + urlencode({'url': url}), 1.5).get('ok'):
+                    continue
+            if self.try_leaf(remote, name, lambda: prove_http(name)):
+                return True
         return False
 
     def dns_answer(self, name):
@@ -808,22 +888,41 @@ class Probe:
         if not ready:
             self.note_failure('validator-dns')
         if not ready and current and self.deadline - self.clock() >= 4:
+            binding = self.selection_binding('lf-dns', current)
             alternatives = self.sample_dns_batch(current, leaves)
             self.dns_leaf(current)
             alternatives.sort(key=lambda leaf: self.sessions.get(leaf) != 'ok')
             for leaf in alternatives:
-                if self.deadline - self.clock() < 3:
+                if self.deadline - self.clock() < 3 or not binding['token']:
                     break
                 outcome = self.sessions.get(leaf)
                 if outcome in FAILED_SESSIONS or (self.sessions.get(current) == 'ok' and outcome != 'ok'):
                     continue
-                if not self.select_leaf(leaf, 'lf-dns'):
-                    continue
-                current = leaf
-                self.dns_leaf(leaf)
-                self.diagnostics['dns_leaf_rotated'] = True
-                ready = resolved()
-                if ready:
+                def check():
+                    answer = resolved()
+                    if answer:
+                        return answer
+                    # Cold recovery may already have cached the negative
+                    # answer from the dead leaf. In C only, keep a leaf
+                    # authenticated against the configured DoH endpoint while
+                    # the validator warms up. It still cannot prove B.
+                    if outcome == 'ok' and self.routing.get('routing_requested') == 'rules':
+                        try:
+                            if (Path(self.settings['runtime']) / 'status').read_text().strip() == 'blocked':
+                                return True
+                        except OSError:
+                            pass
+                    return None
+
+                result = self.try_leaf(binding, leaf, check)
+                if result:
+                    current = leaf
+                    self.dns_leaf(leaf)
+                    self.diagnostics['dns_leaf_rotated'] = True
+                    if isinstance(result, str):
+                        ready = result
+                    else:
+                        self.dns_transport_leaf = leaf
                     break
         if not ready:
             raise ProbeFailure('dns', 'managed validator did not resolve the probe name')
@@ -833,7 +932,14 @@ class Probe:
         return ready
 
     def application_path(self):
-        argv = self.settings.get('application_dns_check')
+        answered = self.system_dns_probe(self.settings.get('application_dns_check'))
+        if answered is None:
+            return
+        self.diagnostics['application_dns_ok'] = answered
+        if not answered:
+            raise ProbeFailure('application', 'system resolver did not answer the probe name')
+
+    def system_dns_probe(self, argv):
         status = Path(self.settings['runtime']) / 'status'
         if not argv or self.deadline - self.clock() < 3.5:
             return
@@ -849,9 +955,41 @@ class Probe:
                 return
         except OSError:
             return
-        self.diagnostics['application_dns_ok'] = answered
-        if not answered:
-            raise ProbeFailure('application', 'system resolver did not answer the probe name')
+        return answered
+
+    def rules_outage(self, error):
+        """Identify a failed foreign path under the current Rules authority."""
+        if (not self.settings.get('authorization_module') or self.routing.get('routing_requested') != 'rules'
+                or self.core_mode != 'rule' or error.layer not in ('obs', 'dns', 'node', 'application')
+                or 'mixed-request' not in self.failure_stages or self.diagnostics['route_ok'] is True):
+            return False
+        # Observation loss, listener mismatch and ambiguous routing proof do
+        # not qualify for the specific remote-outage decision.
+        if failure_stage(error.detail) not in ('mixed-request', 'leaf-unavailable', 'node-auth',
+                'session-unavailable', 'target-unavailable', 'validator-dns', 'application-dns'):
+            return False
+        try:
+            spec = importlib.util.spec_from_file_location('proxy_authorization', self.settings['authorization_module'])
+            auth = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(auth)
+            return auth.rules_lease_active(Path(self.settings['runtime']).parent)
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
+
+    def domestic_path(self, log_path):
+        url = self.settings.get('domestic_probe_url')
+        if not url:
+            return
+        self.diagnostics['domestic_dns_ok'] = self.system_dns_probe(self.settings.get('domestic_dns_check'))
+        if self.deadline - self.clock() < 3.5:
+            return
+        try:
+            self.tun_target(urlsplit(url).hostname, log_path, url=url)
+            self.diagnostics['domestic_route_ok'] = True
+        except ProbeFailure as error:
+            if error.layer == 'interrupted':
+                raise
+            self.diagnostics['domestic_route_ok'] = False
 
     def data_paths(self, log_path):
         recovered = False
@@ -898,7 +1036,6 @@ class Probe:
                     raise ProbeFailure('obs', 'sampled sessions passed but HTTP targets did not respond') from None
                 raise ProbeFailure('node', 'authorized leaves did not answer the mixed request') from None
         def transparent_paths():
-            self.timed('application_dns', self.application_dns)
             self.timed('tun', lambda: self.tun_test(log_path))
             self.timed('real_dns', self.real_dns)
         try:
@@ -941,10 +1078,14 @@ class Probe:
                 pass
         def listeners():
             try:
-                subprocess.run([self.settings['listener_check'], 'core', 'dns'],
-                               capture_output=True, timeout=self.remaining(4.5), check=True)
+                result = subprocess.run([self.settings['listener_check'], 'core', 'dns'],
+                                        capture_output=True, timeout=self.remaining(4.5), check=False)
             except (OSError, subprocess.SubprocessError):
+                raise ProbeFailure('obs', 'listener observation unavailable') from None
+            if result.returncode == 1:
                 raise ProbeFailure('config', 'managed TCP/UDP listener identity mismatch') from None
+            if result.returncode:
+                raise ProbeFailure('obs', 'listener observation unavailable')
         self.diagnostics['listener_ok'] = False
         self.timed('listeners', listeners)
         self.diagnostics['listener_ok'] = True
@@ -970,7 +1111,13 @@ class Probe:
                                           stdout=stream, stderr=subprocess.DEVNULL)
             try:
                 time.sleep(min(0.15, self.remaining(0.15)))
-                self.data_paths(log_path)
+                outage = None
+                try:
+                    self.data_paths(log_path)
+                except ProbeFailure as error:
+                    if not self.rules_outage(error):
+                        raise
+                    outage = error
                 if self.settings.get('dns_leaf_group') and 'dns_leaf' not in self.diagnostics and self.deadline - self.clock() > 1.5:
                     try:
                         leaf, alternatives = self.selector('lf-dns')
@@ -986,10 +1133,14 @@ class Probe:
                 self.diagnostics['config_ok'] = False
                 final = check_config(self.api("/configs"), self.settings)
                 if final != fingerprint:
-                    raise ProbeFailure("obs", "configuration changed during the probe")
+                    raise ProbeFailure("config", "configuration changed during the probe")
                 if self.routing_binding() != self.routing:
                     raise ProbeFailure('config', 'routing changed during the probe')
                 self.diagnostics['config_ok'] = True
+                if outage is not None:
+                    self.note_failure(failure_stage(outage.detail))
+                    self.domestic_path(log_path)
+                    raise ProbeFailure('rules-degraded', 'remote path unavailable during an active Rules lease')
                 self.delay_diagnosis()
                 return final
             finally:
@@ -1034,7 +1185,7 @@ def main():
                 and 'validator-dns' in probe.failure_stages)
     if os.geteuid() == 0 and not fast and result.get('reason') != 'interrupted':
         classification = result.get('reason')
-        if classification not in ('node', 'application', 'tun', 'dns', 'config', 'route', 'obs',
+        if classification not in ('node', 'application', 'tun', 'dns', 'config', 'route', 'obs', 'rules-degraded',
                                   'controller-unavailable', 'direct-mode', 'no-tun', 'core-gone'):
             classification = 'obs'
         if not result['ok']:

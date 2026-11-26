@@ -365,6 +365,28 @@ class RoutingTests(unittest.TestCase):
         changed['nftables'][1]['set']['elem'][0]['concat'][2] = 8443
         self.assertNotEqual(routing.table_view(self.settings, echo), routing.table_view(self.settings, changed))
 
+    def test_fixed_tcp_alternate_is_bound_to_the_snapshot_and_port(self):
+        runtime = self.root / 'runtime'
+        directory = runtime / 'effective'
+        directory.mkdir(parents=True)
+        self.settings.update(runtime=str(runtime), stage_tool='unused')
+        (self.state / 'authorized-config').touch()
+        record = dict(routing_policy_digest='policy')
+        (directory / 'source-manifest.json').write_text(json.dumps(dict(policy='policy')))
+        node = dict(server='1.1.1.1', port=443, type='trojan',
+                    **{'lf-node-alternates': ['2606:4700:4700::1111']})
+        profile = directory / 'clash-verge.yaml'
+        profile.write_text(json.dumps(dict(proxies=[node])))
+        with patch.object(routing, 'module', return_value=SimpleNamespace(verify=Mock())):
+            self.assertEqual(routing.endpoints(self.settings, record), [
+                (4, '1.1.1.1', 'tcp', 443), (4, '1.1.1.1', 'udp', 443),
+                (6, '2606:4700:4700::1111', 'tcp', 443)])
+            self.assertEqual(routing.endpoints(self.settings, dict(routing_policy_digest='other')), [])
+            node['lf-node-alternates'] = ['169.254.169.254']
+            profile.write_text(json.dumps(dict(proxies=[node])))
+            with self.assertRaises(ValueError):
+                routing.endpoints(self.settings, record)
+
 
 if __name__ == '__main__':
     unittest.main()

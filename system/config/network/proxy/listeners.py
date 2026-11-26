@@ -9,6 +9,10 @@ import subprocess
 import sys
 
 
+class ListenerMismatch(ValueError):
+    """An observed socket failed the expected endpoint or owner check."""
+
+
 def snapshot(ss, protocols, run=subprocess.run, *, family=None):
     sockets = []
     for protocol in sorted(protocols):
@@ -53,10 +57,10 @@ def verify(expected, sockets):
                     and s['protocol'] == item['protocol'] and s['port'] == item['port']
                     and s['address'] not in allowed for s in sockets)
         if extra or len(found) != 1:
-            raise ValueError(f"{item['protocol']} {item['address']}:{item['port']}: missing or duplicate listener")
+            raise ListenerMismatch(f"{item['protocol']} {item['address']}:{item['port']}: missing or duplicate listener")
         sock = found[0]
         if not sock['extended'] or sock['uid'] not in item['uids'] or sock['cgroup'] != item['cgroup']:
-            raise ValueError(f"{item['protocol']} {item['address']}:{item['port']}: listener identity mismatch")
+            raise ListenerMismatch(f"{item['protocol']} {item['address']}:{item['port']}: listener identity mismatch")
 
 
 def main():
@@ -77,9 +81,12 @@ def main():
             spec.loader.exec_module(observer)
             sockets.extend(observer.request(settings['observer'], 'listeners')['sockets'])
         verify(expected, sockets)
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+    except ListenerMismatch as error:
         print('listeners: ' + str(error), file=sys.stderr)
         return 1
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        print('listeners: ' + str(error), file=sys.stderr)
+        return 2
     return 0
 
 

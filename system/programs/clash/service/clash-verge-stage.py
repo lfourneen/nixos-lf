@@ -966,7 +966,7 @@ def same_forwarding_inputs(settings, baseline, candidate):
             return False
     # Both accepted snapshots and the staged candidate have been checked against
     # their complete asset manifest. Source-data also binds future local renders.
-    informational = {'responses', 'dropped', 'drop_counts', 'local_routing', 'schema', 'routing'}
+    informational = {'responses', 'dropped', 'drop_counts', 'worker', 'local_routing', 'schema', 'routing'}
     left, right = ({k: v for k, v in manifest.items() if k not in informational} for manifest in manifests)
     return left == right and (baseline / 'clash-verge.yaml').read_bytes() == (candidate / 'clash-verge.yaml').read_bytes()
 

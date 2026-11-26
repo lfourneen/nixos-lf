@@ -283,6 +283,17 @@ def node_identity(node):
                                     separators=(',', ':')).encode()).hexdigest()
 
 
+def select_pinned_egress(candidates, egress_id):
+    for node in candidates:
+        if not egress_id or node_identity(node) == egress_id:
+            return node
+        if 'lf-node-alternates' in node:
+            legacy = {key: value for key, value in node.items() if key != 'lf-node-alternates'}
+            if node_identity(legacy) == egress_id:
+                return legacy
+    return None
+
+
 def egress_nodes(document, tunnel=None, require_protected=False):
     """Return ordered, fixed leaves reachable from the subscription catch-all."""
     nodes = {node['name']: node for node in document['proxies']}
@@ -604,7 +615,7 @@ def render(document, payloads, policy, forced_domains=(), probe_domains=(), remo
         if not proxy_only:
             raise Refused('single egress requires proxy-only')
         candidates = egress_nodes(result, tunnel, require_protected)
-        selected = next((node for node in candidates if not egress_id or node_identity(node) == egress_id), None)
+        selected = select_pinned_egress(candidates, egress_id)
         if selected is None:
             raise Refused('selected egress unavailable')
         result['proxies'] = [selected]
@@ -651,9 +662,11 @@ def loopback_literal(server):
     return address.is_loopback
 
 
-def pin_servers(config, resolver=socket.getaddrinfo, sanitize_insecure=False, counts=None):
+def pin_servers(config, resolver=socket.getaddrinfo, sanitize_insecure=False, counts=None, nat64=(),
+                allow_alternates=True):
     document = load(config)
     nodes, unresolved, loopback, excluded = [], [], [], []
+    translation = [ipaddress.IPv6Network(prefix) for prefix in nat64]
     for node in document['proxies']:
         if node.get('type') not in ('ss', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'http', 'socks5', 'anytls'):
             raise Refused('unsupported node protocol')
@@ -676,8 +689,25 @@ def pin_servers(config, resolver=socket.getaddrinfo, sanitize_insecure=False, co
         except OSError:
             unresolved.append(node.get('name'))
             continue
+        if any('%' in address or any(ipaddress.ip_address(address) in prefix for prefix in translation)
+                for address in addresses):
+            raise Refused('destination')
+        normalized = []
+        for address in map(ipaddress.ip_address, addresses):
+            if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+                address = address.ipv4_mapped
+            normalized.append(str(address))
+        addresses = list(dict.fromkeys(normalized))
         node['lf-source-server'] = server
         node['server'] = addresses[0]
+        # Endpoint sets are written only by the worker. Rebuild them on every
+        # fetch before rendering either route. Raw subscription keys confer no authority.
+        node.pop('lf-node-alternates', None)
+        if (allow_alternates and len(addresses) > 1 and node['type'] not in ('hysteria2', 'tuic')
+                and node.get('network') not in ('kcp', 'h3')):
+            primary = ipaddress.ip_address(addresses[0])
+            alternates = sorted(addresses[1:], key=lambda address: ipaddress.ip_address(address).version == primary.version)
+            node['lf-node-alternates'] = alternates[:2]
         if node.get('tls') or node.get('type') in ('trojan', 'hysteria2', 'tuic', 'anytls'):
             node.setdefault('servername', node.get('sni') or server)
             node.setdefault('sni', node.get('servername') or server)
@@ -733,8 +763,11 @@ def prepare(request, download=None, resolver=socket.getaddrinfo):
     source = step('render', normalize, document, payloads,
                   policy.get('lf-private-targets', {}).get('delay-test-url'))
     drop_counts = {}
+    targets = policy.get('lf-private-targets', {})
     pinned_config, _ = step('pin-addresses', pin_servers, yaml.safe_dump(source).encode(),
-                            resolver, request.get('sanitize_insecure') is True, drop_counts)
+                            resolver, request.get('sanitize_insecure') is True, drop_counts,
+                            targets.get('nat64-prefixes', ()),
+                            targets.get('require-protected-node-transport') is True)
     pinned = load(pinned_config)['proxies']
     retained = {node['name'] for node in pinned}
     removed = {node['name'] for node in source['proxies']} - retained

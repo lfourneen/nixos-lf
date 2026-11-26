@@ -99,6 +99,21 @@ replace(root / "adapter/adapter.go", '\tconn, err := p.ProxyAdapter.DialContext(
 replace(root / "adapter/adapter.go", 'func (p *Proxy) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {',
         'func (p *Proxy) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {\n'
         '\tswitch p.Type() { case C.Selector, C.Fallback, C.URLTest, C.LoadBalance: return p.ProxyAdapter.DialContext(ctx, metadata) }')
+# Keep the adapter's configured TLS identity and per-protocol handshakes. Only
+# its underlying TCP socket dial selects among the worker-pinned endpoints.
+replace(root / "adapter/parser.go", '\tvar (\n\t\tproxy outbound.ProxyAdapter',
+        '\taddresses, alternateErr := lfguard.ParseNodeAlternates(mapping)\n'
+        '\tif alternateErr != nil { return nil, alternateErr }\n'
+        '\tif len(addresses) > 0 {\n'
+        '\t\tport, err := strconv.Atoi(fmt.Sprint(mapping["port"]))\n'
+        '\t\tif err != nil || port < 1 || port > 65535 { return nil, fmt.Errorf("invalid managed node port") }\n'
+        '\t\tbasicOption.LFNodeAddresses, basicOption.LFNodePort = addresses, port\n\t}\n'
+        '\tvar (\n\t\tproxy outbound.ProxyAdapter')
+replace(root / "adapter/outbound/base.go", '"net"', '"net"\n\t"net/netip"\n\t"github.com/metacubex/mihomo/component/lfguard"')
+replace(root / "adapter/outbound/base.go", '\tProviderName string   `proxy:"-"`',
+        '\tProviderName string   `proxy:"-"`\n\tLFNodeAddresses []netip.Addr `proxy:"-"`\n\tLFNodePort int `proxy:"-"`')
+replace(root / "adapter/outbound/base.go", '\treturn cDialer',
+        '\treturn lfguard.WithNodeAlternates(cDialer, b.LFNodeAddresses, b.LFNodePort, b.IPVersion)')
 replace(root / "adapter/adapter.go",
         'func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {',
         'func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {\n'
@@ -164,7 +179,7 @@ replace(root / "adapter/provider/healthcheck.go", '''	if len(url) == 0 || url ==
 	}''')
 replace(root / "adapter/provider/healthcheck.go", 'context.WithTimeout(hc.ctx, hc.timeout)',
         'lfguard.BackgroundDelay(hc.ctx, hc.timeout)')
-replace(root / "adapter/parser.go", '"fmt"', '"fmt"\n\t"github.com/metacubex/mihomo/component/lfguard"')
+replace(root / "adapter/parser.go", '"fmt"', '"fmt"\n\t"strconv"\n\t"github.com/metacubex/mihomo/component/lfguard"')
 replace(root / "adapter/parser.go", 'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {',
         'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {\n'
         '\tif err := lfguard.CheckProxy(mapping); err != nil { return nil, err }')
@@ -289,7 +304,41 @@ replace(root / "hub/route/server.go", '\t\tunixServer = server',
 replace(root / "hub/route/proxies.go", '\n\t"strconv"\n\t"time"\n', '\n')
 replace(root / "hub/route/proxies.go", '\n\t"github.com/metacubex/mihomo/common/utils"', '')
 replace(root / "hub/route/proxies.go", '\t\tr.Get("/delay", getProxyDelay)',
-        '\t\tr.Get("/delay", getProxyDelay)\n\t\tr.Get("/session", lfSessionCheck)')
+        '\t\tr.Get("/delay", getProxyDelay)\n\t\tr.Get("/session", lfSessionCheck)\n'
+        '\t\tr.Get("/selection", lfSelection)\n\t\tr.Put("/selection", lfSelection)\n'
+        '\t\tr.Get("/health-delay", lfHealthDelay)')
+replace(root / "hub/route/proxies.go", '\tif err := selector.Set(req.Name); err != nil {',
+        '\tunlock := lfLockSelection(proxy)\n\tdefer unlock()\n'
+        '\tif err := selector.Set(req.Name); err != nil {')
+replace(root / "hub/route/proxies.go", '''	cachefile.Cache().SetSelected(proxy.Name(), req.Name)
+	if SwitchProxiesCallback != nil {''', '''	lfChangedSelection(proxy)
+	lfSaveSelection(proxy, req.Name)
+	render.NoContent(w, r)
+}
+
+func lfSaveSelection(proxy C.Proxy, name string) {
+	cachefile.Cache().SetSelected(proxy.Name(), name)
+	if SwitchProxiesCallback != nil {''')
+replace(root / "hub/route/proxies.go", '''		go SwitchProxiesCallback(proxy.Name(), req.Name)
+	}
+	render.NoContent(w, r)
+}''', '''		go SwitchProxiesCallback(proxy.Name(), name)
+	}
+}''')
+# Controller selector trials race data-plane readers and must preserve a GUI
+# update even if both selected the very same name.
+selector = root / "adapter/outboundgroup/selector.go"
+replace(selector, '\t"errors"', '\t"errors"\n\t"sync/atomic"')
+replace(selector, '\tselected   string', '\tselected   atomic.Pointer[string]')
+replace(selector, '\t\t\ts.selected = name', '\t\t\ts.selected.Store(&name)')
+replace(selector, '\ts.selected = name', '\ts.selected.Store(&name)')
+replace(selector, '\tproxies := s.GetProxies(touch)\n\tfor _, proxy := range proxies {\n\t\tif proxy.Name() == s.selected {',
+        '\tproxies := s.GetProxies(touch)\n\tselected := s.selected.Load()\n'
+        '\tfor _, proxy := range proxies {\n\t\tif selected != nil && proxy.Name() == *selected {')
+replace(selector, '\treturn &Selector{',
+        '\ts := &Selector{')
+replace(selector, '\t\tselected:   selectorOption.DefaultSelected,\n', '')
+replace(selector, '\t}, nil\n}', '\t}\n\ts.ForceSet(selectorOption.DefaultSelected)\n\treturn s, nil\n}')
 replace(root / "hub/route/proxies.go", '''	query := r.URL.Query()
 	url := query.Get("url")
 	timeout, err := strconv.ParseInt(query.Get("timeout"), 10, 16)
@@ -391,6 +440,8 @@ source = Path(__file__).parent.parent
 (root / "config/lf_dns_transport.go").write_text((source / "config/dns_transport.go").read_text())
 (root / "hub/executor/lf_dns_transport.go").write_text((source / "controller/dns_transport.go").read_text())
 (root / "component/lfguard").mkdir()
+(root / "component/lfguard/lf_tcp_candidates.go").write_text((source / "guard/tcp_candidates.go").read_text())
+(root / "component/lfguard/lf_tcp_candidates_test.go").write_text((source / "guard/tcp_candidates_test.go").read_text())
 (root / "component/lfguard/guard.go").write_text((source / "guard/target_guard.go").read_text())
 (root / "component/lfguard/delay.go").write_text((source / "guard/delay.go").read_text())
 (root / "component/lfguard/validated_answers.go").write_text((source / "guard/validated_answers.go").read_text())
@@ -409,6 +460,8 @@ source = Path(__file__).parent.parent
 (root / "hub/route/lf_managed_test.go").write_text((source / "controller/managed_route_test.go").read_text())
 (root / "hub/route/lf_policy.go").write_text((source / "controller/policy_middleware.go").read_text())
 (root / "hub/route/lf_delay.go").write_text((source / "controller/delay.go").read_text())
+(root / "hub/route/lf_selection.go").write_text((source / "controller/selection.go").read_text())
+(root / "hub/route/lf_selection_test.go").write_text((source / "controller/selection_test.go").read_text())
 (root / "hub/route/lf_policy_test.go").write_text((source / "controller/policy_middleware_test.go").read_text())
 (root / "config/lf_managed_rules_test.go").write_text((source / "config/managed_rules_test.go").read_text())
 

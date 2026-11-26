@@ -1,6 +1,7 @@
 """Authorization/permission regressions using real files, without root or VM."""
 
 import errno
+import hashlib
 import importlib.util
 import fcntl
 import json
@@ -10,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -715,7 +717,13 @@ class HealthLeafTests(unittest.TestCase):
     def probe(self, delays=None, **values):
         settings = dict(budget_seconds=30, urls=[self.url], dns_port=5353, dns_leaf_group=True)
         probe = health_probe.Probe(settings | values, clock=lambda: 0)
-        def api(path, *_):
+        probe.selection_requests = []
+        probe.selection_binding = Mock(side_effect=lambda group, current: {
+            'path': '/proxies/' + group + '/selection', 'token': current})
+        def api(path, *_, body=None, **_options):
+            if path.endswith('/selection'):
+                probe.selection_requests.append((path.split('/')[2], body))
+                return {'token': str(len(probe.selection_requests))}
             if path == '/proxies/lf-remote':
                 return {'type': 'Selector', 'all': ['a', 'b', 'c', 'd', 'e'], 'now': 'b'}
             if path == '/proxies/lf-dns':
@@ -725,6 +733,10 @@ class HealthLeafTests(unittest.TestCase):
             return delays
         probe.api = Mock(side_effect=api)
         return probe
+
+    @staticmethod
+    def trials(probe):
+        return [(group, body['name']) for group, body in probe.selection_requests if body['action'] == 'trial']
 
     def test_candidates_rank_positive_delays_and_keep_unmeasured_authorized_members(self):
         probe = self.probe({'b': 1, 'foreign': 2, 'c': 30, 'd': 0, 'e': 20})
@@ -743,18 +755,22 @@ class HealthLeafTests(unittest.TestCase):
     def test_rotation_requires_real_mixed_request_and_continues_to_unmeasured_members(self):
         probe = self.probe({'e': 20})
         mixed_failure = health_probe.ProbeFailure('obs', 'mixed HTTP request failed')
-        probe.target = Mock(side_effect=[mixed_failure, mixed_failure, None])
-        probe.select_leaf = Mock(return_value=True)
+        def target(url, log_path, maximum):
+            candidate = self.trials(probe)[-1][1]
+            if candidate != 'd':
+                raise mixed_failure
+            probe.exit_identities['mixed'] = hashlib.sha256(b'd').hexdigest()
+        probe.target = Mock(side_effect=target)
         self.assertTrue(probe.rotate_leaf(None, self.url))
-        self.assertEqual([call.args[0] for call in probe.select_leaf.call_args_list], ['e', 'c', 'd'])
+        self.assertEqual(self.trials(probe), [('lf-remote', name) for name in ['e', 'c', 'd']])
+        self.assertEqual([body['action'] for _, body in probe.selection_requests],
+                         ['trial', 'rollback', 'trial', 'rollback', 'trial', 'commit'])
         self.assertEqual([call.args for call in probe.target.call_args_list], [(self.url, None)] * 3)
 
     def test_fixed_egress_never_tries_a_different_leaf(self):
         probe = self.probe({})
         probe.routing = {'routing_requested': 'proxy-only', 'egress_requested': 'a' * 64}
-        probe.select_leaf = Mock()
         self.assertFalse(probe.rotate_leaf(None, self.url))
-        probe.select_leaf.assert_not_called()
         probe.api.assert_not_called()
 
     def test_node_failure_reports_when_all_authorized_leaves_fail_mixed_request(self):
@@ -762,27 +778,27 @@ class HealthLeafTests(unittest.TestCase):
         mixed_failure = health_probe.ProbeFailure('obs', 'mixed HTTP request failed')
         probe.attempt_targets = Mock(side_effect=mixed_failure)
         probe.target = Mock(side_effect=mixed_failure)
-        probe.select_leaf = Mock(return_value=True)
         probe.dns_answer = Mock(return_value=True)
         probe.application_path = Mock()
         with self.assertRaises(health_probe.ProbeFailure) as failure:
             probe.data_paths(None)
         self.assertEqual(failure.exception.layer, 'node')
         self.assertEqual(health_probe.failure_stage(failure.exception.detail), 'leaf-unavailable')
-        self.assertEqual([call.args[0] for call in probe.select_leaf.call_args_list], ['c', 'd', 'e', 'a'])
+        self.assertEqual(self.trials(probe), [('lf-remote', name) for name in ['c', 'd', 'e', 'a']])
+        self.assertEqual([body['action'] for _, body in probe.selection_requests], ['trial', 'rollback'] * 4)
         probe.application_path.assert_called_once_with()
 
     def test_dns_failure_rotates_only_the_managed_dns_selector_and_retries_the_current_application_leaf(self):
         probe = self.probe({})
         probe.attempt_targets = Mock(side_effect=health_probe.ProbeFailure('obs', 'mixed HTTP request failed'))
         probe.target = Mock()
-        probe.select_leaf = Mock(return_value=True)
         probe.dns_answer = Mock(side_effect=[False, True])
         probe.application_path = Mock()
         probe.application_dns = Mock()
         probe.tun_test = Mock()
         probe.data_paths(None)
-        probe.select_leaf.assert_called_once_with('a', 'lf-dns')
+        self.assertEqual(self.trials(probe), [('lf-dns', 'a')])
+        self.assertEqual(probe.selection_requests[-1][1]['action'], 'commit')
         probe.target.assert_called_once_with(self.url, None, maximum=2.5)
         self.assertTrue(probe.diagnostics['dns_leaf_rotated'])
         self.assertTrue(probe.diagnostics['managed_dns_ok'])
@@ -790,7 +806,6 @@ class HealthLeafTests(unittest.TestCase):
     def test_managed_dns_failure_is_distinct_from_node_failure(self):
         probe = self.probe({})
         probe.attempt_targets = Mock(side_effect=health_probe.ProbeFailure('obs', 'mixed HTTP request failed'))
-        probe.select_leaf = Mock(return_value=True)
         probe.dns_answer = Mock(return_value=False)
         probe.rotate_leaf = Mock(return_value=False)
         with self.assertRaises(health_probe.ProbeFailure) as failure:
@@ -800,19 +815,19 @@ class HealthLeafTests(unittest.TestCase):
         self.assertFalse(probe.diagnostics['managed_dns_ok'])
         probe.rotate_leaf.assert_called_once_with(None, self.url, self.host)
 
-    def test_dns_failure_promotes_a_reachable_remote_leaf_and_retries_both_paths(self):
+    def test_dns_failure_preserves_remote_leaf_when_restoring_dns_is_enough(self):
         probe = self.probe({'e': 15})
-        probe.selector = Mock(side_effect=[('b', ['a', 'c', 'e']), ('e', ['b', 'a', 'c']), ('b', ['e'])])
+        def selector(group):
+            return ('b', ['a', 'c', 'e']) if group == 'lf-dns' else ('e', ['b', 'a', 'c'])
+        probe.selector = Mock(side_effect=selector)
         probe.attempt_targets = Mock(side_effect=health_probe.ProbeFailure('obs', 'mixed HTTP request failed'))
         probe.target = Mock()
-        probe.select_leaf = Mock(return_value=True)
-        probe.dns_answer = Mock(side_effect=[False, False, False, False, True])
+        probe.dns_answer = Mock(side_effect=[False, False, False, True])
         probe.application_path = Mock()
         probe.application_dns = Mock()
         probe.tun_test = Mock()
         probe.data_paths(None)
-        self.assertEqual([call.args for call in probe.select_leaf.call_args_list],
-                         [('a', 'lf-dns'), ('c', 'lf-dns'), ('e', 'lf-dns'), ('e',)])
+        self.assertEqual(self.trials(probe), [('lf-dns', 'a'), ('lf-dns', 'c'), ('lf-dns', 'e')])
         self.assertTrue(probe.diagnostics['managed_dns_ok'])
         probe.target.assert_called_once()
         probe.tun_test.assert_called_once()
@@ -822,16 +837,16 @@ class HealthLeafTests(unittest.TestCase):
         banners = [f'bad{index}' for index in range(29)]
         probe.selector = Mock(side_effect=[('good', banners), ('bad0', [*banners[1:], 'good'])])
         probe.dns_answer = Mock(return_value=True)
+        probe.sample_sessions = Mock()
         probe.recover_dns(self.host)
         self.assertEqual(probe.leaf_candidates(self.url)[0], 'good')
-        probe.api.assert_not_called()
 
     def test_explicit_authentication_evidence_does_not_report_validator_dns(self):
         probe = self.probe({}, session_urls=['https://203.0.113.53/dns-query'])
         probe.attempt_targets = Mock(side_effect=health_probe.ProbeFailure('obs', 'mixed HTTP request failed'))
         original_api = probe.api.side_effect
-        probe.api.side_effect = lambda path, *_: {'session': 'node-auth'} if '/session?' in path else original_api(path)
-        probe.select_leaf = Mock(return_value=True)
+        probe.api.side_effect = lambda path, *args, **kwargs: (
+            {'session': 'node-auth'} if '/session?' in path else original_api(path, *args, **kwargs))
         probe.target = Mock()
         probe.dns_answer = Mock(return_value=False)
         with self.assertRaises(health_probe.ProbeFailure) as failure:
@@ -847,17 +862,16 @@ class HealthLeafTests(unittest.TestCase):
         probe.api.return_value['Answer'].append({'type': 1, 'data': '203.0.113.10'})
         self.assertTrue(probe.dns_answer(self.host))
 
-    def test_dns_recovery_preserves_a_working_session_during_validator_warmup(self):
+    def test_dns_recovery_rolls_back_a_session_when_validated_answers_still_fail(self):
         probe = self.probe()
-        probe.selector = Mock(side_effect=[('bad', ['also-bad', 'good', 'unchecked']),
-                                           ('good', ['bad', 'also-bad', 'unchecked']), ('bad', ['good', 'also-bad'])])
+        probe.selector = Mock(return_value=('bad', ['also-bad', 'good']))
         probe.sessions = {'bad': 'session-unavailable', 'also-bad': 'session-unavailable', 'good': 'ok'}
-        probe.select_leaf = Mock(return_value=True)
         probe.dns_answer = Mock(return_value=False)
         with self.assertRaises(health_probe.ProbeFailure):
             probe.recover_dns(self.host)
-        self.assertFalse(probe.rotate_leaf(None, self.url, self.host))
-        self.assertEqual([call.args for call in probe.select_leaf.call_args_list], [('good', 'lf-dns'), ('good',)])
+        self.assertEqual(self.trials(probe), [('lf-dns', 'good')])
+        self.assertEqual(probe.selection_requests[-1][1]['action'], 'rollback')
+        self.assertIsNone(probe.dns_transport_leaf)
 
     def test_dns_sampling_advances_after_unavailable_batch_for_same_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -915,7 +929,6 @@ class HealthLeafTests(unittest.TestCase):
         probe = self.probe(urls=[self.url, fallback], delay_primary=self.url, delay_fallback=fallback)
         probe.target = Mock(side_effect=[health_probe.ProbeFailure('obs', 'mixed HTTP request failed'), None])
         self.assertTrue(probe.attempt_targets(None))
-        import hashlib
         self.assertEqual(probe.diagnostics['delay_fallback'], hashlib.sha256((self.url + '\n' + fallback).encode()).hexdigest())
         probe.dns_answer = Mock(return_value=False)
         probe.delay_diagnosis()
@@ -930,22 +943,90 @@ class HealthLeafTests(unittest.TestCase):
     def test_one_negative_dns_answer_preserves_the_current_dns_transport(self):
         probe = self.probe(urls=[self.url, 'https://second.example/check'])
         probe.dns_answer = Mock(side_effect=[False, True])
-        probe.select_leaf = Mock()
         probe.recover_dns(self.host)
         self.assertTrue(probe.diagnostics['managed_dns_ok'])
         self.assertEqual([call.args[0] for call in probe.dns_answer.call_args_list], [self.host, 'second.example'])
-        probe.select_leaf.assert_not_called()
+        self.assertFalse(self.trials(probe))
 
     def test_recovery_tries_next_authenticated_session_if_dns_still_fails(self):
         probe = self.probe()
         probe.selector = Mock(return_value=('failed', ['transport-only', 'working']))
         probe.sessions = {'failed': 'session-unavailable', 'transport-only': 'ok', 'working': 'ok'}
         probe.dns_answer = Mock(side_effect=[False, False, True])
-        probe.select_leaf = Mock(return_value=True)
         probe.recover_dns(self.host)
         self.assertEqual(probe.dns_transport_leaf, 'working')
-        self.assertEqual([call.args for call in probe.select_leaf.call_args_list],
-                         [('transport-only', 'lf-dns'), ('working', 'lf-dns')])
+        self.assertEqual(self.trials(probe), [('lf-dns', 'transport-only'), ('lf-dns', 'working')])
+
+    def test_validated_transport_can_warm_the_resolver_in_c_without_proving_b(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status = Path(directory) / 'status'
+            for mode, action in (('blocked', 'commit'), ('proxy', 'rollback')):
+                status.write_text(mode)
+                probe = self.probe(runtime=directory)
+                probe.routing = {'routing_requested': 'rules'}
+                probe.selector = Mock(return_value=('failed', ['transport-only']))
+                probe.sessions = {'failed': 'session-unavailable', 'transport-only': 'ok'}
+                probe.dns_answer = Mock(return_value=False)
+                with self.assertRaises(health_probe.ProbeFailure) as failure:
+                    probe.recover_dns(self.host)
+                self.assertEqual(failure.exception.layer, 'dns')
+                self.assertFalse(probe.diagnostics['managed_dns_ok'])
+                actions = [call.kwargs['body']['action'] for call in probe.api.call_args_list if 'body' in call.kwargs]
+                self.assertEqual(actions, ['trial', action])
+
+    def test_selector_conflict_aborts_recovery_without_an_unconditional_write(self):
+        probe = self.probe()
+        binding = {'path': '/proxies/lf-remote/selection', 'token': 'before'}
+        conflict = health_probe.ProbeFailure('obs', 'recorded leaf no longer matches the selector generation')
+        probe.api.side_effect = [{'token': 'in-trial'}, conflict, conflict]
+        with self.assertRaises(health_probe.ProbeFailure):
+            probe.try_leaf(binding, 'candidate', lambda: True)
+        self.assertEqual(binding['token'], '')
+        writes = [call.kwargs['body'] for call in probe.api.call_args_list]
+        self.assertEqual([(item['action'], item['token']) for item in writes],
+                         [('trial', 'before'), ('commit', 'in-trial'), ('rollback', 'in-trial')])
+
+    def test_working_leaf_session_is_preserved_if_all_independent_http_checks_fail(self):
+        probe = self.probe({'ok': False})
+        probe.sessions['b'] = 'ok'
+        probe.target = Mock()
+        self.assertFalse(probe.rotate_leaf(None, self.url))
+        self.assertFalse(self.trials(probe))
+        probe.target.assert_not_called()
+
+    def test_tun_route_starts_while_other_dns_candidate_is_still_running(self):
+        probe = health_probe.Probe(dict(budget_seconds=5, require_tun=True, tun_probe_name='slow',
+                                        tun_probe_names=['slow', 'fast']))
+        slow_started = threading.Event()
+
+        def lookup(name):
+            if name == 'slow':
+                slow_started.set()
+                assert probe.dns_workers.cancelled.wait(1)
+            else:
+                assert slow_started.wait(1)
+
+        probe.fake_ip = Mock(side_effect=lookup)
+        probe.tun_target = Mock()
+        probe.tun_test()
+        probe.tun_target.assert_called_once_with('fast', None)
+        self.assertEqual(probe.tun_name, 'fast')
+        self.assertTrue(probe.diagnostics['tun_ok'])
+
+    def test_tun_checks_next_ready_candidate_when_first_route_times_out(self):
+        probe = self.probe(require_tun=True, tun_probe_name='first', tun_probe_names=['first', 'second'])
+        first = threading.Event()
+        def lookup(name):
+            if name == 'second':
+                assert first.wait(1)
+        probe.fake_ip = Mock(side_effect=lookup)
+        def target(name, _log):
+            if name == 'first':
+                first.set()
+                raise health_probe.ProbeFailure('obs', 'fake-IP TCP probe failed')
+        probe.tun_target = Mock(side_effect=target)
+        probe.tun_test()
+        self.assertEqual(probe.tun_name, 'second')
 
 
 if __name__ == '__main__':

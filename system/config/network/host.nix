@@ -59,6 +59,7 @@ in
   ];
 
   my.proxy.authorizationLeaseSeconds = 60;
+  my.proxy.rulesDomesticProbeUrl = "https://www.bilibili.com/";
 
   # Cold foreign DNSSEC validation can outlive the module's 12 s probe budget;
   # leave room for the 3 s fake-IP lookups plus the HTTP/TUN checks.

@@ -27,7 +27,14 @@ assert builtins.elem "socket-guest-dns.service" c.systemd.services.clash-source-
 assert builtins.elem "clash-core" c.systemd.services.clash-source-refresh.serviceConfig.SupplementaryGroups;
 assert !(builtins.elem "CAP_NET_ADMIN" c.systemd.services.clash-source-refresh.serviceConfig.CapabilityBoundingSet);
 assert c.systemd.services.profile-refresh-verify.environment.LF_MANAGED_PROXY_POLICY == c.my.proxy.activeManagedPolicy;
-assert c.systemd.timers.clash-source-refresh.timerConfig.Unit == "clash-source-request.service";
+assert c.systemd.timers.clash-source-refresh.timerConfig.Unit == "clash-source-refresh-due.service";
+assert c.systemd.timers.clash-source-refresh.timerConfig.OnUnitActiveSec == "1min";
+assert c.systemd.sockets.clash-source-gui.socketConfig.Accept;
+assert c.systemd.sockets.clash-source-gui.socketConfig.SocketMode == "0600";
+assert c.systemd.sockets.clash-source-gui.socketConfig.SocketUser == c.my.machine.desktopUser;
+assert c.systemd.services."clash-source-gui@".serviceConfig.RestrictAddressFamilies == [ "AF_UNIX" ];
+assert c.systemd.sockets.clash-source-gui-http.socketConfig.ListenStream == "127.0.0.1:45129";
+assert c.systemd.services."clash-source-gui-http@".serviceConfig.IPAddressAllow == "localhost";
 assert c.systemd.paths.clash-source-download.pathConfig.PathExists == "/run/proxy-mode/source-refresh-ready";
 assert c.systemd.paths.clash-source-apply.pathConfig.PathExists == "/run/proxy-mode/source-apply.json";
 assert c.systemd.services.clash-source-guard.serviceConfig.CapabilityBoundingSet == [ "CAP_NET_ADMIN" ];
@@ -50,7 +57,6 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   browser = json.loads(Path('${h.programs.firefox.finalPackage.netsec.settings}').read_text())
   assert stage['source_root'] == '/var/lib/clash-source'
   assert stage['audit_auto_approve'] == ['node_identity', 'node_authentication', 'node_transport']
-  assert '${c.systemd.timers.clash-source-refresh.timerConfig.OnUnitActiveSec}' == '30min'
   assert browser['requireProxy'] is False and browser['proxyPort'] == 18080
   ${pkgs.lib.concatMapStringsSep "\n" (p: ''
   isolated = json.loads(Path('${p.netsec.settings}').read_text())

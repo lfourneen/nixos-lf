@@ -99,10 +99,10 @@ An explicit `clash-on` uses the accepted snapshot when available and records one
 The coordinator starts the downloader after B remains healthy and verified for 90 seconds under the same boot, snapshot, policy and routing selection.
 A transition out of healthy B restarts this wait.
 In C, the request remains queued and `proxy-status` reports the deferral. `clash-off` cancels pending requests and applications.
-The root timer queues a request about two minutes after boot and every 30 minutes thereafter, independently of the GUI.
+The root timer checks when the selected source is due starting about two minutes after boot, independently of the GUI.
 A download job allows up to three attempts, spaced 15 seconds apart, with a 210-second service timeout.
 While an import or rollback is being settled, the downloaded candidate waits for application by digest.
-The GUI's `update_interval` controls only its display copy: startup raises existing intervals shorter than 1440 minutes to 1440 and preserves longer intervals and disabled schedules.
+At launch, the wrapper maps registered profiles to the local controlled subscription endpoint. Relaunch an already-open copy of Verge once to load the mapping. Verge's refresh button uses the same queue, and the endpoint reports success once the candidate takes effect or the broker proves it equivalent to the effective snapshot. See `proxy-status` for failed download and application verdicts. Verge runs its native timer while open in B. The root timer reads the selected profile's saved interval and automatic-update setting when Verge is closed. The default interval is 30 minutes. An interval of zero disables scheduled refresh.
 
 If the current snapshot remains authorized and intact, with fresh full health, readiness and any required B lease,
 a rejected or unchanged candidate leaves the running core and existing connections in place.

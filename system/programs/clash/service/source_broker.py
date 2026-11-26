@@ -3,14 +3,18 @@ import argparse
 from contextlib import contextmanager, nullcontext
 import fcntl
 import hashlib
+import hmac
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import resource
+import secrets
 import shutil
+import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -213,8 +217,8 @@ def migrate(root):
     atomic(migrated, b'1\n')
 
 
-def gui_choice(settings, root):
-    """The GUI supplies only an identifier, never endpoints or configuration."""
+def gui_index(settings):
+    """Read the desktop index for profile identity and scheduling preferences."""
     import importlib.util
     spec = importlib.util.spec_from_file_location('source_worker', settings['worker'])
     worker = importlib.util.module_from_spec(spec)
@@ -223,7 +227,7 @@ def gui_choice(settings, root):
         fd = os.open(os.environ.get('LF_SOURCE_GUI_INDEX', settings['gui_index']),
                      os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
-        return None
+        return {}
     with os.fdopen(fd, 'rb') as stream:
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_uid != settings['desktop_uid'] or before.st_size > 1024 * 1024:
@@ -232,7 +236,12 @@ def gui_choice(settings, root):
         after = os.fstat(stream.fileno())
     if len(data) > 1024 * 1024 or (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
         raise ValueError('GUI index changed')
-    identity = worker.load(data).get('current')
+    return worker.load(data)
+
+
+def gui_choice(settings, root):
+    """The GUI supplies only an identifier, never endpoints or configuration."""
+    identity = gui_index(settings).get('current')
     if not isinstance(identity, str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', identity):
         return None
     matches = []
@@ -803,10 +812,13 @@ def effective_source(settings, stage):
 def cancel_revoked_requests(state, manual, stage, identity, reset):
     with manual.queue_lock(state):
         gui = state / 'source-gui-request.json'
+        desktop = state / 'source-desktop-refresh.json'
         application = state / 'source-apply.json'
         gui_binding = stage.read_record(gui)
         if reset or identity in (gui_binding.get('source'), gui_binding.get('previous')):
             gui.unlink(missing_ok=True)
+        if reset or identity == stage.read_record(desktop).get('source'):
+            desktop.unlink(missing_ok=True)
         if reset or stage.read_record(application).get('binding', {}).get('source_id') == identity:
             application.unlink(missing_ok=True)
             (state / 'source-apply-status.json').unlink(missing_ok=True)
@@ -987,9 +999,229 @@ def automatic_refresh(settings, root, lock, *, requested=False, wait=time.sleep)
             run_automatic(settings, root, lock, manual, stage, stage_settings, requested, wait)
 
 
+def attempt_binding(path, manual, stage, stage_settings):
+    _, intent, _ = manual.network_mode(stage_settings, stage)
+    return dict(boot_id=stage.boot_id(Path(stage_settings['state'])), source=path.name,
+                revision=digest(read_private(path / 'registry.json')),
+                routing=stage.routing_binding(stage_settings) if intent == 'proxy' else {})
+
+
+def desktop_binding(settings, root, source, manual, stage, stage_settings, profile):
+    if gui_index(settings).get('current') != profile:
+        return None
+    return dict(attempt_binding(source, manual, stage, stage_settings),
+                selection=manual.selection_stamp(root / 'selected'), profile=profile)
+
+
+def refresh_due(settings, root, manual, stage, stage_settings):
+    source = requested_source(root)
+    if source is None:
+        return
+    try:
+        items = gui_index(settings).get('items') or []
+    except (OSError, ValueError, KeyError):
+        items = []
+    profile = json.loads(read_private(source / 'registry.json')).get('gui-profile')
+    interval = 30
+    if profile and isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict) or item.get('uid') != profile:
+                continue
+            options = item.get('option')
+            if isinstance(options, dict):
+                if options.get('allow_auto_update') is False or type(options.get('update_interval')) is int \
+                        and options['update_interval'] == 0:
+                    return
+                configured = options.get('update_interval')
+                if type(configured) is int and 0 < configured <= 525600:
+                    interval = configured
+            url = item.get('url', '')
+            if (isinstance(url, str) and url.startswith(f"http://127.0.0.1:{settings.get('gui_port')}/")
+                    and manual.network_mode(stage_settings, stage)[0] == 'proxy'
+                    and load_module('gui_state', stage_settings['readiness_tool']).gui_running(settings['desktop_uid'])):
+                return  # Verge's native timer owns the schedule while it is open.
+            break
+    state = Path(stage_settings['state'])
+    record = stage.read_record(state / 'source-refresh-attempt.json')
+    binding = attempt_binding(source, manual, stage, stage_settings)
+    now = time.clock_gettime(time.CLOCK_BOOTTIME)
+    started = record.get('started')
+    with manual.queue_lock(state):
+        if (not all(record.get(key) == value for key, value in binding.items())
+                or type(started) not in (float, int) or not 0 <= now - started < 60 * interval):
+            (state / 'source-refresh-pending').touch(mode=0o600)
+
+
+def gui_outcome(state, stage, attempt):
+    if attempt.get('result') in ('failed', 'discarded', 'prepared'):
+        return 'retained'
+    if attempt.get('result') != 'downloaded':
+        return None
+    application = stage.read_record(state / 'source-apply-status.json')
+    if application.get('at') != attempt['download_at'] or application.get('boot_id') != attempt['boot_id']:
+        return None
+    if application.get('decision') == 'accepted':
+        return 'applied'
+    if application.get('decision') == 'decided' or application.get('result') == 'discarded':
+        return 'retained'
+    refresh = stage.read_record(state / 'profile-refresh.json')
+    if refresh.get('boot_id') == attempt['boot_id']:
+        for entry in reversed(refresh.get('history', [])):
+            if entry.get('at', 0) >= attempt['download_at'] and entry.get('digest') == attempt['candidate']:
+                if entry.get('result') in ('accepted', 'refused', 'fallback', 'rolled_back'):
+                    return 'applied' if entry['result'] == 'accepted' else 'retained'
+    return None
+
+
+def desktop_refresh(settings, root, profile, *, clock=time.monotonic, wait=time.sleep):
+    deadline = clock() + 350
+    manual, stage, stage_settings = refresh_context(settings)
+    state = Path(stage_settings['state'])
+    path = state / 'source-refresh-attempt.json'
+    with (root / 'source.lock').open('a') as lock:
+        acquire(lock)
+        source = requested_source(root)
+        if source is None or json.loads(read_private(source / 'registry.json')).get('gui-profile') != profile:
+            return 'select-profile'
+        mode, intent, _ = manual.network_mode(stage_settings, stage)
+        if mode != 'proxy' or intent != 'proxy':
+            return 'not-ready'
+        if pending_revocation(root).get('protect'):
+            return 'changed'
+        requested = desktop_binding(settings, root, source, manual, stage, stage_settings, profile)
+        if requested is None:
+            return 'select-profile'
+        binding = {key: requested[key] for key in ('boot_id', 'source', 'revision', 'routing')}
+        selection = requested['selection']
+        with manual.queue_lock(state):
+            record = stage.read_record(path)
+            current = all(record.get(key) == value for key, value in binding.items())
+            with manual.download_job(state) as idle:
+                fetching = not idle and record.get('result') == 'fetching'
+            applying = (record.get('result') == 'downloaded'
+                        and any((state / name).is_file() for name in
+                                ('source-apply.json', 'profile-refresh-verifying.json', 'profile-refresh-restart.json',
+                                 'profile-refresh-commit.json'))
+                        and gui_outcome(state, stage, record) is None)
+            if current and (fetching or applying):
+                since = record['started']
+            else:
+                since = time.clock_gettime(time.CLOCK_BOOTTIME)
+                marker = state / 'source-desktop-refresh.json'
+                if stage.read_record(marker) != requested:
+                    stage.atomic_record(marker, requested, mode=0o600)
+    while clock() < deadline:
+        try:
+            if (manual.network_mode(stage_settings, stage)[1] != 'proxy'
+                    or manual.selection_stamp(root / 'selected') != selection
+                    or pending_revocation(root).get('protect')
+                    or attempt_binding(source, manual, stage, stage_settings) != binding):
+                return 'changed'
+        except (OSError, ValueError, KeyError):
+            return 'changed'
+        record = stage.read_record(path)
+        if all(record.get(key) == value for key, value in binding.items()) and record.get('started', -1) >= since:
+            outcome = gui_outcome(state, stage, record)
+            if outcome == 'applied':
+                active = stage.read_record(state / 'source.json')
+                try:
+                    authority = (state / 'authorized-config').read_text().strip()
+                except OSError:
+                    return 'changed'
+                if not authority or active.get('snapshot') != authority \
+                        or active.get('boot_id') != binding['boot_id'] or active.get('source_id') != binding['source'] \
+                        or active.get('revision') != binding['revision']:
+                    return 'changed'
+            if outcome:
+                return outcome
+        wait(0.5)
+    return 'pending'
+
+
+def serve_desktop(settings, root):
+    with socket.socket(fileno=os.dup(0)) as peer:
+        peer.settimeout(2)
+        _, uid, _ = struct.unpack('3i', peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        if uid != settings['desktop_uid']:
+            return
+        try:
+            with peer.makefile('rb') as request:
+                profile = request.readline(130)
+            if profile == b'index\n':
+                with (root / 'source.lock').open('a') as lock:
+                    acquire(lock)
+                    token = desktop_token(root, create=True)
+                    profiles = []
+                    for path in (root / 'sources').iterdir():
+                        try:
+                            registry = json.loads(read_private(source_path(root, path.name) / 'registry.json'))
+                        except (OSError, ValueError, KeyError):
+                            continue
+                        name = registry.get('gui-profile')
+                        if isinstance(name, str) and re.fullmatch('[A-Za-z0-9_-]{1,128}', name):
+                            profiles.append(name)
+                    peer.sendall(json.dumps(dict(profiles=profiles, token=token, port=settings['gui_port'])).encode() + b'\n')
+                return
+            if not re.fullmatch(rb'[A-Za-z0-9_-]{1,128}\n', profile):
+                return
+            outcome = desktop_refresh(settings, root, profile[:-1].decode('ascii'))
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            outcome = 'unavailable'
+        try:
+            peer.sendall(outcome.encode('ascii') + b'\n')
+        except BrokenPipeError:
+            pass  # Closing Verge does not cancel an already queued refresh.
+
+
+def desktop_token(root, *, create=False):
+    path = root / 'gui-refresh-token'
+    if create and not path.exists():
+        atomic(path, secrets.token_hex(32).encode())
+    return read_private(path, 64).decode('ascii')
+
+
+def desktop_http(settings, root, peer):
+    """Translate the stock client's loopback GET to the root broker."""
+    response = b'404 Not Found'
+    body = b'Controlled refresh URL is unavailable. See proxy-status.\n'
+    peer.settimeout(2)
+    try:
+        with peer.makefile('rb') as request:
+            line = request.readline(512)
+            match = re.fullmatch(rb'GET /([a-f0-9]{64})/([A-Za-z0-9_-]{1,128}) HTTP/1\.[01]\r\n', line)
+            if match and hmac.compare_digest(match[1], desktop_token(root).encode('ascii')):
+                hosts = []
+                for _ in range(32):
+                    header = request.readline(2048)
+                    if header == b'\r\n':
+                        break
+                    if not header.endswith(b'\r\n'):
+                        break
+                    name, sep, value = header.partition(b':')
+                    if sep and name.lower() == b'host':
+                        hosts.append(value.strip())
+                if header == b'\r\n' and hosts == [f"127.0.0.1:{settings['gui_port']}".encode()]:
+                    outcome = desktop_refresh(settings, root, match[2].decode('ascii'))
+                    if outcome == 'applied':
+                        response = b'200 OK'
+                        body = b'proxies: []\nproxy-groups: []\nrules: ["MATCH,REJECT"]\n'
+                    else:
+                        response = b'503 Service Unavailable'
+                        body = b'Controlled refresh has not applied. See proxy-status.\n'
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        pass
+    try:
+        peer.sendall(b'HTTP/1.1 ' + response + b'\r\nContent-Type: text/plain; charset=utf-8\r\n'
+                     b'Connection: close\r\nCache-Control: no-store\r\nContent-Length: ' +
+                     str(len(body)).encode() + b'\r\n\r\n' + body)
+    except OSError:
+        pass
+
+
 def run_automatic(settings, root, lock, manual, stage, stage_settings, requested, wait):
     state = Path(stage_settings['state'])
     gui_request = state / 'source-gui-request.json'
+    desktop_request = state / 'source-desktop-refresh.json'
     gui = stage.read_record(gui_request)
     if gui:
         try:
@@ -1000,15 +1232,33 @@ def run_automatic(settings, root, lock, manual, stage, stage_settings, requested
             with manual.queue_lock(state):
                 gui_request.unlink(missing_ok=True)
             gui = {}
+    previous = selected(root)
+    desktop = stage.read_record(desktop_request)
+
+    def desktop_current():
+        try:
+            return (selected(root) == previous
+                    and desktop_binding(settings, root, previous, manual, stage, stage_settings,
+                                        desktop['profile']) == desktop)
+        except (OSError, ValueError, KeyError):
+            return False
+
+    if desktop and (gui or not desktop_current()):
+        with manual.queue_lock(state):
+            desktop_request.unlink(missing_ok=True)
+        desktop = {}
     if not manual.schedule_download(stage_settings, stage, consume=True, request=requested):
         return
-    previous = selected(root)
     path = source_path(root, gui['source']) if gui else previous
     selection = manual.selection_stamp(root / 'selected')
     registration = read_private(path / 'registry.json')
     network = manual.network_mode(stage_settings, stage)
     epoch = manual.authorization_epoch(state)
     stable = stage.read_record(state / 'source-refresh-stable.json')
+    attempt_path = state / 'source-refresh-attempt.json'
+    attempt = dict(attempt_binding(path, manual, stage, stage_settings),
+                   started=time.clock_gettime(time.CLOCK_BOOTTIME))
+    stage.atomic_record(attempt_path, dict(attempt, result='fetching'), mode=0o600)
 
     def check():
         try:
@@ -1018,6 +1268,7 @@ def run_automatic(settings, root, lock, manual, stage, stage_settings, requested
                 and manual.selection_stamp(root / 'selected') == selection
                 and read_private(path / 'registry.json') == registration
                 and stage.read_record(gui_request) == gui
+                and (not desktop or stage.read_record(desktop_request) == desktop and desktop_current())
                 and (not gui or gui_binding(settings, root, manual, stage, stage_settings) == gui))
         except (OSError, ValueError, KeyError):
             unchanged = False
@@ -1028,10 +1279,15 @@ def run_automatic(settings, root, lock, manual, stage, stage_settings, requested
         if gui:
             select(root, path)
         if network[0] == 'proxy':
-            manual.queue_application(stage_settings, stage, stage.snapshot_digest(generation), at)
+            candidate = stage.snapshot_digest(generation)
+            manual.queue_application(stage_settings, stage, candidate, at)
+            stage.atomic_record(attempt_path, dict(attempt, result='downloaded',
+                                candidate=candidate, download_at=at), mode=0o600)
+        else:
+            stage.atomic_record(attempt_path, dict(attempt, result='prepared'), mode=0o600)
 
     try:
-        for attempt in range(3):
+        for retry in range(3):
             try:
                 check()
                 with manual.queue_lock(state):
@@ -1041,18 +1297,22 @@ def run_automatic(settings, root, lock, manual, stage, stage_settings, requested
                              _before_publish=check), path, downloaded=downloaded)
                 return
             except RequestChanged:
+                stage.atomic_record(attempt_path, dict(attempt, result='discarded'), mode=0o600)
                 return
             except (OSError, ValueError, subprocess.SubprocessError):
-                if attempt == 2:
+                if retry == 2:
+                    stage.atomic_record(attempt_path, dict(attempt, result='failed'), mode=0o600)
                     raise
                 fcntl.flock(lock, fcntl.LOCK_UN)
                 wait(15)
                 acquire(lock)
     finally:
-        if gui:
+        if gui or desktop:
             with manual.queue_lock(state):
-                if stage.read_record(gui_request) == gui:
+                if gui and stage.read_record(gui_request) == gui:
                     gui_request.unlink(missing_ok=True)
+                if desktop and stage.read_record(desktop_request) == desktop:
+                    desktop_request.unlink(missing_ok=True)
 
 
 def load_module(name, path):
@@ -1086,6 +1346,9 @@ def main():
     sub.add_parser('add', help='review, register, fetch and verify a source from the private catalog').add_argument('id')
     sub.add_parser('list')
     sub.add_parser('gui-select')
+    sub.add_parser('gui-refresh')
+    sub.add_parser('gui-refresh-http')
+    sub.add_parser('refresh-due')
     revoke = sub.add_parser('revoke')
     revoke.add_argument('id')
     revoke.add_argument('--revision', help='require this registered revision')
@@ -1095,6 +1358,13 @@ def main():
     settings = json.loads(Path(args.settings).read_text())
     root = Path(settings['root'])
     state_root(root)
+    if args.action == 'gui-refresh':
+        serve_desktop(settings, root)
+        return
+    if args.action == 'gui-refresh-http':
+        with socket.socket(fileno=os.dup(0)) as peer:
+            desktop_http(settings, root, peer)
+        return
     if args.action == 'revoke':
         try:
             outcome = revoke_source(settings, root, args.id, args.revision)
@@ -1151,6 +1421,10 @@ def main():
         if args.action == 'gui-select':
             if request_gui(settings, root):
                 print('registered source queued for download')
+            return
+        if args.action == 'refresh-due':
+            manual, stage, stage_settings = refresh_context(settings)
+            refresh_due(settings, root, manual, stage, stage_settings)
             return
         if args.action == 'use' and args.select_only:
             if pending_revocation(root).get('source_id') == args.id:

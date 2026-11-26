@@ -189,7 +189,8 @@ def advance_refresh_window(state, stage):
     def advance():
         with (state / 'source-refresh.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            if not any((state / name).exists() for name in ('source-refresh-pending', 'source-gui-request.json')):
+            if not any((state / name).exists() for name in ('source-refresh-pending', 'source-gui-request.json',
+                                                            'source-desktop-refresh.json')):
                 return True
             binding = stage.read_record(path)
             now = time.clock_gettime(time.CLOCK_BOOTTIME)
@@ -284,13 +285,39 @@ def recover():
     assert stream.getresponse().read() == b'before-refresh'
     held_socket = stream.sock
     assert held_socket is not None
+    index = GUI / 'profiles.yaml'
+    pending_index = GUI / '.refresh-fixture-index'
+    pending_index.write_text('current: uid-one\n')
+    os.chown(pending_index, USER.pw_uid, USER.pw_gid)
+    pending_index.replace(index)
+    desktop_refresh = [
+        'setpriv', f'--reuid={USER.pw_uid}', '--clear-groups', sys.executable, '-c',
+        "import http.client, json, socket, sys\n"
+        "with socket.socket(socket.AF_UNIX) as client:\n"
+        "    client.settimeout(5)\n"
+        "    client.connect('/run/clash-source-gui-refresh.sock')\n"
+        "    client.sendall(b'index\\n')\n"
+        "    config = json.loads(client.makefile().readline())\n"
+        "with_socket = http.client.HTTPConnection('127.0.0.1', config['port'], timeout=140)\n"
+        "with_socket.request('GET', f\"/{config['token']}/{sys.argv[1]}\")\n"
+        "reply = with_socket.getresponse()\n"
+        "reply.read()\n"
+        "print(reply.status)\n"
+        "with_socket.close()\n",
+    ]
+    assert run(*desktop_refresh, 'uid-two').stdout.strip() == '503'
     formatting = Path('/run/managed-source-format')
     original_generation = (source / 'current').resolve()
     started = time.time()
+    source_log = Path('/run/managed-source-requests')
+    downloads = source_log.read_text().splitlines().count('/one')
     formatting.touch()
     try:
         first_proof = stage.read_record(state / 'authorization.json')['proof_id']
-        run('systemctl', 'start', 'clash-source-refresh.service')
+        gui_requests = [subprocess.Popen([*desktop_refresh, 'uid-one'], stdout=subprocess.PIPE, text=True)
+                        for _ in range(2)]
+        wait(lambda: (state / 'source-desktop-refresh.json').exists()
+             or stage.read_record(state / 'source-apply-status.json').get('at', 0) >= started, 20)
         advance_refresh_window(state, stage)
         def equivalent_applied():
             stream.request('GET', '/echo?renewal')
@@ -300,6 +327,8 @@ def recover():
                     and result.get('result') == 'submitted' and result['at'] >= started
                     and stage.read_record(state / 'authorization.json')['proof_id'] != first_proof)
         wait(equivalent_applied, 120)
+        assert [request.communicate(timeout=5)[0].strip() for request in gui_requests] == ['200', '200']
+        assert source_log.read_text().splitlines().count('/one') == downloads + 1
         assert stage.service_request(stage_settings, 'GET', '/status')['core_pid'] == before_pid
         assert (state / 'authorized-config').read_bytes() == before_authority
         assert stage.read_record(state / 'state.json')['policy_version'] == before_version

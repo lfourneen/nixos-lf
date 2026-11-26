@@ -68,5 +68,49 @@ profiles() {
 }
 result=0
 preferences "$1" || { echo 'Clash Verge: invalid GUI preferences' >&2; result=1; }
-profiles || { echo 'Clash Verge: invalid profile index; interval unchanged' >&2; result=1; }
+if [[ -z "${LF_CLASH_CONTROLLED_REFRESH:-}" ]]; then
+  profiles || { echo 'Clash Verge: invalid profile index; interval unchanged' >&2; result=1; }
+elif [[ -f "$data/profiles.yaml" && ! -L "$data/profiles.yaml" ]]; then
+  python3 - "$data/profiles.yaml" <<'PY' || result=1
+import json
+import os
+from pathlib import Path
+import socket
+import sys
+import tempfile
+
+import yaml
+
+path = Path(sys.argv[1])
+try:
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.settimeout(3)
+        connection.connect('/run/clash-source-gui-refresh.sock')
+        connection.sendall(b'index\n')
+        with connection.makefile() as reply:
+            settings = json.loads(reply.readline(65536))
+except (OSError, ValueError):
+    raise SystemExit(0)  # Unregistered and offline launch still works.
+
+document = yaml.safe_load(path.read_text())
+if not isinstance(document, dict) or not isinstance(document.get('items'), list):
+    raise SystemExit(0)
+changed = False
+for item in document['items']:
+    if not isinstance(item, dict) or item.get('type') != 'remote' or item.get('uid') not in settings['profiles']:
+        continue
+    url = f"http://127.0.0.1:{settings['port']}/{settings['token']}/{item['uid']}"
+    options = item.get('option') or {}
+    expected = dict(options, with_proxy=False, self_proxy=False, timeout_seconds=360)
+    if type(options.get('update_interval')) is not int:
+        expected['update_interval'] = 30
+    if item.get('url') != url or options != expected:
+        item.update(url=url, option=expected)
+        changed = True
+if changed:
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, prefix='.profiles-', delete=False) as stream:
+        yaml.safe_dump(document, stream, allow_unicode=True, sort_keys=False)
+    os.replace(stream.name, path)
+PY
+fi
 exit "$result"

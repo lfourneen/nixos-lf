@@ -376,34 +376,36 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(records[0]['chains'], ['Good', 'Group'])
         self.assertNotIn('start', records[0])
 
-    def test_warm_all_dns_names_retry_once_and_preserve_tcp_candidate_order(self):
+    def test_first_ready_dns_candidate_retries_and_a_failed_route_uses_the_next_candidate(self):
         probe = health.Probe(dict(budget_seconds=18, require_tun=True, dig='dig', dns_port=1053,
                     fake_ip_net='198.18.0.0/16', tun_probe_name='global.example',
                     tun_probe_names=['global.example', 'domestic.example']))
         attempts = []
+        first_route = threading.Event()
         def command(argv, maximum):
             name = argv[-2]
             attempts.append((name, maximum))
+            if name == 'domestic.example':
+                self.assertTrue(first_route.wait(1))
             if name == 'global.example' and attempts.count((name, maximum)) == 1:
                 return ''
             return '198.18.0.2' if name == 'global.example' else '198.18.0.3'
         probe.command = command
-        probe.application_dns()
-        self.assertEqual(attempts.count(('global.example', 3)), 2)
-        self.assertEqual(attempts.count(('domestic.example', 3)), 1)
-        self.assertEqual(len(probe.fake_ips), 2)
-        self.assertFalse(probe.diagnostics['dns_ok'], 'warmup alone must not claim TUN DNS')
         order = []
         def tun_target(name, _log):
             order.append(name)
             self.assertIn(name, probe.fake_ips)
             if name == 'global.example':
+                self.assertFalse(probe.diagnostics['dns_ok'], 'warmup alone must not claim TUN DNS')
+                first_route.set()
                 raise health.ProbeFailure('obs', 'fake-IP TCP probe failed')
             probe.diagnostics['dns_ok'] = True
         probe.tun_target = tun_target
         probe.tun_test()
         self.assertEqual(order, ['global.example', 'domestic.example'])
         self.assertTrue(probe.diagnostics['tun_ok'])
+        self.assertEqual(attempts.count(('global.example', 3)), 2)
+        self.assertEqual(attempts.count(('domestic.example', 3)), 1)
 
     def test_dns_retry_is_capped_by_the_shared_deadline(self):
         now = [0.]
@@ -660,10 +662,11 @@ class HealthTests(unittest.TestCase):
     def test_listener_failure_precedes_controller_or_dns_requests(self):
         probe = health.Probe({'budget_seconds': 12, 'listener_check': 'check-listeners'})
         probe.api = lambda *args: self.fail('queried controller after listener failure')
-        with patch.object(health.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'check-listeners')):
-            with self.assertRaises(health.ProbeFailure) as failure:
-                probe.run(fast=True)
-        self.assertEqual(failure.exception.layer, 'config')
+        for result, layer in ((1, 'config'), (2, 'obs')):
+            with patch.object(health.subprocess, 'run', return_value=subprocess.CompletedProcess([], result)):
+                with self.assertRaises(health.ProbeFailure) as failure:
+                    probe.run(fast=True)
+            self.assertEqual(failure.exception.layer, layer)
 
     def test_managed_policy_and_route_scope_drift(self):
         settings = {"expected": {"managed-policy": "verified", "tun": {"include-uid": [], "route-address": []}}}
@@ -2187,13 +2190,14 @@ class RecoveryAndDiagnosticsTests(unittest.TestCase):
     def test_tun_candidates_tolerate_dns_failure_but_not_policy_failure(self):
         probe = health.Probe({'budget_seconds':12, 'require_tun': True,
                               'tun_probe_name':'one.example', 'tun_probe_names':['one.example','two.example']})
+        probe.fake_ip = lambda _: '198.18.0.2'
         seen = []
         def target(name, _):
             seen.append(name)
             if name == 'one.example': raise health.ProbeFailure('dns', 'no answer')
         probe.tun_target = target
         probe.tun_test()
-        self.assertEqual(seen, ['one.example', 'two.example'])
+        self.assertIn('two.example', seen)
         def invalid(name, _): raise health.ProbeFailure('config', 'invalid policy')
         probe.tun_target = invalid
         with self.assertRaises(health.ProbeFailure): probe.tun_test()

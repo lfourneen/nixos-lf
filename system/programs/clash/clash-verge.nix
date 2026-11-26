@@ -42,7 +42,7 @@ let
   # Set the writable GUI preference without rebuilding the Rust application.
   guiDefaults = pkgs.writeShellApplication {
     name = "clash-verge-defaults";
-    runtimeInputs = [ pkgs.yq-go pkgs.coreutils pkgs.python3 pkgs.util-linux ];
+    runtimeInputs = [ pkgs.yq-go pkgs.coreutils (pkgs.python3.withPackages (p: [ p.pyyaml ])) pkgs.util-linux ];
     text = builtins.readFile ./gui/clash-verge-defaults.sh;
   };
 
@@ -219,6 +219,7 @@ in
         substituteInPlace "$out/bin/.clash-verge-launcher" \
           --replace-fail 'exec -a "$0"' "exec -a \"$out/bin/clash-verge\""
         makeWrapper "${guiProcess}/bin/clash-verge-gui-prepare" "$out/bin/clash-verge" \
+          ${lib.optionalString config.my.proxy.controlledSources "--set LF_CLASH_CONTROLLED_REFRESH 1"} \
           --add-flags "--launch $out/bin/clash-verge $out/bin/.clash-verge-launcher ${guiDefaults}/bin/clash-verge-defaults" \
           --add-flags ${lib.escapeShellArg (lib.escapeShellArg config.my.proxy.delayTestUrl)}
       '';

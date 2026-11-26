@@ -622,29 +622,30 @@ func DialTCP(ctx context.Context, metadata *C.Metadata,
 	if len(metadata.LFCandidates) == 0 {
 		return dial(ctx, metadata)
 	}
-	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
-	defer cancel()
-	var last error
-	for _, ip := range metadata.LFCandidates {
+	if len(metadata.LFCandidates) == 1 {
+		target := metadata.Clone()
+		target.LFCandidates = nil
+		target.Host, target.DstIP = "", metadata.LFCandidates[0]
+		attempt, done := context.WithTimeout(ctx, 2*time.Second)
+		defer done()
+		conn, err := dial(attempt, target)
+		if err != nil && conn != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return conn, err
+	}
+	conn, ip, err := raceTCP(ctx, metadata.LFCandidates, func(attempt context.Context, ip netip.Addr) (C.Conn, error) {
 		target := metadata.Clone()
 		target.LFCandidates = nil
 		target.Host, target.DstIP = "", ip
-		attempt, done := context.WithTimeout(ctx, 2*time.Second)
-		conn, err := dial(attempt, target)
-		done()
-		if err == nil {
-			metadata.DstIP = ip
-			return conn, nil
-		}
-		if conn != nil {
-			conn.Close()
-		}
-		last = err
-		if ctx.Err() != nil {
-			break
-		}
+		return dial(attempt, target)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("validated destination candidates unavailable: %w", err)
 	}
-	return nil, fmt.Errorf("validated destination candidates unavailable: %w", last)
+	metadata.DstIP = ip
+	return conn, nil
 }
 
 func strictCertificateChecks(value any) bool {

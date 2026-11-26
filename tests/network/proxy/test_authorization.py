@@ -142,6 +142,33 @@ class AuthorizationTests(unittest.TestCase):
         self.grant(now=130)
         self.assertNotIn('delay_fallback', json.loads(public.read_text()))
 
+    def test_rules_outage_can_use_only_the_remaining_authorized_lease(self):
+        routing = dict(routing_requested='rules', routing_applied='rules', routing_phase='ready',
+                       routing_epoch=4, routing_policy_digest='a' * 64)
+        policy = dict(mode='proxy', policy_version=8, authorization_lease_seconds=60, **routing)
+        selection = dict(boot_id='boot', **routing)
+        lease = dict(boot_id='boot', policy_version=8, authorization_epoch='0', digest='digest', until=160,
+                     routing_epoch=4, routing_policy_digest='a' * 64)
+        (self.state / 'authorized-config').write_text('digest\n')
+        records = {'state.json': policy, 'routing.json': selection, 'authorization.json': lease}
+        for name, record in records.items():
+            self.write(name, record)
+        self.assertTrue(authorization.rules_lease_active(self.root, now=159.9))
+        self.assertFalse(authorization.rules_lease_active(self.root, now=160))
+        for name, change in (
+            ('state.json', {'mode': 'blocked'}), ('state.json', {'policy_version': 9}),
+            ('routing.json', {'routing_requested': 'proxy-only'}), ('routing.json', {'routing_epoch': 5}),
+            ('authorization.json', {'authorization_epoch': '1'}), ('authorization.json', {'digest': 'old'}),
+        ):
+            with self.subTest(change=change):
+                self.write(name, records[name] | change)
+                self.assertFalse(authorization.rules_lease_active(self.root, now=159.9))
+                self.write(name, records[name])
+        (self.root / 'dns-policy/sleeping').touch()
+        self.assertFalse(authorization.rules_lease_active(self.root, now=159.9))
+        self.assertFalse(self.transactions)
+        self.assertEqual(json.loads((self.state / 'authorization.json').read_text()), lease)
+
     def test_routing_epoch_and_policy_digest_cannot_reuse_an_old_full_proof(self):
         binding = dict(routing_requested='proxy-only', routing_applied='proxy-only',
                        routing_phase='ready', routing_epoch=4, routing_policy_digest='a' * 64,

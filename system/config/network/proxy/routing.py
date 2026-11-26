@@ -255,12 +255,19 @@ def endpoints(settings, record):
     document = yaml.safe_load((directory / 'clash-verge.yaml').read_text())
     result = set()
     for node in document.get('proxies') or []:
-        address = ipaddress.ip_address(node['server'])
         port = node['port']
-        if not address.is_global or address.is_multicast or type(port) is not int or not 1 <= port <= 65535:
+        alternates = node.get('lf-node-alternates', [])
+        if not isinstance(alternates, list) or len(alternates) > 2 or type(port) is not int or not 1 <= port <= 65535:
             raise ValueError('invalid pinned outer transport')
         protocols = ('udp',) if node['type'] in ('tuic', 'hysteria2') else ('tcp', 'udp')
-        result.update((address.version, str(address), protocol, port) for protocol in protocols)
+        for index, value in enumerate([node['server'], *alternates]):
+            address = ipaddress.ip_address(value)
+            if not address.is_global or address.is_multicast or getattr(address, 'scope_id', None):
+                raise ValueError('invalid pinned outer transport')
+            if index == 0:
+                result.update((address.version, str(address), protocol, port) for protocol in protocols)
+            elif 'tcp' in protocols:
+                result.add((address.version, str(address), 'tcp', port))
     return sorted(result)
 
 

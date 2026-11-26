@@ -41,6 +41,32 @@ def full_routing_proof(proof, target, tunnel=None):
         and (not requires_icmp or proof.get('ip_tunnel_ok') is True))
 
 
+def rules_lease_active(root=Path('/run'), now=None):
+    """Recognize a still-valid Rules lease without attempting any grant."""
+    state = Path(root) / 'proxy-mode'
+    policy = read(state / 'state.json')
+    selection = read(state / 'routing.json')
+    lease = read(state / 'authorization.json')
+    boot = (state / 'boot-id').read_text().strip()
+    snapshot = (state / 'config-digest').read_text().strip()
+    epoch_path = state / 'authorization-epoch'
+    epoch = epoch_path.read_text().strip() if epoch_path.exists() else '0'
+    now = time.clock_gettime(time.CLOCK_BOOTTIME) if now is None else now
+    until = lease.get('until')
+    return (not (Path(root) / 'dns-policy/sleeping').exists() and not (Path(root) / 'netsec/failed').exists()
+        and (state / 'intent').read_text().strip() == 'proxy'
+        and policy.get('mode') == 'proxy' and policy.get('authorization_lease_seconds') is not None
+        and bool(boot) and selection.get('boot_id') == lease.get('boot_id') == boot
+        and bool(snapshot) and (state / 'authorized-config').read_text().strip() == lease.get('digest') == snapshot
+        and lease.get('authorization_epoch') == epoch
+        and lease.get('policy_version') == policy.get('policy_version')
+        and type(until) in (int, float) and math.isfinite(until) and until > now
+        and all(record.get('routing_requested') == record.get('routing_applied') == 'rules'
+                and record.get('routing_phase') == 'ready' for record in (policy, selection))
+        and all(policy.get(key) is not None and policy[key] == selection.get(key) == lease.get(key)
+                for key in ('routing_epoch', 'routing_policy_digest')))
+
+
 def grant(settings, version, root=Path('/run'), now=None, run=subprocess.run):
     root = Path(root)
     state = root / 'proxy-mode'
@@ -111,6 +137,8 @@ def grant(settings, version, root=Path('/run'), now=None, run=subprocess.run):
 
 if __name__ == '__main__':
     try:
+        if sys.argv[2] == '--existing-rules-lease':
+            sys.exit(0 if rules_lease_active() else 1)
         grant(json.loads(Path(sys.argv[1]).read_text()), int(sys.argv[2]))
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print('proxy-authorization: ' + type(error).__name__, file=sys.stderr)
