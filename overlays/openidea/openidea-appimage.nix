@@ -2,13 +2,13 @@
 
 let
   pname = "openidea";
-  version = "0.1.51";
+  version = "0.1.53";
 
   # Tauri (WebKitGTK 4.1) AppImage. linuxdeploy strips the sysroot core, which
   # the FHS environment below supplies again.
   src = pkgs.fetchurl {
     url = "https://github.com/l0ng-ai/openidea/releases/download/v${version}/OpenIDEA_${version}_amd64.AppImage";
-    hash = "sha256-BbwBLkYeWfKaMSdvr06hPhLzeVzMwXVsLMOGfQuMQZg=";
+    hash = "sha256-k9dkrnlfxZjAidoLXEdpYKGo9kKC1W49YfXnMVhEgto=";
   };
 
   appDir = pkgs.appimageTools.extract { inherit pname version src; };
