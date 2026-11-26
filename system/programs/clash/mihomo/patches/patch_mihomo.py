@@ -11,6 +11,23 @@ def replace(path, old, new):
 
 
 root = Path(sys.argv[1])
+# Persist the allocation cursor with the reverse mapping. A forced core stop
+# can skip Shutdown while desktop clients still hold the issued addresses.
+fake_cache = root / 'component/profile/cachefile/fakeip.go'
+fake_pool = root / 'component/fakeip/pool.go'
+replace(fake_cache, 'type FakeIpStore struct {',
+        'const FakeIPOffsetKey = "\\x00fake-ip-offset"\n\ntype FakeIpStore struct {')
+replace(fake_pool, 'offsetKey = "key-offset-fake-ip"',
+        'offsetKey = cachefile.FakeIPOffsetKey')
+replace(fake_pool, 'if offset, exist := s.GetByHost(offsetKey); exist {',
+        'offset, exist := s.GetByHost(offsetKey)\n'
+        '\t\tif !exist {\n\t\t\toffset, exist = s.GetByHost("key-offset-fake-ip")\n\t\t}\n'
+        '\t\tif exist {')
+replace(fake_pool, 'func (p *Pool) StoreState() {',
+        'func (p *Pool) StoreState() {\n\tp.mux.Lock()\n\tdefer p.mux.Unlock()')
+replace(fake_cache, 'return bucket.Put(ip.AsSlice(), []byte(host))',
+        'if err := bucket.Put(ip.AsSlice(), []byte(host)); err != nil {\n'
+        '\t\t\treturn err\n\t\t}\n\t\treturn bucket.Put([]byte(FakeIPOffsetKey), ip.AsSlice())')
 replace(root / "listener/sing_tun/prepare.go", '"context"',
         '"context"\n\t"fmt"\n\t"github.com/metacubex/mihomo/component/lfguard"')
 replace(root / "listener/sing_tun/prepare.go", 'case N.NetworkICMP: // our fork only send those type to PrepareConnection now',
@@ -462,6 +479,7 @@ replace(root / "common/utils/range.go",
 source = Path(__file__).parent.parent
 (root / "dns/lf_filter.go").write_text((source / "guard/dns_filter.go").read_text())
 (root / "dns/lf_filter_test.go").write_text((source / "guard/dns_filter_test.go").read_text())
+(root / "component/fakeip/lf_restart_test.go").write_text((source / "tests/fakeip_restart_test.go").read_text())
 (root / "dns/lf_transport.go").write_text((source / "guard/dns_transport.go").read_text())
 (root / "dns/lf_transport_test.go").write_text((source / "guard/dns_transport_test.go").read_text())
 (root / "config/lf_dns_transport.go").write_text((source / "config/dns_transport.go").read_text())

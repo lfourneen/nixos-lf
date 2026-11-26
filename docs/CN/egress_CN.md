@@ -134,9 +134,8 @@ libvirt、Waydroid 及启用的热点默认限制私网转发。
 参见 [Chrony server 选项](https://chrony-project.org/doc/4.8/chrony.conf.html)。
 地址变化时拒绝连接，不自动扩大白名单，也不退回明文时间协议。
 
-启用此限制时，受管 DNS 将声明的 NTS-KE 名排除出 fake-IP，让目标检查看到真实地址。
-如果 KE 协商出另一个主机名，还须将它加入 `timeServerNames`，同时限定其地址 CIDR。
-补充域名不扩大地址授权。
+受管 DNS 为已配置的 NTS-KE 主机名返回真实地址，Chrony 才能通过物理上行连接这些服务器。
+如果密钥交换返回另一个主机名，将它加入 `timeServerNames`。启用 `timeServerCidrs` 时，还需将该服务器的地址纳入允许的 CIDR。
 Gost 的 TCP 后备保留限定后的 NTS-KE 例外。
 合法目标按配置选路，直连例外还要求物理上行口。
 在 B 关闭宿主 Unbound DoT 不影响独立的 A 恢复策略和 B 受管 DNS。

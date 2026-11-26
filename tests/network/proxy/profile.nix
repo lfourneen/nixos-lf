@@ -42,8 +42,7 @@ let
         fakeIpFilter = osConfig.my.proxy.managedDns.fake-ip-filter;
         privateRoutes = osConfig.my.hardening.directEgress.privateRoutes;
         privateV4 = osConfig.my.machine.privateV4;
-        realTimeNames = if osConfig.my.hardening.directEgress.timeServerCidrs == [ ] then [ ] else
-          osConfig.my.machine.ntsUpstreams ++ osConfig.my.hardening.directEgress.timeServerNames;
+        realTimeNames = osConfig.my.machine.ntsUpstreams ++ osConfig.my.hardening.directEgress.timeServerNames;
       };
     };
 

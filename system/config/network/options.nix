@@ -82,7 +82,7 @@
       timeServerNames = lib.mkOption {
         type = lib.types.listOf (lib.types.strMatching "[a-zA-Z0-9.-]+");
         default = [ ];
-        description = "Additional negotiated NTP hostnames to exclude from fake-IP when timeServerCidrs is selected. Configured NTS-KE names are included automatically; this does not grant additional CIDRs.";
+        description = "Additional negotiated NTP hostnames that need real addresses. Managed DNS also returns real addresses for the configured NTS-KE names.";
       };
     };
 

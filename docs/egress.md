@@ -140,9 +140,8 @@ The CIDRs must include both the NTS-KE endpoint and the NTP server returned by k
 Address changes fail closed, without automatic widening or plaintext fallback.
 See [Chrony's server options](https://chrony-project.org/doc/4.8/chrony.conf.html).
 
-With pins, managed DNS excludes configured NTS-KE names from fake-IP so checks see real addresses.
-If KE negotiates another hostname, declare it in `timeServerNames` as well as pinning its address CIDRs.
-Extra names never grant extra addresses.
+Managed DNS returns real addresses for the configured NTS-KE names so Chrony can reach them on the physical uplink.
+If key exchange returns another hostname, add it to `timeServerNames`. When using `timeServerCidrs`, also include that server's addresses.
 Gost's TCP fallback preserves the scoped NTS-KE exception.
 Valid targets use the configured route.
 The direct exception additionally requires a physical uplink.

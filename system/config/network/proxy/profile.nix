@@ -53,8 +53,7 @@ let
         "lens.l.google.com" "+.srv.nintendo.net" "+.stun.playstation.net" "+.xboxlive.com"
         "+.msftncsi.com" "+.msftconnecttest.com" "capture.apple.com"
         "connectivitycheck.gstatic.com" "connectivitycheck.android.com"
-      ] ++ lib.optionals (config.my.hardening.directEgress.timeServerCidrs != [ ])
-        (m.ntsUpstreams ++ config.my.hardening.directEgress.timeServerNames);
+      ] ++ m.ntsUpstreams ++ config.my.hardening.directEgress.timeServerNames;
 
       use-hosts = true;
       respect-rules = true;

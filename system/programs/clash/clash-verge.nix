@@ -167,6 +167,7 @@ let
       go test -mod=vendor ./adapter/inbound ./transport/socks5 -count=1
       go test -mod=vendor github.com/metacubex/sing-tun -run '^TestLFManaged' -count=1
       go test -mod=vendor ./component/lfguard -count=1
+      go test -mod=vendor ./component/fakeip -count=1
       go test -mod=vendor ./adapter ./adapter/provider -run '^TestLFManaged' -count=1
       go test -mod=vendor ./dns -run '^TestLFManaged' -count=1
       go test -mod=vendor ./adapter/outbound -run '^TestLFManagedDirect' -count=1
