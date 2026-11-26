@@ -1,6 +1,6 @@
 {
   "schema": "lf-dns-blocklist-manifest/1",
-  "generated_at": "2026-11-16",
+  "generated_at": "2026-11-26",
   "generator": "scripts/refresh-dns-blocklist.py",
   "limits": {
     "max_domain_bytes": 253,
@@ -17,9 +17,9 @@
       "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
       "final_url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
       "format": "hosts",
-      "bytes": 2328985,
-      "sha256": "a596c1301ff515f441fb862227ad7eacdb9ded28536905297b03925b45c74f7d",
-      "count": 76104,
+      "bytes": 2505650,
+      "sha256": "c9145624bd3ce64d0ac203b39d6d40b6f729ecdecf75cade9e3113070be2bbef",
+      "count": 81676,
       "content_type": "text/plain; charset=utf-8",
       "origin": "network",
       "invalid_lines": 7,
@@ -31,9 +31,9 @@
       "url": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext",
       "final_url": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext",
       "format": "hosts",
-      "bytes": 95344,
-      "sha256": "ff0031f3c8d35e80b4f60f2a791529267e159d6f975fb9fb7ac6ff63989dbfd3",
-      "count": 3564,
+      "bytes": 95201,
+      "sha256": "7271bfd7555793c28f0face08eb63ab75006aa90965050b67a96ba4402e162b6",
+      "count": 3559,
       "content_type": "text/plain;charset=UTF-8",
       "origin": "network",
       "invalid_lines": 0,
@@ -59,9 +59,9 @@
       "url": "https://big.oisd.nl/dnsmasq",
       "final_url": "https://big.oisd.nl/dnsmasq",
       "format": "dnsmasq",
-      "bytes": 6532544,
-      "sha256": "b5051e7c4f40c7f843d0f38fe5e6905974898a9486f0ecd47873a4c5119346ec",
-      "count": 228765,
+      "bytes": 6344774,
+      "sha256": "450b5ea89f336c8cc4d2770cb049fb65a25e9c3f53b1c27755ffe8cd5676c067",
+      "count": 221930,
       "content_type": "text/plain",
       "origin": "network",
       "invalid_lines": 0,
@@ -98,10 +98,10 @@
     }
   ],
   "merged": {
-    "count": 673861,
-    "sha256": "f3724af0a1c9374fa9f63366acf710d4b71f3d1e4186ed82e08b6251a4bb37f1",
-    "uncompressed_bytes": 16915808,
-    "compressed_sha256": "45d34ee8e032c06ece9ef0d4f349577ef4bddcd6ff3fb10819b63586c7d71309",
-    "compressed_bytes": 3945592
+    "count": 672768,
+    "sha256": "07771e8e320dae77fb995e3b52d7bed4a43b2f63204d1012fd359dcbaccf4fd9",
+    "uncompressed_bytes": 16923458,
+    "compressed_sha256": "dbb0de284ae10db855b57981316d9a624dd78aaa4fda25c5c77f6247519e64c4",
+    "compressed_bytes": 3929752
   }
 }

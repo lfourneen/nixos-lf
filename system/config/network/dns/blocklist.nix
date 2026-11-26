@@ -4,15 +4,15 @@
 # The manifest binds source counts and compressed/decompressed digests.
 
 # BEGIN GENERATED
-#   stevenblack    76104  https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
-#   peterlowe       3564  https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext
+#   stevenblack    81676  https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+#   peterlowe       3559  https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext
 #   adaway          6540  https://adaway.org/hosts.txt
-#   oisd_big      228765  https://big.oisd.nl/dnsmasq
+#   oisd_big      221930  https://big.oisd.nl/dnsmasq
 #   1hosts_lite   202953  https://raw.githubusercontent.com/badmojr/1Hosts/master/Lite/hosts.txt
 #   notracking    250170  https://raw.githubusercontent.com/notracking/hosts-blocklists/master/hostnames.txt
-#   total         673861  merged and de-duplicated
-# Snapshot: 2026-11-16
-# Manifest: sha256 44c6e0c0e8645e61e7dc81c92d19863115ccc715545e3ab62956c33a86098106
+#   total         672768  merged and de-duplicated
+# Snapshot: 2026-11-26
+# Manifest: sha256 8e98d25c6ac184c806e7d1157f2c394ddadd9a5b8f03164eb0e9562b1c847874
 # END GENERATED
 #
 # Additions that are specific to this host belong in `my.proxy.blockedDomains`
