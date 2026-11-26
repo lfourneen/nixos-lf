@@ -47,7 +47,7 @@
       type = "github";
       owner = "NousResearch";
       repo = "hermes-agent";
-      ref = "v0.23.3";
+      ref = "v0.23.4";
     };
 
     llm-agents.url = "github:numtide/llm-agents.nix";
