@@ -399,6 +399,30 @@ def routing_view(root=Path('/run'), policy=None, boot_id=None):
     return result
 
 
+UDP_PROBE_RESULTS = ('verified', 'no-reply', 'error')
+UDP_PROBE_SETTINGS = Path('/etc/proxy-udp-health.json')
+
+
+def udp_probe_binding(root, boot, version, routing, source):
+    if (not boot or not routing.get('routing_consistent') or routing.get('routing_applied') != 'proxy-only'
+            or routing.get('routing_phase') != 'ready' or not routing.get('egress_requested')
+            or source.get('boot_id') != boot or not source.get('snapshot')):
+        return None
+    try:
+        epoch = (root / 'proxy-mode/authorization-epoch').read_text().strip()
+    except FileNotFoundError:
+        epoch = '0'
+    except OSError:
+        return None
+    try:
+        settings = hashlib.sha256(UDP_PROBE_SETTINGS.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    return dict(boot=boot, version=version, epoch=epoch, snapshot=source['snapshot'], settings=settings, **{
+        key: routing[key] for key in ('routing_epoch', 'routing_policy_digest', 'egress_epoch', 'egress_requested')
+    })
+
+
 def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
               verification_maximum=420, boot_id=None, routing_target=None, routing_epoch=None):
     root = Path(root)
@@ -537,13 +561,21 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     udp_declared = health.get('node_udp_supported') if health_current else None
     if type(udp_declared) is not bool:
         udp_declared = None
+    udp = 'unsupported' if udp_declared is False else 'not-probed'
+    if not reasons and target == 'proxy' and routing.get('routing_applied') == 'proxy-only':
+        report = read(directory / 'udp-health.json')
+        binding = udp_probe_binding(root, boot_id, version, routing, source)
+        if (binding is not None and report.get('binding') == binding
+                and report.get('result') in UDP_PROBE_RESULTS
+                and fresh(report.get('monotonic_seconds'), now, 150)):
+            udp = report['result']
     tunnel_health = health.get('ip_tunnel') if health_current and routing.get('routing_transport') == 'wireguard' else None
     return {**routing, "ready": not reasons, "target": target, "policy_version": version,
             'core_mode': core_mode, 'sampled_egress_identity': identity,
             **({'ip_tunnel_health': tunnel_health} if isinstance(tunnel_health, dict) else {}),
             'capabilities': {'dns': ('validated-via-proxy' if routing.get('routing_applied') == 'proxy-only'
                 and health_current and health.get('real_dns_ok') is True else 'pending' if routing.get('routing_requested') == 'proxy-only'
-                else 'policy-selected'), 'udp': 'unsupported' if udp_declared is False else 'not-probed',
+                else 'policy-selected'), 'udp': udp,
                 'udp_declared': udp_declared,
                 'icmp': ('verified-dual-stack' if not reasons and health_current and health.get('ip_tunnel_ok') is True
                          else 'pending') if routing.get('routing_transport') == 'wireguard'

@@ -29,6 +29,7 @@ let
     private6 = "fd42:feed::1";
     public4 = "203.0.113.10";
     public6 = "2001:db8:dead::1";
+    reservedPort = m.ports.coreRealDns;
   };
 
 in
@@ -42,13 +43,13 @@ in
     };
 
     guestPrivateExceptions = [
-      { interface = "waydroid0"; cidr = "100.67.0.1/32"; tcpPorts = [ 18081 ]; udpPorts = [ 18082 ]; }
+      { interface = "waydroid0"; cidr = "100.67.0.1/32"; tcpPorts = [ 18081 m.ports.coreRealDns ]; udpPorts = [ 18082 ]; }
       { interface = "waydroid0"; cidr = "fd42:feed::1/128"; tcpPorts = [ 18081 ]; udpPorts = [ 18082 ]; }
     ];
 
     socketGuestUsers = [ "guestnet" ];
     socketGuestPrivateExceptions = [
-      { user = "guestnet"; interface = "ens1"; cidr = "100.67.0.1/32"; tcpPorts = [ 18081 ]; udpPorts = [ 18082 ]; }
+      { user = "guestnet"; interface = "ens1"; cidr = "100.67.0.1/32"; tcpPorts = [ 18081 m.ports.coreRealDns ]; udpPorts = [ 18082 ]; }
       { user = "guestnet"; interface = "ens1"; cidr = "fd42:feed::1/128"; tcpPorts = [ 18081 ]; udpPorts = [ 18082 ]; }
     ];
   };

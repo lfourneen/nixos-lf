@@ -126,9 +126,7 @@ let
   # Loopback listeners owned by the core, DNS, relay and guest DNS services.
   # A process outside that trusted set that binds one of these can shadow the
   # real listener while it restarts.
-  reservedListenerPorts = (import ./lib/reserved-ports.nix { inherit lib; ports = port; })
-    ++ lib.optional config.my.proxy.runtimeRouting (toString port.sourceRecoveryDns)
-    ++ lib.optional (config.my.proxy.ipTunnel != null) (toString config.my.proxy.ipTunnel.listenPort);
+  reservedListenerPorts = guestPolicy.reservedPorts;
   tailscalePort = config.my.hardening.tailscale.ingressPort;
   reservedSocketBinds = reservedListenerPorts
     ++ lib.optional (tailscalePort != null) "udp:${toString tailscalePort}";

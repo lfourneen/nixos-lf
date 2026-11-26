@@ -116,6 +116,43 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(second['egress_id'], requested)
         self.assertEqual([node['name'] for node in w.load(second['yaml'].encode())['proxies']], ['other'])
 
+        for field, value in (('name', 'renamed'), ('password', 'rotated'), ('server', 'new.example')):
+            candidate = json.loads(json.dumps(document))
+            candidate['proxies'][1][field] = value
+            if field == 'name':
+                candidate['proxy-groups'][0]['proxies'][1] = value
+            with self.subTest(field=field), self.assertRaises(w.Refused) as refused:
+                w.prepare(dict(request, egress_id=requested), lambda *_: json.dumps(candidate).encode(), public)
+            self.assertEqual(str(refused.exception), 'render')
+            self.assertEqual(refused.exception.reason, 'selected egress unavailable')
+
+        def rotated(host, port, *, type):
+            return [(socket.AF_INET, type, 6, '', ('8.8.4.4', port))]
+
+        with self.assertRaises(w.Refused) as refused:
+            w.prepare(dict(request, egress_id=requested), lambda *_: json.dumps(document).encode(), rotated)
+        self.assertEqual(refused.exception.reason, 'selected egress unavailable')
+
+    def test_configured_nat64_addresses_are_not_dialed_or_pinned(self):
+        prefix = '2001:4860:abcd:64::/96'
+        policy = {'lf-private-targets': {'nat64-prefixes': [prefix]}}
+        request = {'registry': {'subscription': {'url': 'https://source.example/sub'}}, 'policy': policy}
+        for address in ('2001:4860:abcd:64::a9fe:a9fe', '2001:4860:abcd:64::c0a8:1',
+                        '2001:4860:abcd:64::808:808'):
+            def translated(*args, **kwargs):
+                return [(socket.AF_INET6, socket.SOCK_STREAM, 6, '', (address, 443, 0, 0))]
+
+            with self.subTest(address=address), patch.object(w.Connection, 'connect') as dial:
+                with self.assertRaises(w.Refused) as refused:
+                    w.prepare(request, resolver=translated)
+                dial.assert_not_called()
+                self.assertEqual(refused.exception.reason, 'destination refused')
+                with self.assertRaisesRegex(w.Refused, 'destination'):
+                    w.pin_servers(json.dumps(DOC).encode(), translated, nat64=[prefix])
+        translation = w.translation_prefixes([prefix])
+        self.assertTrue(w.public_address('8.8.8.8', translation))
+        self.assertTrue(w.public_address('2606:4700:4700::1111', translation))
+
     def test_proxy_only_rewrites_direct_and_reject_without_destroying_rule_data(self):
         original = json.loads(json.dumps(DOC))
         original['rules'] = ['DOMAIN,domestic.example,DIRECT', 'DOMAIN,denied.example,REJECT', 'MATCH,P']

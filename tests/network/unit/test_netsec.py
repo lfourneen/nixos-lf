@@ -44,6 +44,7 @@ MODULE_PATHS = {'alerts': 'system/config/network/firewall/alerts.py',
  'resolved_policy': 'system/config/network/dns/resolved_policy.py',
  'rules': 'system/config/network/firewall/rules.py',
  'state': 'system/config/network/proxy/state.py',
+ 'udp_health': 'system/config/network/proxy/udp_health.py',
  'status': 'home/config/clash/status.py',
  'tailscale_contract': 'system/config/network/tailscale/tailscale_contract.py',
  'tun': 'system/config/network/proxy/tun.py',
@@ -186,7 +187,8 @@ class GuestPolicyTests(unittest.TestCase):
             'privateScopes': ['10.0.0.0/8', '192.168.0.0/16', 'fc00::/7'],
             'sourceScopes': ['10.0.0.0/8', '192.168.0.0/16', 'fc00::/7'],
             'unsafe4': ['0.0.0.0/8', '127.0.0.0/8', '169.254.169.254/32', '198.18.0.0/15'],
-            'unsafe6': ['::/96', '::1/128', 'ff00::/8'], 'reservedPorts': [53, 1056, 7897, 33332]}
+            'unsafe6': ['::/96', '::1/128', 'ff00::/8'], 'reservedPorts': [1056, 1059, 1060, 7897, 33332],
+            'internalTargets': ['10.222.0.0/30', 'fd42:222::/64']}
 
     def test_scoped_roles_cover_all_networks(self):
         guest_policy.validate(self.policy())
@@ -222,7 +224,7 @@ class GuestPolicyTests(unittest.TestCase):
         candidate = self.policy(); candidate['users']['alias'] = 1100
         with self.assertRaises(ValueError): guest_policy.validate(candidate)
         for values in ({'user': 'lfour'}, {'interface': 'lo'}, {'interface': 'Mihomo'},
-                       {'tcpPorts': [7897]}, {'tcpPorts': [53]}, {'cidr': '203.0.113.10/32'}):
+                       {'tcpPorts': [53]}, {'cidr': '203.0.113.10/32'}):
             candidate = self.policy(); candidate['socketExceptions'][0].update(values)
             with self.subTest(values=values), self.assertRaises(ValueError): guest_policy.validate(candidate)
 
@@ -233,6 +235,7 @@ class GuestPolicyTests(unittest.TestCase):
                                      'lfour': [{'startUid': 200000, 'count': 65536}]}
         candidate['socketUsers'][0]['uidRanges'] = candidate['subUidRanges']['guestnet']
         guest_policy.validate(candidate)
+
         for other in ({'startUid': 400100, 'count': 65536}, {'startUid': 400000, 'count': 65536}):
             bad = copy.deepcopy(candidate); bad['subUidRanges']['lfour'] = [other]
             with self.subTest(other=other), self.assertRaises(ValueError): guest_policy.validate(bad)
@@ -240,6 +243,17 @@ class GuestPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError): guest_policy.validate(bad)
         bad = copy.deepcopy(candidate); bad['socketUsers'][0]['uidRanges'] = [{'startUid': 500000, 'count': 65536}]
         with self.assertRaises(ValueError): guest_policy.validate(bad)
+
+    def test_reserved_ports_require_a_remote_guest_destination(self):
+        for key in ('exceptions', 'socketExceptions'):
+            for cidr in ('10.222.0.2/32', 'fd42:222::2/128', '192.168.122.1/32'):
+                candidate = self.policy()
+                candidate[key][0].update(cidr=cidr, tcpPorts=[1059])
+                with self.subTest(key=key, cidr=cidr), self.assertRaises(ValueError):
+                    guest_policy.validate(candidate)
+            candidate = self.policy()
+            candidate[key][0]['tcpPorts'] = [1059]
+            guest_policy.validate(candidate)
 
     def test_delegated_group_ranges_cannot_share_another_role(self):
         candidate = self.policy()
@@ -1270,14 +1284,12 @@ class CoreLoopbackTests(unittest.TestCase):
         broker = module('core_loopback')
         settings = {'ipv6': True, 'strictDns': True,
                     'localTargets': ['127.0.0.0/8', '::1/128'],
-                    'ports': {'dnsmasq': 1054, 'unbound': 1055, 'socketGuestDns': 1056,
-                              'mihomoDns': 1053, 'mihomoMixed': 7897, 'mihomoStrict': 7898,
-                              'mihomoTproxy': 7896, 'gostHttp': 33332, 'gostRedirect': 33333,
-                              'coreDnsTransport': 1057, 'coreDnsBootstrapTransport': 1058,
-                              'coreLoopback': 14661}}
+                    'ports': {'dnsmasq': 1054},
+                    'reservedPorts': [1053, 1054, 1055, 1056, 1057, 1058, 1059, 1060, 1061, 1062,
+                                      7896, 7897, 7898, 14661, 33332, 33333]}
         for version, address in ((4, '127.0.0.1'), (6, '::1')):
             self.assertEqual(broker.target(settings, version, 18098), (address, 18098))
-            for port in (0, 53, 65536, *settings['ports'].values()):
+            for port in (0, 53, 65536, *settings['reservedPorts']):
                 with self.subTest(version=version, port=port), self.assertRaises(ValueError):
                     broker.target(settings, version, port)
             with self.assertRaises(ValueError):
@@ -1288,6 +1300,46 @@ class CoreLoopbackTests(unittest.TestCase):
                                            version, 53), (address, 1054))
         with self.assertRaises(ValueError):
             broker.target(dict(settings, ipv6=False), 6, 18098)
+
+
+class UdpHealthTests(unittest.TestCase):
+    def test_echo_requires_the_exact_nonce(self):
+        udp = module('udp_health')
+        address, port = udp.endpoint({'address': '9.9.9.99', 'port': 1024})
+        nonce = b'a' * 24
+        for response, expected in ((nonce, 'verified'), (nonce + b'x', 'no-reply'), (b'other', 'no-reply')):
+            with patch.object(udp.socket, 'socket') as opened, patch.object(udp.secrets, 'token_bytes', return_value=nonce):
+                stream = opened.return_value.__enter__.return_value
+                stream.recv.return_value = response
+                self.assertEqual(udp.echo(address, port), expected)
+                stream.connect.assert_called_once_with(('9.9.9.99', 1024))
+                stream.send.assert_called_once_with(nonce)
+        with self.assertRaises(ValueError):
+            udp.endpoint({'address': '169.254.169.254', 'port': 1024})
+
+    def test_probe_results_are_bound_to_enabled_endpoint_and_routing(self):
+        state = module('state')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = root / 'enabled.json'
+            settings.write_text('first endpoint')
+            (root / 'proxy-mode').mkdir()
+            epoch = root / 'proxy-mode/authorization-epoch'
+            routing = dict(routing_consistent=True, routing_applied='proxy-only', routing_phase='ready',
+                           egress_requested='a' * 64, egress_epoch=2, routing_epoch=4,
+                           routing_policy_digest='b' * 64)
+            source = dict(boot_id='boot', snapshot='c' * 64)
+            with patch.object(state, 'UDP_PROBE_SETTINGS', settings):
+                first = state.udp_probe_binding(root, 'boot', 1, routing, source)
+                settings.write_text('another endpoint')
+                second = state.udp_probe_binding(root, 'boot', 1, routing, source)
+                self.assertNotEqual(first['settings'], second['settings'])
+                epoch.write_text('changed')
+                self.assertEqual(state.udp_probe_binding(root, 'boot', 1, routing, source)['epoch'], 'changed')
+                self.assertIsNone(state.udp_probe_binding(root, 'boot', 1,
+                    dict(routing, routing_applied='rules'), source))
+                settings.unlink()
+                self.assertIsNone(state.udp_probe_binding(root, 'boot', 1, routing, source))
 
 
 class ListenerTests(unittest.TestCase):

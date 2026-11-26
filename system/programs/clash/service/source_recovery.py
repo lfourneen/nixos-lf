@@ -78,7 +78,7 @@ def install(settings, endpoints, deadline):
     nft(settings, ''.join(commands))
 
 
-def pinned_addresses(worker, registry, resolver, deadline):
+def pinned_addresses(worker, registry, resolver, deadline, translation):
     specs = [registry['subscription'], *registry.get('providers', {}).values()]
     hosts = {worker.endpoint(url)[0] for spec in specs for url in (spec['url'], *spec.get('redirects', []))}
     if len(hosts) > 256:
@@ -88,7 +88,7 @@ def pinned_addresses(worker, registry, resolver, deadline):
         if clock() >= deadline:
             return host, []
         try:
-            return host, worker.public_addresses(resolver, host, 443)
+            return host, worker.public_addresses(resolver, host, 443, translation)
         except (socket.gaierror, worker.Refused):
             # Unused redirect hosts need not resolve. A fetch of an unavailable
             # or invalid answer fails before opening a socket.
@@ -114,7 +114,7 @@ def revoke(settings):
 
 
 @contextmanager
-def open_recovery(settings, worker, registry):
+def open_recovery(settings, worker, registry, nat64=()):
     if not settings:
         raise ValueError('source recovery is unavailable')
     with ExitStack() as cleanup:
@@ -132,7 +132,7 @@ def open_recovery(settings, worker, registry):
             install(settings, dot, deadline)
         control(settings, 'start')
         resolver = worker.real_resolver(settings['resolver'])
-        pinned = pinned_addresses(worker, registry, resolver, deadline)
+        pinned = pinned_addresses(worker, registry, resolver, deadline, worker.translation_prefixes(nat64))
         https = [(address, 443) for addresses in pinned.values() for address in addresses]
         with policy_lock():
             if ACTIVE.read_text() != version or (STATE / 'version').read_text() != version:

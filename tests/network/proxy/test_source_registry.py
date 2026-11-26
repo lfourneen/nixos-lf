@@ -56,6 +56,22 @@ class RegistryTests(unittest.TestCase):
             self.assertFalse(marker.exists())
             self.assertEqual([call.args[1] for call in nft.call_args_list], [recovery.FLUSH] * 2)
 
+    def test_recovery_grants_only_native_destinations(self):
+        recovery = b.load_module('source_recovery', os.environ.get('SOURCE_RECOVERY',
+            Path(worker).with_name('source_recovery.py')))
+        renderer = b.load_module('fixture_worker', worker)
+        addresses = {'translated.example': '2001:4860:abcd:64::a9fe:a9fe',
+                     'native.example': '2606:4700:4700::1111'}
+        registry = {'subscription': {'url': 'https://translated.example/sub',
+                    'redirects': ['https://native.example/sub']}}
+
+        def resolve(host, port, *, type):
+            return [(socket.AF_INET6, type, 6, '', (addresses[host], port, 0, 0))]
+
+        result = recovery.pinned_addresses(renderer, registry, resolve, recovery.clock() + 5,
+            renderer.translation_prefixes(['2001:4860:abcd:64::/96']))
+        self.assertEqual(result, {'translated.example': [], 'native.example': [addresses['native.example']]})
+
     def test_add_confirms_replaces_current_revision_and_verifies_after_publication(self):
         self.register('source-one')
         previous = self.register('source-two')

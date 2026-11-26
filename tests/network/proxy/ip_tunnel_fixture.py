@@ -66,6 +66,8 @@ table inet ip_tunnel_test {
 }
 ''')
     run('systemd-run', '--unit=ip-tunnel-target', *TARGET, sys.executable, __file__, 'origin')
+    run('systemd-run', '--unit=ip-tunnel-udp-health', *TARGET, sys.executable, __file__, 'udp-health')
+    wait(lambda: ':18091' in run(*TARGET, 'ss', '-uln').stdout, timeout=10)
     config = Path('/run/wireguard-test/relay.yaml')
     config.write_text('''mode: rule
 ipv6: true
@@ -148,12 +150,13 @@ def layer_checks():
     ca = json.loads(Path('/etc/netsec-egress.json').read_text())['tls'] + '/ca.pem'
     name = 'tunnel.egress.fixture.example'
 
-    def sample(label, address, port, hostname=name, *, explicit=False, count=1, timeout=2):
+    def sample(label, address, port, hostname=name, *, explicit=False, count=1, timeout=2, system_dns=False):
         actor = () if explicit else APP
         proxy = ('--proxy', 'http://127.0.0.1:33332') if explicit else ()
+        resolution = ('--system-resolution', '--no-echo') if system_dns else ()
         result = run(*actor, sys.executable, BENCHMARK, 'layers', '--name', hostname,
                      '--address', address, '--port', port, '--ca-file', ca,
-                     '--samples', count, '--timeout', timeout, *proxy, timeout=45)
+                     '--samples', count, '--timeout', timeout, *proxy, *resolution, timeout=45)
         (EVIDENCE / (label + '.json')).write_text(result.stdout)
         value = json.loads(result.stdout)
         assert all(item['https']['elapsed_ms'] <= timeout * 1000 + 200 for item in value['samples']), value
@@ -164,6 +167,9 @@ def layer_checks():
             assert item['dns']['outcome'] == 'answer' and item['dns']['answers'][0]['address'] == address, item
             assert item['echo']['outcome'] == 'echo-reply' and item['https']['outcome'] == 'ok', item
             assert list(item['https']['stages']) == ['tcp', 'tls', 'http'], item
+        item, = sample(f'hostname-v{version}', address, 18443, system_dns=True, timeout=4)
+        assert 'dns' not in item and 'echo' not in item, item
+        assert item['https']['outcome'] == 'ok' and list(item['https']['stages']) == ['system_dns', 'tcp', 'tls', 'http'], item
     item, = sample('layers-connect', TARGETS[0], 18443, explicit=True, count=1, timeout=4)
     assert item['https']['outcome'] == 'ok' and item['https']['stages']['connect']['status'] == 200, item
     item, = sample('tls-certificate', TARGETS[0], 18443, 'valid.signed.fixture.example')
@@ -189,12 +195,25 @@ table inet connection_fault {
     print('Recorded DNS outcomes, native and CONNECT stages, TLS failure, RST, blackhole and unreachable targets')
 
 
+def check_udp_health(result):
+    observation = Path('/run/proxy-mode/udp-health.json')
+    previous = observation.stat().st_mtime_ns if observation.exists() else None
+    def observed():
+        run('systemctl', 'reset-failed', 'proxy-udp-health.service', required=False)
+        run('systemctl', 'start', 'proxy-udp-health.service')
+        return observation.exists() and observation.stat().st_mtime_ns != previous
+    wait(observed, timeout=20)
+    verdict = egress.status()
+    assert verdict['ready'] and verdict['capabilities']['udp'] == result, (verdict, observation.read_text())
+
+
 def udp_failures():
     run(*PEER, 'nft', 'insert', 'rule', 'inet', 'ip_tunnel_test', 'relay',
         'iifname', 'wg-fixture', 'udp', 'dport', '18081', 'drop')
     for target, source in zip(TARGETS, EXITS):
         assert application('udp', target, required=False).returncode
         assert json.loads(application('tcp', target).stdout)['peer'] == source
+    check_udp_health('no-reply')
     rules = run(*PEER, 'nft', '-a', 'list', 'chain', 'inet', 'ip_tunnel_test', 'relay').stdout
     handle = next(line.rsplit(' ', 1)[1] for line in rules.splitlines() if 'udp dport 18081 drop' in line)
     run(*PEER, 'nft', 'delete', 'rule', 'inet', 'ip_tunnel_test', 'relay', 'handle', handle)
@@ -206,12 +225,13 @@ def udp_failures():
         assert application('udp', TARGETS[0], required=False).returncode
         assert ping(TARGETS[0]).returncode == 0
         assert json.loads(application('tcp', TARGETS[0]).stdout)['peer'] == EXITS[0]
-    assert egress.status()['capabilities']['udp'] == 'not-probed'
+    assert egress.status()['capabilities']['udp'] == 'no-reply'
     ASSOCIATION_OVERRIDE.unlink()
     run('systemctl', 'stop', RELAY)
     start_relay(shutil.which('mihomo'), '-d', '/run/wireguard-test', '-f', '/run/wireguard-test/relay.yaml')
     wait(lambda: egress.status()['ready'])
     assert json.loads(application('udp', TARGETS[0]).stdout)['peer'] == EXITS[0]
+    check_udp_health('verified')
 
 
 def check():
@@ -232,6 +252,7 @@ def check():
     assert status == 200 and 'TunnelRelay' in json.loads(data)['proxies'], data
     assert verdict['capabilities']['icmp'] == 'verified-dual-stack', verdict
     assert verdict['capabilities']['udp_declared'] is True and verdict['capabilities']['udp'] == 'not-probed', verdict
+    check_udp_health('verified')
     for target, source_address in zip(TARGETS, EXITS):
         ping(target)
         for protocol in ('tcp', 'udp'):
@@ -351,6 +372,13 @@ if sys.argv[1] == 'check':
     check()
 elif sys.argv[1] == 'origin':
     egress.origin()
+elif sys.argv[1] == 'udp-health':
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as listener:
+        listener.bind((TARGETS[0], 18091))
+        while True:
+            payload, peer = listener.recvfrom(64)
+            if peer[0] == EXITS[0]:
+                listener.sendto(payload, peer)
 elif sys.argv[1] == 'probe':
     egress.probe(*sys.argv[2:])
 elif sys.argv[1] == 'faulty-relay':

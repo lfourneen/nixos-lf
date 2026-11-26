@@ -125,7 +125,7 @@ Private grants use `socketGuestPrivateExceptions`.
 They are additional bounds, not an exemption from a separately restricted host policy.
 Port 53 has a forced filtered real-address path.
 
-Loopback proxies, synthetic/known translation destinations and reserved listener ports cannot be granted.
+Loopback proxies and synthetic or known translation destinations cannot be granted. Reserved ports are protected on host addresses and the internal core link. An explicit exception can still authorize a remote private service on the same port.
 Per-account conntrack identities cut replies after grant revocation and in C.
 These identities must remain declared while revoking grants.
 Ordinary loopback IPC and desktop-owned backends retain the host trust class.

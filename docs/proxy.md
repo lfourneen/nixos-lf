@@ -118,6 +118,7 @@ See [source registration](operations.md#source-registration).
 Source downloads and node-address pinning use the filtered real-address gateway on `127.0.0.1:1056`, independently of B's fake-IP answers.
 Only the dedicated `clash-fetch` account and root can query that port directly.
 The worker still rejects non-public answers and verifies HTTPS certificates.
+Subscription downloads, pinned node endpoints and C recovery require native addresses. They refuse synthesized addresses under the configured `nat64Prefixes`.
 A usable DNS family can be used when the other family is unavailable.
 Downloads validate the entire address set before connecting and retry public addresses within one deadline, preserving HTTPS hostname and certificate checks.
 A controlled source can pin up to two alternate public addresses for a TCP-backed node. A failed dial or a 250 ms delay starts the next attempt, with at most two dials active per race. TLS retains the original node identity and certificate policy. Fixed exits can use the additional addresses when the operator selects the identity that includes them. Existing single-address grants, the WireGuard relay and native UDP or QUIC connections continue to use their fixed endpoint.
@@ -443,7 +444,9 @@ If a source changes the chosen node's address, credentials or transport, the old
 A system generation can replace the active routing policy or its health artifacts. If the active selection belongs to a previous generation, the proxy stays blocked. Run `clash-rules` to revoke the old selection and start a new rules transaction. Then use `clash-egress` to select a strict exit for the new policy.
 
 `proxy-status --json` reports `capabilities.egress="fixed-leaf"` for the strict selection.
-`capabilities.udp_declared` reports the selected adapter's UDP flag when available. UDP is `unsupported` when the adapter lacks it. Continuous UDP coverage otherwise remains `not-probed`. IPv6 targets remain node-dependent, and unsupported requests cannot use another leaf or DIRECT.
+`capabilities.udp_declared` reports the selected adapter's UDP flag when available. By default UDP is `unsupported` when the adapter lacks it and `not-probed` otherwise. IPv6 targets remain node-dependent, and unsupported requests cannot use another leaf or DIRECT.
+
+For a host that needs a UDP check, set `my.proxy.udpHealth.address` and `my.proxy.udpHealth.port` to a public literal address and port of an approved UDP echo server. In healthy transparent Proxy-only, the timer sends one nonce as an ordinary desktop socket every two minutes. `capabilities.udp` reports `verified`, `no-reply` or `error` for the current exit. The verdict expires after 150 seconds and is advisory. It has no role in the application lease, automatic refresh or exit selection.
 `capabilities.remote_nat="not-measured"` keeps the remote boundary explicit: one node can still use different NAT addresses for TCP/UDP or destinations.
 A single NAT guarantee requires independent target observations. IPv4 and IPv6 may have separate declared exit addresses.
 

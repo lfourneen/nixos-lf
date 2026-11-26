@@ -27,6 +27,12 @@ let
       ++ [ topology.subnet4 topology.subnet6 ];
 
     ports = m.ports;
+    reservedPorts = map lib.toInt (import ../lib/reserved-ports.nix {
+      inherit lib;
+      inherit (m) ports;
+      sourceRecovery = p.runtimeRouting;
+      extra = lib.optional (p.ipTunnel != null) p.ipTunnel.listenPort;
+    });
     uplinks = [ m.wired.name m.wireless.name ];
 
     magicDns = if config.services.tailscale.enable && config.my.hardening.tailscale.magicDns

@@ -130,15 +130,29 @@ class Connection(http.client.HTTPSConnection):
             raise
 
 
-def public_address(value):
-    ip = ipaddress.ip_address(value.split('%')[0])
+NON_NATIVE_PREFIXES = tuple(map(ipaddress.IPv6Network, (
+    '64:ff9b::/96', '64:ff9b:1::/48', '2002::/16', '2001::/32',
+)))
+
+
+def translation_prefixes(values):
+    prefixes = tuple(ipaddress.IPv6Network(value) for value in values)
+    if any(prefix.prefixlen not in (32, 40, 48, 56, 64, 96) for prefix in prefixes):
+        raise Refused('invalid NAT64 prefix')
+    return prefixes
+
+
+def public_address(value, translation=()):
+    if not isinstance(value, str) or '%' in value:
+        return False
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        return False
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
     # Fail closed on translation/tunnelling prefixes, including embedded IPv4.
-    return ip.is_global and not ip.is_multicast and not any(ip in net for net in (
-        ipaddress.ip_network('64:ff9b::/96'), ipaddress.ip_network('64:ff9b:1::/48'),
-        ipaddress.ip_network('2002::/16'), ipaddress.ip_network('2001::/32'))
-        if ip.version == net.version)
+    return ip.is_global and not ip.is_multicast and not any(ip in net for net in NON_NATIVE_PREFIXES + translation)
 
 
 def real_resolver(settings):
@@ -188,9 +202,9 @@ def real_resolver(settings):
     return lookup
 
 
-def public_addresses(resolver, host, port):
+def public_addresses(resolver, host, port, translation=()):
     values = {item[4][0] for item in resolver(host, port, type=socket.SOCK_STREAM)}
-    if not values or not all(public_address(ip) for ip in values):
+    if not values or not all(public_address(ip, translation) for ip in values):
         raise Refused('destination')
     # Prefer IPv4 when both are present; keep IPv6-only sources supported.
     # The old lexical ordering could select an unreachable IPv6 address first.
@@ -198,7 +212,7 @@ def public_addresses(resolver, host, port):
                                            int(ipaddress.ip_address(value))))
 
 
-def fetch(spec, deadline, budget, resolver=socket.getaddrinfo, connection=Connection):
+def fetch(spec, deadline, budget, resolver=socket.getaddrinfo, connection=Connection, *, translation=()):
     url = spec['url']
     approved = {spec['url'], *spec.get('redirects', [])}
     agent = spec.get('user-agent', 'clash.meta')
@@ -214,7 +228,7 @@ def fetch(spec, deadline, budget, resolver=socket.getaddrinfo, connection=Connec
     context = ssl.create_default_context()
     for _ in range(5):
         host, port, path, query = endpoint(url)
-        addresses = public_addresses(resolver, host, port)
+        addresses = public_addresses(resolver, host, port, translation)
         response = conn = None
         failure = None
         for index, address in enumerate(addresses):
@@ -667,7 +681,7 @@ def pin_servers(config, resolver=socket.getaddrinfo, sanitize_insecure=False, co
                 allow_alternates=True):
     document = load(config)
     nodes, unresolved, loopback, excluded = [], [], [], []
-    translation = [ipaddress.IPv6Network(prefix) for prefix in nat64]
+    translation = translation_prefixes(nat64)
     for node in document['proxies']:
         if node.get('type') not in ('ss', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'http', 'socks5', 'anytls'):
             raise Refused('unsupported node protocol')
@@ -686,13 +700,10 @@ def pin_servers(config, resolver=socket.getaddrinfo, sanitize_insecure=False, co
             loopback.append(node.get('name'))
             continue
         try:
-            addresses = public_addresses(resolver, server, port)
+            addresses = public_addresses(resolver, server, port, translation)
         except OSError:
             unresolved.append(node.get('name'))
             continue
-        if any('%' in address or any(ipaddress.ip_address(address) in prefix for prefix in translation)
-                for address in addresses):
-            raise Refused('destination')
         normalized = []
         for address in map(ipaddress.ip_address, addresses):
             if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
@@ -741,13 +752,17 @@ def step(phase, function, *args, **kwargs):
 
 def prepare(request, download=None, resolver=socket.getaddrinfo):
     registry, policy = request['registry'], request['policy']
+    targets = policy.get('lf-private-targets', {})
+    nat64 = targets.get('nat64-prefixes', ())
     if download is None:
         pinned = request.get('pinned_downloads')
+        translation = translation_prefixes(nat64)
         def download_resolver(host, port, *, type):
             return [(0, type, 0, '', (address, port)) for address in pinned.get(host, ())]
 
         def download(spec, deadline, budget):
-            return fetch(spec, deadline, budget, resolver=resolver if pinned is None else download_resolver)
+            return fetch(spec, deadline, budget, resolver=resolver if pinned is None else download_resolver,
+                         translation=translation)
     deadline, budget = time.monotonic() + 40, [TOTAL]
     data = step('fetch', download, registry['subscription'], deadline, budget)
     document = step('parse', load, data)
@@ -764,10 +779,9 @@ def prepare(request, download=None, resolver=socket.getaddrinfo):
     source = step('render', normalize, document, payloads,
                   policy.get('lf-private-targets', {}).get('delay-test-url'))
     drop_counts = {}
-    targets = policy.get('lf-private-targets', {})
     pinned_config, _ = step('pin-addresses', pin_servers, yaml.safe_dump(source).encode(),
                             resolver, request.get('sanitize_insecure') is True, drop_counts,
-                            targets.get('nat64-prefixes', ()),
+                            nat64,
                             targets.get('require-protected-node-transport') is True)
     pinned = load(pinned_config)['proxies']
     retained = {node['name'] for node in pinned}

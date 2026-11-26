@@ -20,6 +20,24 @@ let
 
   protected4 = lib.unique (private4 ++ unsafe4);
   protected6 = lib.unique (private6 ++ unsafe6);
+  reservedPorts = import ../lib/reserved-ports.nix {
+    inherit lib;
+    inherit (m) ports;
+    sourceRecovery = p.runtimeRouting;
+    extra = lib.optional (p.ipTunnel != null) p.ipTunnel.listenPort;
+  };
+  internalTargets = lib.optionals p.coreNetns [ p.coreTopology.subnet4 p.coreTopology.subnet6 ];
+  protectedPorts = ''meta l4proto { tcp, udp } th dport { ${join reservedPorts} } counter drop'';
+  protectGuestTargets = actor: ''
+    ${actor} fib daddr type local ${protectedPorts}
+    ${lib.concatMapStrings (cidr: ''${actor} ${family cidr} daddr ${cidr} ${protectedPorts}
+    '') internalTargets}
+  '';
+  protectedReplies = ''
+    fib saddr type local ct protocol { tcp, udp } ct original proto-dst { ${join reservedPorts} } counter drop
+    ${lib.concatMapStrings (cidr: ''ct original ${family cidr} daddr ${cidr} ct protocol { tcp, udp } ct original proto-dst { ${join reservedPorts} } counter drop
+    '') internalTargets}
+  '';
   uidOf = name: config.users.users.${name}.uid or null;
 
   socketActors = map (name: let
@@ -96,6 +114,7 @@ let
       ${dhcp n "accept"}
       ip6 saddr { ::, fe80::/10${lib.optionalString (n.source6 != [ ]) ", ${join n.source6}"} } ${ndp} accept
       ${sourceCheck n}
+      ${protectGuestTargets ""}
       ${gatewayRules n "return"}
       # A live B-only TPROXY grant marks this routing identity at -201.
       ip daddr ${p.fakeIpNet} meta mark ${tproxyMark} meta l4proto { tcp, udp } accept
@@ -168,7 +187,7 @@ let
 
 in
 {
-  inherit known networks socketUids socketOwners socketMarks private4 private6 unsafe4 unsafe6 protected4 protected6;
+  inherit known networks socketUids socketOwners socketMarks private4 private6 unsafe4 unsafe6 protected4 protected6 reservedPorts;
 
   blockedReplies = lib.concatMapStrings (n: lib.concatMapStrings (six: let
     sources = if six then n.source6 else n.source4;
@@ -201,15 +220,14 @@ in
     sourceScopes = lib.filter (cidr: cidr != "169.254.0.0/16") m.privateV4 ++ m.ulaV6;
     inherit unsafe4 unsafe6;
 
-    reservedPorts = [ 53 m.ports.mihomoMixed m.ports.mihomoDns m.ports.dnsmasq m.ports.unbound
-      m.ports.socketGuestDns m.ports.coreDnsTransport m.ports.coreDnsBootstrapTransport
-      m.ports.mihomoTproxy m.ports.gostHttp m.ports.gostRedirect
-      m.ports.unboundInfrastructure m.ports.coreInfrastructureDns ];
+    reservedPorts = map lib.toInt reservedPorts;
+    inherit internalTargets;
   };
 
   nft = rules + ''
     ${lib.concatMapStrings (n: ''
     chain lf_guest_host_reply_${toString n.index} {
+      ${protectedReplies}
       ${hostReplyRules n}
       # Current mode guards govern public TPROXY replies before core recovery.
       ct original ip daddr != { ${join protected4} } return
@@ -254,6 +272,7 @@ in
       type filter hook output priority -202; policy accept;
       # Every ordinary :53 query is forced to the filtered real-address stub.
       meta skuid ${socketOwners} meta l4proto { tcp, udp } th dport 53 accept
+      ${protectGuestTargets "meta skuid ${socketOwners}"}
       meta skuid ${socketOwners} ip daddr { ${join protected4} } jump lf_socket_guest_private
       meta skuid ${socketOwners} ip6 daddr { ${join protected6} } jump lf_socket_guest_private
     }
@@ -284,6 +303,7 @@ in
     chain lf_socket_guest_reply_${toString uid} {
       ct status dnat ct original proto-dst 53 ct reply ip saddr 127.0.0.1 ct reply proto-src ${toString m.ports.socketGuestDns} return
       ct status dnat ct original proto-dst 53 ct reply ip6 saddr ::1 ct reply proto-src ${toString m.ports.socketGuestDns} return
+      ${protectedReplies}
       ${unsafe (f: "ct original ${f} daddr")}
       ${socketReplyGrants uid}
       ct original ip daddr { ${join protected4} } counter drop

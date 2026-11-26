@@ -140,12 +140,12 @@ def serve():
                 else:
                     connection.sendall(request)
 
-    def tcp_server(family, address):
+    def tcp_server(family, address, port):
         listener = socket.socket(family, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if family == socket.AF_INET6:
             listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-        listener.bind((address, 18081)); listener.listen()
+        listener.bind((address, port)); listener.listen()
         while True:
             connection, _ = listener.accept()
             threading.Thread(target=tcp_client, args=(connection,), daemon=True).start()
@@ -164,7 +164,10 @@ def serve():
                     stream.sendto(request, peer)
 
     for family, address in ((socket.AF_INET, '0.0.0.0'), (socket.AF_INET6, '::')):
-        threading.Thread(target=tcp_server, args=(family, address), daemon=True).start()
+        threading.Thread(target=tcp_server, args=(family, address, 18081), daemon=True).start()
+    if outside:
+        threading.Thread(target=tcp_server, args=(socket.AF_INET, config['private4'], config['reservedPort']),
+                         daemon=True).start()
     for address in addresses:
         threading.Thread(target=udp_server, args=(address,), daemon=True).start()
     signal('outside' if outside else 'host', 'server')
@@ -352,6 +355,14 @@ def stale_dns():
 def direct():
     config = json.loads(POLICY.read_text())
     run(config['listenerCheck'], 'socket-guest-dns')
+    port = config['reservedPort']
+    ns('waydroid0', config['python'], SCRIPT, 'probe', config['private4'], port, 'tcp', 'yes')
+    actor(config['python'], SCRIPT, 'probe', config['private4'], port, 'tcp', 'yes')
+    index = next(i for i, role in enumerate(config['networks']) if role['interface'] == 'waydroid0')
+    chain = f'lf_guest_from_{index}'
+    before = counter(chain)
+    ns('waydroid0', config['python'], SCRIPT, 'probe', '192.168.240.1', port, 'tcp', 'no')
+    assert counter(chain) > before
     actor(config['python'], SCRIPT, 'dns-test')
     for index, role in enumerate(config['networks']):
         iface = role['interface']; device = 'gclient'+str(index)
@@ -537,6 +548,7 @@ def proxy():
     c_backend = start_backend('rootlesskit', 'guestnet', 'c-rootless', holds=entries)
     wait(lambda: (ROOT/(label+'.ready')).exists() and (ROOT/'c-socket.ready').exists(), 30)
     policy('blocked')
+    actor(config['python'], SCRIPT, 'probe', config['private4'], config['reservedPort'], 'tcp', 'no')
     for name in (label, 'c-socket'): signal(name, 'after'); signal(name, 'push')
     wait(lambda: (ROOT/(label+'.blocked')).exists() and (ROOT/'c-socket.blocked').exists(), 10)
     complete(c_backend)

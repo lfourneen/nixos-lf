@@ -29,11 +29,8 @@ def target(s, version, port):
         raise ValueError('invalid localhost selector')
     if port == 53 and not s['strictDns']:
         return address, p['dnsmasq']
-    reserved = {53, p['mihomoMixed'], p['mihomoStrict'], p['mihomoDns'], p['mihomoTproxy'],
-                p['gostHttp'], p['gostRedirect'], p['dnsmasq'], p['unbound'],
-                p['socketGuestDns'], p['coreDnsTransport'], p['coreDnsBootstrapTransport'], p['coreLoopback']}
-    if port in reserved or not any(ipaddress.ip_address(address) in ipaddress.ip_network(cidr)
-                                   for cidr in s['localTargets']):
+    if (port == 53 or port in s['reservedPorts']
+            or not any(ipaddress.ip_address(address) in ipaddress.ip_network(cidr) for cidr in s['localTargets'])):
         raise ValueError('localhost selector not authorized')
     return address, port
 

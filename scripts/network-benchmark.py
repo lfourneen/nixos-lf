@@ -160,7 +160,7 @@ def authority(address, port):
     return f'{host}:{port}'
 
 
-def https_probe(name, address, port, context, timeout, proxy=None):
+def https_probe(name, address, port, context, timeout, proxy=None, system_resolution=False):
     stages = {}
     current = None
     started = time.monotonic()
@@ -180,6 +180,11 @@ def https_probe(name, address, port, context, timeout, proxy=None):
     try:
         signal.setitimer(signal.ITIMER_REAL, timeout)
         with ExitStack() as stack:
+            if system_resolution:
+                with stage('system_dns'):
+                    family = socket.AF_INET if address.version == 4 else socket.AF_INET6
+                    answers = socket.getaddrinfo(name, port, family, socket.SOCK_STREAM)
+                    address = ipaddress.ip_address(answers[0][4][0])
             with stage('tcp'):
                 endpoint = (proxy.hostname, proxy.port or 80) if proxy else (str(address), port)
                 stream = stack.enter_context(socket.create_connection(endpoint, timeout=timeout))
@@ -226,6 +231,8 @@ def measure_layers(args):
     if proxy and (proxy.scheme != 'http' or not proxy.hostname or proxy.username is not None
                   or proxy.path not in ('', '/') or proxy.query or proxy.fragment):
         raise ValueError('expected an HTTP proxy without credentials')
+    if args.system_resolution and (proxy or args.resolver or args.dns_port != 53):
+        raise ValueError('system resolution requires the native socket path and the system resolver')
     context = ssl.create_default_context(cafile=args.ca_file)
     record = 'A' if args.address.version == 4 else 'AAAA'
     samples = []
@@ -236,18 +243,22 @@ def measure_layers(args):
             timings.setdefault(phase, {}).setdefault(observation['outcome'], []).append(observation[field] / 1000)
 
     for _ in range(args.samples):
-        dns = dns_probe(name, record, args.timeout, args.resolver, args.dns_port)
-        echo = echo_probe(args.address, args.timeout)
-        https = https_probe(name, args.address, args.port, context, args.timeout, proxy)
-        samples.append({'dns': dns, 'echo': echo, 'https': https})
-        collect('dns', dns)
-        collect('echo_wait', echo)
-        collect('echo_rtt', echo, 'rtt_ms')
+        sample = {}
+        if not args.system_resolution:
+            sample['dns'] = dns_probe(name, record, args.timeout, args.resolver, args.dns_port)
+            collect('dns', sample['dns'])
+        if not args.no_echo:
+            sample['echo'] = echo_probe(args.address, args.timeout)
+            collect('echo_wait', sample['echo'])
+            collect('echo_rtt', sample['echo'], 'rtt_ms')
+        https = https_probe(name, args.address, args.port, context, args.timeout, proxy, args.system_resolution)
+        samples.append(dict(sample, https=https))
         collect('https_total', https)
         for phase, observation in https['stages'].items():
             collect(phase, observation)
     return {'schema': 1, 'name': name, 'address': str(args.address), 'port': args.port,
             'path': 'http-connect' if proxy else 'native-socket', 'timeout_seconds': args.timeout,
+            **({'hostname_resolution': 'system'} if args.system_resolution else {}),
             'samples': samples, 'timings': {
                 phase: {outcome: distribution(values) for outcome, values in groups.items()}
                 for phase, groups in timings.items()}}
@@ -271,6 +282,9 @@ def main():
     layers.add_argument('--ca-file')
     layers.add_argument('--resolver', type=ipaddress.ip_address)
     layers.add_argument('--dns-port', type=int, default=53)
+    layers.add_argument('--system-resolution', action='store_true',
+                        help='Resolve the HTTP hostname through the application resolver, using the address family of --address')
+    layers.add_argument('--no-echo', action='store_true', help='Skip the ICMP comparison')
     layers.add_argument('--samples', type=int, choices=range(1, 101), default=5)
     layers.add_argument('--timeout', type=int, choices=range(1, 31), default=5)
     snapshot = commands.add_parser('snapshot')

@@ -64,6 +64,7 @@ pkgs.testers.runNixOSTest {
       ../../../system/config/network/network.nix
       ../../../system/config/network/dns/blocklist.nix
       ../../../system/config/network/proxy/coordinator.nix
+      ../../../system/config/network/proxy/udp-health.nix
       ../../../system/config/network/dns/upstream.nix
       ../../../system/config/network/firewall/alert.nix
       ../../../system/config/network/firewall/verify.nix
@@ -115,6 +116,8 @@ pkgs.testers.runNixOSTest {
     my.proxy.runtimeRouting = routing;
     my.proxy.startupRecoveryFetch = recoveryOnly;
     my.proxy.transparentApplications = ipTunnel;
+    my.proxy.udpHealth = lib.mkIf ipTunnel { address = "9.9.9.99"; port = 18091; };
+    systemd.timers.proxy-udp-health = lib.mkIf ipTunnel { timerConfig.OnActiveSec = lib.mkForce "30min"; };
 
     my.proxy.ipTunnel = lib.mkIf ipTunnel {
       endpointAddress = "1.1.1.1";

@@ -498,7 +498,8 @@ def refresh_generation(settings, root):
         if settings.get('_recover'):
             options = settings['recovery']
             worker = load_module('source_recovery_worker', settings['worker'])
-            recovery = load_module('source_recovery', options['module']).open_recovery(options, worker, registry)
+            nat64 = request['policy'].get('lf-private-targets', {}).get('nat64-prefixes', ())
+            recovery = load_module('source_recovery', options['module']).open_recovery(options, worker, registry, nat64)
             request['resolver'] = options['resolver']
         with recovery as pinned, tempfile.TemporaryFile() as output:
             if pinned is not None:
@@ -656,7 +657,10 @@ def local_source(settings, root, target):
             raise ValueError('ambiguous probe rule prefix')
         base['rules'] = rules[len(prefix):]
         source_data = json.dumps(base, sort_keys=True, ensure_ascii=False).encode()
-    if not base.get('proxies') or any(not worker.public_address(node.get('server', '')) for node in base['proxies']):
+    policy = json.loads(Path(settings['policy']).read_bytes())
+    translation = worker.translation_prefixes(policy.get('lf-private-targets', {}).get('nat64-prefixes', ()))
+    if not base.get('proxies') or any(not worker.public_address(address, translation)
+            for node in base['proxies'] for address in [node.get('server'), *node.get('lf-node-alternates', [])]):
         raise ValueError('source requires pinned public endpoints')
     return worker, base, source_data, source, old_manifest
 

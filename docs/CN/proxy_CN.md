@@ -112,6 +112,7 @@ B 中下载成功会按候选摘要排队应用。如果导入或回滚正在进
 来源下载和节点地址固定使用 `127.0.0.1:1056` 的过滤后真实地址解析器，不受 B 模式 fake-IP 答案影响。
 只有专用 `clash-fetch` 账户和 root 可以直接查询该端口。
 Worker 仍拒绝非公网答案，并验证 HTTPS 证书。
+订阅下载、固定节点端点和 C 中的恢复均要求原生地址，并拒绝配置在 `nat64Prefixes` 下的合成地址。
 一个地址家族不可用时，可以使用另一个家族的有效答案。
 下载先检查完整地址集合，再在同一截止时间内重试公网地址，保留 HTTPS 主机名和证书验证。
 受控来源可为使用 TCP 传输的节点保留最多两个备用公网地址。首次拨号失败或超过 250 毫秒时，可以尝试下一地址，同一拨号最多同时尝试两个。TLS 仍按原节点名称和策略验证。已登记的固定出口必须显式选择包含这些地址的节点身份。既有单地址授权、WireGuard relay 和使用原生 UDP 或 QUIC 的连接继续使用固定端点。
@@ -419,7 +420,9 @@ Off/on 及返回 rules 保留本次启动的严格出口选择，重启清除它
 系统重建可能替换当前路由策略或其健康检查产物。如果运行时选择仍属于旧一代系统，代理保持阻断。运行 `clash-rules` 撤销旧选择并启动新的 rules 事务，然后用 `clash-egress` 为新策略选择严格出口。
 
 `proxy-status --json` 为严格选择报告 `capabilities.egress="fixed-leaf"`。
-`capabilities.udp_declared` 显示所选适配器的 UDP 声明，缺少该信息时留空。实际适配器不支持 UDP 时显示 `unsupported`，其余 UDP 的持续探测范围为 `not-probed`。IPv6 目标能力取决于节点，不支持的请求不能转到另一叶子或 DIRECT。
+`capabilities.udp_declared` 显示所选适配器的 UDP 声明，缺少该信息时留空。默认在适配器不支持 UDP 时显示 `unsupported`，其余情况显示 `not-probed`。IPv6 目标能力取决于节点，不支持的请求不能转到另一叶子或 DIRECT。
+
+需要验证 UDP 的主机可将 `my.proxy.udpHealth.address` 和 `my.proxy.udpHealth.port` 设为已批准的公网 UDP 回显端点，地址使用字面 IP。透明 Proxy-only 就绪后，每两分钟以普通桌面进程的身份发送一个随机数据报。`capabilities.udp` 报告当前出口的 `verified`、`no-reply` 或 `error`，结果在 150 秒后到期。这个结果只用于诊断，应用授权租约、自动刷新和选点均独立运行。
 `capabilities.remote_nat="not-measured"` 明确远端边界：同一节点仍可能为 TCP/UDP 或不同目标使用不同 NAT 地址。
 单一 NAT 保证需要独立的目标观测。IPv4 和 IPv6 可以分别声明出口地址。
 

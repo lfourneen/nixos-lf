@@ -38,6 +38,7 @@ def validate(policy):
     unsafe = [network(cidr) for cidr in policy["unsafe4"] + policy["unsafe6"]]
     seen = []
     roles = {}
+    protected_targets = [network(cidr) for cidr in policy['internalTargets']]
     for role in policy["networks"]:
         iface = role["interface"]
         if iface not in interfaces or iface in roles or role["trust"] not in ("trusted", "restricted"):
@@ -56,6 +57,7 @@ def validate(policy):
                 raise ValueError("guest gateway must be inside its source subnet")
             if contained(network(f"{address}/{address.max_prefixlen}"), unsafe):
                 raise ValueError("unsafe guest gateway")
+            protected_targets.append(network(f"{address}/{address.max_prefixlen}"))
         if ports(role, ("hostTcpPorts", "hostUdpPorts")) and not role["gateways"]:
             raise ValueError("guest host service grants require a gateway address")
         roles[iface] = role
@@ -69,6 +71,8 @@ def validate(policy):
         values = ports(entry, ("tcpPorts", "udpPorts"))
         if not values:
             raise ValueError("guest grants require destination ports")
+        if set(values) & set(policy['reservedPorts']) and contained(prefix, protected_targets):
+            raise ValueError("guest grant cannot open a host proxy or DNS listener")
         return values
 
     for entry in policy["exceptions"]:
@@ -119,8 +123,8 @@ def validate(policy):
             raise ValueError("socket grant requires a dedicated actor and exact interface")
         if entry["interface"] in ("lo", policy["tunInterface"]):
             raise ValueError("socket grant cannot use loopback or the proxy TUN")
-        if set(destination(entry)) & set(policy["reservedPorts"]):
-            raise ValueError("socket grant cannot open a proxy or DNS listener")
+        if 53 in destination(entry):
+            raise ValueError("socket guest DNS uses the managed resolver")
 
 
 if __name__ == "__main__":
