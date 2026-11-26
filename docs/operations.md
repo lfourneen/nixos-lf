@@ -178,7 +178,6 @@ This command does not create a recovery generation or alter DNS fallback policy.
 ## Switching modes
 
 Use the Nushell commands `clash-on` and `clash-off`.
-They record privileged intent, manage the GUI/helper lifecycle and wait for coherent state.
 With runtime routing, `clash-on` allows up to 90 seconds per core for DNS and TUN warmup and fresh readiness proof.
 If a restored controlled snapshot repeatedly fails data-plane checks, `clash-on` can try one compatible cached update for the same registration in C.
 This host enables `my.proxy.startupRecoveryFetch`, which allows one scoped download in C when the cache is unavailable. The option defaults to disabled.
@@ -204,8 +203,8 @@ See [routing policy](proxy.md#routing-policy) for the policy boundary.
 `on` opens the single-use configuration-import window and starts the helper.
 The controlled-source host starts the core from its registered candidate.
 Compatibility mode still lets the GUI supply/start it.
-`off` clears authorization and stops the helper.
-The desktop commands also handle GUI processes.
+`off` clears authorization, stops the helper and confirms that the direct firewall and routing policy is active.
+`clash-off` closes the GUI in the background after the switch. Use `proxy-status` to check direct DNS health separately.
 Starting only `clash-verge` in A does not authorize a core.
 
 | Command | Purpose |

@@ -223,27 +223,11 @@ in
     }
 
     # Stop the Clash core and return to Mode A (direct egress).
-    # In service mode the core is owned by the on-demand clash-verge.service
-    # helper, so quitting the GUI does NOT stop it -- stopping the unit does.
     def clash-off [] {
-      print $"(ansi yellow_bold)Stopping the Clash core \(service mode\)...(ansi reset)"
-      let gui = (^${pkgs.python3}/bin/python3 ${../../system/programs/clash/gui/clash-verge-gui.py} --stop | complete)
-      if $gui.exit_code != 0 {
-        print -e $gui.stderr
-        print $"(ansi red_bold)Failed to stop the Clash GUI ✗(ansi reset)"
-        return
-      }
-      let core = (run-status { ^sudo proxy-control off })
-      if $core != 0 {
-        print $"(ansi red_bold)Failed to stop the core ✗(ansi reset)"
-        return
-      }
-      print "Clash core stopped. Waiting for direct DNS and network readiness..."
-      if (proxy-control wait direct | complete).exit_code == 0 {
-        print $"(ansi green_bold)Mode A ready \(direct\) ✓(ansi reset)"
-      } else {
-        proxy-status
-      }
+      ^sudo proxy-control off
+      job spawn {
+        ^${pkgs.python3}/bin/python3 ${../../system/programs/clash/gui/clash-verge-gui.py} --stop
+      } | ignore
     }
 
     # Start the Clash core again (service + GUI) -> Mode B.

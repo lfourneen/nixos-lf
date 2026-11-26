@@ -700,6 +700,27 @@ pkgs.testers.runNixOSTest {
         except Exception:
             print(machine.execute("cat /run/proxy-mode/{state,routing,health,health-observations,profile-refresh,source-fetch}.json; journalctl -u proxy-mode -u clash-verge --no-pager -n 60"))
             raise
+    with subtest("explicit off restores direct egress while the encrypted validator is stalled"):
+        machine.succeed("systemctl stop clash-verge.service")
+        machine.wait_until_succeeds("grep -qx blocked /run/proxy-mode/status")
+        direct_http = "setpriv --reuid=${toString desktop.uid} --clear-groups curl --noproxy '*' -fsS --max-time 3 http://203.0.113.10:8080/ >/dev/null"
+        machine.fail(direct_http)
+        old_pid = int(machine.succeed("systemctl show -p MainPID --value unbound.service"))
+        assert old_pid > 1
+        machine.succeed("systemctl freeze dns-upstream.service; systemctl kill --kill-whom=main --signal=STOP unbound.service")
+        try:
+            machine.succeed("timeout 20 proxy-control off | grep -F 'Mode A active' && grep -qx direct /run/proxy-mode/status")
+            machine.fail("proxy-control status direct --check")
+            machine.succeed(direct_http)
+            direct_version = machine.succeed("jq -r .policy_version /run/proxy-mode/state.json")
+            machine.succeed("timeout 20 proxy-control off | grep -F 'Mode A active'")
+            assert machine.succeed("jq -r .policy_version /run/proxy-mode/state.json") == direct_version
+        finally:
+            machine.succeed("systemctl thaw dns-upstream.service")
+        machine.wait_until_succeeds(f"p=$(systemctl show -p MainPID --value unbound.service) && test $p -gt 1 && test $p -ne {old_pid}", timeout=65)
+        machine.wait_until_succeeds("jq -e '.mode == \"dot\" and .window_until == 0' /run/dns-upstream/state.json", timeout=50)
+        machine.wait_until_succeeds("proxy-control status direct --check | jq -e '.ready and .routing_phase == \"inactive\"'", timeout=20)
+        print(machine.succeed("python3 -u /etc/netsec-assurance.py direct", timeout=30))
     ''}
     machine.reboot()
     machine.wait_for_unit("proxy-mode.service")

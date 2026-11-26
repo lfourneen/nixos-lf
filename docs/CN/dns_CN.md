@@ -68,6 +68,7 @@ Split DNS 和明文回退不经过 Unbound。
 每个上游交换共用五秒截止，覆盖 TLS 握手和完整 DNS 响应。
 
 两个结果分别记录在 `/run/dns-upstream/state.json` 和 `/var/lib/dns-upstream/history.log` 的 `dnssec_probe.local`、`dnssec_probe.transport` 字段。
+在 A 中，若认证 DoT 连续两次可达，而本地验证器超时或只返回无 EDE 的 `SERVFAIL`，后台会重启宿主 Unbound 一次。两次重启至少间隔一分钟，DNS 健康仍按当前策略判定。
 手工调用未指定传输端点时，报告 `scope=validation-only`。
 
 ### 明文恢复与额度

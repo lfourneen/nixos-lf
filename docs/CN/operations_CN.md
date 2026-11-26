@@ -176,7 +176,7 @@ clash-diff
 
 ## 模式切换
 
-使用 Nushell 的 `clash-on`、`clash-off`，它们记录特权意图，管理 GUI/helper 并等待一致状态。
+使用 Nushell 的 `clash-on`、`clash-off` 切换模式。
 启用运行时路由时，`clash-on` 每次启动核心后最多等待 90 秒，以完成 DNS 和 TUN 预热并取得新的就绪证明。
 若恢复的受控快照连续出现数据面故障，`clash-on` 可在 C 中尝试一次同一登记来源的兼容缓存更新。
 本机启用 `my.proxy.startupRecoveryFetch`，允许缓存不可用时在 C 中受限下载一次。此选项默认关闭。
@@ -200,8 +200,8 @@ Proxy-only 需要已接受的固定节点来源。若准备或完整健康检查
 
 底层系统命令为 `sudo proxy-control on`、`sudo proxy-control off`。
 `on` 打开一次性配置导入窗口并启动 helper，受控来源本机由登记候选启动核心，兼容模式仍由 GUI 提供配置并启动核心。
-`off` 清除授权并停止 helper。
-桌面命令额外处理 GUI 进程。
+`off` 清除授权、停止 helper，并确认直连防火墙和路由策略已生效。
+`clash-off` 在切换完成后后台关闭 GUI。直连 DNS 的就绪状态通过 `proxy-status` 查看。
 A 中仅启动 `clash-verge` 不会授权核心。
 
 | 命令 | 用途 |

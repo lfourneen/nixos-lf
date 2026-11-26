@@ -239,6 +239,7 @@ in
         woken=0
         last_ident=""
         hits=0; misses=0; dot_fails=0; dot_grace_rounds=0; ever_secure=0
+        dot_stalls=0; dot_recovery_attempted=0; last_dot_recovery=-60
         prime_rounds=''${NETSEC_DOT_PRIME_ROUNDS:-1}
         history=/var/lib/dns-upstream/history.log
         history_lines=400
@@ -311,12 +312,38 @@ in
             probe_exit=4
           fi
           case "$probe_exit" in
-            0) dot_state=secure; return 0 ;;
+            0) dot_state=secure; dot_stalls=0; dot_recovery_attempted=0; return 0 ;;
             2) dot_state=unavailable ;;
             3) dot_state=validation-error ;;
             *) dot_state=indeterminate ;;
           esac
+          recover_direct_validator
           return 1
+        }
+        recover_direct_validator() {
+          if ! jq -e '.status == "indeterminate" and .transport.status == "reachable"
+              and (.local.detail == "servfail-no-ede" or .local.detail == "local-timeout")' \
+              <<< "$dot_result" >/dev/null; then
+            dot_stalls=0
+            return 0
+          fi
+          dot_stalls=$((dot_stalls + 1))
+          [ "$dot_stalls" -ge 2 ] && [ "$dot_recovery_attempted" = 0 ] || return 0
+          local now
+          now=$(now_mono)
+          [ "$((now - last_dot_recovery))" -ge 60 ] || return 0
+          jq -e --argjson version "$policy_version" '.mode == "direct" and (.policy_version // .version) == $version' \
+            /run/proxy-mode/state.json >/dev/null || return 0
+          if $CLASH_ON; then return 0; fi
+          # Authenticated transport works independently of this validator.
+          # Restart once per outage to discard stale connections and backoff.
+          dot_recovery_attempted=1
+          last_dot_recovery=$now
+          if timeout 3 systemctl restart --no-block unbound.service; then
+            echo 'dns-upstream: restarting the stalled direct validator after reachable DoT probes'
+          else
+            echo 'dns-upstream: could not restart the direct validator' >&2
+          fi
         }
         dns_listener_up() {
           ${config.my.proxy.listenerCheck} core-dns >/dev/null 2>&1
@@ -365,8 +392,32 @@ in
             tail -n "$history_lines" "$history" > "$history.$$" && mv -f "$history.$$" "$history"
           fi
         }
+        publish_servers() {
+          local target="$1" new_conf server split_conf
+          new_conf='server=127.0.0.1#${toString port.unbound}'
+          if [[ "$target" = proxy || "$target" = proxy-priming || "$target" = degraded-proxy ]]; then
+            new_conf="server=127.0.0.1#$proxy_dns_port"
+          elif [ "$target" = split-error ] || [ "$target" = resolver-error ]; then
+            # no-resolv + an empty servers-file disables forwarding. Do not
+            # send unknown enterprise suffixes to a default public resolver.
+            new_conf=""
+          elif [[ "$target" == *plaintext ]]; then
+            new_conf=""
+            for server in $servers; do new_conf="$new_conf"$'\n'"server=$server"; done
+          fi
+          split_conf=$(printf '%s' "$split" | jq -r '.context.interface as $iface | .entries[] | "server=/" + .domain + "/" + .server + "@" + $iface')
+          [ -z "$split_conf" ] || new_conf="$new_conf"$'\n'"$split_conf"
+          if [ "$(jq -r '.policy_version // .version' /run/proxy-mode/state.json)" != "$policy_version" ]; then
+            apply_reason='network policy changed before DNS reload'
+            return 1
+          fi
+          if ! printf '%s\n' "$new_conf" | ${pkgs.python3}/bin/python3 ${./resolved_policy.py} ${resolvedSettings} --publish-servers; then
+            apply_reason='dnsmasq publication failed'
+            return 1
+          fi
+        }
         apply_state() {
-          local target="$1" new_conf pid notify=0
+          local target="$1" notify=0
           # A stale budget file or override cannot reopen strict transport.
           if [ "$allow_plaintext" = 0 ]; then
             window_until=0
@@ -388,35 +439,15 @@ in
               state_reason='mode-a: plaintext allowance exhausted; encrypted resolver only'
             fi
           fi
-          new_conf='server=127.0.0.1#${toString port.unbound}'
-          if [[ "$target" = proxy || "$target" = proxy-priming || "$target" = degraded-proxy ]]; then
-            new_conf="server=127.0.0.1#$proxy_dns_port"
-          elif [ "$target" = split-error ] || [ "$target" = resolver-error ]; then
-            # no-resolv + an empty servers-file disables forwarding. Do not
-            # send unknown enterprise suffixes to a default public resolver.
-            new_conf=""
-          elif [[ "$target" == *plaintext ]]; then
-            new_conf=""
-            for server in $servers; do new_conf="$new_conf"$'\n'"server=$server"; done
-          fi
-          split_conf=$(printf '%s' "$split" | jq -r '.context.interface as $iface | .entries[] | "server=/" + .domain + "/" + .server + "@" + $iface')
-          [ -z "$split_conf" ] || new_conf="$new_conf"$'\n'"$split_conf"
           # Re-check after slow probes: a concurrent on request must never
           # publish a plaintext resolver list after A has ended.
           if [[ "$target" == *plaintext ]] \
              && { [ "$(jq -r '.mode // "unknown"' /run/proxy-mode/state.json 2>/dev/null)" != direct ] || $CLASH_ON; }; then
             target=blocked; until=0
             state_reason='proxy transition: encrypted resolver only'
-            new_conf='server=127.0.0.1#${toString port.unbound}'
+            split='{"entries":[],"context":null}'
           fi
-          if [ "$(jq -r '.policy_version // .version' /run/proxy-mode/state.json)" != "$policy_version" ]; then
-            apply_reason='network policy changed before DNS reload'
-            return 1
-          fi
-          if ! printf '%s\n' "$new_conf" | ${pkgs.python3}/bin/python3 ${./resolved_policy.py} ${resolvedSettings} --publish-servers; then
-            apply_reason='dnsmasq publication failed'
-            return 1
-          fi
+          publish_servers "$target" || return 1
           now=$(now_mono)
           if [ "$until" != 0 ] && [ "$until" -le "$now" ]; then
             state_reason='mode-a: plaintext allowance expired during apply'
@@ -482,6 +513,7 @@ in
           policy_version=$(jq -r '.policy_version // .version // -1' <<< "$policy")
           mode=$(jq -r '.mode // "unknown"' <<< "$policy")
           if [ "$policy_version" != "$previous_version" ]; then hits=0; misses=0; fi
+          if [ "$mode" != direct ]; then dot_stalls=0; dot_recovery_attempted=0; fi
           proxy_dns_port=${toString port.mihomoDns}
           ${lib.optionalString (config.my.proxy.ipTunnel != null) ''
           if [ "$(jq -r '.routing_requested' <<< "$policy")" = proxy-only ]; then
@@ -512,6 +544,12 @@ in
             fi
           elif [ "$mode" = direct ] && ! $CLASH_ON; then
             hits=0; misses=0
+            # Hand DNS back to the local encrypted resolver before probing it.
+            # The eventual verdict still controls readiness and fallback.
+            case "$current" in
+              proxy|proxy-priming|degraded-proxy|pending)
+                if [ "$split_ok" = 1 ]; then publish_servers dot || true; fi ;;
+            esac
             link=$(${pkgs.python3}/bin/python3 ${../identity/link.py} ${linkSettings} 2>/dev/null || echo '{}')
             ident=$(printf '%s' "$link" | jq -r '.identity // "offline"')
             servers=$(printf '%s' "$link" | jq -r '.servers[]?')
@@ -520,6 +558,7 @@ in
             [ -n "$servers" ] || servers=${lib.escapeShellArg transportFallback}
             if [ "$ident" != "$last_ident" ]; then
               last_ident="$ident"; budget_epoch=$(cat /proc/sys/kernel/random/uuid); dot_fails=0; dot_grace_rounds=0; ever_secure=0
+              dot_stalls=0; dot_recovery_attempted=0
               load_budget || exit 1
             fi
             if dot_ok; then

@@ -395,8 +395,8 @@ let
         --argjson routing "$([ -z "''${ROUTING:-}" ] && echo '{}' || "$ROUTING" view)" \
         --argjson lease "''${LEASE_SECONDS:-null}" \
         --argjson revision "$((revision + 1))" --arg updated "$(${pkgs.coreutils}/bin/date -Iseconds)" \
-        '$routing + {mode:$mode,reason:$reason,version:$version,policy_version:$version,revision:$revision,updated_at:$updated,authorization_lease_seconds:$lease}' > /run/proxy-mode/state.json.$$
-      mv -f /run/proxy-mode/state.json.$$ /run/proxy-mode/state.json
+        '$routing + {mode:$mode,reason:$reason,version:$version,policy_version:$version,revision:$revision,updated_at:$updated,authorization_lease_seconds:$lease}' > /run/proxy-mode/state.json.$$ || return 1
+      mv -f /run/proxy-mode/state.json.$$ /run/proxy-mode/state.json || return 1
       [ "''${1:-policy}" != policy ] || request_verify
     }
 
@@ -404,7 +404,6 @@ let
     reason=""           # "no-tun" | "direct-mode" | "node" | "core-gone" | "obs" | ""
     obs_fails=0         # consecutive `obs` / `dns` health failures (3-strike hysteresis)
     fails=0
-    once=0
     changed=1
     nap_pid=""
     interval=2          # start fast; the loop backs off once the state is stable
@@ -421,8 +420,6 @@ let
         echo 5
       fi
     }
-    [ "''${1:-}" = "--once" ] && once=1
-
     log() { echo "proxy-mode: $*" >&2; }
     loud() {
       echo "proxy-mode: $*" >&2
@@ -1057,6 +1054,11 @@ NFT_OFF
         lock_state
         if [ "$1" = --request-direct ]; then intent=direct; else intent=proxy; fi
         atomic_write "$INTENT" "$intent" || exit 1
+        if [ "$intent" = direct ] && [ "$($CAT "$STATUS" 2>/dev/null)" = direct ] \
+           && ! $IS_CLASH_ON && matches direct; then
+          unlock_state
+          exit 0
+        fi
         # Arm C before starting/stopping the core. GUI/start failures leave the
         # requested proxy state protected; off becomes A only after core exit.
         if ! load_complete blocked; then unlock_state; exit 1; fi
@@ -1078,19 +1080,29 @@ NFT_OFF
         request_wake
         exit 0
         ;;
+      --finish-direct)
+        lock_state
+        if [ "$(read_intent)" != direct ] || $IS_CLASH_ON; then unlock_state; exit 1; fi
+        if [ "$($CAT "$STATUS" 2>/dev/null)" != direct ] || ! matches direct; then
+          if ! load_complete direct; then unlock_state; exit 1; fi
+          mode=direct; reason=""
+          if ! publish_state; then unlock_state; exit 1; fi
+        fi
+        unlock_state
+        request_wake
+        exit 0
+        ;;
     esac
 
     ready_sent=0
     while true; do
       woken=0
       pass_verified=0
-      if [ "$ready_sent" = 0 ] && [ "$once" = 0 ] && [ -n "''${NOTIFY_SOCKET:-}" ]; then
+      if [ "$ready_sent" = 0 ] && [ -n "''${NOTIFY_SOCKET:-}" ]; then
         initial_policy
       else
         sync_pass
       fi
-      pass_rc=$?
-      [ "$once" = "1" ] && exit "$pass_rc"
       if [ "$pass_verified" = 1 ]; then
         lock_state
         if [ "$(read_version)" != "$verified_version" ]; then
@@ -1445,8 +1457,8 @@ NFT_OFF
             ''}
           else
             ${modeScript} --request-direct
-            if ! systemctl stop clash-verge.service; then
-              ${modeScript} --request-proxy
+            if ! timeout 12 systemctl stop clash-verge.service && ${isClashOn}; then
+              echo 'Mode A requested. The managed core is still stopping. See proxy-status.' >&2
               exit 1
             fi
             ${lib.optionalString config.my.proxy.runtimeRouting ''
@@ -1478,10 +1490,14 @@ NFT_OFF
               fi
               rm -f /run/clash-verge-rev/forwarder.pid
             fi
-            ${modeScript} --once
+            if ! ${modeScript} --finish-direct; then
+              echo 'Mode A requested, but the direct policy could not be confirmed. See proxy-status.' >&2
+              exit 1
+            fi
+            echo 'Mode A active (direct). Use proxy-status for DNS health.'
           fi
           flock -u 8
-          systemctl start --no-block proxy-net-wake.service
+          systemctl start --no-block proxy-net-wake.service || [ "$1" = off ]
           ;;
         preflight)
           ${if config.programs.clash-verge.enable then ''

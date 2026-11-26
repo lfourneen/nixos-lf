@@ -12,7 +12,7 @@ MODES = {'direct': 'A · Direct', 'proxy': 'B · Proxy', 'blocked': 'C · Protec
 DNS = {'dot': 'Unbound · authenticated DoT', 'proxy': 'Mihomo · managed DNS', 'dot-priming': 'DoT · trust anchor initialization',
        'proxy-priming': 'Mihomo · awaiting DNS confirmation', 'degraded-proxy': 'Mihomo · DNS probes failed',
        'bootstrap-plaintext': 'Plaintext recovery · bootstrap', 'portal-plaintext': 'Plaintext recovery · portal',
-       'degraded-plaintext': 'Plaintext recovery · encrypted upstream unavailable', 'degraded-dot-only': 'Encrypted upstream unavailable',
+       'degraded-plaintext': 'Plaintext recovery · encrypted DNS degraded', 'degraded-dot-only': 'Unbound · encrypted DNS degraded',
        'resolver-error': 'Resolver identity check failed', 'split-error': 'Split DNS configuration error'}
 REASONS = {'node': 'Authorized proxy leaves failed the HTTP probe', 'dns': 'Managed DNS check failed',
            'application': 'System DNS probe failed for an application user', 'tun': 'Transparent path check failed',

@@ -73,6 +73,7 @@ The local query has an eight-second limit.
 Each upstream exchange shares a five-second deadline for TLS and the complete DNS response.
 
 The two results appear as `dnssec_probe.local` and `dnssec_probe.transport` in `/run/dns-upstream/state.json` and `/var/lib/dns-upstream/history.log`.
+In Mode A, two consecutive local timeouts or bare SERVFAIL replies with reachable authenticated DoT trigger one restart of the host validator. Restarts are at least a minute apart, and the resolver's health verdict still depends on the configured DNS policy.
 A manual invocation without transport endpoints reports `scope=validation-only`.
 
 ### Plaintext recovery and allowance
