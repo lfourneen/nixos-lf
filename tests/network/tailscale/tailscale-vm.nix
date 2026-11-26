@@ -329,13 +329,18 @@ pkgs.testers.runNixOSTest {
         for suffix in ("", " --tcp"):
             machine.succeed(probe(address, 53, uid=1000) + suffix + " --expect-prefix managed:")
 
-    # The resolver stays on the tailnet interface in both egress policies.
-    machine.succeed(probe("100.100.100.100", 53, uid=resolve))
+    # The authenticated resolver lease stays on the same tailnet interface.
+    magic = probe("100.100.100.100", 53, uid=resolve)
+    machine.fail(magic)
+    machine.succeed("index=$(cat /sys/class/net/tailscale0/ifindex); nft add element inet lf_filter magic_dns_link \"{ $index timeout 30s }\"")
+    machine.succeed(magic)
     (machine.fail if restricted else machine.succeed)(probe("100.100.100.100", 53, uid=1000))
     machine.succeed("ip route replace 100.100.100.100/32 via 198.51.100.1 dev ens1")
     for suffix in ("", " --tcp"):
-        machine.fail(probe("100.100.100.100", 53, uid=resolve) + suffix)
+        machine.fail(magic + suffix)
     machine.succeed("ip route replace 100.100.100.100/32 dev tailscale0")
+    machine.succeed("nft flush set inet lf_filter magic_dns_link")
+    machine.fail(magic)
 
     # An approved lease is still required for dnsmasq's direct split DNS.
     machine.fail(probe("10.44.0.1", 53, uid=985))

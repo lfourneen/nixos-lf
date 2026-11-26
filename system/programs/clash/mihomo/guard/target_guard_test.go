@@ -59,8 +59,13 @@ func TestDesktopFallbackUsesOnlyFreshSupervisorEvidenceForThisPrimary(t *testing
 func TestMagicDNSFollowsAuthenticatedSuffix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "domain")
 	p := &policy{MagicDNSSuffixFile: path}
+	history := filepath.Join(filepath.Dir(path), "private-suffixes")
+	if err := os.WriteFile(history, []byte("alpha.ts.net\nbeta.ts.net\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	for _, suffix := range []string{"alpha.ts.net", "beta.ts.net"} {
-		if err := os.WriteFile(path, []byte(suffix+"\n"), 0600); err != nil {
+		lease := fmt.Sprintf(`{"suffix":%q,"ifindex":7,"until":%f,"sleep_epoch":"0"}`, suffix, bootSeconds()+30)
+		if err := os.WriteFile(path, []byte(lease), 0600); err != nil {
 			t.Fatal(err)
 		}
 		for _, name := range []string{suffix, "peer." + suffix} {
@@ -79,11 +84,21 @@ func TestMagicDNSFollowsAuthenticatedSuffix(t *testing.T) {
 		t.Fatal("single egress inherited MagicDNS")
 	}
 	p.SingleEgress = false
+	expired := fmt.Sprintf(`{"suffix":"beta.ts.net","ifindex":7,"until":%f,"sleep_epoch":"0"}`, bootSeconds()-1)
+	if err := os.WriteFile(path, []byte(expired), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if p.matchesMagicDNS("peer.beta.ts.net") || !p.privateMagicDNS("peer.beta.ts.net") {
+		t.Fatal("expired suffix must remain private without a wire grant")
+	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 	if p.matchesMagicDNS("peer.beta.ts.net") {
 		t.Fatal("revoked suffix still matched")
+	}
+	if p.privateMagicDNS("peer.other.ts.net") || p.privateMagicDNS("notalpha.ts.net") {
+		t.Fatal("public sibling suffix unexpectedly protected")
 	}
 }
 

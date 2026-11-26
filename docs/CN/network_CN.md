@@ -27,6 +27,9 @@ A 中的门户登录使用临时浏览器。
 Gost 监听于宿主命名空间。
 宿主回环核心入口经私有 veth 转发，核心监听和实际 TUN 位于 `lf-clash-core`。
 本机启用 `my.proxy.transparentApplications`。Niri、Nushell、GSettings、Flatpak、Zed、Nix daemon 和 Hermes 使用原生路径，无须受管应用代理设置。
+
+启用透明代理后，Flatpak 安装服务会清理系统全局覆盖中仍与旧声明一致、且有 nix-flatpak 所有权记录的 Gost 设置。服务日志会列出保留的手改或归属不明的键。用户级和按应用划分的覆盖沿用各自设置。
+Flatpak 迁移到这条路径时，安装服务移除仍与旧声明一致的系统级全局代理变量。其他覆盖项和缺少归属凭据的代理值照常保留。
 应用配置代次后，注销并重新登录，使会话进程使用新的环境变量。
 A 中原生 socket 直连，C 阻断普通外部流量。
 采用兼容默认值 `my.proxy.transparentApplications = false` 的安装仍可让应用使用 `127.0.0.1:33332` 上的 Gost HTTP。
@@ -269,7 +272,7 @@ C 仍保留 loopback IPC、本地 DNS、root/核心恢复和链路维护流量�
 
 ### 加载与恢复
 
-[bootstrap.nix](../../system/config/network/firewall/bootstrap.nix) 在 NetworkManager/dhcpcd 前安装入站和转发基线。
+[bootstrap.nix](../../system/config/network/firewall/bootstrap.nix) 在 NetworkManager 或 dhcpcd 前安装入站、转发和 DNS 防护。
 首次完整装载失败仍保留它。
 静态漂移触发完整修复：直连意图回到 A，代理意图先回 C，再检查健康。
 失败报告 `unenforced`。代理意图下，`inet lf_policy_guard` 逐包检查是否经过必要的主策略链。主表或这些链丢失时会立刻切断新建和已有流量，旧 B 租约尚未到期时也适用。

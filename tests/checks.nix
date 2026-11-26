@@ -123,6 +123,18 @@ let
     in
     {
       openidea-tools = self.nixosConfigurations.lfour.pkgs.openidea.tests.repair-tools;
+      flatpak-proxy-migration = let
+        c = self.nixosConfigurations.lfour.config;
+      in assert pkgs.lib.any (pkgs.lib.hasInfix "migrate-proxy-override.py")
+        c.systemd.services.flatpak-managed-install.serviceConfig.ExecStartPre;
+      pkgs.runCommand "flatpak-proxy-migration" {
+        nativeBuildInputs = [ pkgs.flatpak pkgs.python3 ];
+      } ''
+        export PYTHONDONTWRITEBYTECODE=1
+        python3 ${./system/test_flatpak_proxy_migration.py} ${../system/programs/flatpak/migrate-proxy-override.py}
+        touch "$out"
+      '';
+
       proxy-regressions = pkgs.runCommand "proxy-regressions" {
         nativeBuildInputs = [ pkgs.python3 pkgs.bash pkgs.jq ];
       } ''

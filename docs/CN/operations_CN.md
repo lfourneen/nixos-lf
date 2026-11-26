@@ -257,6 +257,7 @@ Sunshine 已启用，随 `graphical-session.target` 启动，将当前图形会�
 管理界面仅接受本机客户端，默认 tailnet 防火墙也不放行该端口。
 UPnP 关闭。
 串流使用 [options.nix](../../system/config/network/options.nix) 的明确 TCP/UDP 清单。
+清空某个协议的列表可关闭该协议的所有入站服务。移除端口会切断对端已建立的该端口连接。其他获准服务和本机主动发起的连接可以继续使用。
 手机到电脑的 grants 需另在 Tailscale 管理后台配置，仓库不包含该权限策略。
 
 A 与健康 B 允许远控。
@@ -454,7 +455,7 @@ Restart/reload 原子重装所属静态策略和安全模式。
 代理意图先回 C，再由健康门恢复 B。
 主表丢失后，独立守卫继续阻断代理意图下的流量。若要热回滚到引入 `inet lf_policy_guard` 之前的代次，先用 `clash-off` 明确进入 A，清除独立守卫的逐包要求。
 Stop 保留已加载规则。
-`nftables-verify-repair.service` 显式修复并复验，`nftables-recover` 重试失败的 nftables unit。
+`nftables-verify-repair.service` 显式修复并复验。`nftables-recover` 重试失败的 nftables 单元，并恢复首次启动作业因防火墙依赖失败而取消、且已启用的网络和时间服务。
 不要清空全局 ruleset。
 
 ## 防火墙表迁移

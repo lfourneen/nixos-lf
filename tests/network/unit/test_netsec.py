@@ -1034,110 +1034,143 @@ class DnssecProbeTests(unittest.TestCase):
 
 
 class TailnetDnsTests(unittest.TestCase):
-    def test_scoping_drift_logout_and_tailnet_change(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'domain'
-            tailnet = {'enabled': True, 'interface': 'tailscale0', 'cli': 'tailscale',
-                       'resolver': '100.100.100.100', 'domain_file': str(path)}
-            settings = {'ip': 'ip', 'resolvectl': 'resolvectl', 'tailnet': tailnet}
-            values = {'dns': ['9.9.9.9'], 'domain': ['~.'], 'default-route': 'yes'}
-            status = {'BackendState': 'Running', 'CurrentTailnet': {
-                'MagicDNSEnabled': True, 'MagicDNSSuffix': 'tailfixture.ts.net'}}
-            commands = []
-            def run(argv, **kwargs):
-                commands.append(argv)
-                if argv[0] == 'tailscale': output = json.dumps(status)
-                elif argv[0] == 'ip': output = ''
-                elif argv[1] == 'revert':
-                    self.assertFalse(path.exists(), 'stale exception must be revoked first')
-                    values.update(dns=[], domain=[], **{'default-route': 'yes'})
-                    output = ''
-                elif argv[1] == 'flush-caches':
-                    output = ''
-                elif len(argv) > 3:
-                    values[argv[1]] = argv[3] if argv[1] == 'default-route' else list(argv[3:])
-                    output = ''
-                else:
-                    value = values[argv[1]]
-                    output = 'Link 7 (tailscale0): ' + (value if isinstance(value, str) else ' '.join(value))
-                return subprocess.CompletedProcess(argv, 0, output, '')
-            resolved_policy.reconcile_tailnet(settings, run=run)
-            self.assertEqual(values, {'dns': ['100.100.100.100'], 'domain': ['tailfixture.ts.net'], 'default-route': 'no'})
-            resolved_policy.reconcile_tailnet(settings, check=True, run=run)
-            values['domain'] = ['~.']
-            with self.assertRaises(ValueError): resolved_policy.reconcile_tailnet(settings, check=True, run=run)
-            resolved_policy.reconcile_tailnet(settings, run=run)
-            status['CurrentTailnet']['MagicDNSSuffix'] = 'other.ts.net'
-            resolved_policy.reconcile_tailnet(settings, run=run)
-            self.assertEqual(path.read_text().strip(), 'other.ts.net')
-            for suffix in ('ts.net', '~.', 'evil.example', 'a..ts.net', 'a.ts.net;bad'):
-                status['CurrentTailnet']['MagicDNSSuffix'] = suffix
-                resolved_policy.reconcile_tailnet(settings, run=run)
-                self.assertFalse(path.exists())
-                self.assertEqual(values['domain'], [])
-            status['CurrentTailnet']['MagicDNSSuffix'] = 'tailfixture.ts.net'
-            resolved_policy.reconcile_tailnet(settings, run=run)
-            status['BackendState'] = 'Stopped'
-            resolved_policy.reconcile_tailnet(settings, run=run)
-            self.assertFalse(path.exists())
-            self.assertEqual(values['dns'], [])
+    def setUp(self):
+        sandbox = tempfile.TemporaryDirectory()
+        self.addCleanup(sandbox.cleanup)
+        self.root = Path(sandbox.name)
+        self.path = self.root / 'domain'
+        self.history = self.root / 'private-suffixes'
+        self.servers = self.root / 'servers.conf'
+        (self.root / 'base-servers.conf').write_text('server=127.0.0.1#1055\n')
+        self.settings = {'ip': 'ip', 'resolvectl': 'resolvectl', 'systemctl': 'systemctl', 'nft': 'nft',
+                         'policy_lock': str(self.root / 'lock'), 'sleeping': str(self.root / 'sleeping'),
+                         'server_file': str(self.servers), 'tailnet': {
+                             'enabled': True, 'interface': 'tailscale0', 'cli': 'tailscale',
+                             'resolver': '100.100.100.100', 'domain_file': str(self.path),
+                             'history_file': str(self.history)}}
+        self.link = 7
+        self.now = 100
+        self.fail_status = False
+        self.fail_resolved = False
+        self.values = {'dns': ['9.9.9.9'], 'domain': ['~.'], 'default-route': 'yes'}
+        self.status = {'BackendState': 'Running', 'Self': {'UserID': 8}, 'CurrentTailnet': {
+            'StableID': 't123', 'MagicDNSEnabled': True, 'MagicDNSSuffix': 'tailfixture.ts.net'}}
+        self.commands = []
 
-    def test_unreadable_status_keeps_the_last_route(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'domain'
-            tailnet = {'enabled': True, 'interface': 'tailscale0', 'cli': 'tailscale',
-                       'resolver': '100.100.100.100', 'domain_file': str(path)}
-            settings = {'ip': 'ip', 'resolvectl': 'resolvectl', 'tailnet': tailnet}
-            path.write_text('tailfixture.ts.net\n')
-            calls = []
-            def slow(argv, **kwargs):
-                calls.append(argv)
-                if argv[0] == 'tailscale':
-                    self.assertEqual(kwargs.get('timeout'), 5)
-                    raise subprocess.TimeoutExpired('tailscale', 5)
-                return subprocess.CompletedProcess(argv, 0, '', '')
-            # A busy daemon is not a logout: neither the file nor resolved may
-            # change, otherwise the exception flaps and lfguard loses the suffix.
-            resolved_policy.reconcile_tailnet(settings, run=slow)
-            self.assertEqual(path.read_text().strip(), 'tailfixture.ts.net')
-            self.assertEqual([argv for argv in calls if argv[0] == 'resolvectl'], [])
-            with self.assertRaises(ValueError):
-                resolved_policy.reconcile_tailnet(settings, check=True, run=slow)
-            self.assertTrue(path.exists())
-
-    def test_confirmed_change_revokes_core_suffix_while_resolved_is_down(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'domain'
-            settings = {'tun': 'Mihomo', 'ip': 'ip', 'resolvectl': 'resolvectl', 'tailnet': {
-                'enabled': True, 'interface': 'tailscale0', 'cli': 'tailscale',
-                'resolver': '100.100.100.100', 'domain_file': str(path)}}
-            for status in ({'BackendState': 'Stopped'}, {'BackendState': 'Running', 'CurrentTailnet': {
-                    'MagicDNSEnabled': True, 'MagicDNSSuffix': 'next.ts.net'}}):
-                path.write_text('previous.ts.net\n')
-
-                def run(argv, **kwargs):
-                    if argv[0] == 'resolvectl':
-                        raise subprocess.CalledProcessError(1, argv)
-                    return subprocess.CompletedProcess(argv, 0, json.dumps(status), '')
-
-                with self.assertRaises(subprocess.CalledProcessError):
-                    resolved_policy.reconcile(settings, run=run)
-                self.assertFalse(path.exists())
-
-    def test_absent_interface_revokes_the_exception(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'domain'
-            path.write_text('tailfixture.ts.net\n')
-            settings = {'ip': 'ip', 'resolvectl': 'resolvectl', 'tailnet': {
-                'enabled': True, 'interface': 'tailscale0', 'cli': 'tailscale',
-                'resolver': '100.100.100.100', 'domain_file': str(path)}}
-            calls = []
-            def gone(argv, **kwargs):
-                calls.append(argv)
+    def run_tool(self, argv, **kwargs):
+        self.commands.append(list(argv))
+        output = ''
+        if argv[0] == 'tailscale':
+            self.assertEqual(kwargs.get('timeout'), 5)
+            if self.fail_status:
+                raise subprocess.TimeoutExpired('tailscale', 5)
+            output = json.dumps(self.status)
+        elif argv[0] == 'ip':
+            if self.link is None:
                 raise subprocess.CalledProcessError(1, argv)
-            resolved_policy.reconcile_tailnet(settings, run=gone)
-            self.assertFalse(path.exists())
-            self.assertEqual([argv for argv in calls if argv[0] == 'resolvectl'], [])
+            output = json.dumps([{'ifname': 'tailscale0', 'ifindex': self.link}])
+        elif argv[0] == 'nft':
+            self.commands.append(kwargs['input'])
+        elif argv[0] == 'systemctl':
+            if argv[1] == 'show':
+                output = '982'
+        elif argv[0] == 'resolvectl':
+            if self.fail_resolved:
+                raise subprocess.CalledProcessError(1, argv)
+            if argv[1] == 'revert':
+                self.assertFalse(self.path.exists())
+                self.values.update(dns=[], domain=[], **{'default-route': 'yes'})
+            elif len(argv) > 3:
+                if argv[1] == 'domain':
+                    self.assertIn(f'server=/{argv[3]}/', self.servers.read_text())
+                self.values[argv[1]] = argv[3] if argv[1] == 'default-route' else list(argv[3:])
+            elif argv[1] != 'flush-caches':
+                value = self.values[argv[1]]
+                output = 'Link 7 (tailscale0): ' + (value if isinstance(value, str) else ' '.join(value))
+        return subprocess.CompletedProcess(argv, 0, output, '')
+
+    def reconcile(self, check=False):
+        resolved_policy.reconcile_tailnet(self.settings, check=check, run=self.run_tool, clock=lambda: self.now)
+
+    def lease(self):
+        return json.loads(self.path.read_text())
+
+    def test_scoping_drift_logout_and_account_change(self):
+        self.reconcile()
+        self.assertEqual(self.values, {'dns': ['100.100.100.100'], 'domain': ['tailfixture.ts.net'], 'default-route': 'no'})
+        self.reconcile(check=True)
+        self.values['domain'] = ['~.']
+        with self.assertRaises(ValueError):
+            self.reconcile(check=True)
+        self.reconcile()
+        original = self.lease()['scope']
+        self.status['Self']['UserID'] = 9
+        self.commands.clear()
+        self.reconcile()
+        self.assertNotEqual(self.lease()['scope'], original)
+        self.assertIn('flush set inet lf_filter magic_dns_link\n', self.commands)
+        self.status['CurrentTailnet']['MagicDNSSuffix'] = 'next.ts.net'
+        self.reconcile()
+        self.assertEqual(self.lease()['suffix'], 'next.ts.net')
+        self.status['BackendState'] = 'Stopped'
+        self.reconcile()
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.values['dns'], [])
+        self.assertEqual(set(self.history.read_text().splitlines()), {'next.ts.net', 'tailfixture.ts.net'})
+        self.assertIn('server=/tailfixture.ts.net/', self.servers.read_text())
+        self.assertTrue(any(isinstance(argv, list) and argv[:2] == ['systemctl', 'restart'] for argv in self.commands))
+
+    def test_temporary_status_failure_never_renews_authority_and_expires_with_boottime(self):
+        self.reconcile()
+        before = self.lease()
+        self.fail_status = True
+        self.now += 60
+        self.reconcile(check=True)
+        self.reconcile()
+        self.assertEqual(self.lease(), before)
+        self.now = before['until']
+        self.reconcile()
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.values['domain'], [])
+        self.assertIn('server=/tailfixture.ts.net/', self.servers.read_text())
+        self.fail_status = False
+        self.reconcile()
+        self.assertGreater(self.lease()['until'], before['until'])
+
+    def test_link_replacement_and_sleep_reject_unreadable_prior_scope(self):
+        for changed_link in (True, False):
+            with self.subTest(changed_link=changed_link):
+                self.fail_status = False
+                self.reconcile()
+                self.fail_status = True
+                if changed_link:
+                    self.link = 11
+                else:
+                    (self.root / 'authorization-epoch').write_text('1\n')
+                self.reconcile()
+                self.assertFalse(self.path.exists())
+                self.assertEqual(self.values['domain'], [])
+
+    def test_confirmed_switch_revokes_lease_while_resolved_is_unavailable(self):
+        self.reconcile()
+        self.status['CurrentTailnet']['MagicDNSSuffix'] = 'next.ts.net'
+        self.fail_resolved = True
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.reconcile()
+        self.assertFalse(self.path.exists())
+        self.assertIn('server=/tailfixture.ts.net/', self.servers.read_text())
+
+    def test_absent_interface_migrates_legacy_suffix_as_local_only(self):
+        self.path.write_text('tailfixture.ts.net\n')
+        self.link = None
+        self.reconcile()
+        self.assertFalse(self.path.exists())
+        self.assertIn('server=/tailfixture.ts.net/', self.servers.read_text())
+
+    def test_mode_handoff_keeps_local_only_suffix_entries(self):
+        self.reconcile()
+        resolved_policy.publish_mode(self.settings, 'server=127.0.0.1#1053\n', self.run_tool)
+        self.assertEqual(self.servers.read_text(), 'server=127.0.0.1#1053\nserver=/tailfixture.ts.net/\n')
 
 
 class TunTests(unittest.TestCase):

@@ -28,6 +28,9 @@ Gost listens in the host namespace.
 Host loopback access to core ports is translated onto a private veth.
 The core listeners and TUN live in `lf-clash-core`.
 The host enables `my.proxy.transparentApplications`. Niri, Nushell, GSettings, Flatpak, Zed, the Nix daemon and Hermes use the native path without a managed application proxy setting.
+
+On the first Flatpak installation service run after enabling transparency, the service retracts unchanged legacy Gost settings from the global system override when nix-flatpak records their ownership. Edited or unverified keys stay in place and the service journal names them. Flatpak user and per-app overrides are outside this migration.
+When Flatpak switches to this path, the installer removes legacy global proxy variables whose current values still match the previous declaration. Other override settings and proxy values without matching ownership evidence stay in place.
 Log out and back in after applying the generation to replace inherited session variables.
 In A native sockets use direct access. C blocks ordinary external traffic.
 Installations using the compatibility default, `my.proxy.transparentApplications = false`, can still direct clients to Gost HTTP on `127.0.0.1:33332`.
@@ -279,7 +282,7 @@ Loopback IPC, local DNS, root/core recovery and link maintenance remain availabl
 
 ### Loading and recovery
 
-[bootstrap.nix](../system/config/network/firewall/bootstrap.nix) installs ingress/forwarding protection before NetworkManager or dhcpcd.
+[bootstrap.nix](../system/config/network/firewall/bootstrap.nix) installs ingress, forwarding and DNS protection before NetworkManager or dhcpcd.
 A failed first full load retains that baseline.
 Static drift triggers a complete repair into A for direct intent or C for proxy intent, followed by health evaluation.
 A failed repair reports `unenforced`. During proxy intent, `inet lf_policy_guard` requires packets to traverse the relevant main policy chains. Loss of the main table or one of those chains cuts new and established flows even before repair, including while an old B lease is still live.

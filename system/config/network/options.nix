@@ -219,13 +219,18 @@
 
         Defaults expose Sunshine streaming only. Its management UI stays local;
         SSH is disabled. Add management or other service ports deliberately.
+        An empty list closes peer-initiated TCP services. Removed ports also
+        stop carrying existing service flows after the firewall reloads.
       '';
     };
 
     tailnetUdpPorts = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "47998" "47999" "48000" "48002" "48010" ];
-      description = "UDP ports the tailnet may reach on this host.";
+      description = ''
+        UDP ports the tailnet may reach on this host. An empty list closes
+        peer-initiated UDP services, including existing flows on removed ports.
+      '';
     };
 
     wifi.clonedMacAddress = lib.mkOption {

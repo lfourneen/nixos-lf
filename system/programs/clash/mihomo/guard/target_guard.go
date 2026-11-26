@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -87,6 +88,10 @@ func validateDNS(ctx context.Context, p *policy, request *D.Msg) (*D.Msg, error)
 	if p == nil || p.LocalDNSSEC == "" || len(request.Question) != 1 ||
 		p.allows(strings.ToLower(strings.TrimSuffix(request.Question[0].Name, "."))) {
 		return nil, nil
+	}
+	if p.privateMagicDNS(strings.ToLower(strings.TrimSuffix(request.Question[0].Name, "."))) {
+		reply := new(D.Msg)
+		return reply.SetRcode(request, D.RcodeNameError), nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -323,6 +328,9 @@ func CheckDomain(host string) error {
 		return nil
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if p.privateMagicDNS(host) && !p.matchesMagicDNS(host) {
+		return fmt.Errorf("managed DNS filter: private tailnet unavailable")
+	}
 	for host != "" {
 		if blocked, found := p.blockedNames[host]; found {
 			if blocked {
@@ -352,16 +360,66 @@ func (p *policy) matchesMagicDNS(host string) bool {
 	if p.MagicDNSSuffixFile == "" || p.ProxyOnly || p.SingleEgress || !strings.HasSuffix(host, ".ts.net") {
 		return false
 	}
-	// The root-only resolved policy unit revokes this file on a tailnet
-	// change or logout, including when the interface disappears.
+	// Host nftables independently checks the interface instance. The core
+	// runs in its own namespace and cannot use the host's interface index.
 	data, err := os.ReadFile(p.MagicDNSSuffixFile)
-	if err != nil || len(data) > 63+len(".ts.net")+1 {
+	if err != nil || len(data) > 512 {
 		return false
 	}
-	domain := strings.TrimSpace(string(data))
+	var lease struct {
+		Suffix  string  `json:"suffix"`
+		Ifindex int     `json:"ifindex"`
+		Until   float64 `json:"until"`
+		Epoch   string  `json:"sleep_epoch"`
+	}
+	if json.Unmarshal(data, &lease) != nil || lease.Ifindex <= 0 {
+		return false
+	}
+	if _, err := os.Stat("/run/dns-policy/sleeping"); !os.IsNotExist(err) {
+		return false
+	}
+	epoch, err := os.ReadFile("/run/proxy-mode/authorization-epoch")
+	if os.IsNotExist(err) {
+		epoch = []byte("0")
+	} else if err != nil {
+		return false
+	}
+	now := bootSeconds()
+	return now >= 0 && lease.Epoch == strings.TrimSpace(string(epoch)) &&
+		lease.Until > now && lease.Until-now <= 135 && magicDNSMatch(lease.Suffix, host)
+}
+
+func magicDNSMatch(domain, host string) bool {
 	tailnet, ok := strings.CutSuffix(domain, ".ts.net")
 	return ok && !strings.Contains(tailnet, ".") && validDomain(domain) &&
 		D.IsSubDomain(D.Fqdn(domain), D.Fqdn(host))
+}
+
+func (p *policy) privateMagicDNS(host string) bool {
+	if !strings.HasSuffix(host, ".ts.net") {
+		return false
+	}
+	path := p.MagicDNSSuffixFile
+	if path == "" {
+		path = "/run/netsec-tailnet/domain"
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(path), "private-suffixes"))
+	if err == nil && len(data) <= 128*(63+len(".ts.net")+1) {
+		for _, domain := range strings.Fields(string(data)) {
+			if magicDNSMatch(domain, host) {
+				return true
+			}
+		}
+	}
+	// Preserve privacy during a live upgrade from the previous bare suffix.
+	legacy, err := os.ReadFile(path)
+	return err == nil && len(legacy) <= 63+len(".ts.net")+1 &&
+		magicDNSMatch(strings.TrimSpace(string(legacy)), host)
+}
+
+func MagicDNSPrivate(host string) bool {
+	p := current.Load()
+	return p != nil && p.privateMagicDNS(strings.ToLower(strings.TrimSuffix(host, ".")))
 }
 
 func (p *policy) allows(host string) bool {
@@ -554,6 +612,9 @@ func Protect(ctx context.Context, original, dial *C.Metadata,
 	}
 	result.LFLocalTarget = p.allows(host)
 	localValidation := p.LocalDNSSEC != "" && !result.LFLocalTarget
+	if !result.LFLocalTarget && p.privateMagicDNS(host) {
+		return nil, fmt.Errorf("managed target guard: private tailnet unavailable")
+	}
 	if localValidation {
 		lookup = func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return validatedIPsForPolicy(ctx, p, host)

@@ -32,6 +32,7 @@ let
     runtime = "/run/dns-upstream";
     allow_plaintext = config.my.proxy.dnsEncryption != "strict";
     source_recovery = config.my.proxy.runtimeRouting;
+    magic_dns_lease = true;
   });
 
   # Plaintext resolvers used only inside the bounded Mode-A window, and only
@@ -47,6 +48,11 @@ let
   resolvedSettings = pkgs.writeText "resolved-policy.json" (builtins.toJSON {
     ip = "${pkgs.iproute2}/bin/ip";
     resolvectl = "${pkgs.systemd}/bin/resolvectl";
+    systemctl = "${pkgs.systemd}/bin/systemctl";
+    nft = "${pkgs.nftables}/bin/nft";
+    policy_lock = "/run/proxy-mode/lock";
+    sleeping = "/run/dns-policy/sleeping";
+    server_file = "/run/dns-upstream/servers.conf";
     tun = config.my.proxy.tunDev;
     tailnet = {
       enabled = config.services.tailscale.enable && config.my.hardening.tailscale.magicDns;
@@ -54,6 +60,7 @@ let
       interface = config.services.tailscale.interfaceName;
       resolver = m.magicDns;
       domain_file = "/run/netsec-tailnet/domain";
+      history_file = "/run/netsec-tailnet/private-suffixes";
     };
   });
 
@@ -162,7 +169,7 @@ in
 
   systemd.services.dns-resolved-policy = {
     description = "Keep resolved on the managed DNS gateway";
-    after = [ "systemd-resolved.service" ] ++ lib.optional config.services.tailscale.enable "tailscaled-set.service";
+    after = [ "systemd-resolved.service" "nftables.service" ] ++ lib.optional config.services.tailscale.enable "tailscaled-set.service";
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${pkgs.python3}/bin/python3 ${./resolved_policy.py} ${config.my.proxy.resolvedPolicySettings}";
@@ -170,10 +177,11 @@ in
       RuntimeDirectory = "netsec-tailnet";
       RuntimeDirectoryPreserve = true;
       NoNewPrivileges = true;
-      CapabilityBoundingSet = "";
+      CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
       ProtectSystem = "strict";
       ProtectHome = true;
       RestrictAddressFamilies = [ "AF_UNIX" "AF_NETLINK" ];
+      ReadWritePaths = [ "/run/dns-upstream" "/run/proxy-mode" ];
     };
   };
 
@@ -229,8 +237,6 @@ in
         interval=2
         degraded_rounds=0
         woken=0
-        last_conf=""
-        last_pid=""
         last_ident=""
         hits=0; misses=0; dot_fails=0; dot_grace_rounds=0; ever_secure=0
         prime_rounds=''${NETSEC_DOT_PRIME_ROUNDS:-1}
@@ -403,23 +409,13 @@ in
             state_reason='proxy transition: encrypted resolver only'
             new_conf='server=127.0.0.1#${toString port.unbound}'
           fi
-          pid=$(systemctl show -p MainPID --value dnsmasq.service 2>/dev/null || true)
-          if [ "$new_conf" != "$last_conf" ] || [ "$pid" != "$last_pid" ] || [ -z "$pid" ] || [ "$pid" = 0 ]; then
-            if [ "$(jq -r '.policy_version // .version' /run/proxy-mode/state.json)" != "$policy_version" ]; then
-              apply_reason='network policy changed before DNS reload'
-              return 1
-            fi
-            atomic_write "$runtime/servers.conf" "$new_conf" || { apply_reason='cannot write servers.conf'; return 1; }
-            if systemctl is-active --quiet dnsmasq.service; then
-              timeout 8 systemctl reload dnsmasq.service || { apply_reason='dnsmasq reload failed'; return 1; }
-            else
-              timeout 8 systemctl start dnsmasq.service || { apply_reason='dnsmasq start failed'; return 1; }
-            fi
-            systemctl is-active --quiet dnsmasq.service || { apply_reason='dnsmasq is not active'; return 1; }
-            last_pid=$(systemctl show -p MainPID --value dnsmasq.service) || last_pid=""
-            [ -n "$last_pid" ] && [ "$last_pid" != 0 ] || { apply_reason='dnsmasq has no main pid'; return 1; }
-            last_conf="$new_conf"
-            resolvectl flush-caches || true
+          if [ "$(jq -r '.policy_version // .version' /run/proxy-mode/state.json)" != "$policy_version" ]; then
+            apply_reason='network policy changed before DNS reload'
+            return 1
+          fi
+          if ! printf '%s\n' "$new_conf" | ${pkgs.python3}/bin/python3 ${./resolved_policy.py} ${resolvedSettings} --publish-servers; then
+            apply_reason='dnsmasq publication failed'
+            return 1
           fi
           now=$(now_mono)
           if [ "$until" != 0 ] && [ "$until" -le "$now" ]; then
@@ -590,8 +586,7 @@ in
           fi
           previous="$current"
           if ! apply_state "$new_status"; then
-            # Keep last_conf unchanged so the next pass must retry. Do not claim
-            # that a desired server list is already the active resolver state.
+            # Do not claim the desired server list is active until it applies.
             budget interrupt || exit 1
             current=pending
             state_reason="DNS apply failed: $apply_reason; retrying"
@@ -639,6 +634,7 @@ in
     "f /run/dns-policy/split-epoch 0644 root root - 0"
     "d /run/dns-upstream 0755 root root -"
     "f /run/dns-upstream/servers.conf 0644 root root - server=127.0.0.1#${toString port.unbound}"
+    "f /run/dns-upstream/base-servers.conf 0644 root root - server=127.0.0.1#${toString port.unbound}"
   ];
 }
 

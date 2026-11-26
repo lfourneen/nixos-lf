@@ -7,6 +7,16 @@ let
     privateV4 = config.my.machine.privateV4;
     extra = [ "192.168.1.1" "*.local" ];
   };
+  legacyProxy = {
+    HTTP_PROXY = gostHttp;
+    HTTPS_PROXY = gostHttp;
+    http_proxy = gostHttp;
+    https_proxy = gostHttp;
+    NO_PROXY = noProxy;
+  };
+  currentEnvironment = config.services.flatpak.overrides.settings.global.Environment or { };
+  migrationSettings = pkgs.writeText "flatpak-legacy-proxy.json" (builtins.toJSON
+    (lib.filterAttrs (name: _: !builtins.hasAttr name currentEnvironment) legacyProxy));
 
 in
 {
@@ -18,13 +28,7 @@ in
       Environment = {
         GTK_THEME = "Adwaita-dark";
         QT_QPA_PLATFORMTHEME = "gtk3";
-      } // lib.optionalAttrs (!config.my.proxy.transparentApplications) {
-        HTTP_PROXY = "${gostHttp}";
-        HTTPS_PROXY = "${gostHttp}";
-        http_proxy = "${gostHttp}";
-        https_proxy = "${gostHttp}";
-        NO_PROXY = noProxy;
-      };
+      } // lib.optionalAttrs (!config.my.proxy.transparentApplications) legacyProxy;
 
       Context = {
         filesystems = [ "xdg-run/dconf" ];
@@ -67,8 +71,15 @@ in
 
   # Order the declarative installation behind the relay. Root traffic remains subject
   # to the same mark-based kernel policy; A passthrough is an explicit mode.
-  systemd.services.flatpak-managed-install = lib.mkIf (!config.my.proxy.transparentApplications) {
-    wants = [ "gost-relay.service" ];
-    after = [ "gost-relay.service" ];
-  };
+  systemd.services.flatpak-managed-install = lib.mkMerge [
+    (lib.mkIf (!config.my.proxy.transparentApplications) {
+      wants = [ "gost-relay.service" ];
+      after = [ "gost-relay.service" ];
+    })
+    (lib.mkIf config.my.proxy.transparentApplications {
+      serviceConfig.ExecStartPre = lib.mkBefore [
+        "${pkgs.python3}/bin/python3 -I ${./migrate-proxy-override.py} ${migrationSettings}"
+      ];
+    })
+  ];
 }

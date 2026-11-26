@@ -16,21 +16,30 @@ DYNAMIC_CHAINS = {"proxymode_drops", "proxymode_tail", "proxymode_forward",
                   "lf_guard_require_output", "lf_guard_require_input", "lf_guard_require_forward",
                   "lf_guard_require_prerouting"}
 LEASE_SETS = {"dns_plaintext4": 4, "dns_split4": 4, "dns_split6": 6, "b_authorization": None,
-              "source_recovery4": 4, "source_recovery6": 6}
+              "source_recovery4": 4, "source_recovery6": 6, "magic_dns_link": None}
 
 
 def lease_set(obj):
     """Ignore only bounded address leases, never their set/rule definitions."""
     value = dict(obj)
-    for element in value.pop("elem", []):
+    elements = value.pop("elem", [])
+    magic_dns = obj["name"] == "magic_dns_link"
+    if magic_dns and len(elements) > 1:
+        raise ValueError("multiple private DNS lease interfaces")
+    for element in elements:
         data = element.get("elem", {}) if isinstance(element, dict) else {}
         address_value = data.get('val', '')
         # nft may omit an element's timeout when it uses the set default.
         # The complete set definition (including that bounded default) still
         # participates in exact policy comparison.
         timeout, expires = data.get("timeout", obj.get("timeout", 0)), data.get("expires", 0)
-        if not (0 < timeout <= 120000 and 0 <= expires <= timeout):
+        if not (0 < timeout <= (135000 if magic_dns else 120000) and 0 <= expires <= timeout):
             raise ValueError("unbounded authorization lease")
+        if magic_dns:
+            if not (type(address_value) is int and 0 < address_value <= 2**31 - 1
+                    or isinstance(address_value, str) and re.fullmatch(r'[a-zA-Z0-9_.:-]{1,15}', address_value)):
+                raise ValueError("invalid private DNS lease interface")
+            continue
         if obj['name'] == 'b_authorization':
             if address_value not in ('ipv4', 'ipv6', 2, 10):
                 raise ValueError('invalid authorization family')

@@ -45,6 +45,8 @@ def transition(settings, action, root=Path("/run"), run=subprocess.run):
         # Keep the marker on any failure. The independent resume service retries
         # after sleep.target is inactive, including a failed ExecStart.
         revoke = REVOKE
+        if settings.get("magic_dns_lease"):
+            revoke += "flush set inet lf_filter magic_dns_link\n"
         if settings.get("source_recovery"):
             (root / "proxy-mode/source-recovery").unlink(missing_ok=True)
             revoke += "flush set inet lf_filter source_recovery4\nflush set inet lf_filter source_recovery6\n"

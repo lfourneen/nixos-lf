@@ -31,6 +31,9 @@ func lfExchangeMagicDNS(ctx context.Context, request *D.Msg, ipv6 bool) (*D.Msg,
 	question := request.Question[0]
 	endpoint := lfguard.MagicDNSEndpoint(question.Name)
 	if endpoint == "" {
+		if lfguard.MagicDNSPrivate(question.Name) {
+			return new(D.Msg).SetRcode(request, D.RcodeNameError), true, nil
+		}
 		return nil, false, nil
 	}
 	if !ipv6 && question.Qtype == D.TypeAAAA {

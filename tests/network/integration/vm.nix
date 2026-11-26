@@ -266,12 +266,18 @@ pkgs.testers.runNixOSTest {
     my.proxy.resolvedPolicySettings = lib.mkForce (pkgs.writeText "netsec-tailnet-fixture.json" (builtins.toJSON {
       ip = "${pkgs.iproute2}/bin/ip";
       resolvectl = "${pkgs.systemd}/bin/resolvectl";
+      systemctl = "${pkgs.systemd}/bin/systemctl";
+      nft = "${pkgs.nftables}/bin/nft";
+      policy_lock = "/run/proxy-mode/lock";
+      sleeping = "/run/dns-policy/sleeping";
+      server_file = "/run/dns-upstream/servers.conf";
       tun = "Mihomo";
       tailnet = {
         enabled = true;
         interface = "tailscale0";
         resolver = "100.100.100.100";
         domain_file = "/run/netsec-tailnet/domain";
+        history_file = "/run/netsec-tailnet/private-suffixes";
         cli = pkgs.writeShellScript "fixture-tailnet-status" ''cat /run/netsec-tailnet-status.json'';
       };
     }));
@@ -617,7 +623,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("systemctl stop dns-upstream.service")
     # Actual resolved link configuration, with an authenticated-tailnet CLI
     # fixture. No public route or unrelated suffix may survive reconciliation.
-    machine.succeed("ip link add tailscale0 type dummy; mkdir -p /run/netsec-tailnet; printf '%s' '{\"BackendState\":\"Running\",\"CurrentTailnet\":{\"MagicDNSSuffix\":\"tailfixture.ts.net\",\"MagicDNSEnabled\":true}}' >/run/netsec-tailnet-status.json")
+    machine.succeed("ip link add tailscale0 type dummy; mkdir -p /run/netsec-tailnet; printf '%s' '{\"BackendState\":\"Running\",\"Self\":{\"UserID\":321},\"CurrentTailnet\":{\"StableID\":\"fixture-tailnet\",\"MagicDNSSuffix\":\"tailfixture.ts.net\",\"MagicDNSEnabled\":true}}' >/run/netsec-tailnet-status.json")
     machine.succeed("python3 /etc/netsec-resolved-policy.py /etc/netsec-tailnet.json; python3 /etc/netsec-resolved-policy.py /etc/netsec-tailnet.json --check")
     machine.succeed("resolvectl domain tailscale0 | grep -q tailfixture.ts.net; resolvectl default-route tailscale0 | grep -q no")
     machine.succeed("resolvectl domain tailscale0 '~.'")
@@ -871,10 +877,10 @@ pkgs.testers.runNixOSTest {
             status = {"BackendState": "Stopped"}
             observed = "test ! -e /run/netsec-tailnet/domain"
             if suffix:
-                status = {"BackendState": "Running", "CurrentTailnet": {
-                    "MagicDNSEnabled": True, "MagicDNSSuffix": suffix,
+                status = {"BackendState": "Running", "Self": {"UserID": 321}, "CurrentTailnet": {
+                    "StableID": suffix, "MagicDNSEnabled": True, "MagicDNSSuffix": suffix,
                 }}
-                observed = f"grep -Fxq {shlex.quote(suffix)} /run/netsec-tailnet/domain"
+                observed = f"jq -r .suffix /run/netsec-tailnet/domain | grep -Fxq {shlex.quote(suffix)}"
             machine.succeed(f"printf '%s' {shlex.quote(json.dumps(status))} >/run/netsec-tailnet-status.new; "
                             "mv /run/netsec-tailnet-status.new /run/netsec-tailnet-status.json")
             machine.wait_until_succeeds(
@@ -897,6 +903,13 @@ pkgs.testers.runNixOSTest {
             for kind in ("HTTPS", "TXT"):
                 machine.succeed(f"grep -Fx 'public {name}. {kind}' /tmp/integration-dns.log")
 
+        def check_private(name, address, port):
+            for kind in ("A", "AAAA", "HTTPS", "TXT"):
+                result = machine.succeed(f"dig +time=3 +tries=1 @{address} -p {port} {name} {kind}")
+                assert "status: NXDOMAIN" in result, (address, name, kind, result)
+            machine.fail(f"grep -F 'public {name}. ' /tmp/integration-dns.log")
+            machine.fail(f"journalctl -u netsec-magic-peer -o cat | grep -F 'magic {name}. '")
+
         core_dns = ("127.0.0.1", 1053)
         system_dns = ("127.0.0.53", 53)
         tailnet_status("tailfixture.ts.net")
@@ -908,19 +921,30 @@ pkgs.testers.runNixOSTest {
         machine.succeed("printf 'unreadable status' >/run/netsec-tailnet-status.json; systemctl start dns-resolved-policy.service")
         check_magic("status-miss.tailfixture.ts.net", *core_dns)
         check_magic("status-system.tailfixture.ts.net", *system_dns)
+        # Simulate a suspend or a missed polling window without waiting for
+        # every real lease interval. Core expiry takes effect before polling.
+        machine.succeed("jq '.until = 0' /run/netsec-tailnet/domain >/run/netsec-tailnet/expired; mv /run/netsec-tailnet/expired /run/netsec-tailnet/domain")
+        check_private("deadline.tailfixture.ts.net", *core_dns)
+        machine.wait_until_succeeds("systemctl start dns-resolved-policy.service && test ! -e /run/netsec-tailnet/domain")
+        check_private("deadline-system.tailfixture.ts.net", *system_dns)
+        check_public("deadline-public.somepublic.ts.net", *system_dns)
+        tailnet_status("tailfixture.ts.net")
         tailnet_status("other.ts.net")
-        check_public("rotated.tailfixture.ts.net", *core_dns)
+        check_private("rotated.tailfixture.ts.net", *core_dns)
+        check_private("rotated-system.tailfixture.ts.net", *system_dns)
         check_magic("core.other.ts.net", *core_dns)
         check_magic("system.other.ts.net", *system_dns)
         tailnet_status(None)
-        check_public("logout.other.ts.net", *core_dns)
-        check_public("logout-system.other.ts.net", *system_dns)
+        check_private("logout.other.ts.net", *core_dns)
+        check_private("logout-system.other.ts.net", *system_dns)
         tailnet_status("tailfixture.ts.net")
         machine.succeed("systemctl stop netsec-magic-peer; ip link del tailscale0; ip netns del magic-outside")
         machine.wait_until_succeeds(
             "systemctl start dns-resolved-policy.service && test ! -e /run/netsec-tailnet/domain", timeout=35,
         )
-        check_public("link-gone.tailfixture.ts.net", *core_dns)
+        check_private("link-gone.tailfixture.ts.net", *core_dns)
+        check_private("link-gone-system.tailfixture.ts.net", *system_dns)
+        check_public("link-gone-public.somepublic.ts.net", *core_dns)
     for name in ("private.core.fixture.example", "mixed.core.fixture.example"):
         machine.fail(f"setpriv --reuid=1000 --clear-groups curl --noproxy \"\" --socks5-hostname 127.0.0.1:7897 -fsS --max-time 3 http://{name}:8080/")
         fake = machine.succeed(f"dig +short @127.0.0.1 -p 1053 {name} A").strip()

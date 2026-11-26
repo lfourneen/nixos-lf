@@ -1,7 +1,18 @@
 { pkgs }:
 
 let
-  node = bootMode: { config, lib, pkgs, ... }: {
+  node = bootMode: startupTest: { config, lib, pkgs, ... }: let
+    tailnetVariant = ports: tailscale: (import ../../../system/config/network/network.nix {
+      inherit pkgs lib;
+      config = config // {
+        my = config.my // { hardening = config.my.hardening // ports; };
+        services = config.services // { tailscale = config.services.tailscale // tailscale; };
+      };
+    }).networking.nftables.ruleset;
+    startupGate = name: pkgs.writeShellScript "firewall-test-${name}" ''
+      test -e /run/allow-${name}
+    '';
+  in {
     imports = [
       ../../../system/programs/clash/service/identity.nix
       ../../../system/config/machine.nix
@@ -14,6 +25,9 @@ let
       ../../../system/config/network/firewall/alert.nix
       ../../../system/config/network/firewall/verify.nix
       ../../../system/config/network/diagnostics
+    ] ++ lib.optionals startupTest [
+      ../../../system/config/network/firewall/recover.nix
+      ../../../system/config/network/time.nix
     ];
 
     users.users.lfour = { isNormalUser = true; uid = 1000; };
@@ -33,10 +47,44 @@ let
     # Exercise the production loader without asynchronous repairs or external
     # DNS/core/network dependencies. The broad VM covers first-load failure and
     # the real helper/core VM covers B recovery after the safety C transaction.
-    systemd.services = lib.genAttrs [ "proxy-mode" "tailscaled" "tailscaled-set"
-      "dhcpcd" "dnsmasq" "unbound" "chronyd" ] (_: { enable = lib.mkForce false; }) // {
-        nftables-verify.wantedBy = lib.mkForce [ ];
+    systemd.services = lib.genAttrs ([ "tailscaled" "tailscaled-set" "dnsmasq" "unbound" ]
+      ++ lib.optionals (!startupTest) [ "proxy-mode" "dhcpcd" "chronyd" ])
+      (_: { enable = lib.mkForce false; }) // {
+      nftables-verify.wantedBy = lib.mkForce [ ];
+    } // lib.optionalAttrs startupTest {
+      network-firewall-bootstrap.serviceConfig.ExecStartPre = startupGate "bootstrap";
+      nftables.serviceConfig.ExecStartPre = startupGate "full";
+      dhcpcd = {
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          Type = lib.mkForce "oneshot";
+          Restart = lib.mkForce "no";
+          RemainAfterExit = true;
+          PIDFile = lib.mkForce "";
+          ExecStart = lib.mkForce (pkgs.writeShellScript "firewall-test-address" ''
+            ${pkgs.iproute2}/bin/ip addr replace 192.0.2.20/32 dev lo
+          '');
+        };
       };
+    };
+    services.chrony = lib.mkIf startupTest {
+      servers = lib.mkForce [ "127.0.0.2 iburst" ];
+      extraConfig = "ntstrustedcerts /run/netsec-boot-clock/server.crt";
+    };
+    environment.etc."netsec-boot-clock.conf" = lib.mkIf startupTest {
+      text = ''
+        bindaddress 127.0.0.2
+        local stratum 10
+        allow 127.0.0.0/8
+        pidfile /run/netsec-boot-clock/server.pid
+        bindcmdaddress /run/netsec-boot-clock/server.sock
+        cmdport 0
+        ntsservercert /run/netsec-boot-clock/server.crt
+        ntsserverkey /run/netsec-boot-clock/server.key
+        ntsprocesses 0
+      '';
+    };
+    systemd.timers.nftables-recover.timerConfig.OnBootSec = lib.mkIf startupTest (lib.mkForce "10min");
     systemd.paths.nftables-verify-pending.enable = false;
     systemd.timers.nftables-verify.enable = false;
     my.proxy.listenerCheck = lib.mkForce "${pkgs.coreutils}/bin/true";
@@ -47,6 +95,16 @@ let
     environment.etc."firewall-check".source = config.my.proxy.rulesCheck;
     environment.etc."firewall-static".source = pkgs.writeText "lf-static-rules.nft" config.networking.nftables.ruleset;
     environment.etc."posture-fixture.py".source = ./posture_fixture.py;
+    environment.etc."tailnet-fixture.py".source = ./tailnet_fixture.py;
+    environment.etc."tailnet-no-tcp.nft".text = tailnetVariant { tailnetTcpPorts = [ ]; } { };
+    environment.etc."tailnet-no-udp.nft".text = tailnetVariant { tailnetUdpPorts = [ ]; } { };
+    environment.etc."tailnet-no-ports.nft".text = tailnetVariant { tailnetTcpPorts = [ ]; tailnetUdpPorts = [ ]; } { };
+    environment.etc."tailnet-remove-first.nft".text = tailnetVariant {
+      tailnetTcpPorts = [ "47989" ];
+      tailnetUdpPorts = [ "47999" ];
+    } { };
+    environment.etc."tailnet-disabled.nft".text = tailnetVariant { } { enable = false; };
+    environment.etc."tailnet-renamed.nft".text = tailnetVariant { } { interfaceName = "tailnet-new0"; };
     environment.etc."snapshot-nft".source = pkgs.writeShellScript "snapshot-nft" ''
       if [ "$*" = "-j list ruleset" ] && [ -f /run/snapshot-test/result ]; then
         if mkdir /run/snapshot-test/capture 2>/dev/null; then
@@ -68,8 +126,9 @@ in
 pkgs.testers.runNixOSTest {
   name = "firewall-ownership-and-migration";
   node.pkgs = pkgs.lib.mkForce (pkgs.extend (_final: prev: { unstable = prev; }));
-  nodes.direct = node "direct";
-  nodes.blocked = node "proxy";
+  nodes.direct = node "direct" false;
+  nodes.blocked = node "proxy" false;
+  nodes.startup = node "direct" true;
 
   testScript = ''
     import json
@@ -103,6 +162,45 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"jq -e '.mode == \"{mode}\"' /run/proxy-mode/state.json")
         machine.succeed(f"nft -j list ruleset >/tmp/live.json; /etc/firewall-check compare /etc/firewall-expected/{mode}.json /tmp/live.json")
 
+    with subtest("recover the boot jobs canceled by a failed bootstrap"):
+        startup.start()
+        units = ["NetworkManager", "dhcpcd", "chronyd"]
+        for unit in units:
+            startup.wait_for_file(f"/run/netsec/firewall-startup-pending/{unit}.service", timeout=45)
+            startup.succeed(f"test $(systemctl show -p InactiveExitTimestampMonotonic --value {unit}.service) = 0")
+        startup.fail("nft list table inet lf_filter")
+        startup.succeed("touch /run/allow-bootstrap")
+        startup.fail("systemctl start nftables-recover.service")
+        startup.wait_for_unit("network-firewall-bootstrap.service", timeout=30)
+        startup.succeed("nft list table inet lf_bootstrap")
+        for unit in units:
+            startup.succeed(f"test -f /run/netsec/firewall-startup-pending/{unit}.service")
+            startup.fail(f"systemctl is-active --quiet {unit}.service")
+        startup.wait_until_succeeds("systemctl is-failed --quiet nftables.service", timeout=30)
+        startup.succeed("install -d /run/netsec-boot-clock; ${pkgs.openssl}/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=127.0.0.2 -addext subjectAltName=IP:127.0.0.2 -keyout /run/netsec-boot-clock/server.key -out /run/netsec-boot-clock/server.crt")
+        startup.succeed("systemd-run --unit=netsec-boot-clock ${pkgs.chrony}/bin/chronyd -n -x -u root -f /etc/netsec-boot-clock.conf")
+        startup.succeed("touch /run/allow-full; systemctl start nftables-recover.service")
+        for unit in units:
+            startup.wait_for_unit(f"{unit}.service", timeout=45)
+        startup.wait_for_unit("proxy-mode.service", timeout=45)
+        startup.succeed("ip -4 -o addr show dev lo | grep -F 192.0.2.20/32")
+        startup.wait_until_succeeds("chronyc -n sources | grep -Eq '^\\^\\*[[:space:]]+127.0.0.2'", timeout=40)
+        startup.succeed("chronyc -n authdata | grep -q NTS; chronyc tracking | grep -q 'Leap status.*Normal'")
+        assert_mode(startup, "direct")
+
+    with subtest("a full-table failure alone leaves manually stopped services alone"):
+        startup.succeed("systemctl stop dhcpcd.service chronyd.service nftables.service; rm /run/allow-full")
+        startup.fail("systemctl start nftables.service")
+        startup.wait_until_succeeds("systemctl is-failed --quiet nftables.service", timeout=30)
+        startup.succeed("touch /run/allow-full; systemctl start nftables-recover.service")
+        startup.wait_for_unit("nftables.service")
+        startup.wait_for_unit("proxy-mode.service")
+        for unit in ["dhcpcd", "chronyd"]:
+            startup.fail(f"systemctl is-active --quiet {unit}.service")
+            startup.fail(f"test -f /run/netsec/firewall-startup-pending/{unit}.service")
+        startup.wait_for_unit("NetworkManager.service")
+    startup.shutdown()
+
     for machine, mode in [(direct, "direct"), (blocked, "blocked")]:
         machine.start()
         with subtest(f"{machine.name}: ordinary loads preserve all foreign names"):
@@ -120,6 +218,11 @@ pkgs.testers.runNixOSTest {
             machine.succeed("nft add rule inet lf_filter input tcp dport 65432 accept; /etc/firewall-mode --once")
             assert_mode(machine, mode)
             assert snapshot(machine, legacy + foreign) == original
+
+        if mode == "direct":
+            with subtest("tailnet port reload revokes only denied peer-initiated services"):
+                machine.succeed("python3 /etc/tailnet-fixture.py")
+                assert_mode(machine, mode)
 
         with subtest(f"{machine.name}: failed reload and migration retain the complete old policy"):
             before = machine.succeed("nft -s -j list ruleset")

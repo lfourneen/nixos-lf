@@ -264,6 +264,7 @@ The web UI accepts only local clients.
 It is not a default tailnet firewall allowance.
 UPnP is disabled.
 Streaming uses the explicit tailnet TCP/UDP port lists in [options.nix](../system/config/network/options.nix).
+An empty list closes all incoming services for that protocol. Removing a service port cuts existing connections to that port from peers. Other authorized services and connections initiated by this host continue.
 Configure phone-to-computer grants in the Tailscale admin console separately.
 That policy is not stored in this repository.
 A and healthy B allow remote desktop.
@@ -477,7 +478,7 @@ Proxy intent goes through C before health reopens B.
 The independent guard keeps proxy-intended traffic blocked when the main table disappears. Before a live rollback to a generation that predates `inet lf_policy_guard`, enter explicit A with `clash-off` to clear its per-packet requirements.
 Stopping nftables leaves its policy installed.
 `nftables-verify-repair.service` performs explicit repair and recheck.
-`nftables-recover` retries a failed nftables unit.
+`nftables-recover` retries a failed nftables unit and resumes the enabled network or time services whose first boot jobs were canceled by the firewall dependency.
 Avoid flushing the global ruleset.
 
 ## Firewall table migration

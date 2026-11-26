@@ -45,8 +45,18 @@ let
   
   # The AP uses its own guest role; a Wi-Fi client remains an uplink.
   hotspotEnable = config.my.hardening.hotspot.enable;
-  tailnetTcp = lib.concatStringsSep ", " config.my.hardening.tailnetTcpPorts;
-  tailnetUdp = lib.concatStringsSep ", " config.my.hardening.tailnetUdpPorts;
+  tailnetIface = config.services.tailscale.interfaceName;
+  tailnetHasInterface = tailnetIface != "userspace-networking";
+  tailnetIfaces = lib.unique ([ "tailscale0" ] ++ lib.optional tailnetHasInterface tailnetIface);
+  tailnetEnabled = config.services.tailscale.enable && tailnetHasInterface;
+  tailnetPorts = {
+    tcp = lib.optionals tailnetEnabled config.my.hardening.tailnetTcpPorts;
+    udp = lib.optionals tailnetEnabled config.my.hardening.tailnetUdpPorts;
+  };
+  tailnetServices = iface: verdict: lib.concatMapStringsSep "\n" (protocol:
+    lib.optionalString (tailnetPorts.${protocol} != [ ])
+      ''${iface} "${tailnetIface}" meta l4proto ${protocol} ct original proto-dst { ${join tailnetPorts.${protocol}} } ${verdict}''
+  ) [ "tcp" "udp" ];
   trustedLanSrc = ''iifname { "${wired}", "${wireless}" } ip saddr { ${join trustedLanCidrs} }'';
   trustedLanRules = lib.optionalString (trustedLanCidrs != [ ]) (lib.concatMapStrings
     (protocol: ''${trustedLanSrc} ${protocol} dport { ${join (map toString trustedLanPorts.${protocol})} } accept
@@ -110,6 +120,7 @@ let
   # identities (0x47500000 + UID) and from routing/socket marks.
   appConnmark = "0x4c460001";
   directDnsConnmark = "0x4c460004";
+  tailnetServiceConnmark = "0x4c460005";
   actorConnmark = "ct mark" + lib.optionalString config.my.proxy.coreNetns " & 0x7fffffff";
   
   # Loopback listeners owned by the core, DNS, relay and guest DNS services.
@@ -264,10 +275,10 @@ let
       ''oifname { "${wired}", "${wireless}" } meta nfproto ipv6 meta l4proto { tcp, udp } th dport 53 accept''
     ] ++ lib.optionals (config.services.tailscale.enable && config.my.hardening.tailscale.magicDns) [
       ''oifname "${config.services.tailscale.interfaceName}" meta skuid { 0, ${toString dnsmasqUid}, ${toString config.users.users.systemd-resolve.uid} } ip daddr ${m.magicDns} meta l4proto { tcp, udp } th dport 53 accept''
-    ] ++ lib.optionals (config.services.tailscale.enable && config.my.hardening.tailnetUdpPorts != [ ]) [
+    ] ++ lib.optionals (tailnetPorts.udp != [ ]) [
       # Sunshine can initiate media from its fixed server ports after RTSP
       # negotiation; ordinary tailnet client sockets need explicit grants.
-      ''oifname "${config.services.tailscale.interfaceName}" meta skuid ${toString config.users.users.${m.desktopUser}.uid} udp sport { ${tailnetUdp} } accept''
+      ''oifname "${tailnetIface}" meta skuid ${toString config.users.users.${m.desktopUser}.uid} udp sport { ${join tailnetPorts.udp} } accept''
     ] ++ hostDirectExceptions)}
     ''}
   '';
@@ -381,8 +392,13 @@ in
       assertion = lib.all (i: builtins.elem i guestIfaces) vmTransparentProxyIfaces
         && lib.length (lib.unique guestIfaces) == lib.length guestIfaces
         && lib.all (i: builtins.match "[a-zA-Z0-9_.-]{1,15}" i != null
-          && !(builtins.elem i [ "lo" wired wireless tunDev "tailscale0" ])) guestIfaces;
+          && !(builtins.elem i ([ "lo" wired wireless tunDev ] ++ tailnetIfaces))) guestIfaces;
       message = "Guest ingress interfaces must be valid, distinct from host uplinks/TUN/loopback, and include every TPROXY interface.";
+    }
+    {
+      assertion = lib.all (i: builtins.match "[a-zA-Z0-9_.-]{1,15}" i != null
+        && !(builtins.elem i [ "lo" wired wireless tunDev ])) tailnetIfaces;
+      message = "The Tailscale interface must be valid and distinct from host uplinks/TUN/loopback.";
     }
     {
       assertion = lib.count (u: u.uid == m.uids.dhcpcd) (lib.attrValues config.users.users) == 1;
@@ -412,10 +428,7 @@ in
 
   # The mode-dependent rules are applied by proxy-mode.service (see proxy/coordinator.nix).
   my.hardening.hostIngress = {
-    tailnet = {
-      tcp = config.my.hardening.tailnetTcpPorts;
-      udp = config.my.hardening.tailnetUdpPorts;
-    };
+    tailnet = tailnetPorts;
     guests = map (n: {
       inherit (n) interface gateways hostTcpPorts hostUdpPorts;
     }) guestPolicy.networks;
@@ -595,7 +608,7 @@ in
 
   # Tailscale (encrypted tailnet; run `sudo tailscale up` once after install to login)
   services.tailscale = {
-    enable = true;
+    enable = lib.mkDefault true;
     package = pkgs.unstable.tailscale;
     # resolved-policy installs only the authenticated MagicDNS suffix. Never
     # accept a tailnet's default resolver, subnet routes or exit-node state.
@@ -610,7 +623,8 @@ in
     nssmdns6 = true;
     # The wireless interface is trusted only while it *is* the AP: as a client of a
     # foreign network it must not announce, so it is wired to the hotspot opt-in.
-    allowInterfaces = [ "lo" "tailscale0" ] ++ lib.optionals hotspotEnable [ hotspotIface ];
+    allowInterfaces = [ "lo" ] ++ lib.optional tailnetEnabled tailnetIface
+      ++ lib.optional hotspotEnable hotspotIface;
   };
 
   # dns-upstream.service selects the application DNS route for the enforced mode.
@@ -834,6 +848,7 @@ in
         set dns_plaintext4 { type ipv4_addr; flags timeout; timeout 120s; }
         set dns_split4 { type ifname . ipv4_addr; flags timeout; timeout 120s; }
         set dns_split6 { type ifname . ipv6_addr; flags timeout; timeout 120s; }
+        set magic_dns_link { type iface_index; flags timeout; timeout 135s; size 1; }
         set b_authorization { type nf_proto; flags timeout; timeout 120s; size 2; }
         ${lib.optionalString config.my.proxy.runtimeRouting ''
         set source_recovery4 { type ifname . ipv4_addr . ipv4_addr . inet_service; flags timeout; timeout 60s; size 256; }
@@ -870,10 +885,14 @@ in
           jump dns_plaintext_mode
           counter drop
         }
+        chain magic_dns_guard {
+          oifname "${config.services.tailscale.interfaceName}" meta oif @magic_dns_link return
+          counter drop
+        }
         chain lf_dns_guard {
           type filter hook output priority -199; policy accept;
-          # If the tailnet route disappears, its resolver cannot move to a physical uplink.
-          ip daddr ${m.magicDns} oifname != "${config.services.tailscale.interfaceName}" meta l4proto { tcp, udp } th dport 53 counter drop
+          # Bind encrypted-tailnet DNS to the currently authorized device instance.
+          ip daddr ${m.magicDns} meta l4proto { tcp, udp } th dport 53 jump magic_dns_guard
           meta skuid ${toString dnsmasqUid} oifname != "lo" meta l4proto { tcp, udp } th dport 53 jump dns_egress
           ${lib.optionalString (config.my.proxy.dnsEncryption == "strict") ''
           ${lib.optionalString config.my.hardening.tailscale.magicDns ''${coreSocket} oifname "${config.services.tailscale.interfaceName}" ip daddr ${m.magicDns} meta l4proto { tcp, udp } th dport 53 accept''}
@@ -939,6 +958,22 @@ in
           counter drop
         }
         ''}
+        # TCP and UDP started by a tailnet peer must keep matching the current
+        # service list. Tag allowed flows so an interface rename also revokes
+        # sessions on the old interface without clearing other conntrack state.
+        chain lf_tailnet_services {
+          ${tailnetServices "iifname" "ct mark set ${tailnetServiceConnmark} accept"}
+          counter drop
+        }
+        chain lf_tailnet_service_replies {
+          ${tailnetServices "oifname" "return"}
+          counter drop
+        }
+        chain lf_tailnet_output {
+          type filter hook output priority -193; policy accept;
+          ct direction reply meta l4proto { tcp, udp } oifname ${nftIfaces tailnetIfaces} jump lf_tailnet_service_replies
+          ct direction reply meta l4proto { tcp, udp } oifname != ${nftIfaces tailnetIfaces} ct mark ${tailnetServiceConnmark} counter drop
+        }
         chain input {
           type filter hook input priority 0; policy drop;
           ${policyGuard.stamp [ "primary" ]}
@@ -948,6 +983,8 @@ in
           iif lo accept
           # Check the actual UDP socket before accepting established flows.
           ${lib.optionalString (tailscalePort != null) ''udp dport ${toString tailscalePort} jump lf_tailscale_ingress''}
+          ct direction original meta l4proto { tcp, udp } iifname ${nftIfaces tailnetIfaces} jump lf_tailnet_services
+          ct direction original meta l4proto { tcp, udp } iifname != ${nftIfaces tailnetIfaces} ct mark ${tailnetServiceConnmark} counter drop
           ${lib.optionalString config.my.proxy.coreNetns ''iifname "${tunDev}" jump lf_core_input''}
           # Clash Verge TUN device: replies only. The core writes arbitrary
           # bytes into this device, and every host-service accept below is
@@ -969,11 +1006,6 @@ in
           # Martian sources on the wired WAN. 100.64.0.0/10 is absent on purpose:
           # this uplink is CGNAT, so those are the ISP's own subscribers.
           ${wiredMartians} counter drop
-
-          # Tailnet: authenticated, but a blanket accept would expose every
-          # 0.0.0.0-bound listener. List ports in my.hardening.tailnet{Tcp,Udp}Ports.
-          iifname "tailscale0" tcp dport { ${tailnetTcp} } accept
-          iifname "tailscale0" udp dport { ${tailnetUdp} } accept
 
           # Validation runs before conntrack accepts, using the same rules as
           # the bootstrap. Link-local RA sources differ from NS/NA sources,
@@ -997,6 +1029,7 @@ in
         chain forward {
           type filter hook forward priority 0; policy drop;
           ${policyGuard.stamp [ "primary" ]}
+          ip daddr ${m.magicDns} meta l4proto { tcp, udp } th dport 53 jump magic_dns_guard
 
           # Guest policy, filled by proxy-mode while Clash runs and empty otherwise.
           # Before the conntrack accept so an established guest flow cannot leak.
