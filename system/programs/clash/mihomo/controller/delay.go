@@ -161,7 +161,7 @@ func lfStartDelay(w http.ResponseWriter, r *http.Request, group string) *lfDelay
 			if release == nil {
 				return lfRefuseDelay(w, r, http.StatusTooManyRequests, "managed delay tests are busy")
 			}
-			ctx = lfguard.WithInteractiveDelay(ctx)
+			ctx, target = lfguard.InteractiveTarget(ctx)
 			if timeout > lfguard.MaxInteractiveDelay.Milliseconds() {
 				timeout = lfguard.MaxInteractiveDelay.Milliseconds()
 			}
@@ -181,8 +181,9 @@ func lfProviderDelay(w http.ResponseWriter, r *http.Request, name string) *lfDel
 	if release == nil {
 		return lfRefuseDelay(w, r, http.StatusTooManyRequests, "managed delay tests are busy")
 	}
-	ctx, cancel := context.WithTimeout(lfguard.WithInteractiveDelay(r.Context()), lfguard.MaxInteractiveDelay)
+	ctx, target := lfguard.InteractiveTarget(r.Context())
+	ctx, cancel := context.WithTimeout(ctx, lfguard.MaxInteractiveDelay)
 	return &lfDelayCall{
-		ctx: ctx, stop: func() { cancel(); release() }, target: lfguard.DelayTarget(),
+		ctx: ctx, stop: func() { cancel(); release() }, target: target,
 	}
 }

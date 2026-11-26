@@ -136,8 +136,8 @@ def cancel_automatic(settings):
             (state / name).unlink(missing_ok=True)
 
 
-def healthy_runtime(settings, stage):
-    """An intact snapshot alone does not prove that keeping its core is safe."""
+def healthy_runtime(settings, stage, *, require_probe=True):
+    """Check the serving core, its current authority and optionally its latest probe."""
     try:
         state, runtime = Path(settings['state']), Path(settings['runtime'])
         readiness = module('source_readiness', settings['readiness_tool'])
@@ -154,7 +154,7 @@ def healthy_runtime(settings, stage):
         routing = stage.routing_binding(settings)
         if routing.get('routing_requested') == 'proxy-only':
             paths.add('real-address-dns')
-        if (health.get('ok') is not True or health.get('boot_id') != boot
+        if require_probe and (health.get('ok') is not True or health.get('boot_id') != boot
                 or health.get('digest') != digest or health.get('policy_version') != ready['policy_version']
                 or any(health.get(key) != value for key, value in routing.items())
                 or not paths <= set(health.get('scope', {}).get('requests', []))
@@ -293,9 +293,10 @@ def check_candidate(settings, stage, validate):
             stage.enforce_audit(settings, findings)
             if stage.snapshot_digest(candidate) != digest:
                 raise stage.RefreshError('snapshot mismatch')
+            equivalent = baseline is not None and stage.same_forwarding_inputs(settings, baseline, candidate)
         if source_binding(settings, stage)[3] != identity:
             raise stage.RefreshError('snapshot mismatch')
-        return dict(accepted=True, digest=digest, binding=identity, findings=findings)
+        return dict(accepted=True, digest=digest, binding=identity, findings=findings, equivalent=equivalent)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as error:
         reason = ('validation timeout' if isinstance(error, subprocess.TimeoutExpired) else
                   str(error) if isinstance(error, stage.RefreshError) and str(error) in stage.REASONS else
@@ -341,7 +342,7 @@ def restart_source(settings, stage, validate=None, activate=None, expected=None,
                     pending = stage.read_record(state / 'profile-refresh-verifying.json')
                     if expected is None or pending.get('digest') != expected:
                         return 'busy'
-                current = healthy_runtime(settings, stage) if not verifying else None
+                current = healthy_runtime(settings, stage, require_probe=False) if not verifying else None
             if request is not None:
                 if (stage.read_record(state / 'source-apply.json') != request
                         or application_binding(settings, stage, expected) != request['binding']):
@@ -358,15 +359,28 @@ def restart_source(settings, stage, validate=None, activate=None, expected=None,
                 fcntl.flock(authorization, fcntl.LOCK_EX)
                 if (state / 'intent').read_text().strip() != 'proxy':
                     return 'proxy intent changed'
+                if stage.source_revocation(settings).get('protect'):
+                    return 'source revocation in progress'
                 if any((state / name).exists() for name in ('profile-refresh-verifying.json',
                         'profile-refresh-restart.json', 'profile-refresh-commit.json')):
                     return 'busy'
                 if current is not None:
-                    if (decision['accepted'] and decision['digest'] != current
+                    if decision['accepted'] and source_binding(settings, stage)[3] != decision['binding']:
+                        return 'source changed during validation'
+                    equivalent = decision['accepted'] and (decision['digest'] == current or (
+                        decision['equivalent'] and current == decision['binding']['baseline']))
+                    still_serving = healthy_runtime(settings, stage, require_probe=False) == current
+                    if equivalent and still_serving:
+                        previous = stage.read_record(state / 'profile-refresh.json')
+                        if previous.get('digest') != current or previous.get('result') != 'accepted':
+                            stage.audit(state, 'accepted', settings.get('refresh_policy', 'strict'),
+                                current, current, snapshot_at=previous.get('snapshot_at', 0),
+                                findings=decision['findings'])
+                        return 'accepted'
+                    if (decision['accepted'] and not equivalent
                             and settings.get('refresh_policy', 'strict') == 'strict'):
                         decision.update(accepted=False, reason='operator authorization required')
-                    still_healthy = healthy_runtime(settings, stage) == current
-                    if still_healthy and not decision['accepted']:
+                    if still_serving and not decision['accepted']:
                         previous = stage.read_record(state / 'profile-refresh.json')
                         if decision['digest'] and not stage.pinned(state, decision['digest']):
                             stage.pin_candidate(state, decision['digest'])
@@ -375,17 +389,6 @@ def restart_source(settings, stage, validate=None, activate=None, expected=None,
                             decision['digest'], current, decision['reason'],
                             previous.get('snapshot_at', 0), decision['findings'])
                         return 'decided'
-                    if still_healthy and decision['digest'] == current and decision['accepted']:
-                        previous = stage.read_record(state / 'profile-refresh.json')
-                        if previous.get('digest') != current or previous.get('result') != 'accepted':
-                            stage.audit(state, 'accepted', settings.get('refresh_policy', 'strict'),
-                                current, current, snapshot_at=previous.get('snapshot_at', 0),
-                                findings=decision['findings'])
-                        return 'accepted'
-                    # SH source + EX operator/auth locks freeze the normal
-                    # publishers. Bind one more time before any destructive step.
-                    if decision['accepted'] and source_binding(settings, stage)[3] != decision['binding']:
-                        return 'source changed during validation'
             # No precheck grants import authority. The helper revalidates and
             # reaudits the same source under SH, then health accepts or rolls back.
             activate()

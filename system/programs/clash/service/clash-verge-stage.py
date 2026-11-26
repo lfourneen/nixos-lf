@@ -955,6 +955,22 @@ def source_snapshot_current(settings, directory, selected=False):
         return False
 
 
+def same_forwarding_inputs(settings, baseline, candidate):
+    """Compare two integrity-checked controlled snapshots without changing their identities."""
+    if not all(source_snapshot_current(settings, path, selected=True) for path in (baseline, candidate)):
+        return False
+    manifests = [read_record(path / 'source-manifest.json') for path in (baseline, candidate)]
+    for manifest in manifests:
+        if manifest.get('schema') not in (1, 2) or not isinstance(manifest.get('assets'), dict) \
+                or not re.fullmatch('[0-9a-f]{64}', manifest.get('yaml', '')):
+            return False
+    # Both accepted snapshots and the staged candidate have been checked against
+    # their complete asset manifest. Source-data also binds future local renders.
+    informational = {'responses', 'dropped', 'drop_counts', 'local_routing', 'schema', 'routing'}
+    left, right = ({k: v for k, v in manifest.items() if k not in informational} for manifest in manifests)
+    return left == right and (baseline / 'clash-verge.yaml').read_bytes() == (candidate / 'clash-verge.yaml').read_bytes()
+
+
 def audit_context(settings):
     mode = settings.get('audit_policy', 'off')
     path = settings.get('audit_settings')

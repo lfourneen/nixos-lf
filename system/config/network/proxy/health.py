@@ -28,6 +28,7 @@ def failure_stage(detail):
     """Persist the failed step without addresses, node names or curl output."""
     for prefix, stage in (
         ('mixed HTTP request failed', 'mixed-request'),
+        ('sampled sessions passed but HTTP targets', 'target-unavailable'),
         ('authorized leaves did not answer', 'leaf-unavailable'),
         ('sampled leaves rejected authentication', 'node-auth'),
         ('sampled leaves could not establish', 'session-unavailable'),
@@ -297,7 +298,7 @@ class Probe:
                 time.sleep(wait)
 
     def selector(self, group):
-        if self.routing.get('egress_requested'):
+        if self.routing.get('routing_requested') == 'proxy-only' or self.routing.get('egress_requested'):
             return None, []
         if self.settings.get('dns_leaf_group'):
             record = self.api('/proxies/' + group)
@@ -314,15 +315,16 @@ class Probe:
         current, members = self.selector('lf-remote')
         if current and self.settings.get('session_urls') and not self.sessions and self.dns_transport_leaf not in members:
             self.sample_sessions([current, *members[:3]])
-        if self.sessions or self.dns_transport_leaf in members:
+        if self.settings.get('session_urls') or self.sessions or self.dns_transport_leaf in members:
             def rank(name):
                 outcome = self.sessions.get(name)
                 if outcome == 'ok' or (outcome is None and name == self.dns_transport_leaf):
                     return 0
                 return 1 if outcome is None else 2
-            return sorted(members, key=rank)
-        if not members or self.deadline - self.clock() < 4:
-            return members
+            return sorted(members, key=rank)[:4]
+        if not members or len(members) > 4 or self.deadline - self.clock() < 4:
+            # A group delay contacts every member, including the current leaf.
+            return members[:4]
         path = '/group/lf-remote/delay?url=' + quote(url, safe='') + '&timeout=1200'
         try:
             delays = self.api(path, 1.8)
@@ -564,6 +566,9 @@ class Probe:
                          self.settings.get('source_address', '127.0.0.1'), records, 'mixed',
                          destination_port=parsed.port or (443 if parsed.scheme == 'https' else 80)))
         self.diagnostics['route_ok'] = True
+        if url == self.settings.get('delay_primary'):
+            self.diagnostics['delay_primary_ok'] = True
+            self.diagnostics.pop('delay_fallback', None)
 
     def routing_binding(self):
         if not self.settings.get('routing_state'):
@@ -633,15 +638,24 @@ class Probe:
 
     def attempt_targets(self, log_path):
         failures = []
+        primary = self.settings.get('delay_primary')
+        failed_primary = False
         for number, url in enumerate(self.settings["urls"]):
             self.last_target = url
             self.target_slots = len(self.settings['urls']) - number + int(self.settings.get('require_tun', False))
             try:
                 self.timed(f"target_{number}", lambda: self.target(url, log_path))
+                if url == primary:
+                    self.diagnostics['delay_primary_ok'] = True
+                elif failed_primary and url == self.settings.get('delay_fallback'):
+                    self.diagnostics['delay_fallback'] = hashlib.sha256((primary + '\n' + url).encode()).hexdigest()
                 return True
             except ProbeFailure as error:
                 if error.layer in {"route", "config", "interrupted"}:
                     raise
+                if url == primary and failure_stage(error.detail) == 'mixed-request':
+                    failed_primary = True
+                    self.diagnostics['delay_primary_ok'] = False
                 self.note_failure(failure_stage(error.detail))
                 failures.append(error)
         raise failures[-1]
@@ -779,7 +793,18 @@ class Probe:
         current, leaves = self.selector('lf-dns') if self.settings.get('dns_leaf_group') else (None, [])
         if current:
             self.dns_leaf(current)
-        ready = self.dns_answer(name)
+        # A negative result for one site's name does not identify a broken DNS
+        # transport. Use at most one other configured remote health target.
+        other = next((urlsplit(url).hostname for url in self.settings['urls']
+                      if urlsplit(url).hostname not in (None, name)), None)
+        def resolved():
+            if self.dns_answer(name):
+                return name
+            if other and self.deadline - self.clock() >= 4 and self.dns_answer(other):
+                return other
+            return None
+
+        ready = resolved()
         if not ready:
             self.note_failure('validator-dns')
         if not ready and current and self.deadline - self.clock() >= 4:
@@ -797,14 +822,15 @@ class Probe:
                 current = leaf
                 self.dns_leaf(leaf)
                 self.diagnostics['dns_leaf_rotated'] = True
-                ready = self.dns_answer(name)
-                if ready or outcome == 'ok':
+                ready = resolved()
+                if ready:
                     break
         if not ready:
             raise ProbeFailure('dns', 'managed validator did not resolve the probe name')
         self.dns_transport_leaf = current
         self.diagnostics['managed_dns_ok'] = True
         self.fake_ip_failures.clear()
+        return ready
 
     def application_path(self):
         argv = self.settings.get('application_dns_check')
@@ -839,15 +865,18 @@ class Probe:
                 raise
             recovered = True
             dns_error = None
+            resolved_name = None
             try:
-                self.timed('validator_dns', lambda: self.recover_dns(name))
+                resolved_name = self.timed('validator_dns', lambda: self.recover_dns(name))
             except ProbeFailure as failure:
                 if failure.layer != 'dns':
                     raise
                 self.note_failure(failure_stage(failure.detail))
                 dns_error = failure
             # A DNS recovery can make the current leaf usable again.
-            if not dns_error and self.diagnostics.get('dns_leaf_rotated'):
+            if resolved_name and resolved_name != name:
+                url = next(target for target in self.settings['urls'] if urlsplit(target).hostname == resolved_name)
+            if not dns_error and (self.diagnostics.get('dns_leaf_rotated') or resolved_name and resolved_name != name):
                 try:
                     self.target_slots = 1
                     self.target(url, log_path, maximum=2.5)
@@ -865,6 +894,8 @@ class Probe:
                 if dns_error:
                     raise dns_error from None
                 self.timed('application_path', self.application_path)
+                if 'ok' in observed:
+                    raise ProbeFailure('obs', 'sampled sessions passed but HTTP targets did not respond') from None
                 raise ProbeFailure('node', 'authorized leaves did not answer the mixed request') from None
         def transparent_paths():
             self.timed('application_dns', self.application_dns)
@@ -885,7 +916,21 @@ class Probe:
                 self.timed('application_path', self.application_path)
                 raise
         if recovered:
-            self.timed('application_path', self.application_path)
+            try:
+                self.timed('application_path', self.application_path)
+            except ProbeFailure as error:
+                if error.layer != 'application':
+                    raise
+
+    def delay_diagnosis(self):
+        if self.diagnostics.get('delay_primary_ok') is not False or self.deadline - self.clock() < 4:
+            return
+        try:
+            host = urlsplit(self.settings['delay_primary']).hostname
+            self.diagnostics['delay_primary_dns_ok'] = self.dns_answer(host)
+        except ProbeFailure as error:
+            if error.layer == 'interrupted':
+                raise
 
     def run(self, fast=False):
         self.routing = self.routing_binding()
@@ -945,6 +990,7 @@ class Probe:
                 if self.routing_binding() != self.routing:
                     raise ProbeFailure('config', 'routing changed during the probe')
                 self.diagnostics['config_ok'] = True
+                self.delay_diagnosis()
                 return final
             finally:
                 reader.terminate()

@@ -2,8 +2,10 @@ package lfguard
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -16,6 +18,43 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	D "github.com/miekg/dns"
 )
+
+func TestDesktopFallbackUsesOnlyFreshSupervisorEvidenceForThisPrimary(t *testing.T) {
+	primary, other := "https://primary.example/check", "https://other.example/check"
+	internal := "http://internal.example/check"
+	p := &policy{DelayTestURL: primary, HealthTestURLs: []string{primary, other, internal}}
+	mode := []byte(`{"mode":"proxy","policy_version":3,"routing_epoch":2,"routing_requested":"rules","egress_epoch":1}`)
+	generation := delayGeneration{Version: 3, Routing: 2}
+	for _, tc := range []struct {
+		primary, chosen string
+		observed        float64
+		ok              bool
+		want            string
+	}{
+		{primary, other, 20, true, other}, {primary, other, 20, false, ""},
+		{primary, other, 9, true, ""}, {primary, other, 90, true, ""},
+		{other, other, 20, true, ""}, {primary, internal, 20, true, ""},
+		{primary, "https://unlisted.example/check", 20, true, ""},
+	} {
+		lease := delayLease{delayGeneration: generation, Until: 92, Observed: tc.observed,
+			Fallback: fmt.Sprintf("%x", sha256.Sum256([]byte(tc.primary+"\n"+tc.chosen)))}
+		if !tc.ok {
+			lease.Until = 80
+		}
+		if observedFallback(p, lease, mode, 10, 80) != tc.want {
+			t.Fatalf("unexpected target for %+v", tc)
+		}
+	}
+	lease := delayLease{delayGeneration: generation, Until: 92, Observed: 20,
+		Fallback: fmt.Sprintf("%x", sha256.Sum256([]byte(primary+"\n"+other)))}
+	for _, state := range []string{`{"mode":"blocked","policy_version":3,"routing_epoch":2}`,
+		`{"mode":"proxy","policy_version":3,"routing_epoch":3}`,
+		`{"mode":"proxy","policy_version":3,"routing_epoch":2,"routing_requested":"proxy-only","egress_epoch":1}`} {
+		if observedFallback(p, lease, []byte(state), 10, 80) != "" {
+			t.Fatal("revoked or previous routing generation retained its fallback", state)
+		}
+	}
+}
 
 func TestMagicDNSFollowsAuthenticatedSuffix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "domain")

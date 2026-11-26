@@ -175,6 +175,8 @@ let
     ];
     dns_timeout_seconds = config.my.proxy.healthDnsTimeoutSeconds;
     urls = config.my.proxy.nodeProbeUrls;
+    delay_primary = config.my.proxy.delayTestUrl;
+    delay_fallback = config.my.proxy.delayTestFallbackUrl;
     mixed_port = port.mihomoMixed;
     dns_port = port.mihomoDns;
     require_tun = requireTun;

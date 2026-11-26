@@ -70,8 +70,8 @@ Fetch failures preserve the selection, and parser, audit or health failures pres
 Until checks complete, `Active source` can differ from the requested selection.
 
 The apply service checks downloaded candidates before interrupting a ready core.
-Rejected or unchanged candidates preserve that core only while its snapshot authority, integrity, full health and readiness remain valid.
-An unhealthy or unauthorized runtime follows C recovery.
+An update that changes only the formatting or comments in the downloaded response keeps existing connections. The apply service compares the rendered rules in order, nodes, credentials and assets against the authorized baseline and checks the source, policy, egress, running core and B readiness. A rejected candidate can also leave the authorized core serving.
+A transient HTTP observation failure does not restart the core for an equivalent update. The supervisor still requires a new complete proof to extend the kernel lease. During renewal the identity relay can use the remaining time on the last committed lease for the same generation.
 Applying a changed candidate enters C before restarting the core and must pass startup checks again.
 The coordinator checks the transport firewall against the staged digest before a health round. In `proxy-only`, this installs the candidate's pinned endpoint tuples while the application lease is revoked.
 Without a compatible fallback, C remains in effect.
@@ -81,6 +81,8 @@ When mixed HTTP fails in rules mode, the health check can query the managed reso
 During candidate verification and recovery, the root controller can sample leaf sessions over TLS to the configured literal DoH endpoints. A TLS-authenticated HTTP response proves a session to the endpoint. DNS answers, mixed HTTP, route proof and the remaining checks determine readiness.
 `proxy-status` shows a short identifier for the observed DNS leaf. It reports explicit authentication rejection as `node-auth`, unsuccessful session samples as `session-unavailable`, and unresolved validator probes as `validator-dns` when session evidence stays inconclusive or a sampled session works. Failed samples stay out of DNS recovery for that round and remain available for later checks.
 B can also diagnose the system resolver through an unprivileged desktop UID.
+
+When daily Firefox reports a missing server, run `getent ahosts www.bilibili.com` from the desktop and then `curl --noproxy '*' -IsS --max-time 6 https://www.bilibili.com/`. Inspect the matching connection in Verge to see its DIRECT or proxy chain. To exercise the identity browser's Unix relay, CONNECT and certificate validation, run `curl --unix-socket /run/clash-strict/proxy.sock --noproxy '' -x http://localhost:80 -IsS --max-time 6 https://search.nixos.org/`. These requests run only on demand.
 
 `clash-off` revokes runtime authority and retires the current routing epoch. A reports the routing selection as inactive and retains the source's accepted baseline for later startup.
 With automatic refresh, the next `clash-on` prefers an accepted snapshot that matches the current source revision, managed policy and renderer settings. Reusing it records `restored`.
@@ -363,6 +365,8 @@ Both the GUI forwarder and the direct controller socket cross the same unconditi
 New controller write endpoints require an explicit policy decision when upgrading the core.
 
 Desktop node, group and provider tests use the exact HTTPS endpoint in `my.proxy.delayTestUrl`, including its path and query. The controller maps Verge's built-in fallback URL to that endpoint and caps desktop requests at 10 seconds. Only successful HTTP responses count. Group and provider batches omit built-in direct adapters.
+
+This host also sets `my.proxy.delayTestFallbackUrl`. If the primary fails and the alternate HTTPS target responds through the expected route in the same successful health round, desktop tests can use the alternate for up to 60 seconds from the start of that proof. A new successful primary observation restores the normal target. The alternate must be in `nodeProbeUrls`. Desktop callers can still request only the primary. `proxy-status` reports fallback use and any observation of the primary's DNS.
 
 Desktop tests share 64 dial slots and a budget of 64 starts per second with a burst of 128. Up to four distinct group or provider batches can run concurrently. Automatic checks use their own 10 slots and 10 starts per second. Root health probes sent directly over the Unix controller have separate slots. The fixed exit stays selected during its delay test.
 

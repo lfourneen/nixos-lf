@@ -910,6 +910,43 @@ class HealthLeafTests(unittest.TestCase):
         probe.dns_answer.assert_not_called()
         probe.api.assert_not_called()
 
+    def test_only_a_failed_primary_and_proven_alternate_enable_desktop_fallback(self):
+        fallback = 'https://second.example/check'
+        probe = self.probe(urls=[self.url, fallback], delay_primary=self.url, delay_fallback=fallback)
+        probe.target = Mock(side_effect=[health_probe.ProbeFailure('obs', 'mixed HTTP request failed'), None])
+        self.assertTrue(probe.attempt_targets(None))
+        import hashlib
+        self.assertEqual(probe.diagnostics['delay_fallback'], hashlib.sha256((self.url + '\n' + fallback).encode()).hexdigest())
+        probe.dns_answer = Mock(return_value=False)
+        probe.delay_diagnosis()
+        self.assertIs(probe.diagnostics['delay_primary_dns_ok'], False)
+        probe.dns_answer.assert_called_once_with(self.host)
+        wrong_route = self.probe(urls=[self.url, fallback], delay_primary=self.url, delay_fallback=fallback)
+        wrong_route.target = Mock(side_effect=health_probe.ProbeFailure('route', 'probe selected a non-proxy policy'))
+        with self.assertRaises(health_probe.ProbeFailure):
+            wrong_route.attempt_targets(None)
+        self.assertNotIn('delay_fallback', wrong_route.diagnostics)
+
+    def test_one_negative_dns_answer_preserves_the_current_dns_transport(self):
+        probe = self.probe(urls=[self.url, 'https://second.example/check'])
+        probe.dns_answer = Mock(side_effect=[False, True])
+        probe.select_leaf = Mock()
+        probe.recover_dns(self.host)
+        self.assertTrue(probe.diagnostics['managed_dns_ok'])
+        self.assertEqual([call.args[0] for call in probe.dns_answer.call_args_list], [self.host, 'second.example'])
+        probe.select_leaf.assert_not_called()
+
+    def test_recovery_tries_next_authenticated_session_if_dns_still_fails(self):
+        probe = self.probe()
+        probe.selector = Mock(return_value=('failed', ['transport-only', 'working']))
+        probe.sessions = {'failed': 'session-unavailable', 'transport-only': 'ok', 'working': 'ok'}
+        probe.dns_answer = Mock(side_effect=[False, False, True])
+        probe.select_leaf = Mock(return_value=True)
+        probe.recover_dns(self.host)
+        self.assertEqual(probe.dns_transport_leaf, 'working')
+        self.assertEqual([call.args for call in probe.select_leaf.call_args_list],
+                         [('transport-only', 'lf-dns'), ('working', 'lf-dns')])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

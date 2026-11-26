@@ -123,7 +123,8 @@ def source():
                 candidates = [dict(good, name=f'Unavailable-{port}', port=port) for port in range(18084, 18089)]
                 candidate['proxies'] = [*candidates, good]
                 candidate['proxy-groups'][0]['proxies'] = [node['name'] for node in candidate['proxies']]
-            body = json.dumps(candidate).encode()
+            pretty = Path('/run/managed-source-format').exists()
+            body = json.dumps(candidate, indent=2 if pretty else None).encode()
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
@@ -269,12 +270,41 @@ def recover():
     before_version = json.loads((state / 'state.json').read_text())['policy_version']
     before_authority = (state / 'authorized-config').read_bytes()
     context = ssl.create_default_context(cafile=str(Path(SETTINGS['tls']) / 'ca.pem'))
-    stream = http.client.HTTPSConnection('127.0.0.1', 7897, timeout=6, context=context)
-    stream.set_tunnel('source.fixture.example', 443)
+    client = socket.socket(socket.AF_UNIX)
+    client.settimeout(6)
+    client.connect('/run/clash-strict/proxy.sock')
+    client.sendall(b'CONNECT source.fixture.example:443 HTTP/1.1\r\nHost: source.fixture.example:443\r\n\r\n')
+    with http.client.HTTPResponse(client, method='CONNECT') as reply:
+        reply.begin()
+        assert reply.status == 200, reply.status
+    stream = http.client.HTTPConnection('source.fixture.example', timeout=6)
+    stream.sock = context.wrap_socket(client, server_hostname='source.fixture.example')
+    stream.auto_open = False  # Losing this TLS stream must fail the request.
     stream.request('GET', '/echo?before-refresh')
     assert stream.getresponse().read() == b'before-refresh'
     held_socket = stream.sock
     assert held_socket is not None
+    formatting = Path('/run/managed-source-format')
+    original_generation = (source / 'current').resolve()
+    started = time.time()
+    formatting.touch()
+    try:
+        first_proof = stage.read_record(state / 'authorization.json')['proof_id']
+        run('systemctl', 'start', 'clash-source-refresh.service')
+        advance_refresh_window(state, stage)
+        def equivalent_applied():
+            stream.request('GET', '/echo?renewal')
+            assert stream.getresponse().read() == b'renewal' and stream.sock is held_socket
+            result = stage.read_record(state / 'source-apply-status.json')
+            return ((source / 'current').resolve() != original_generation
+                    and result.get('result') == 'submitted' and result['at'] >= started
+                    and stage.read_record(state / 'authorization.json')['proof_id'] != first_proof)
+        wait(equivalent_applied, 120)
+        assert stage.service_request(stage_settings, 'GET', '/status')['core_pid'] == before_pid
+        assert (state / 'authorized-config').read_bytes() == before_authority
+        assert stage.read_record(state / 'state.json')['policy_version'] == before_version
+    finally:
+        formatting.unlink()
     marker.touch()
     blocked = Path('/run/managed-source-block')
     blocked.touch()

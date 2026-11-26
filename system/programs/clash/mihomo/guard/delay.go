@@ -2,9 +2,12 @@ package lfguard
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net/netip"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +16,7 @@ import (
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 	"golang.org/x/exp/slices"
+	"golang.org/x/sys/unix"
 	"golang.org/x/time/rate"
 )
 
@@ -31,6 +35,7 @@ var (
 type healthDelayKey struct{}
 type sessionCheckKey struct{}
 type interactiveDelayKey struct{}
+type interactiveTargetKey struct{}
 type backgroundTimeoutKey struct{}
 
 func WithHealthDelay(ctx context.Context) context.Context {
@@ -55,6 +60,74 @@ func SessionCheck(ctx context.Context, target string) bool {
 
 func WithInteractiveDelay(ctx context.Context) context.Context {
 	return context.WithValue(ctx, interactiveDelayKey{}, true)
+}
+
+func bootSeconds() float64 {
+	var ts unix.Timespec
+	if unix.ClockGettime(unix.CLOCK_BOOTTIME, &ts) != nil {
+		return -1
+	}
+	return float64(ts.Sec) + float64(ts.Nsec)/1e9
+}
+
+var coreStarted = bootSeconds()
+
+type delayGeneration struct {
+	Version int64  `json:"policy_version"`
+	Routing int64  `json:"routing_epoch"`
+	Policy  string `json:"routing_policy_digest"`
+	Egress  string `json:"egress_requested"`
+	Exit    int64  `json:"egress_epoch"`
+}
+
+type delayLease struct {
+	delayGeneration
+	Until    float64 `json:"until"`
+	Observed float64 `json:"monotonic_seconds"`
+	Fallback string  `json:"delay_fallback"`
+}
+
+// Only the supervisor chooses an alternate. A desktop request still has to
+// name the configured primary and pays the ordinary interactive quota.
+func InteractiveTarget(ctx context.Context) (context.Context, string) {
+	ctx = WithInteractiveDelay(ctx)
+	p := current.Load()
+	if p == nil || p.DelayTestURL == "" || len(p.HealthTestURLs) < 2 {
+		return ctx, DelayTarget()
+	}
+	data, err := os.ReadFile("/run/proxy-mode/authorization.json")
+	var lease delayLease
+	if err == nil && json.Unmarshal(data, &lease) == nil && lease.Fallback != "" {
+		state, _ := os.ReadFile("/run/proxy-mode/state.json")
+		if target := observedFallback(p, lease, state, coreStarted, bootSeconds()); target != "" {
+			return context.WithValue(ctx, interactiveTargetKey{}, target), target
+		}
+	}
+	return ctx, p.DelayTestURL
+}
+
+func observedFallback(p *policy, lease delayLease, stateData []byte, started, now float64) string {
+	var state struct {
+		delayGeneration
+		Mode      string `json:"mode"`
+		Requested string `json:"routing_requested"`
+	}
+	if json.Unmarshal(stateData, &state) != nil || state.Mode != "proxy" {
+		return ""
+	}
+	if state.Requested == "rules" {
+		state.Egress, state.Exit = "", 0
+	}
+	if state.delayGeneration != lease.delayGeneration ||
+		lease.Until <= now || started < 0 || lease.Observed < started || now < lease.Observed || now-lease.Observed > 60 {
+		return ""
+	}
+	for _, target := range p.HealthTestURLs {
+		if validDelayURL(target, true) && fmt.Sprintf("%x", sha256.Sum256([]byte(p.DelayTestURL+"\n"+target))) == lease.Fallback {
+			return target
+		}
+	}
+	return ""
 }
 
 // The provider's per-node deadline applies to the probe after scheduling.
@@ -116,7 +189,8 @@ func BeginDelay(ctx context.Context, target string) (context.Context, func(), er
 		return ctx, func() {}, nil
 	}
 	health, _ := ctx.Value(healthDelayKey{}).(bool)
-	if !SessionCheck(ctx, target) && !DelayAllowed(target, health) {
+	alternate := ctx.Value(interactiveTargetKey{}) == target && DelayAllowed(target, true)
+	if !alternate && !SessionCheck(ctx, target) && !DelayAllowed(target, health) {
 		return ctx, func() {}, fmt.Errorf("managed delay test endpoint is not authorized")
 	}
 	interactive, _ := ctx.Value(interactiveDelayKey{}).(bool)

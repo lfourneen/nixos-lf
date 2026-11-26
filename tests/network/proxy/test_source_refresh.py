@@ -182,7 +182,8 @@ class SourceRefreshTests(unittest.TestCase):
             'proxies: [{name: Fixture, type: vless, server: 1.1.1.1, lf-source-server: old-prefix.entry.example, port: 443, uuid: old-secret}]\n'
             "proxy-groups: [{name: Choice, type: select, proxies: [Fixture]}]\nrules: ['MATCH,Choice']\n")
         (seed / 'clash-verge.yaml').write_text(self.original)
-        manifest = dict(source_id='one', revision=hashlib.sha256((self.source / 'registry.json').read_bytes()).hexdigest(),
+        manifest = dict(source_id='one', schema=1, assets={}, yaml=hashlib.sha256(self.original.encode()).hexdigest(),
+                        revision=hashlib.sha256((self.source / 'registry.json').read_bytes()).hexdigest(),
                         policy=hashlib.sha256(self.policy.read_bytes()).hexdigest())
         (seed / 'source-manifest.json').write_text(json.dumps(manifest))
         self.old = stage.snapshot_digest(seed)
@@ -606,10 +607,8 @@ class SourceRefreshTests(unittest.TestCase):
 
     def test_unhealthy_or_tampered_current_core_uses_existing_recovery(self):
         for path, replacement in (
-            (self.state / 'health.json', '{}'),
             (self.state / 'authorized-config', '0' * 64),
             (self.root / 'netsec/failed', 'nftables-verify'),
-            (self.state / 'health.json', json.dumps(dict(ok=True, scope={'requests': []}))),
         ):
             original = path.read_bytes() if path.exists() else None
             self.activate.reset_mock()
@@ -623,11 +622,33 @@ class SourceRefreshTests(unittest.TestCase):
                 if original is None: path.unlink()
                 else: path.write_bytes(original)
 
-    def test_current_core_failure_during_rejected_check_still_recovers(self):
+    def test_probe_loss_during_rejected_check_keeps_authorized_core(self):
         self.validate.side_effect = lambda _: (self.state / 'health.json').write_text('{}')
         with patch.object(stage, 'run_audit', return_value=DENY):
             self.run_refresh()
-        self.activate.assert_called_once()
+        self.assert_unchanged()
+
+    def test_new_download_with_equivalent_forwarding_keeps_serving_during_probe_loss(self):
+        (self.candidate / 'clash-verge.yaml').write_text(self.original)
+        manifest_path = self.candidate / 'source-manifest.json'
+        manifest = stage.read_record(manifest_path)
+        manifest.update(responses={'subscription': 'a' * 64}, dropped=1)
+        manifest_path.write_text(json.dumps(manifest))
+        (self.state / 'health.json').write_text('{}')
+        before = (self.runtime / 'effective').readlink()
+        result = refresh.restart_source(self.settings, stage, self.validate, self.activate)
+        self.assertEqual(result, 'accepted')
+        self.assert_unchanged()
+        self.assertEqual((self.runtime / 'effective').readlink(), before)
+        self.assertNotEqual(stage.snapshot_digest(self.candidate), self.old)
+        self.validate.assert_called_once()
+        for changed in (self.original.replace('old-secret', 'new-secret'),
+                        self.original.replace('MATCH,Choice', 'MATCH,REJECT')):
+            with self.subTest(changed=changed[-24:]):
+                (self.candidate / 'clash-verge.yaml').write_text(changed)
+                self.activate.reset_mock()
+                self.run_refresh()
+                self.activate.assert_called_once()
 
     def test_validation_keeps_authority_lock_available_to_other_writers(self):
         import fcntl

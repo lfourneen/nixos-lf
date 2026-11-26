@@ -439,12 +439,24 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
             reasons.append(name + " policy generation differs")
     if policy.get("mode") != target:
         reasons.append("policy is not " + target)
-    authorization = read(root / 'proxy-mode/authorization.json')
+    directory = root / 'proxy-mode'
+    authorization = read(directory / 'authorization.json')
+    source = read(directory / 'source.json')
     lease_required = target == 'proxy' and policy.get('authorization_lease_seconds') is not None
     until = authorization.get('until', 0)
     lease_active = (type(until) in (int, float) and math.isfinite(until) and until > now
                     and authorization.get('boot_id') == boot_id
                     and authorization.get('policy_version') == version)
+    if lease_active and 'authorization_epoch' in authorization:
+        try:
+            epoch = (directory / 'authorization-epoch').read_text().strip()
+        except FileNotFoundError:
+            epoch = '0'
+        except OSError:
+            epoch = None
+        lease_active = (authorization['authorization_epoch'] == epoch and not (root / 'dns-policy/sleeping').exists()
+                        and (not source or (source.get('boot_id') == boot_id
+                             and source.get('snapshot') == authorization.get('digest'))))
     if routing and target == 'proxy':
         lease_active = lease_active and all(authorization.get(key) == routing[key]
             for key in ('routing_epoch', 'routing_policy_digest'))
@@ -494,9 +506,7 @@ def readiness(root=Path("/run"), target="proxy", maximum=120, now=None,
     preflight = read(root / 'proxy-mode/preflight.json')
     if preflight.get('boot_id') != boot_id or not fresh(preflight.get('monotonic_seconds'), now, 86400):
         preflight = {}
-    directory = root / 'proxy-mode'
     health = read(directory / 'health.json')
-    source = read(directory / 'source.json')
     health_current = health.get('boot_id') == boot_id and fresh(health.get('monotonic_seconds'), now, maximum)
     if source.get('boot_id') == boot_id and source.get('provenance') == 'controlled-fetch':
         health_current = health_current and health.get('digest') == source.get('snapshot')

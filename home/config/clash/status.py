@@ -23,6 +23,7 @@ REASONS = {'node': 'Authorized proxy leaves failed the HTTP probe', 'dns': 'Mana
            'policy-repair': 'Repairing policy', 'policy-repair-failed': 'Policy repair failed',
            'policy-repair-backoff': 'Waiting to retry policy repair', 'interrupted': 'Probe cancelled by supervisor'}
 HEALTH_STAGES = {'mixed-request': 'Mixed HTTP request failed',
+                 'target-unavailable': 'HTTP targets unavailable after successful proxy sessions',
                  'validator-dns': 'Managed validator did not resolve the probe name',
                  'controller': 'Controller connection unavailable',
                  'node-auth': 'Sampled leaves rejected authentication',
@@ -275,6 +276,10 @@ def rows(state):
         value = 'Passed' if health.get('ok') else HEALTH_STAGES.get(health.get('failure_stage'),
                                                                  REASONS.get(health.get('reason'), 'Incomplete'))
         yield 'Last proxy probe', value + f" · duration {health.get('duration_ms', '?')} ms"
+        if health.get('delay_primary_ok') is False:
+            dns = {True: 'resolved', False: 'failed'}.get(health.get('delay_primary_dns_ok'), 'not sampled')
+            fallback = ' · GUI fallback verified' if health.get('ok') and health.get('delay_fallback') else ''
+            yield 'Delay test target', f'Primary HTTP failed · primary DNS {dns}' + fallback
         if not health.get('ok') and len(stages := health.get('failure_stages', [])) > 1:
             yield 'Probe failure sequence', ' → '.join(HEALTH_STAGES.get(stage, clean(stage)) for stage in stages)
         if health.get('dns_leaf'):

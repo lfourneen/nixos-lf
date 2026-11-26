@@ -416,6 +416,12 @@ in
     description = "Exact HTTPS endpoint for managed desktop delay tests and automatic proxy-group and provider checks.";
   };
 
+  options.my.proxy.delayTestFallbackUrl = lib.mkOption {
+    type = lib.types.nullOr (lib.types.strMatching "https://[^[:space:]]+");
+    default = null;
+    description = "Optional desktop fallback when the supervisor observes the primary fail and this configured nodeProbeUrls target pass on the same route.";
+  };
+
   # Split-routing checks embed these names, so GEOIP,CN would send them direct
   # and expose the real client address. The controlled renderer and the GUI
   # Merge template prepend them with the subscription's catch-all group.

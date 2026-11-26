@@ -5,7 +5,9 @@ even when the caller stops running. Proof time is boot time, including suspend.
 """
 import json
 import math
+import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -13,6 +15,16 @@ import time
 
 def read(path):
     return json.loads(path.read_text())
+
+
+def publish(path, record, mode):
+    temporary = path.with_suffix('.new')
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, 'w') as stream:
+        os.fchmod(stream.fileno(), mode)
+        json.dump(record, stream)
+        stream.write('\n')
+    temporary.replace(path)
 
 
 def full_routing_proof(proof, target, tunnel=None):
@@ -43,7 +55,10 @@ def grant(settings, version, root=Path('/run'), now=None, run=subprocess.run):
     boot = (state / 'boot-id').read_text().strip()
     digest = (state / 'config-digest').read_text().strip()
     observed = proof.get('monotonic_seconds')
-    previous = read(state / 'authorization.json') if (state / 'authorization.json').exists() else {}
+    public = state / 'authorization.json'
+    journal = state / 'authorization-consumed.json'
+    previous = read(public) if public.exists() else {}
+    consumed = read(journal) if journal.exists() else {}
     epoch = (state / 'authorization-epoch').read_text().strip() if (state / 'authorization-epoch').exists() else '0'
     routing = {}
     if 'routing_epoch' in policy:
@@ -67,25 +82,31 @@ def grant(settings, version, root=Path('/run'), now=None, run=subprocess.run):
             or type(observed) not in (int, float) or not math.isfinite(observed)
             or not 0 <= now - observed < seconds
             or not isinstance(proof.get('proof_id'), str) or not proof['proof_id']
-            or proof['proof_id'] == previous.get('proof_id')):
+            or proof['proof_id'] == previous.get('proof_id')
+            or (consumed.get('boot_id') == boot and (proof['proof_id'] == consumed['proof_id']
+                or observed <= consumed['monotonic_seconds']))):
         raise ValueError('stale, replayed or unauthorized health proof')
     remaining = int((observed + seconds - now) * 1000)
     if remaining <= 0:
         raise ValueError('expired health proof')
     # Record consumption before nft: interrupted/ambiguous commits cannot reuse
     # the same proof. Only a new complete health round can retry authorization.
-    temporary = state / 'authorization.json.tmp'
-    temporary.write_text(json.dumps(dict(boot_id=boot, proof_id=proof['proof_id'],
-        policy_version=policy['policy_version'], until=0, **routing)) + '\n')
-    temporary.replace(state / 'authorization.json')
+    binding = dict(boot_id=boot, digest=digest, authorization_epoch=epoch,
+                   policy_version=policy['policy_version'], **routing)
+    record = dict(binding, proof_id=proof['proof_id'])
+    if any(previous.get(key) != value for key, value in binding.items()):
+        # An initial, legacy or differently bound lease cannot cover this commit.
+        publish(public, dict(record, until=0), 0o644)
+    publish(journal, dict(boot_id=boot, proof_id=proof['proof_id'], monotonic_seconds=observed), 0o600)
     transaction = ('flush set inet lf_filter b_authorization\n'
         'add element inet lf_filter b_authorization { '
         f'ipv4 timeout {remaining}ms, ipv6 timeout {remaining}ms' + ' }\n')
     run([settings['nft'], '-f', '-'], input=transaction, text=True,
         capture_output=True, timeout=5, check=True)
-    temporary.write_text(json.dumps(dict(boot_id=boot, proof_id=proof['proof_id'],
-        policy_version=policy['policy_version'], until=observed + seconds, **routing)) + '\n')
-    temporary.replace(state / 'authorization.json')
+    fallback = proof.get('delay_fallback')
+    if isinstance(fallback, str) and re.fullmatch('[a-f0-9]{64}', fallback):
+        record.update(delay_fallback=fallback, monotonic_seconds=observed)
+    publish(public, dict(record, until=observed + seconds), 0o644)
 
 
 if __name__ == '__main__':
