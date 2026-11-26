@@ -8,7 +8,7 @@
 
 <p align="center">个人 NixOS 系统配置</p>
 
-[English](README.md) | 简体中文
+<p align="center"><a href="README.md">English</a> | 简体中文</p>
 
 这是一套通过 Nix flakes 和 Home Manager 管理的个人 NixOS 系统配置，涵盖 Niri 桌面、应用软件、开发环境和加密存储。
 工作站的网络配置集成了 nftables 防火墙、Mihomo（Clash）系统级透明代理，以及支持 DNSSEC 验证的加密 DNS。
@@ -112,7 +112,7 @@ sudo nixos-rebuild switch --flake .#lfour
 | 命令 | 用途 |
 |---|---|
 | `clash-on` | 请求代理并启动受管核心 |
-| `clash-off` | 切换到直连 |
+| `clash-off` | 切换到 A 并确认直连防火墙与路由策略生效 |
 | `clash-rules` | 选择订阅规则路由并请求健康 B |
 | `clash-proxy-only` | 选择严格代理路由并请求健康 B |
 | `clash-egress [ID]` | 列出已接受来源的出口候选，或经受保护事务选择其中一个 |
@@ -123,12 +123,15 @@ sudo nixos-rebuild switch --flake .#lfour
 | `firefox-portal http://192.168.1.1/` | 在直连模式打开临时门户会话 |
 
 A 表示直连，B 表示代理健康可用，C 在代理不可用时阻断应用流量。
-关闭 GUI 保留受管核心运行。使用 `clash-off` 切换到 A。
+关闭 GUI 后受管核心继续运行。`clash-off` 切换到 A 后，可用 `proxy-status` 单独查看直连 DNS 是否就绪。
 Clash Verge 保持上游打包版本，用于选择和监控节点。系统会丢弃 GUI 发出的 System Proxy、TUN 和核心模式请求。
 使用系统命令选择 `rules` 或 `proxy-only`，两种路由均使用 Mihomo 的 `mode: rule`。
 运行 `clash-on` 时，受控订阅优先恢复已接受快照。常规启动更新等待健康 B。恢复的快照不健康时，可在 C 中尝试一次有时限的恢复。
-已登记订阅也会每 30 分钟刷新，正常节点轮换自动批准。
-成功更新不弹窗，失败通过桌面通知和 `proxy-status` 提示。
+
+可通过 Clash Verge 的刷新按钮向系统提交已登记订阅的更新。定时刷新按订阅配置的间隔执行，默认 30 分钟。启用自动更新时，关闭 GUI 后仍会定时刷新。
+若更新未改变转发行为，且运行中的快照仍获授权并处于就绪状态，已有连接会继续使用。应用改变转发行为的新配置时，系统会先进入 C，再重启核心。
+用 `proxy-status` 查看下载和应用结果。见[刷新状态](docs/CN/operations_CN.md#刷新状态)。
+
 来源管理、诊断和离线恢复见[操作与诊断](docs/CN/operations_CN.md)。
 
 ## Hermes 与密钥
