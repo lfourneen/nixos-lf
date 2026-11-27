@@ -13,6 +13,8 @@ in
     "org/gnome/desktop/interface" = {
       cursor-theme = "Iochi Mari (Gym ver.)";
       cursor-size = 48;
+      document-font-name = "Maple Mono NF CN Medium Italic 10";
+      monospace-font-name = "Maple Mono NF CN Medium Italic 10";
     };
 
     # org.gnome.system.proxy schema path is /system/proxy/ (not /org/gnome/).

@@ -4,6 +4,10 @@
   gtk = {
     enable = true;
     colorScheme = "light";
+    font = {
+      name = "Maple Mono NF CN Medium Italic";
+      size = 10;
+    };
 
     theme = {
       name = "Adwaita";

@@ -106,6 +106,19 @@
     emoji     = [ "Twitter Color Emoji" ];
   };
 
+  # Match Maple Mono NF CN to its Medium Italic face by default. This also
+  # applies when an application only asks for the family or a generic alias.
+  fonts.fontconfig.localConf = ''
+    <?xml version="1.0"?>
+    <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+    <fontconfig>
+      <match target="pattern">
+        <test qual="any" name="family"><string>Maple Mono NF CN</string></test>
+        <edit name="style" mode="assign"><string>Medium Italic</string></edit>
+      </match>
+    </fontconfig>
+  '';
+
   # Large repos plus editors/browsers can exhaust inotify watches; raise the
   # per-user budget so recursive watchers do not fail with ENOSPC.
   boot.kernel.sysctl = {
