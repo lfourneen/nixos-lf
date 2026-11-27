@@ -10,6 +10,7 @@
     ./easyeda-bridge.nix
     ./llm.nix
     # ./opencode.nix
+    ./onlyoffice.nix
     ./vscode.nix
     ./zed-editor.nix
   ];

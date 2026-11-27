@@ -27,6 +27,11 @@ in
     overrides.settings.global = {
       Environment = {
         GTK_THEME = "Adwaita";
+
+        # Host Qt style overrides (Adwaita/Breeze) have no matching plugin in
+        # the Flatpak runtime; clear it so Qt uses its bundled style.
+        QT_STYLE_OVERRIDE = "";
+
         # Do not bridge Flatpak Qt apps through GTK; Qt falls back to its
         # own light style instead.
         QT_QPA_PLATFORMTHEME = "";

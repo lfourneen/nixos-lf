@@ -26,7 +26,7 @@ let
       QT_QPA_PLATFORM "wayland"
       QT_QPA_PLATFORMTHEME ""
       QT_WAYLAND_DISABLE_WINDOWDECORATION "1"
-      
+
       ELECTRON_OZONE_PLATFORM_HINT "wayland"
       _JAVA_AWT_WM_NONREPARENTING "1"
 
@@ -440,6 +440,20 @@ let
       }
     }
 
+    // OnlyOffice
+    window-rule {
+      match app-id=r#"(?i)^(org\.onlyoffice\.desktopeditors|onlyoffice.*)$"#
+      exclude title=r#"(?i)(dialog|settings|preferences|about)"#
+      open-maximized true
+      geometry-corner-radius 0
+      clip-to-geometry true
+      opacity 1.0
+      background-effect { blur false; }
+      shadow { off; }
+      focus-ring { off; }
+      border { off; }
+    }
+
     window-rule {
       match app-id="^catwhale-pet$" title="^Catwhale Pet$"
       open-floating true
@@ -472,7 +486,7 @@ let
       XF86MonBrightnessUp allow-when-locked=true { spawn "brightnessctl" "--class=backlight" "set" "+10%";   }
       XF86MonBrightnessDown allow-when-locked=true { spawn "brightnessctl" "--class=backlight" "set" "10%-  "; }
 
-      Mod+A repeat=false { toggle-overview; } 
+      Mod+A repeat=false { toggle-overview; }
       Mod+X repeat=false { close-window; }
 
       Mod+Left  { focus-column-left; }
@@ -598,7 +612,7 @@ let
   # target. Valid ids are left untouched, so the last applied wallpaper is
   # preserved. Upstream display recall passes the saved ID to apply_wallpaper,
   # which returns WallpaperNotFound for a removed library item.
-  waywallenFallbackWallpaper = "Iochi_Mari.mp4"; # basename to prefer; "" = any video
+  waywallenFallbackWallpaper = "timeless-nascence.mp4"; # basename to prefer; "" = any video
   waywallenFixRestore = pkgs.writeText "waywallen-fix-restore.py" ''
     import os, re, sqlite3, sys
 
@@ -694,4 +708,3 @@ in
     Install.WantedBy = [ "graphical-session.target" ];
   };
 }
-
