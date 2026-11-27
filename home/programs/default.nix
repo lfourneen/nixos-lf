@@ -5,6 +5,7 @@
 
     # Files
     ./antigravity.nix
+    ./brush.nix
     ./codex.nix
     ./easyeda-bridge.nix
     ./llm.nix

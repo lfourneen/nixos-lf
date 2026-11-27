@@ -13,11 +13,12 @@
 | [`system/programs/gost/`](../../system/programs/gost) | Gost 打包、HTTP 补丁与 relay 服务 |
 | [`system/programs/hermes/`](../../system/programs/hermes) | Agent 配置、`hermes-skills/`、邮件 CLI 与受限 rootless Docker 集成 |
 | [`home/config/clash/`](../../home/config/clash) | Home Manager 写入用户目录的配置及英文状态渲染器 |
+| [`home/programs/brush.nix`](../../home/programs/brush.nix) | 桌面用户的交互式 Brush 命令和环境变量 |
 | [`home/programs/firefox/`](../../home/programs/firefox) | 受管浏览器偏好、启动器和桌面沙箱 |
 | [`system/programs/systemd/`](../../system/programs/systemd) | journald 与 coredump 全局设置 |
 | [`system/hardware/`](../../system/hardware) | 设备声明及配套的启动、CPU 和 NVIDIA 服务设置 |
 
-`home/config/clash/status.py` 从 `system/config/network/proxy/state.py` 读取共用的就绪状态契约。`diagnostics` 模块把状态和诊断命令导出给交互式 shell 和自动化脚本调用，Nushell 也会把 `proxy-status` 的参数原样转过去。至于特权配置导入和快照授权，统一由系统侧的 Clash 服务负责。
+`home/config/clash/status.py` 从 `system/config/network/proxy/state.py` 读取共用的就绪状态契约。`diagnostics` 模块提供 `proxy-status`，交互式 Shell 和自动化脚本都能直接调用。特权配置导入和快照授权由系统侧的 Clash 服务负责。
 
 ## 网络配置
 

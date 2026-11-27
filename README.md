@@ -36,7 +36,7 @@ Both the [network modules](system/config/network/) and [NixOS VM tests](tests/ch
 
 - **Wayland desktop.** Niri is the default session, paired with Noctalia for the bar, launcher, notifications, and wallpaper-driven theming. GNOME is also available in GDM, and Fcitx5 with Rime handles Chinese input.
 - **Storage and persistence.** Disko lays out a LUKS2-encrypted Btrfs setup where the root subvolume is wiped and recreated on every boot, while Impermanence keeps selected system and application state under `/persist`.
-- **Development environment.** Nushell, Neovim (with LSPs), VS Code, and Zed are configured alongside rootless Docker, virtualization tools, and FHS environments for software that expects a traditional Linux filesystem layout.
+- **Development environment.** Brush, Neovim (with LSPs), VS Code, and Zed are configured alongside rootless Docker, virtualization tools, and FHS environments for software that expects a traditional Linux filesystem layout.
 - **Firefox.** Packaged natively with locked privacy settings, an outer filesystem sandbox, a separate identity profile, and a temporary portal browser. Startup checks the current network state before launching.
 - **Hermes Agent.** The agent, gateway, dashboard, MCP integrations, and skills are all declared in Nix. Agent state lives in `/var/lib/hermes`, using a separate account and Docker backend for container workloads.
 - **Hardware and remote access.** AMD/NVIDIA graphics, audio, Bluetooth, USBGuard, and Sunshine streaming over Tailscale are tailored to my hardware. See the [USBGuard guide](scripts/README.md#usbguard-policy) for initial setup and device authorization.
@@ -107,7 +107,7 @@ Clicking the refresh button in Clash Verge submits a registered subscription upd
 
 ## Hermes and secrets
 
-Hermes configuration and skills live in [system/programs/hermes/](system/programs/hermes). You can launch the CLI with `hermes` in Nushell, or `sudo -u hermes -i hermes` from any other shell. Its container endpoint and data handling are documented in [Hermes containers](docs/operations.md#hermes-containers).
+Hermes configuration and skills live in [system/programs/hermes/](system/programs/hermes). You can launch the CLI with `hermes` in an interactive Brush session, or `sudo -u hermes -i hermes` from any shell. Its container endpoint and data handling are documented in [Hermes containers](docs/operations.md#hermes-containers).
 
 Secrets are managed with `sops-nix`. By default, system services decrypt using the root-only Age identity at `/persist/secrets/age/system.key`, so make sure that key is in place before the first rebuild. The [scripts guide](scripts/README.md#system-age-keypy) walks through adopting an existing `age.txt` or `keys.txt`, generating a new identity, adding its recipient to `.sops.yaml`, and re-encrypting existing files. Keep the private key out of Git and back it up offline. (To fall back to `~/.config/sops/age/keys.txt`, set `my.secrets.systemAgeKey.enable = false`.)
 

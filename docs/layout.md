@@ -13,11 +13,12 @@ System services and policy live under `system/`, while Home Manager modules unde
 | [`system/programs/gost/`](../system/programs/gost) | Gost packaging, HTTP patch, and relay service |
 | [`system/programs/hermes/`](../system/programs/hermes) | Agent configuration, `hermes-skills/`, mail CLI, and restricted rootless Docker integration |
 | [`home/config/clash/`](../home/config/clash) | Home Manager user profile files and the English status renderer |
+| [`home/programs/brush.nix`](../home/programs/brush.nix) | Desktop user's interactive Brush commands and environment |
 | [`home/programs/firefox/`](../home/programs/firefox) | Managed browser preferences, launcher, and desktop sandbox |
 | [`system/programs/systemd/`](../system/programs/systemd) | Global journald and coredump settings |
 | [`system/hardware/`](../system/hardware) | Device configuration and associated boot, CPU, and NVIDIA service settings |
 
-The status renderer in `home/config/clash/status.py` reads the shared readiness contract defined in `system/config/network/proxy/state.py`. The diagnostics module exports its command for interactive shells and scripts alike, and Nushell forwards `proxy-status` arguments directly to it. Privileged configuration import and snapshot authorization stay on the system side with the Clash service.
+The status renderer in `home/config/clash/status.py` reads the shared readiness contract defined in `system/config/network/proxy/state.py`. The diagnostics module provides `proxy-status` to interactive shells and scripts. Privileged configuration import and snapshot authorization stay on the system side with the Clash service.
 
 ## Network feature
 

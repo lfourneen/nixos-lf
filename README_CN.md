@@ -36,7 +36,7 @@
 
 - **Wayland 桌面**：默认会话是 Niri，搭配 Noctalia 负责状态栏、启动器、通知和随壁纸联动的主题；GDM 里也留了 GNOME 可选。中文输入法使用 Fcitx5 + Rime。
 - **存储与持久化**：Disko 声明了基于 LUKS2 加密的 Btrfs 布局，每次开机重建根子卷，Impermanence 负责把指定的系统和应用数据留在 `/persist`。
-- **开发环境**：配好了 Nushell、带 LSP 的 Neovim、VS Code 和 Zed，外加 rootless Docker、虚拟化工具，以及给传统 Linux 二进制准备的 FHS 环境。
+- **开发环境**：配好了 Brush、带 LSP 的 Neovim、VS Code 和 Zed，外加 rootless Docker、虚拟化工具，以及给传统 Linux 二进制准备的 FHS 环境。
 - **Firefox**：使用原生 Nix 包，内置锁定的隐私策略、外层文件系统沙箱、独立身份 profile 和临时门户浏览器，每次启动都会先核对网络状态。
 - **Hermes Agent**：agent、gateway、dashboard、MCP 集成和技能全部声明在 Nix 里，数据放在 `/var/lib/hermes`，容器工作负载使用独立账户和 Docker 后端。
 - **硬件与远程访问**：按作者本机配置了 AMD/NVIDIA 显卡、音频、蓝牙、USBGuard 和跑在 Tailscale 上的 Sunshine 串流。初次启用 USBGuard 和设备授权可以参考 [USBGuard 使用说明](scripts/README_CN.md#usbguard-策略)。
@@ -107,7 +107,7 @@ Clash Verge 保留了上游打包，主要用来选节点和看监控，它在�
 
 ## Hermes 与密钥
 
-Hermes 的配置和技能都在 [system/programs/hermes/](system/programs/hermes)。在 Nushell 里直接输 `hermes` 就能进 CLI，其他 shell 可以用 `sudo -u hermes -i hermes`。容器入口和数据管理见 [Hermes 容器](docs/CN/operations_CN.md#hermes-容器)。
+Hermes 的配置和技能都在 [system/programs/hermes/](system/programs/hermes)。在交互式 Brush 里直接运行 `hermes` 就能进 CLI，也可以在任何 Shell 里用 `sudo -u hermes -i hermes`。容器入口和数据管理见 [Hermes 容器](docs/CN/operations_CN.md#hermes-容器)。
 
 密钥交给 `sops-nix` 管理。系统服务默认用 `/persist/secrets/age/system.key` 这把只有 root 能读的 Age 私钥解密，所以第一次重建系统前得先把密钥放好。怎么接管现有的 `age.txt` / `keys.txt`、从头生成身份、把公钥写入 `.sops.yaml` 以及重新加密文件，都可以看[脚本说明](scripts/README_CN.md#system-age-keypy)。私钥千万别提交到 Git，记得做好离线备份。如果想回退到用户目录下的 `~/.config/sops/age/keys.txt`，设一下 `my.secrets.systemAgeKey.enable = false` 就行。
 

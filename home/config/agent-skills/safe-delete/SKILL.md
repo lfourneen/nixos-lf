@@ -27,7 +27,7 @@ Use `rm -- "$target"` for disposable temporary files, build outputs, or caches c
 
 If `trash-put` is missing, make the tool available first. If moving a file fails, keep it in place and diagnose the failure. Empty the trash only when the task explicitly calls for it.
 
-On this machine, Nushell wraps `rm` as a trash operation. Other shells require an explicit trash command. Python deletion APIs and the external `rm` binary retain their usual behavior.
+On this machine, interactive Brush aliases `rm` to `trash-put`. Call `trash-put` explicitly when trashing from scripts. Python deletion APIs and the external `rm` binary retain their usual behavior.
 
 ## Verification and recovery
 

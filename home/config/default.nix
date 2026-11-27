@@ -9,7 +9,6 @@
     # Files
     ./dconf.nix
     ./neovim.nix
-    ./nushell.nix
     ./theme.nix
   ];
 }

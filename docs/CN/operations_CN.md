@@ -100,7 +100,7 @@ clash-diff
 
 ## 模式切换
 
-在 Nushell 里用 `clash-on` 和 `clash-off` 切换。开启运行时路由时，`clash-on` 每次起核心最多等 90 秒完成 DNS/TUN 预热并拿到就绪证明；要是恢复的受控快照连续在数据面翻车，`clash-on` 会在 **C** 里试一次兼容缓存更新（本机还开了 `my.proxy.startupRecoveryFetch`，缓存不可用时允许在 **C** 受限下载一次——共用从首个核心启动算起的 210 秒就绪截止）。关掉 GUI 不影响代理意图和核心运行，彻底停代理用 `clash-off`。
+在 Brush 里用 `clash-on` 和 `clash-off` 切换。开启运行时路由时，`clash-on` 每次起核心最多等 90 秒完成 DNS/TUN 预热并拿到就绪证明；要是恢复的受控快照连续在数据面翻车，`clash-on` 会在 **C** 里试一次兼容缓存更新（本机还开了 `my.proxy.startupRecoveryFetch`，缓存不可用时允许在 **C** 受限下载一次——共用从首个核心启动算起的 210 秒就绪截止）。关掉 GUI 不影响代理意图和核心运行，彻底停代理用 `clash-off`。
 
 `clash-rules` 和 `clash-proxy-only` 一键选好路由子模式并请求 **B**（核心启动后最多等 90 秒确认就绪），只在终端返回模式或失败阶段，不开 GUI、不发通知、也不跑 `proxy-status`（底层是 `sudo proxy-control routing rules` 和 `sudo proxy-control routing proxy-only`）。`clash-off` 会为本次启动留住选择，`clash-on` 复用它，重启恢复 `rules`。`proxy-only` 要求已有已接受的固定节点来源，准备或健康检查挂了就停在 **C** 等重试。
 

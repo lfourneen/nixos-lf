@@ -18,7 +18,7 @@
                rules 或固定出口
 ```
 
-Gost 监听在宿主命名空间，宿主回环到核心端口的流量通过私有 `veth` 转进 `lf-clash-core` 命名空间，核心的监听端口和真正的 TUN 设备都住在里面。由于本机启用了 `my.proxy.transparentApplications`，Niri、Nushell、GSettings、Flatpak、Zed、Nix daemon 和 Hermes 都直接走原生路径，不需要配置应用级代理环境变量。
+Gost 监听在宿主命名空间，宿主回环到核心端口的流量通过私有 `veth` 转进 `lf-clash-core` 命名空间，核心的监听端口和真正的 TUN 设备都住在里面。由于本机启用了 `my.proxy.transparentApplications`，Niri、Brush、GSettings、Flatpak、Zed、Nix daemon 和 Hermes 都直接走原生路径，不需要配置应用级代理环境变量。
 
 开启透明代理后，Flatpak 安装服务首次运行时会清掉系统全局覆盖里那些仍与旧声明一致、且有 `nix-flatpak` 归属记录的 Gost 代理变量（手改过或归属不明的键会原样保留，并在服务日志里点名；用户级和按应用区分的覆盖不受影响）。切完代次记得注销重新登录，让会话进程拿到新环境。在 **A** 下原生 socket 直接出站，**C** 下则阻断普通外部流量；如果是采用兼容默认值 `my.proxy.transparentApplications = false` 的系统，客户端仍可指向 `127.0.0.1:33332` 的 Gost HTTP 代理。
 

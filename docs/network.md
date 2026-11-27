@@ -18,7 +18,7 @@ Native TCP and UDP                    TCP fallback
             rules or fixed exit
 ```
 
-Gost listens in the host namespace, while host loopback access to core ports is forwarded across a private `veth` into `lf-clash-core`, where the core listeners and actual TUN live. Because the host enables `my.proxy.transparentApplications`, Niri, Nushell, GSettings, Flatpak, Zed, the Nix daemon, and Hermes all use native sockets without any managed app-level proxy variables.
+Gost listens in the host namespace, while host loopback access to core ports is forwarded across a private `veth` into `lf-clash-core`, where the core listeners and actual TUN live. Because the host enables `my.proxy.transparentApplications`, Niri, Brush, GSettings, Flatpak, Zed, the Nix daemon, and Hermes all use native sockets without any managed app-level proxy variables.
 
 On the first Flatpak installation service run after enabling transparency, the service strips unchanged legacy Gost settings from the global system override whenever `nix-flatpak` records ownership (edited or unverified keys stay put and are noted in the journal; user and per-app overrides are untouched). Log out and back in after switching generations so session processes pick up the updated environment. In **A**, native sockets go out directly; **C** blocks ordinary external traffic. Setups using the compatibility default (`my.proxy.transparentApplications = false`) can still point clients at Gost HTTP on `127.0.0.1:33332`.
 

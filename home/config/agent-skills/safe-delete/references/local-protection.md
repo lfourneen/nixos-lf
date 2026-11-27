@@ -60,7 +60,7 @@ Use `lsattr -d -- "$target"` to check for `i`. The immutable flag on a directory
 
 ## Trash behavior
 
-The local Nushell `rm` invokes `trash-put`. Other shells and in-process deletion APIs retain their normal behavior. Call `trash-put` explicitly when trashing an item.
+Interactive Brush aliases `rm` to `trash-put`. Call `trash-put` explicitly when trashing an item.
 
 The home trash usually lives at `${XDG_DATA_HOME:-$HOME/.local/share}/Trash`. The `files` directory holds trashed items and `info` holds recovery metadata. Other mounts may use their own trash directories. Use `trash-list` to check records.
 

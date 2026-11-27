@@ -1,6 +1,8 @@
 { pkgs, ... }:
 
 {
+  environment.shells = [ pkgs.brush ];
+
   # Define user account.
   users = {
     mutableUsers = false;
@@ -21,7 +23,7 @@
         isNormalUser = true;
         hashedPasswordFile = "/persist/passwords/lfour";
         description = "LFour";
-        shell = pkgs.unstable.nushell;
+        shell = pkgs.brush;
 
         extraGroups = [
           "networkmanager"

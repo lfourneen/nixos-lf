@@ -44,7 +44,7 @@ assert applicationProbe.Slice == "untrusted.slice" && applicationProbe.IPAddress
 assert applicationProbe.NoNewPrivileges && applicationProbe.CapabilityBoundingSet == "";
 assert builtins.length diagnosticCommands == 1;
 assert !(builtins.any (p: (p.pname or (p.name or "")) == "clash-apply") c.environment.systemPackages);
-assert !(pkgs.lib.hasInfix "clash-apply" h.programs.nushell.extraConfig);
+assert !(pkgs.lib.hasInfix "clash-apply" h.home.file.".brushrc".text);
 
 pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3 ]; } ''
   test -x ${command}/bin/clash-source
