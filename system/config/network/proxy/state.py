@@ -30,7 +30,7 @@ def fresh(stamp, now, maximum):
 REFRESH_RESULTS = ('accepted', 'fallback', 'rolled_back', 'refused', 'verifying', 'restored')
 REFRESH_REASONS = ('configuration invalid', 'input unreadable', 'validation timeout',
                    'snapshot mismatch', 'blocked by audit', 'audit indeterminate',
-                   'operator authorization required', 'recent health failure', 'unknown', 'node', 'tun', 'dns', 'obs', 'application')
+                   'operator authorization required', 'recent health failure', 'unknown', 'node', 'tun', 'dns', 'obs', 'controller-unavailable', 'application')
 FETCH_REASONS = frozenset(('dns lookup failed', 'certificate rejected', 'tls failed',
     'connection timeout', 'connection refused', 'connection reset', 'network unreachable',
     'http rejected', 'encoding unsupported', 'redirect refused', 'destination refused',

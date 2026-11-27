@@ -79,6 +79,14 @@ type lfDelayCall struct {
 	expected utils.IntRanges[uint16]
 }
 
+func (call *lfDelayCall) refuseRevoked(w http.ResponseWriter, r *http.Request) bool {
+	if context.Cause(call.ctx) != lfguard.ErrDesktopRevoked {
+		return false
+	}
+	lfRefuseDelay(w, r, http.StatusForbidden, lfguard.ErrDesktopRevoked.Error())
+	return true
+}
+
 func lfSessionCheck(w http.ResponseWriter, r *http.Request) {
 	root, _ := r.Context().Value(lfControllerRoot{}).(bool)
 	if !root || len(r.URL.RawQuery) > 4096 {
@@ -133,6 +141,7 @@ func lfStartDelay(w http.ResponseWriter, r *http.Request, group string) *lfDelay
 		return lfRefuseDelay(w, r, http.StatusBadRequest, "invalid delay test parameters")
 	}
 	ctx := r.Context()
+	deadline := context.WithTimeout
 	target := query.Get("url")
 	release := func() {}
 	if managed {
@@ -156,6 +165,7 @@ func lfStartDelay(w http.ResponseWriter, r *http.Request, group string) *lfDelay
 			batch := ""
 			if group != "" {
 				batch = "group/" + group
+				deadline = lfguard.ScheduledDelay
 			}
 			release = lfReserveDelay(batch)
 			if release == nil {
@@ -167,7 +177,7 @@ func lfStartDelay(w http.ResponseWriter, r *http.Request, group string) *lfDelay
 			}
 		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
+	ctx, cancel := deadline(ctx, time.Duration(timeout)*time.Millisecond)
 	return &lfDelayCall{
 		ctx: ctx, stop: func() { cancel(); release() }, target: target, expected: expected,
 	}
@@ -182,7 +192,7 @@ func lfProviderDelay(w http.ResponseWriter, r *http.Request, name string) *lfDel
 		return lfRefuseDelay(w, r, http.StatusTooManyRequests, "managed delay tests are busy")
 	}
 	ctx, target := lfguard.InteractiveTarget(r.Context())
-	ctx, cancel := context.WithTimeout(ctx, lfguard.MaxInteractiveDelay)
+	ctx, cancel := lfguard.ScheduledDelay(ctx, lfguard.MaxInteractiveDelay)
 	return &lfDelayCall{
 		ctx: ctx, stop: func() { cancel(); release() }, target: target,
 	}

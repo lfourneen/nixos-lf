@@ -10,8 +10,8 @@ let
   guiPort = 45129;
 
   rendererSettings = {
-    forced_domains = p.tunProbeNames ++ map (url:
-      builtins.head (builtins.match "https?://([^/:]+).*" url)) (p.nodeProbeUrls ++ [ p.delayTestUrl ]);
+    forced_domains = p.tunProbeNames ++ lib.filter (name: builtins.match "[0-9.]+" name == null) (map (url:
+      builtins.head (builtins.match "https?://([^/:]+).*" url)) (p.nodeProbeUrls ++ [ p.delayTestUrl ]));
     probe_domains = p.probeDomains;
     remote_only_catchall = p.remoteOnlyCatchAll;
   };

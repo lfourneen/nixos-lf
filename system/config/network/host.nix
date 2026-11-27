@@ -64,6 +64,7 @@ in
   # Cold foreign DNSSEC validation can outlive the module's 12 s probe budget;
   # leave room for the 3 s fake-IP lookups plus the HTTP/TUN checks.
   my.proxy.healthBudgetSeconds = 18;
+  my.proxy.delayTestUrl = "https://www.gstatic.com/generate_204";
   my.proxy.delayTestFallbackUrl = "https://cp.cloudflare.com/generate_204";
 
   # Keep the offline content audit in blocking mode for this host. Reusable

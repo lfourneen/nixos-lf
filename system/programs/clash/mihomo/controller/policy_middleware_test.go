@@ -68,7 +68,11 @@ func TestLFManagedDelayControllerRequiresExactURLAndRootPeer(t *testing.T) {
 				t.Fatalf("unexpected dial target %s", call.target)
 			}
 			deadline, ok := call.ctx.Deadline()
-			if !ok || time.Until(deadline) > lfguard.MaxInteractiveDelay {
+			limit := lfguard.MaxInteractiveDelay
+			if tt.group != "" && !tt.root {
+				limit += 30 * time.Second
+			}
+			if !ok || time.Until(deadline) > limit {
 				t.Fatal("delay deadline exceeds limit")
 			}
 			call.stop()

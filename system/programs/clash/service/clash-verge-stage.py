@@ -256,7 +256,7 @@ class RefreshError(ValueError):
 
 REASONS = {'configuration invalid', 'input unreadable', 'validation timeout',
            'snapshot mismatch', 'blocked by audit', 'audit indeterminate',
-           'operator authorization required', 'recent health failure', 'unknown', 'node', 'tun', 'dns', 'obs', 'application'}
+           'operator authorization required', 'recent health failure', 'unknown', 'node', 'tun', 'dns', 'obs', 'controller-unavailable', 'application'}
 PIN_TTL = 3600
 HISTORY = 20
 AUTO_APPROVAL_CATEGORIES = frozenset(('node_identity', 'node_authentication', 'node_transport'))
@@ -795,7 +795,7 @@ def complete_commit(runtime, state, settings=None):
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
         raise ValueError('invalid snapshot transaction permissions')
     commit = read_record(path)
-    if commit.get('boot_id') != boot_id(state) or commit.get('kind') not in ('import', 'rollback'):
+    if commit.get('boot_id') != boot_id(state) or commit.get('kind') not in ('import', 'rollback', 'refuse'):
         raise ValueError('invalid snapshot transaction')
     if (state / 'intent').read_text().strip() != 'proxy':
         raise ValueError('proxy intent was revoked during commit')
@@ -809,6 +809,21 @@ def complete_commit(runtime, state, settings=None):
         if any(record.get(key) != selected.get(key) for key in
                keys):
             raise ValueError('snapshot transaction belongs to another routing epoch')
+    if commit['kind'] == 'refuse':
+        with (state / 'lock').open('a') as policy_lock:
+            fcntl.flock(policy_lock, fcntl.LOCK_EX)
+            effective = runtime / 'effective'
+            if effective.is_symlink() and effective.resolve() != directory:
+                raise ValueError('refused snapshot is no longer effective')
+            for name in ('authorized-config', 'config-digest', 'authorization.json', 'source.json',
+                         'effective-config-sha256', 'effective-config.json', 'snapshot-verification.json'):
+                (state / name).unlink(missing_ok=True)
+            effective.unlink(missing_ok=True)
+        audit(state, 'refused', record['policy'], record['digest'], reason=record['rollback_reason'],
+              snapshot_at=record['snapshot_at'], event_at=commit['at'])
+        (state / 'profile-refresh-verifying.json').unlink(missing_ok=True)
+        path.unlink()
+        return True
     if settings and settings.get('source_root'):
         if commit['kind'] == 'import':
             compatible = source_snapshot_current(settings, directory, selected=True) and (
@@ -979,12 +994,12 @@ def audit_context(settings):
     return [mode, settings.get('audit_tool'), hashlib.sha256(Path(path).read_bytes()).hexdigest() if path else None]
 
 
-def restart_eligible(settings, directory):
+def restart_eligible(settings, directory, selected=False):
     """Check an already authorized snapshot against its own registration and today's policy."""
     if not settings.get('source_root'):
         return True
     try:
-        if not source_snapshot_current(settings, directory):
+        if not source_snapshot_current(settings, directory, selected=selected):
             return False
         enforce_audit(settings, run_audit(settings, directory, None))
         return True
@@ -1125,6 +1140,8 @@ def stage_locked(settings, config, validate):
                 previous = effective.resolve()
                 previous_at = read_record(state / 'profile-refresh.json').get('snapshot_at') or previous.stat().st_mtime
         settled, settled_digest, settled_at = settled_snapshot(runtime, state, previous_digest)
+        if previous is None and settled is not None and not restart_eligible(settings, settled):
+            settled, settled_digest, settled_at = None, '', 0
         candidate = None
         candidate_digest = ''
         validated = False
@@ -1178,7 +1195,8 @@ def stage_locked(settings, config, validate):
             (candidate / 'cache.db').symlink_to(Path(settings['data']) / 'cache.db')
             provider_cache(candidate, settings['data'])
             candidate_digest = snapshot_digest(candidate)
-            if prepared and pinned(state, candidate_digest) and read_record(state / 'profile-refresh-pin.json').get('health') is True:
+            if ((prepared or previous is None and not authorized) and pinned(state, candidate_digest)
+                    and read_record(state / 'profile-refresh-pin.json').get('health') is True):
                 raise RefreshError('recent health failure')
             if not authorized and policy == 'auto' and previous is not None and pinned(state, candidate_digest) and not (
                     settings.get('source_root') and ((source_directory(settings) / 'approval.json').exists() or
@@ -1356,23 +1374,18 @@ def verify_pending_refresh(settings, record):
         raise ValueError('pending snapshot authority changed')
     health = read_record(state / 'health.json')
     mode = read_record(state / 'state.json')
-    healthy = (mode.get('mode') == 'proxy' and health.get('ok') is True
-               and health.get('boot_id') == boot_id(state) and health.get('digest') == current
-               and record['at'] <= health.get('at', 0) <= time.time()
-               and time.time() - health['at'] <= 60)
     binding = routing_binding(settings)
     if any(record.get(key) != value for key, value in binding.items()):
         raise ValueError('pending routing transaction differs')
-    healthy = healthy and all(health.get(key) == value for key, value in binding.items())
+    now = time.time()
+    fresh = (health.get('boot_id') == record['boot_id'] and health.get('digest') == current
+             and max(record['at'], now - 60) <= health.get('at', 0) <= now
+             and all(health.get(key) == value for key, value in binding.items()))
+    healthy = fresh and mode.get('mode') == 'proxy' and health.get('ok') is True
     previous = Path(record['previous']) if record.get('previous') else None
-    if healthy:
-        if settings.get('source_root') and (
-                not source_snapshot_current(settings, (runtime / 'effective').resolve())
-                or record.get('audit_context') != audit_context(settings)):
-            audit(state, 'refused', record['policy'], current, reason='snapshot mismatch',
-                  snapshot_at=record['snapshot_at'])
-            pending_path.unlink()
-            return
+    current_authority = not settings.get('source_root') or (
+        source_snapshot_current(settings, (runtime / 'effective').resolve()) and record.get('audit_context') == audit_context(settings))
+    if healthy and current_authority:
         remember_settled(runtime, state, current, record['snapshot_at'], settings)
         audit(state, 'accepted', record['policy'], current, record['previous_digest'],
               snapshot_at=record['snapshot_at'], findings=record.get('audit'))
@@ -1380,16 +1393,20 @@ def verify_pending_refresh(settings, record):
         (state / 'profile-refresh-pin.json').unlink(missing_ok=True)
         prune_snapshots(runtime / 'snapshots', {(runtime / 'effective').resolve(), previous})
         return
-    reason = mode.get('reason', '').split(':')[0] or health.get('reason')
-    reason = ('tun' if reason in ('tun', 'no-tun', 'core-gone', 'config') else
-              reason if reason in ('dns', 'obs', 'application') else 'node')
+    reason = mode.get('reason', '').split(':')[0]
+    if fresh and health.get('ok') is False:
+        reason = health.get('reason') or reason
+    reason = ('tun' if reason in ('tun', 'no-tun', 'route', 'direct-mode', 'core-gone', 'config') else
+              reason if reason in ('dns', 'obs', 'node', 'controller-unavailable', 'application') else 'obs')
+    if not current_authority:
+        reason = 'snapshot mismatch'
+    if previous is None and reason in ('dns', 'obs', 'controller-unavailable', 'application'):
+        # Keep the first audited candidate on probation in C. The verifier
+        # can settle it when the resolver or controller becomes available.
+        return
     pin_candidate(state, current, health=True)
     if previous is None:
-        # No history exists on first import: C continues to protect the
-        # host. There is no safe snapshot we could invent here.
-        audit(state, 'refused', record['policy'], current, reason=reason,
-              snapshot_at=record['snapshot_at'])
-        pending_path.unlink()
+        commit_snapshot(runtime, state, current, dict(record, rollback_reason=reason), kind='refuse', settings=settings)
         return
     snapshots = runtime / 'snapshots'
     if previous.parent != snapshots or previous.name != record['previous_digest']:
@@ -1403,9 +1420,7 @@ def verify_pending_refresh(settings, record):
     try:
         commit_snapshot(runtime, state, record['previous_digest'], transaction, kind='rollback', settings=settings)
     except RefreshError:
-        audit(state, 'refused', record['policy'], current, reason=reason,
-              snapshot_at=record['snapshot_at'])
-        pending_path.unlink()
+        commit_snapshot(runtime, state, current, transaction, kind='refuse', settings=settings)
 
 
 def service_request(settings, method, endpoint, payload=None, timeout=15):

@@ -1291,7 +1291,7 @@ NFT_OFF
           trap 'transaction_failed interrupted; exit 130' INT
           trap 'transaction_failed terminated; exit 143' TERM
           trap 'transaction_failed disconnected; exit 129' HUP
-          if [ "$recovery" = 0 ] && ${config.my.proxy.routingCommand} same-ready "$2" "''${egress_args[@]}"; then
+          if [ "$recovery" = 0 ] && [ -z "''${LF_SOURCE_GENERATION:-}" ] && ${config.my.proxy.routingCommand} same-ready "$2" "''${egress_args[@]}"; then
             trap - ERR INT TERM HUP
             echo "Routing already active: $2"
             exit 0

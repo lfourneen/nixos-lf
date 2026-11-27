@@ -179,8 +179,12 @@ def begin(settings, target, egress_id=None, prepared=None):
         # The core has stopped and C is installed before the immutable policy changes.
         activate(settings, target)
         atomic(state / 'routing.json', record)
+        # A Rules source switch can roll back to its accepted snapshot after
+        # rechecking that snapshot's registration, policy and audit.
+        if stale or target != 'rules' or current['routing_requested'] != 'rules':
+            (state / 'profile-refresh-settled.json').unlink(missing_ok=True)
         for name in ('authorize-window', 'authorized-config', 'config-digest', 'effective-config-sha256',
-                     'effective-config.json', 'health.json', 'source-refresh-stable.json', 'profile-refresh-settled.json'):
+                     'effective-config.json', 'health.json', 'source-refresh-stable.json'):
             (state / name).unlink(missing_ok=True)
         enforce(settings, 'blocked')
         if target == 'rules' or not settings.get('ip_tunnel'):
@@ -513,7 +517,7 @@ def main():
             effective = Path(settings['runtime']) / 'effective'
             authority = Path(settings['state']) / 'authorized-config'
             stage.verify(effective, authority.with_name('config-digest'), authority)
-            if not stage.restart_eligible(stage_settings, effective.resolve()):
+            if not stage.restart_eligible(stage_settings, effective.resolve(), selected=True):
                 raise SystemExit(1)
         check(settings, 'proxy')
     else:

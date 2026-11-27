@@ -83,10 +83,13 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   assert policy['lf-private-targets']['require-protected-node-transport'] is True
   assert policy['lf-private-targets']['strict-inlets'] == ['lf-strict']
   assert policy['listeners'][0]['port'] == ${toString c.my.machine.ports.mihomoStrict}
+  assert policy['lf-private-targets']['delay-test-url'] == ${builtins.toJSON c.my.proxy.delayTestUrl}
+  assert 'https://www.gstatic.com/generate_204' in policy['lf-private-targets']['health-test-urls']
   transport = policy['lf-dns-transport']['dns']
   domestic = ${builtins.toJSON (map (ip: "https://${ip}/dns-query#DIRECT") c.my.machine.mihomoDomesticValidatingDnsUpstreams)}
   assert transport['nameserver'] == ['https://1.1.1.1/dns-query#lf-dns', 'https://8.8.8.8/dns-query#lf-dns']
   assert transport['nameserver-policy'] == {'geosite:cn': domestic}
+  assert policy['lf-dns-transport']['validation-nameserver'] == domestic
   assert transport['proxy-server-nameserver'] == ['https://223.5.5.5/dns-query']
   assert policy['dns.proxy-server-nameserver'] == ['tcp://127.0.0.1:${toString c.my.machine.ports.socketGuestDns}#DIRECT']
   strict = json.loads(Path('${c.my.proxy.routingPolicies.proxy-only}').read_text())
@@ -97,6 +100,7 @@ pkgs.runCommand "source-and-browser-config" { nativeBuildInputs = [ pkgs.python3
   for role in ('nameserver', 'proxy-server-nameserver'):
       assert strict['lf-dns-transport']['dns'][role] == [
           'https://1.1.1.1/dns-query#lf-remote', 'https://8.8.8.8/dns-query#lf-remote']
+  assert strict['lf-dns-transport']['validation-nameserver'] == []
   for role, path in ${builtins.toJSON (pkgs.lib.mapAttrs (_: path: toString path) c.my.proxy.coreValidatorConfigs)}.items():
       validator = Path(path).read_text()
       fields = dict(line.strip().split(': ', 1) for line in validator.splitlines() if ': ' in line)

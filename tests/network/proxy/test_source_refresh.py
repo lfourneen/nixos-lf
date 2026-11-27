@@ -953,9 +953,22 @@ class SourceMigrationTests(unittest.TestCase):
         self.register('revoked', self.revision)
         self.settle(healthy=False)
         self.assertEqual(stage.read_record(self.state / 'profile-refresh.json')['result'], 'refused')
-        self.assertNotEqual((self.state / 'authorized-config').read_text().strip(), old)
+        self.assertFalse((self.state / 'authorized-config').exists())
+        self.assertFalse((self.state / 'config-digest').exists())
+        self.assertFalse((self.runtime / 'effective').is_symlink())
         with self.assertRaises(stage.RefreshError):
             self.launch()
+
+    def test_selected_source_must_match_for_same_ready(self):
+        self.seed()
+        effective = (self.runtime / 'effective').resolve()
+        other = self.store / 'sources/other'
+        other.mkdir()
+        (other / 'registry.json').write_text('{"id":"other"}')
+        with patch.object(stage, 'source_directory',
+                          side_effect=lambda settings, identity=None: self.source if identity == 'fixture' else other):
+            self.assertTrue(stage.restart_eligible(self.settings, effective))
+            self.assertFalse(stage.restart_eligible(self.settings, effective, selected=True))
 
 
 if __name__ == '__main__':

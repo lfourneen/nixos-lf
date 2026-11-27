@@ -25,6 +25,8 @@ let
         proxy-server-nameserver-policy = { };
         default-nameserver = remoteDns;
       };
+      # Runtime proxy-only keeps every DNS role on the fixed remote leaf.
+      validation-nameserver = [ ];
     };
     "dns.nameserver-policy" = { };
   } // lib.optionalAttrs (p.ipTunnel != null) { lf-ip-tunnel = p.ipTunnelPolicy; };

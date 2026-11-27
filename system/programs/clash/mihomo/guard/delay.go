@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"net/url"
@@ -24,6 +25,8 @@ const delayConcurrency = 10
 const interactiveConcurrency = 64
 const MaxInteractiveDelay = 10 * time.Second
 
+var ErrDesktopRevoked = errors.New("desktop network requests require active proxy authorization")
+
 var (
 	delaySlots       = make(chan struct{}, delayConcurrency)
 	healthDelaySlots = make(chan struct{}, delayConcurrency)
@@ -37,7 +40,7 @@ type sessionCheckKey struct{}
 type interactiveDelayKey struct{}
 type desktopDNSKey struct{}
 type interactiveTargetKey struct{}
-type backgroundTimeoutKey struct{}
+type probeTimeoutKey struct{}
 
 func WithHealthDelay(ctx context.Context) context.Context {
 	return context.WithValue(ctx, healthDelayKey{}, true)
@@ -139,12 +142,12 @@ func observedFallback(p *policy, lease delayLease, stateData []byte, started, no
 	return ""
 }
 
-// The provider's per-node deadline applies to the probe after scheduling.
-func BackgroundDelay(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+// A queued probe gets its dial budget after acquiring its slot.
+func ScheduledDelay(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if !ManagedDelay() {
 		return context.WithTimeout(ctx, timeout)
 	}
-	ctx = context.WithValue(ctx, backgroundTimeoutKey{}, timeout)
+	ctx = context.WithValue(ctx, probeTimeoutKey{}, timeout)
 	return context.WithTimeout(ctx, 30*time.Second+timeout)
 }
 
@@ -224,7 +227,7 @@ func BeginDelay(ctx context.Context, target string) (context.Context, func(), er
 		<-slots
 		return ctx, func() {}, err
 	}
-	timeout, _ := ctx.Value(backgroundTimeoutKey{}).(time.Duration)
+	timeout, _ := ctx.Value(probeTimeoutKey{}).(time.Duration)
 	if timeout <= 0 || timeout > MaxInteractiveDelay {
 		timeout = MaxInteractiveDelay
 	}
@@ -236,7 +239,8 @@ func BeginDelay(ctx context.Context, target string) (context.Context, func(), er
 func TestDelayBatch(ctx context.Context, proxies []C.Proxy, target string, expected utils.IntRanges[uint16]) map[string]uint16 {
 	limit := delayConcurrency
 	if interactive, _ := ctx.Value(interactiveDelayKey{}).(bool); interactive {
-		limit = interactiveConcurrency
+		// Four concurrent batches leave half the dial slots for per-node GUI requests.
+		limit = interactiveConcurrency / 8
 	}
 	slots := make(chan struct{}, limit)
 	delays := make(map[string]uint16)

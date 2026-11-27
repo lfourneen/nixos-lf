@@ -14,7 +14,7 @@ DNS = {'dot': 'Unbound · authenticated DoT', 'proxy': 'Mihomo · managed DNS', 
        'bootstrap-plaintext': 'Plaintext recovery · bootstrap', 'portal-plaintext': 'Plaintext recovery · portal',
        'degraded-plaintext': 'Plaintext recovery · encrypted DNS degraded', 'degraded-dot-only': 'Unbound · encrypted DNS degraded',
        'resolver-error': 'Resolver identity check failed', 'split-error': 'Split DNS configuration error'}
-REASONS = {'node': 'Authorized proxy leaves failed the HTTP probe', 'dns': 'Managed DNS check failed',
+REASONS = {'controller-unavailable': 'Core controller unavailable', 'node': 'Authorized proxy leaves failed the HTTP probe', 'dns': 'Managed DNS check failed',
            'application': 'System DNS probe failed for an application user', 'tun': 'Transparent path check failed',
            'no-tun': 'TUN device or routes unavailable', 'core-gone': 'Proxy core is not running', 'config': 'Core configuration or listener identity mismatch',
            'route': 'Probe did not use the authorized proxy path', 'obs': 'Connection observation unavailable', 'direct-mode': 'Core is in Direct mode',
@@ -36,7 +36,7 @@ CACHE_RESULTS = {'eligible': 'Compatible download available', 'no-download': 'No
                  'policy-mismatch': 'Download does not match the routing policy',
                  'damaged-cache': 'Cached download is missing or damaged'}
 SESSION_RESULTS = {'ok': 'Session established', 'node-auth': 'Authentication rejected',
-                   'session-unavailable': 'Session unavailable', 'unmeasured': 'Session not sampled'}
+                   'session-unavailable': 'DoH endpoints unreachable', 'unmeasured': 'Session not sampled'}
 PHASES = {'prepare-policy': 'Certificate or subscription policy rejected', 'prepare-profile': 'Desktop profile missing or invalid',
           'prepare-source-access': 'Controlled source state unavailable',
           'prepare-source-registration': 'Controlled source registration required',
@@ -247,13 +247,16 @@ def rows(state):
     if state.get('reason'):
         yield 'Transition reason', REASONS.get(str(state['reason']).split(':')[0], 'Inspect coordinator state with proxy-inspect')
     yield 'System DNS', DNS.get(state.get('dns_mode'), 'Unknown')
+    lease = state.get('authorization_lease', {})
     if mode == 'proxy':
         yield 'DNS validation', ('Local DNSSEC · unsigned zones remain unsigned'
             if state.get('dns_validation') == 'local-dnssec' else 'Encrypted core resolvers')
-        lease = state.get('authorization_lease', {})
         if lease.get('required'):
             yield 'Application authorization', (f"Kernel lease · {lease.get('remaining', 0)}s remaining"
                 if lease.get('active') else 'Kernel lease expired or pending')
+    if lease.get('required') or mode == 'blocked':
+        yield 'Desktop delay tests', ('B lease active' if mode == 'proxy' and lease.get('active') and not state.get('alarm')
+                                      else 'Waiting for B authorization · retry once active')
     if state.get('mode') == 'direct':
         encryption = {'strict': 'Strict encryption', 'opportunistic': 'Bounded plaintext recovery allowed'}.get(state.get('dns_encryption'), 'Unknown policy')
         yield 'DNS policy', encryption
@@ -289,7 +292,7 @@ def rows(state):
         if health.get('dns_leaf'):
             yield 'lf-dns leaf', health['dns_leaf'] + ' · ' + SESSION_RESULTS.get(health.get('dns_leaf_session'), 'Session not sampled')
         if samples := health.get('leaf_sessions'):
-            yield 'Leaf session sample', f"{samples['ok']} passed · {samples['node-auth']} auth rejected · {samples['session-unavailable']} unavailable"
+            yield 'Leaf session sample', f"{samples['ok']} passed · {samples['node-auth']} auth rejected · {samples['session-unavailable']} unavailable at DoH endpoints"
         fields = [('data_plane_ok', 'Mixed HTTP'), ('route_ok', 'Route'),
                   ('dns_ok', 'TUN DNS'), ('managed_dns_ok', 'Managed DNS'),
                   ('application_dns_ok', 'System DNS'), ('tun_ok', 'TUN'),

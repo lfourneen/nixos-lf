@@ -533,6 +533,17 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(self.settle(ok=False), [])
         self.assertEqual(self.record()['result'], 'refused')
 
+        self.assertFalse((self.runtime / 'effective').exists())
+        self.assertFalse((self.state / 'authorized-config').exists())
+
+    def test_first_import_controller_outage_can_recover(self):
+        self.settings['refresh_policy'] = 'auto'
+        self.authorize()
+        self.settle(ok=False, reason='controller-unavailable')
+        self.assertEqual(self.record()['result'], 'verifying')
+        self.settle(ok=True)
+        self.assertEqual(self.record()['result'], 'accepted')
+
     def test_audit_baseline_remains_settled_during_consecutive_imports(self):
         original = self.auto_baseline()
         for name in ('first', 'second'):
@@ -752,20 +763,13 @@ class HealthLeafTests(unittest.TestCase):
                 probe = self.probe(delays)
                 self.assertEqual(probe.leaf_candidates(self.url), ['c', 'd', 'e', 'a'])
 
-    def test_rotation_requires_real_mixed_request_and_continues_to_unmeasured_members(self):
+    def test_rotation_never_moves_the_selected_application_exit(self):
         probe = self.probe({'e': 20})
         mixed_failure = health_probe.ProbeFailure('obs', 'mixed HTTP request failed')
-        def target(url, log_path, maximum):
-            candidate = self.trials(probe)[-1][1]
-            if candidate != 'd':
-                raise mixed_failure
-            probe.exit_identities['mixed'] = hashlib.sha256(b'd').hexdigest()
-        probe.target = Mock(side_effect=target)
-        self.assertTrue(probe.rotate_leaf(None, self.url))
-        self.assertEqual(self.trials(probe), [('lf-remote', name) for name in ['e', 'c', 'd']])
-        self.assertEqual([body['action'] for _, body in probe.selection_requests],
-                         ['trial', 'rollback', 'trial', 'rollback', 'trial', 'commit'])
-        self.assertEqual([call.args for call in probe.target.call_args_list], [(self.url, None)] * 3)
+        probe.target = Mock(side_effect=mixed_failure)
+        self.assertFalse(probe.rotate_leaf(None, self.url))
+        self.assertEqual(self.trials(probe), [])
+        probe.target.assert_not_called()
 
     def test_fixed_egress_never_tries_a_different_leaf(self):
         probe = self.probe({})
@@ -784,8 +788,8 @@ class HealthLeafTests(unittest.TestCase):
             probe.data_paths(None)
         self.assertEqual(failure.exception.layer, 'node')
         self.assertEqual(health_probe.failure_stage(failure.exception.detail), 'leaf-unavailable')
-        self.assertEqual(self.trials(probe), [('lf-remote', name) for name in ['c', 'd', 'e', 'a']])
-        self.assertEqual([body['action'] for _, body in probe.selection_requests], ['trial', 'rollback'] * 4)
+        self.assertEqual(self.trials(probe), [])
+        self.assertEqual(probe.selection_requests, [])
         probe.application_path.assert_called_once_with()
 
     def test_dns_failure_rotates_only_the_managed_dns_selector_and_retries_the_current_application_leaf(self):
@@ -853,7 +857,47 @@ class HealthLeafTests(unittest.TestCase):
             probe.data_paths(None)
         self.assertEqual(health_probe.failure_stage(failure.exception.detail), 'node-auth')
         self.assertEqual(probe.diagnostics['dns_leaf_session'], 'node-auth')
-        self.assertEqual(probe.diagnostics['leaf_sessions']['node-auth'], 3)
+        self.assertEqual(probe.diagnostics['leaf_sessions']['node-auth'], 5)
+        samples = [call.args[0] for call in probe.api.call_args_list if '/session?' in call.args[0]]
+        self.assertEqual(len(samples), len(set(samples)))
+
+        # An unsampled region may still restore the subscription.
+        probe.sessions.clear()
+        probe.selector = Mock(return_value=('b', ['a', 'c', 'd', 'e', 'unmeasured']))
+        with self.assertRaises(health_probe.ProbeFailure) as failure:
+            probe.data_paths(None)
+        self.assertEqual(failure.exception.layer, 'dns')
+
+    def test_remote_http_trial_does_not_change_the_selected_exit(self):
+        probe = self.probe()
+        probe.sessions = {'b': 'session-unavailable', 'c': 'session-unavailable'}
+        probe.target = Mock(side_effect=lambda *args, **kwargs:
+                            probe.exit_identities.update(mixed=hashlib.sha256(b'c').hexdigest()))
+        self.assertFalse(probe.rotate_leaf(None, self.url))
+        self.assertEqual(self.trials(probe), [])
+        probe.target.assert_not_called()
+
+    def test_successful_alternate_dns_does_not_hide_a_dead_selected_leaf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            probe = self.probe(runtime=directory, session_urls=['https://203.0.113.53/dns-query'])
+            probe.sessions = {'b': 'session-unavailable', 'a': 'ok'}
+            probe.dns_answer = Mock(return_value=True)
+            probe.observe_dns_leaf('b', ['a'])
+            self.assertEqual(self.trials(probe), [('lf-dns', 'a')])
+            probe.dns_answer.assert_called_once_with(self.host)
+            self.assertTrue(probe.diagnostics['dns_leaf_rotated'])
+            probe.observe_dns_leaf('a', ['b'])
+            self.assertEqual(len(self.trials(probe)), 1)
+
+    def test_unreachable_doh_samples_preserve_validator_failure(self):
+        probe = self.probe()
+        probe.sessions['b'] = 'session-unavailable'
+        probe.attempt_targets = Mock(side_effect=health_probe.ProbeFailure('obs', 'mixed HTTP request failed'))
+        probe.dns_answer = Mock(return_value=False)
+        probe.rotate_leaf = Mock(return_value=False)
+        with self.assertRaises(health_probe.ProbeFailure) as failure:
+            probe.data_paths(None)
+        self.assertEqual(failure.exception.layer, 'dns')
 
     def test_validator_probe_requires_a_real_address(self):
         probe = self.probe()
@@ -878,13 +922,13 @@ class HealthLeafTests(unittest.TestCase):
             runtime = Path(directory)
             (runtime / 'boot-id').write_text('boot')
             alternatives = ['bad1', 'bad2', 'bad3', 'good', 'bad4']
-            for epoch, expected in ((1, alternatives[:3]), (1, ['good', 'bad4', 'bad1']), (2, alternatives[:3])):
+            for epoch, expected in ((1, ['bad1', 'bad3', 'bad4']), (1, ['bad2', 'good', 'bad1']), (2, ['bad1', 'bad3', 'bad4'])):
                 probe = self.probe(runtime=directory, session_urls=['https://203.0.113.53/dns-query'])
                 probe.routing = {'routing_epoch': epoch, 'routing_policy_digest': 'b' * 64}
                 probe.snapshot = 'a' * 64
                 probe.sample_sessions = Mock(side_effect=lambda names: probe.sessions.update(
                     {name: 'ok' if name == 'good' else 'session-unavailable' for name in names}))
-                self.assertEqual(probe.sample_dns_batch('bad0', alternatives), expected)
+                self.assertEqual(probe.sample_leaf_batch('dns', 'bad0', alternatives), expected)
                 probe.sample_sessions.assert_called_once_with(['bad0', *expected])
 
     def test_mixed_and_dns_failures_survive_a_later_controller_disconnect(self):

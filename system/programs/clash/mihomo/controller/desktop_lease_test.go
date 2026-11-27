@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/metacubex/mihomo/component/lfguard"
 )
 
 func TestLFManagedDesktopRequiresCurrentB(t *testing.T) {
@@ -85,6 +87,9 @@ func TestLFManagedDesktopRequestSurvivesRenewalButCancelsOnRevoke(t *testing.T) 
 	case <-second.Done():
 	case <-time.After(time.Second):
 		t.Fatal("shared guard did not cancel the second request")
+	}
+	if context.Cause(ctx) != lfguard.ErrDesktopRevoked || context.Cause(second) != lfguard.ErrDesktopRevoked {
+		t.Fatal("lease revocation lost its cause")
 	}
 	if _, _, ok := guard.begin(context.Background()); ok {
 		t.Fatal("revoked generation admitted a new request")

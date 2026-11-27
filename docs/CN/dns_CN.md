@@ -160,8 +160,16 @@ HTTP-only（`tunMode=false`）采用 redir-host。
 每个验证器通过 TCP loopback 转交私有 Mihomo 传输监听：应用查询使用 1057，引导查询使用 1058。
 这些监听传递完整 DNSSEC 材料，不使用 hosts 替换、fake-IP 合成或普通解析器缓存。
 
+应用验证器在确认一个名字前还需要父区与目标区的 DS、DNSKEY、NSEC/NSEC3 和 RFC 5011 key-tag 应答。
+这些材料不匹配 `geosite:cn`，只按域名策略会落到代理 DoH；选中的 DNS 叶不可用时，国内 DIRECT 名字也会因无法验证而失败。
+受管传输先尝试当前叶；1 秒内拿不到可用材料（含 SERVFAIL、REFUSED 或截断）时，改用 360 字面 DoH 的 `#DIRECT` 验证路径，并在 30 秒内跳过该叶。
+应用 A/AAAA/HTTPS 记录仍按原国内/代理分流。
+该回退可能把被查询区的名字暴露给国内验证解析器；DNSSEC 仍决定答案是否有效。
+运行时 `proxy-only` 不启用这条路径，所有 DNS 角色继续绑定固定远程叶。
+
 `rules` 中应用传输保留国内分流：`geosite:cn` 经 360 DoH 直连解析，其余使用 Cloudflare/Google DoH。
 启用受控来源时，海外查询使用独立的 `lf-dns` 选择组，成员来自授权的 `lf-remote`。每个协议、固定服务器地址和端口组合保留一个叶子，优先排列不同服务器地址和协议的候选。
+Rules 的默认上游在 1.5 秒内未应答时，传输层通过 `lf-remote` 重试相同 DoH 端点。国内查询继续使用策略指定的解析器，固定出口模式下所有上游均使用获授权的出口。
 应用和 DNS 分别选叶子。`profile.store-selected` 在核心重启后恢复仍符合组成员资格的选择。
 受管解析器的健康检查失败时，监督器分批抽查获授权的 DNS 叶子。同一快照和路由事务的后续探针继续抽查其他成员。已选中的可用会话可以继续等待 DNSSEC 验证预热。
 未启用受控来源的配置保留 `respect-rules` 选路。

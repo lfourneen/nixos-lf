@@ -158,7 +158,7 @@ replace(root / "adapter/adapter.go", '\tinstance, err := p.DialContext(ctx, &add
 replace(root / "adapter/adapter.go", '\tvar satisfied bool',
         '\tsessionCheck := lfguard.SessionCheck(ctx, url)\n\tvar satisfied bool')
 replace(root / "adapter/adapter.go", '\t\talive := err == nil',
-        '\t\tif sessionCheck { return }\n\t\talive := err == nil')
+        '\t\tif sessionCheck || context.Cause(ctx) == lfguard.ErrDesktopRevoked { return }\n\t\talive := err == nil')
 # Recovery probes need the first successful response within their short deadline.
 replace(root / "adapter/adapter.go", '\tif unifiedDelay {', '\tif unifiedDelay && !lfguard.HealthDelay(ctx) {')
 # Unified delay may issue a second HEAD on the same connection.
@@ -212,7 +212,7 @@ replace(root / "adapter/provider/healthcheck.go", '''	if len(url) == 0 || url ==
 		return
 	}''')
 replace(root / "adapter/provider/healthcheck.go", 'context.WithTimeout(hc.ctx, hc.timeout)',
-        'lfguard.BackgroundDelay(hc.ctx, hc.timeout)')
+        'lfguard.ScheduledDelay(hc.ctx, hc.timeout)')
 replace(root / "adapter/parser.go", '"fmt"', '"fmt"\n\t"strconv"\n\t"github.com/metacubex/mihomo/component/lfguard"')
 replace(root / "adapter/parser.go", 'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {',
         'func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {\n'
@@ -400,6 +400,7 @@ replace(root / "hub/route/proxies.go", '''	query := r.URL.Query()
 	defer call.stop()
 	proxy := r.Context().Value(CtxKeyProxy).(C.Proxy)
 	delay, err := proxy.URLTest(call.ctx, call.target, call.expected)
+	if call.refuseRevoked(w, r) { return }
 	if call.ctx.Err() != nil {''')
 replace(root / "hub/route/groups.go", '\n\t"context"\n\t"strconv"\n\t"time"\n', '')
 replace(root / "hub/route/groups.go", '\n\t"github.com/metacubex/mihomo/common/utils"', '')
@@ -436,7 +437,8 @@ replace(root / "hub/route/groups.go", '''	if selectAble, ok := proxy.Adapter().(
 		selectAble.ForceSet("")
 		cachefile.Cache().SetSelected(proxy.Name(), "")
 	}
-	dm, err := group.URLTest(call.ctx, call.target, call.expected)''')
+	dm, err := group.URLTest(call.ctx, call.target, call.expected)
+	if call.refuseRevoked(w, r) { return }''')
 replace(root / "hub/route/provider.go", '\t"context"',
         '\t"context"\n\n\t"github.com/metacubex/mihomo/component/lfguard"')
 replace(root / "hub/route/provider.go", 'r.Get("/healthcheck", healthCheckProvider)',
@@ -448,6 +450,7 @@ replace(root / "hub/route/provider.go", '\tprovider.HealthCheck()\n\trender.NoCo
 		if call == nil { return }
 		defer call.stop()
 		lfguard.TestDelayBatch(call.ctx, provider.Proxies(), call.target, nil)
+		if call.refuseRevoked(w, r) { return }
 		if call.ctx.Err() != nil {
 			lfRefuseDelay(w, r, http.StatusGatewayTimeout, "provider delay tests timed out")
 			return

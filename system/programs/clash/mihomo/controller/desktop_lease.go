@@ -172,16 +172,16 @@ func (guard *desktopLease) begin(parent context.Context) (context.Context, func(
 	}
 	guard.active++
 	revoked := guard.revoked
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancelCause(parent)
 	go func() {
 		select {
 		case <-revoked:
-			cancel()
+			cancel(lfguard.ErrDesktopRevoked)
 		case <-ctx.Done():
 		}
 	}()
 	return ctx, func() {
-		cancel()
+		cancel(nil)
 		guard.Lock()
 		guard.active--
 		guard.Unlock()
@@ -232,7 +232,7 @@ func lfDesktopRequest(next http.HandlerFunc, dns bool) http.HandlerFunc {
 		}
 		ctx, stop, ok := desktopController.begin(r.Context())
 		if !ok {
-			lfRefuseDelay(w, r, http.StatusForbidden, "desktop network requests require active proxy authorization")
+			lfRefuseDelay(w, r, http.StatusForbidden, lfguard.ErrDesktopRevoked.Error())
 			return
 		}
 		defer stop()

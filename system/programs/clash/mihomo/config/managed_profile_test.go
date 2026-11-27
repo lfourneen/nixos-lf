@@ -189,6 +189,35 @@ func TestLFManagedDNSTransportCannotAdoptModeAUpstreams(t *testing.T) {
 	}
 }
 
+func TestLFManagedDNSTransportValidationNameservers(t *testing.T) {
+	raw := DefaultRawConfig()
+	raw.LFDNSTransport = map[string]any{
+		"dns": map[string]any{
+			"enable":                  true,
+			"listen":                  "127.0.0.1:1057",
+			"nameserver":              []string{"https://1.1.1.1/dns-query#lf-dns"},
+			"default-nameserver":      []string{"223.5.5.5"},
+			"proxy-server-nameserver": []string{"https://223.5.5.5/dns-query"},
+		},
+		"bootstrap-listen":      "127.0.0.1:1058",
+		"validation-nameserver": []string{"https://101.226.4.6/dns-query#DIRECT"},
+	}
+	transport, err := lfParseDNSTransport(raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.Validation) != 1 || transport.Validation[0].ProxyName != "DIRECT" {
+		t.Fatalf("validation resolver is not pinned to DIRECT: %#v", transport.Validation)
+	}
+	for _, endpoint := range []string{"https://1.1.1.1/dns-query#lf-dns", "https://1.1.1.1/dns-query",
+		"https://dns.example/dns-query#DIRECT", "udp://1.1.1.1:53#DIRECT"} {
+		raw.LFDNSTransport["validation-nameserver"] = []string{endpoint}
+		if _, err := lfParseDNSTransport(raw, nil); err == nil {
+			t.Fatal("unauthorized validation resolver accepted", endpoint)
+		}
+	}
+}
+
 func TestLFManagedStrictSniffer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "policy.json")
 	if err := os.WriteFile(path, []byte(`{"sniffer.enable":false}`), 0600); err != nil {

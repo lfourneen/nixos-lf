@@ -77,9 +77,9 @@ The coordinator checks the transport firewall against the staged digest before a
 Without a compatible fallback, C remains in effect.
 An interrupted routing transaction preserves proxy intent and puts unfinished routing back into a verifiable state. Retry with `clash-on`.
 
-When mixed HTTP fails in Rules mode, the health check can try a small number of authorized DNS and proxy candidates. A temporary selection is committed after the corresponding DNS or HTTP and route checks pass. Failure or timeout restores the previous selection, and a manual selection takes precedence. The TUN check starts with the first completed DNS candidate and cancels the remaining lookups after a verified success.
-During candidate verification and recovery, the root controller can sample leaf sessions over TLS to the configured literal DoH endpoints. A TLS-authenticated HTTP response proves a session to the endpoint. DNS answers, mixed HTTP, route proof and the remaining checks determine readiness.
-`proxy-status` shows a short identifier for the observed DNS leaf. It reports explicit authentication rejection as `node-auth`, unsuccessful session samples as `session-unavailable`, and unresolved validator probes as `validator-dns` when session evidence stays inconclusive or a sampled session works. Failed samples stay out of DNS recovery for that round and remain available for later checks.
+When mixed HTTP fails in Rules mode, the health check only tries or rotates DNS leaves. The `lf-remote` application exit stays at the user's selection and fails closed instead of silently changing nodes or the public egress IP. A temporary DNS selection is committed after the corresponding DNS and route checks pass. Failure or timeout restores the previous selection, and a manual selection takes precedence. The TUN check starts with the first completed DNS candidate and cancels the remaining lookups after a verified success.
+The root controller can sample leaf sessions over TLS to the configured literal DoH endpoints. When Rules is healthy and the probe has time left, it checks the DNS selection at most once a minute. If the current DNS leaf fails that probe, it can switch to another DNS leaf that reaches a DoH endpoint and returns a validated DNS answer; the application exit is not changed. DNS answers, mixed HTTP, route proof and the remaining checks determine readiness.
+`proxy-status` shows a short identifier for the observed DNS leaf. It reports explicit authentication rejection as `node-auth`, unreachable DoH endpoints as `session-unavailable`, and unresolved validator probes as `validator-dns` when session evidence stays inconclusive or a sampled session works. A DoH timeout still permits an HTTP trial for that leaf. Rules recovery samples different parts of the authorized list across rounds.
 B can also diagnose the system resolver through an unprivileged desktop UID.
 During a remote outage, a valid Rules B lease can continue carrying traffic already allowed by the rules. `proxy-status` shows remote degradation and any observed domestic DNS and DIRECT route results. The existing deadline stays in effect until a complete health proof renews the lease.
 
@@ -254,7 +254,7 @@ Startup imports retain the full 60-second observation window without early rollb
 For subsequent imports with a settled fallback, at least two consecutive fresh full-health failures for the same candidate and policy allow rollback after `my.proxy.profileRefreshFailureGraceSeconds`.
 This option defaults to 20 seconds and accepts 20–60 seconds; rollback occurs on the next verifier run.
 Missing or stale failure proofs retain the 60-second window, and successful acceptance always requires that full window.
-If no settled baseline exists, the failure is recorded as `refused` and the health gate continues protecting the host.
+On first import, a DNS or controller observation failure keeps the candidate under verification. A definitive refusal clears the effective snapshot and its authority. A later healthy observation can settle a pending candidate.
 Use `proxy-status` to confirm service recovery.
 The helper unit being active alone does not prove core readiness.
 GUI delay history can be empty after a core restart, and C also blocks GUI latency requests.
@@ -368,14 +368,14 @@ Core mode is fixed by the system-rendered profile; the managed parser also pins 
 Both controller sockets enforce the write policy. The direct Unix socket identifies root recovery probes by their peer credentials.
 New controller write endpoints require an explicit policy decision when upgrading the core.
 
-Desktop node, group and provider tests use the exact HTTPS endpoint in `my.proxy.delayTestUrl`, including its path and query. The controller maps Verge's built-in fallback URL to that endpoint and caps desktop requests at 10 seconds. Only successful HTTP responses count. Group and provider batches omit built-in direct adapters.
+Desktop node, group and provider tests use the exact HTTPS endpoint in `my.proxy.delayTestUrl`, including its path and query. The controller maps Verge's built-in fallback URL to that endpoint and caps each dial at 10 seconds. Batch requests allow up to 30 additional seconds for scheduling. Only successful HTTP responses count. Group and provider batches omit built-in direct adapters.
 Desktop DNS queries and delay tests require current B authorization. The controller cancels requests still running when that authorization expires or is revoked. In C, the desktop can still read controller state and existing results. Recovery DNS queries from the root Unix peer use the configured probe names.
 
 The managed core uses Verge's unified delay. When the probe can make a second request on the connection, the figure measures that request. Recovery probes finish on the first successful response. Cold DNS, socket setup and the first TLS handshake still affect the time to first byte for a new application connection.
 
-This host also sets `my.proxy.delayTestFallbackUrl`. If the primary fails and the alternate HTTPS target responds through the expected route in the same successful health round, desktop tests can use the alternate for up to 60 seconds from the start of that proof. A new successful primary observation restores the normal target. The alternate must be in `nodeProbeUrls`. Desktop callers can still request only the primary. `proxy-status` reports fallback use and any observation of the primary's DNS.
+This host measures desktop latency with `my.proxy.delayTestUrl` (the gstatic endpoint here). When the same health round proves the primary failed and the configured fallback succeeds through the expected proxy, desktop tests may use `my.proxy.delayTestFallbackUrl` for the 60-second proof window. Verge displays denied tests as zero; check the desktop test authorization in `proxy-status` and repeat the test once the lease recovers. The supervisor continues to prove the configured domain targets through mixed HTTP and TUN.
 
-Desktop tests share 64 dial slots and a budget of 64 starts per second with a burst of 128. Up to four distinct group or provider batches can run concurrently. Automatic checks use their own 10 slots and 10 starts per second. Root health probes sent directly over the Unix controller have separate slots. The fixed exit stays selected during its delay test.
+Desktop tests share 64 dial slots and a budget of 64 starts per second with a burst of 128. Up to four distinct group or provider batches can run concurrently, each with at most 8 dials. Automatic checks use their own 10 slots and 10 starts per second. Root health probes sent directly over the Unix controller have separate slots. The fixed exit stays selected during its delay test.
 
 ## Subscription trust in compatibility mode
 

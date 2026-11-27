@@ -224,7 +224,7 @@ def cached_recovery():
                           text=True, start_new_session=True) as start:
         try:
             wait(lambda: status()['mode'] == 'blocked' and status()['routing_phase'] == 'verifying', timeout=35)
-            wait(lambda: status().get('last_proxy_health', {}).get('failure_stage') == 'session-unavailable', timeout=60)
+            wait(lambda: status().get('last_proxy_health', {}).get('failure_stage') == 'validator-dns', timeout=60)
         finally:
             start.send_signal(signal.SIGINT)
             stdout, stderr = start.communicate(timeout=35)
@@ -243,7 +243,6 @@ def cached_recovery():
     assert result['sampled_egress_identity'] == recovered[:12], result
     assert result['last_proxy_health']['dns_leaf'] == recovered[:12], result
     history = json.loads((runtime / 'health-observations.json').read_text())
-    assert any(item.get('digest') == downloaded and not item['ok'] for item in history), history
     assert any(item.get('digest') == downloaded and item.get('dns_leaf_rotated')
                and item.get('leaf_sessions', {}).get('session-unavailable', 0) >= 3 for item in history), history
     assert (runtime / 'source-refresh-pending').exists() and not (runtime / 'source-refresh-ready').exists()

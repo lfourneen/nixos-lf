@@ -100,6 +100,14 @@ in
         };
       };
       bootstrap-listen = "127.0.0.1:${toString m.ports.coreDnsBootstrapTransport}";
+
+      # DS, DNSKEY and the RFC 5011 key-tag probe must resolve before the
+      # application validator can accept any name. Keep them on a literal
+      # DIRECT validating DoH instead of the selected proxy DNS leaf, so a dead
+      # foreign leaf cannot also break domestic DIRECT browsing. Application
+      # records keep their normal domestic/proxied split.
+      validation-nameserver = lib.optionals (!p.proxyOnly)
+        (map (ip: "https://${ip}/dns-query#DIRECT") m.mihomoDomesticValidatingDnsUpstreams);
     };
   };
 

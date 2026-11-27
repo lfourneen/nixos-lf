@@ -168,8 +168,16 @@ They maintain separate persistent RFC 5011 anchors seeded from locked `dns-root-
 Each validator forwards over TCP loopback to a private Mihomo transport listener: application queries use port 1057 and bootstrap queries use 1058.
 These listeners carry raw DNSSEC material without hosts substitution, fake-IP synthesis or reuse of ordinary resolver cache entries.
 
+The application validator also needs DS, DNSKEY, NSEC/NSEC3 and RFC 5011 key-tag responses for the parent and target zones before it can accept any name.
+Those names do not match `geosite:cn`, so a name-only policy sends them through the proxied DoH and a dead DNS leaf would also stop domestic DIRECT validation.
+The transport tries the current leaf first; if it cannot return usable material (including SERVFAIL, REFUSED or truncation) within one second, the transport asks the 360 literal DoH endpoints over `#DIRECT` and skips that leaf for 30 seconds.
+Application A/AAAA/HTTPS records keep the normal domestic/proxied split.
+The fallback can disclose the queried zone name to the domestic validating resolver; DNSSEC still decides validity.
+Runtime `proxy-only` disables this fallback and keeps every DNS role on the fixed remote leaf.
+
 In `rules`, application transport keeps a domestic split: `geosite:cn` uses 360 DoH over a direct connection, and other names use Cloudflare/Google DoH.
 With controlled sources, foreign queries use `lf-dns`, a separate selector of authorized `lf-remote` leaves. It keeps one leaf per protocol, pinned server address and port, with different server addresses and protocols ahead of repeated addresses.
+When the default Rules upstream fails to answer within 1.5 seconds, the transport retries the same DoH endpoints through `lf-remote`. Domestic queries keep their policy resolver. In fixed-exit mode all upstreams use the authorized exit.
 The application and DNS selectors pick independently, and `profile.store-selected` keeps their eligible choices across core restarts.
 When the managed resolver fails its health check, the supervisor samples a bounded set of authorized DNS leaves. Later probes within the same snapshot and routing transaction continue with other members. A selected leaf with a working session gets time for DNSSEC validation to warm up.
 Configurations without controlled sources retain `respect-rules` selection.

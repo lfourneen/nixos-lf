@@ -21,7 +21,7 @@ import time
 from urllib.parse import quote, urlencode, urlsplit
 
 SNAPSHOT_TOOLS = {}
-FAILED_SESSIONS = {'node-auth', 'session-unavailable'}
+FAILED_DOH_SAMPLES = {'node-auth', 'session-unavailable'}
 
 
 def failure_stage(detail):
@@ -221,6 +221,7 @@ class Probe:
         self.core_mode = 'unknown'
         self.tun_name = None
         self.sessions = {}
+        self.remote_auth_rejected = False
         self.dns_transport_leaf = None
         self.failure_stages = []
         self.snapshot = None
@@ -275,12 +276,14 @@ class Probe:
         duration = maximum if cleanup else self.remaining(maximum)
         connection = http.client.HTTPConnection("localhost", timeout=duration)
         timer = None
+        expired = threading.Event()
         try:
             connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             connection.sock.settimeout(duration)
             connection.sock.connect(self.settings["socket"])
             transport = connection.sock
             def expire():
+                expired.set()
                 try:
                     transport.shutdown(socket.SHUT_RDWR)
                 except OSError:
@@ -302,6 +305,8 @@ class Probe:
                 raise ValueError('controller request failed')
             return json.loads(value)
         except (OSError, ValueError, http.client.HTTPException) as error:
+            if expired.is_set():
+                raise ProbeFailure('obs', 'controller reply unavailable before deadline') from None
             if isinstance(error, http.client.RemoteDisconnected) or getattr(error, "errno", None) in (
                     errno.ENOENT, errno.ECONNREFUSED, errno.ECONNRESET, errno.EPIPE):
                 raise ProbeFailure('controller-unavailable', 'controller socket unavailable') from None
@@ -338,14 +343,18 @@ class Probe:
 
     def leaf_candidates(self, url):
         current, members = self.selector('lf-remote')
-        if current and self.settings.get('session_urls') and current not in self.sessions:
-            self.sample_sessions([current, *members[:3]])
+        if current and self.settings.get('session_urls'):
+            batch = self.sample_leaf_batch('remote', current, members)
+            self.remote_auth_rejected = all(self.sessions.get(leaf) == 'node-auth' for leaf in [current, *members])
+            # A working DNS transport is also a useful application candidate.
+            members = list(dict.fromkeys([*([self.dns_transport_leaf] if self.dns_transport_leaf in members else []),
+                                          *batch, *members]))
         if self.settings.get('session_urls') or self.sessions or self.dns_transport_leaf in members:
             def rank(name):
                 outcome = self.sessions.get(name)
                 if outcome == 'ok' or (outcome is None and name == self.dns_transport_leaf):
                     return 0
-                return 1 if outcome is None else 2
+                return 2 if outcome == 'node-auth' else 1
             return sorted(members, key=rank)[:4]
         if not members or len(members) > 4 or self.deadline - self.clock() < 4:
             # A group delay contacts every member, including the current leaf.
@@ -724,11 +733,17 @@ class Probe:
         raise failures[-1]
 
     def rotate_leaf(self, log_path, url, dns_name=None):
-        """Start after the current leaf so unmeasured members get a turn across rounds."""
+        """Repair the DNS leaf without moving the selected application exit.
+
+        The application selector is user-controlled. A dead exit must fail
+        closed instead of silently changing the public egress IP.
+        """
         current, members = self.selector('lf-remote')
         if not members:
+            self.remote_auth_rejected = bool(current and self.sessions.get(current) == 'node-auth')
             return False
-        remote = self.selection_binding('lf-remote', current)
+        if not dns_name:
+            return False
         urls = list(dict.fromkeys([url, *self.settings['urls']]))
         dns_leaf, dns_alternatives = self.selector('lf-dns') if dns_name and self.settings.get('dns_leaf_group') else (None, [])
         dns = self.selection_binding('lf-dns', dns_leaf) if dns_alternatives else None
@@ -750,40 +765,35 @@ class Probe:
             return False
 
         for name in self.leaf_candidates(url):
-            if self.deadline - self.clock() <= 2 or not remote['token']:
+            if self.deadline - self.clock() <= 2:
                 break
-            if self.sessions.get(name) in FAILED_SESSIONS:
+            if self.sessions.get(name) == 'node-auth':
                 continue
-            if dns_name:
-                # Repair the independent DNS path while the application
-                # selector still points at its original leaf.
-                if (name not in dns_alternatives or not dns or not dns['token']
-                        or self.sessions.get(dns_leaf) in FAILED_SESSIONS and self.sessions.get(name) != 'ok'
-                        or not self.try_leaf(dns, name, lambda: self.dns_answer(dns_name))):
-                    continue
-                dns_name = None
-                self.dns_transport_leaf = name
-                self.dns_leaf(name)
-                self.diagnostics['dns_leaf_rotated'] = True
-                self.diagnostics['managed_dns_ok'] = True
-                self.fake_ip_failures.clear()
-                # DNS can restore the original application's full route.
-                if prove_http():
-                    return True
-            if self.sessions.get(current) == 'ok':
-                if self.deadline - self.clock() < 3.5:
-                    break
-                path = '/proxies/' + quote(name, safe='') + '/health-delay?'
-                if not self.api(path + urlencode({'url': url}), 1.5).get('ok'):
-                    continue
-            if self.try_leaf(remote, name, lambda: prove_http(name)):
+            if dns_name is None:
+                break
+            # Repair the independent DNS path while the application
+            # selector still points at its original leaf.
+            if (name not in dns_alternatives or not dns or not dns['token']
+                    or self.sessions.get(dns_leaf) in FAILED_DOH_SAMPLES and self.sessions.get(name) != 'ok'
+                    or not self.try_leaf(dns, name, lambda: self.dns_answer(dns_name))):
+                continue
+            dns_name = None
+            self.dns_transport_leaf = name
+            self.dns_leaf(name)
+            self.diagnostics['dns_leaf_rotated'] = True
+            self.diagnostics['managed_dns_ok'] = True
+            self.fake_ip_failures.clear()
+            # DNS can restore the original application's full route.
+            if prove_http():
                 return True
         return False
 
     def dns_answer(self, name):
         if not self.settings.get('dns_leaf_group'):
-            answer = self.command([self.settings['dig'], '+time=2', '+tries=1', '+short', '@127.0.0.1',
-                                   '-p', str(self.settings['dns_port']), name, 'A'], 2.2)
+            # A cold validator may need one bounded leaf attempt before the
+            # direct validation material path answers.
+            answer = self.command([self.settings['dig'], '+time=3', '+tries=1', '+short', '@127.0.0.1',
+                                   '-p', str(self.settings['dns_port']), name, 'A'], 3.0)
             for line in answer.splitlines():
                 try:
                     if ipaddress.ip_address(line).version == 4:
@@ -793,7 +803,7 @@ class Probe:
             return False
         # The controller resolver returns real records without the fake-IP middleware.
         try:
-            response = self.api('/dns/query?' + urlencode(dict(name=name, type='A')), 2.2)
+            response = self.api('/dns/query?' + urlencode(dict(name=name, type='A')), 3.0)
         except ProbeFailure as error:
             if error.layer != 'obs':
                 raise
@@ -840,22 +850,25 @@ class Probe:
         self.diagnostics['leaf_sessions'] = {result: measured.count(result)
                                             for result in ('ok', 'node-auth', 'session-unavailable')}
 
-    def sample_dns_batch(self, current, leaves):
+    def sample_leaf_batch(self, group, current, leaves):
         """Advance past previously sampled alternatives within the same routing transaction."""
         if not (self.snapshot and self.routing and self.settings.get('session_urls')):
             self.sample_sessions([current, *leaves[:3]])
             return leaves[:3]
         runtime = Path(self.settings['runtime'])
-        path = runtime / 'dns-leaf-cursor.json'
+        path = runtime / f'{group}-leaf-cursor.json'
         binding = dict(self.routing, boot_id=(runtime / 'boot-id').read_text().strip(), digest=self.snapshot)
-        ordered = [current, *leaves]
+        # Interleave thirds of the subscription so adjacent regional outages
+        # do not consume every sample in the first recovery rounds.
+        width = (len(leaves) + 2) // 3
+        ordered = [leaves[i] for column in range(width) for i in range(column, len(leaves), width)]
         identities = [hashlib.sha256(name.encode()).hexdigest() for name in ordered]
         try:
             record = json.loads(path.read_text())
             offset = identities.index(record['last']) + 1 if record['binding'] == binding else 0
         except (OSError, ValueError, KeyError, TypeError):
             offset = 0
-        alternatives = [name for name in ordered[offset:] + ordered[:offset] if name != current][:3]
+        alternatives = (ordered[offset:] + ordered[:offset])[:3]
         self.sample_sessions([current, *alternatives])
         measured = [leaf for leaf in alternatives if leaf in self.sessions]
         if measured:
@@ -889,14 +902,14 @@ class Probe:
             self.note_failure('validator-dns')
         if not ready and current and self.deadline - self.clock() >= 4:
             binding = self.selection_binding('lf-dns', current)
-            alternatives = self.sample_dns_batch(current, leaves)
+            alternatives = self.sample_leaf_batch('dns', current, leaves)
             self.dns_leaf(current)
             alternatives.sort(key=lambda leaf: self.sessions.get(leaf) != 'ok')
             for leaf in alternatives:
                 if self.deadline - self.clock() < 3 or not binding['token']:
                     break
                 outcome = self.sessions.get(leaf)
-                if outcome in FAILED_SESSIONS or (self.sessions.get(current) == 'ok' and outcome != 'ok'):
+                if outcome in FAILED_DOH_SAMPLES or (self.sessions.get(current) == 'ok' and outcome != 'ok'):
                     continue
                 def check():
                     answer = resolved()
@@ -930,6 +943,32 @@ class Probe:
         self.diagnostics['managed_dns_ok'] = True
         self.fake_ip_failures.clear()
         return ready
+
+    def observe_dns_leaf(self, current, leaves):
+        """Retire a failed DNS selection even if the alternate resolver kept B healthy."""
+        self.dns_leaf(current)
+        if not self.settings.get('session_urls') or self.deadline - self.clock() < 8:
+            return
+        runtime = Path(self.settings['runtime'])
+        checked = runtime / 'dns-leaf-observed'
+        try:
+            if checked.exists() and 0 <= time.time() - checked.stat().st_mtime < 60:
+                return
+            checked.touch(mode=0o600)
+        except OSError:
+            return
+        sampled = self.sample_leaf_batch('dns', current, leaves)
+        self.dns_leaf(current)
+        if self.sessions.get(current) not in FAILED_DOH_SAMPLES:
+            return
+        candidate = next((leaf for leaf in sampled if self.sessions.get(leaf) == 'ok'), None)
+        # Leave time for selector RPCs, the DNS trial and the final config proof.
+        if candidate and self.deadline - self.clock() >= 8:
+            name = urlsplit(self.settings['urls'][0]).hostname
+            binding = self.selection_binding('lf-dns', current)
+            if self.try_leaf(binding, candidate, lambda: self.dns_answer(name)):
+                self.dns_leaf(candidate)
+                self.diagnostics['dns_leaf_rotated'] = True
 
     def application_path(self):
         answered = self.system_dns_probe(self.settings.get('application_dns_check'))
@@ -1025,10 +1064,8 @@ class Probe:
                     error = None
             if error and not self.timed('leaf_recovery', lambda: self.rotate_leaf(log_path, url, name if dns_error else None)):
                 observed = set(self.sessions.values())
-                if observed == {'node-auth'}:
+                if self.remote_auth_rejected:
                     raise ProbeFailure('node', 'sampled leaves rejected authentication') from None
-                if observed and 'ok' not in observed:
-                    raise ProbeFailure('node', 'sampled leaves could not establish proxy sessions') from None
                 if dns_error:
                     raise dns_error from None
                 self.timed('application_path', self.application_path)
@@ -1121,15 +1158,14 @@ class Probe:
                 if self.settings.get('dns_leaf_group') and 'dns_leaf' not in self.diagnostics and self.deadline - self.clock() > 1.5:
                     try:
                         leaf, alternatives = self.selector('lf-dns')
+                        if leaf:
+                            if outage is None:
+                                self.timed('session_sample', lambda: self.observe_dns_leaf(leaf, alternatives))
+                            else:
+                                self.dns_leaf(leaf)
                     except ProbeFailure as error:
                         if error.layer not in ('obs', 'controller-unavailable'):
                             raise
-                    else:
-                        if leaf:
-                            if (Path(self.settings['runtime']) / 'profile-refresh-verifying.json').exists() \
-                                    and self.deadline - self.clock() > 4:
-                                self.timed('session_sample', lambda: self.sample_sessions([leaf, *alternatives[:2]]))
-                            self.dns_leaf(leaf)
                 self.diagnostics['config_ok'] = False
                 final = check_config(self.api("/configs"), self.settings)
                 if final != fingerprint:

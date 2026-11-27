@@ -259,7 +259,7 @@ in
     default = let
       host = url: let found = builtins.match "https?://([^/:]+).*" url;
         in if found == null then null else lib.toLower (builtins.head found);
-      names = lib.filter (value: value != null)
+      names = lib.filter (value: value != null && builtins.match "[0-9.]+" value == null)
         (map host (config.my.proxy.nodeProbeUrls ++ [ config.my.proxy.delayTestUrl ]));
     in lib.genAttrs (lib.unique (names ++ config.my.proxy.tunProbeNames)) (_: "proxy");
     description = "Root-approved route classes for protected exact domains. Health and delay-test domains default to proxy; declare subscription/update hosts and any intentional alternatives here. Indeterminate routes are refused by enforce.";
