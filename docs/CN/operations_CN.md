@@ -4,32 +4,18 @@
 
 ## GUI 控制权限
 
-Clash Verge GUI 复用 Nixpkgs 的上游构建。独立编译的 Rust 后台服务带有本地补丁。
-首页、设置页、托盘和快捷键中的 System Proxy、TUN 与核心模式仍可操作，并可写入 GUI 本地偏好。
-这些操作在到达操作系统或受管核心前被静默丢弃：
+Clash Verge GUI 直接用 Nixpkgs 的上游构建，独立编译的 Rust 后台服务则打上了本地补丁。首页、设置页、托盘菜单和快捷键里的 System Proxy、TUN 和核心模式按钮都还能点、也会写入 GUI 本地偏好，但在碰到底层系统或受管核心前会被静默丢弃：
 
-- 启动包装用只丢弃写入的 shim 替换 System Proxy、PAC 和代理守护调用。
-  私有挂载命名空间遮蔽绝对 helper 路径，GSettings 内存后端和 KDE 5 helper 名称作为后备。
-  启动与退出时的 OS 代理清理同样不改变实际设置。
-- 控制器对 `mode`、`tun` 的 `PATCH /configs` 和 `PUT /configs` 重载返回 204 但不应用。
-  其它配置写入、禁用规则、升级和重启仍拒绝。
-- helper 以内核 Unix peer 身份区分调用者，GUI 停止或重启请求不能中断受管核心，受控来源由 root 启动。
-- 受管解析器在最终校验前把核心模式固定为 `rule`，并用 root 策略覆盖整个 `tun` 段。
-  本地偏好不能改变实际状态，也不能让重启因策略校验失败。
+- **启动 shim**：System Proxy、PAC 和代理守护调用在启动时被换成只丢弃写入的 shim；私有挂载命名空间遮蔽绝对 helper 路径（以内存 GSettings 后端和 KDE 5 helper 名称作后备），确保启动和退出清理都不改系统代理设置。
+- **控制器策略**：对 `mode`、`tun` 的 `PATCH /configs` 和 `PUT /configs` 重载都返回 `204` 但不应用，其余配置写操作、禁用规则、升级和重启一律返回 `403`。
+- **调用者身份**：helper 按内核 Unix peer 凭据认人，GUI 的停止/重启请求动不了受管核心，受控来源只能由 root 启动。
+- **受管解析器**：最终校验前把核心模式钉死为 `rule`，并用 root 策略覆盖整段 `tun`，所以本地偏好既改不了实际状态，也不会让重启因校验失败而卡住。
 
-GUI 可以显示本地偏好；实际状态以控制器、`proxy-status` 或受管核心为准。
-受管组内选择节点、关闭连接、延迟测试、状态读取和日志仍然可用。
-
-使用 `clash-rules` 或 `clash-proxy-only` 请求系统路由子模式。
-两者均渲染核心 `mode: rule`，GUI 的 Rule 表示核心按规则列表处理流量，并不代表当前路由子模式。
-使用 `proxy-status` 查看整体网络状态及 B 中的路由子模式。
-策略缺失或损坏不会开放 GUI 控制写权限。
+GUI 界面里显示的只是它自己的本地偏好，实际状态以控制器、`proxy-status` 或受管核心为准（策略缺失或损坏也不会开放 GUI 写权限）。受管组内选节点、关连接、测速、状态读取和看日志都照常可用。切换系统路由子模式请用 `clash-rules` 或 `clash-proxy-only`——两者渲染出来的核心设置都是 `mode: rule`，所以 GUI 上的 Rule 只代表核心在跑规则表，不代表当前是哪个路由子模式（具体看 `proxy-status`）。
 
 ## 来源登记
 
-来源清单保存在 Sops 加密的 [system/secrets/proxy.yaml](../../system/secrets/proxy.yaml)，激活时渲染为 root 私有 `/run/secrets/proxy_source`（0400）。
-
-在 Sops 编辑器中，`proxy_source` 是包含 sources 数组的 JSON 字符串：
+私有来源清单存在 Sops 加密的 [system/secrets/proxy.yaml](../../system/secrets/proxy.yaml) 里，激活时渲染成 root 私有的 `/run/secrets/proxy_source`（权限 `0400`）。在 Sops 编辑器中，`proxy_source` 是一个包含 `sources` 数组的 JSON 字符串：
 
 ```yaml
 proxy_source: |-
@@ -49,160 +35,78 @@ proxy_source: |-
   }
 ```
 
-每个来源有一个主 `subscription` 和可选 HTTP provider。
-新增订阅使用独立 ID，同一来源内的 provider 则须匹配订阅声明的名称和 URL。
-
-端点可选设置包括最多四个精确 HTTPS `redirects`，以及默认为 `clash.meta` 的 `user-agent`。
-来源的 `"gui-profile":"REMOTE_PROFILE_UID"` 映射 GUI 本地 `profiles.yaml` 中的精确 UID。
-映射只授权选择来源，不导入 GUI 的 URL 或 YAML。
+每个来源有一条主 `subscription` 和可选的 HTTP `providers`（新增订阅要配独立 ID，同一来源内的 provider 须匹配订阅声明的名称和 URL）。端点可选字段包括最多四个精确 HTTPS `redirects` 和 `user-agent`（默认 `clash.meta`）；`"gui-profile":"REMOTE_PROFILE_UID"` 则把 Verge 本地 `profiles.yaml` 里的精确 UID 映射过来，用来授权选择来源而不导入 GUI 的 URL 或 YAML。
 
 ### 添加与切换来源
 
-运行 `sops edit system/secrets/proxy.yaml`，在 `sources` 中追加一条配置并使用唯一 ID。清单支持 1–256 条。激活更新后的密钥，然后添加需要的来源：
+运行 `sops edit system/secrets/proxy.yaml`，在 `sources` 里追加一条带唯一 ID 的记录（清单支持 1–256 条），重建部署后再添加来源：
 
 ```sh
 sudo nixos-rebuild switch --flake .#lfour
 sudo clash-source add SOURCE_ID
 ```
 
-检查显示的 `digest` 和 `previous` 版本，确认要登记该条目后输入 `yes`。Broker 只登记这一条目，并复核确认期间清单条目和已登记版本是否变化。摘要覆盖规范化后的整条定义。命令只显示摘要及来源 ID，URL 和凭据仍保持私有。
+核对终端打出来的 `digest` 和 `previous` 版本确认无误后输入 `yes`（broker 只登记这一条并复核期间定义和历史版本没变；URL 和凭据始终保密）。`add` 会用无特权 worker 下载、选中该来源并等待现有 verifier：处于 **A** 时通过受保护启动事务请求代理；处于 **B** 时沿用当前路由策略，不用另跑 `clash-on` 或 `clash-rules`（在 **A** 或 **B** 下的显式命令会跳过自动更新的 90 秒稳定期立刻执行；若当前在 **C**，先恢复 **B** 或切到 **A** 再下载）。
 
-`add` 通过非特权 worker 下载，选择下载完成的来源，并等待现有 verifier。处于 A 时，命令会通过受保护的启动事务请求代理。处于 B 时，沿用当前路由策略，无需另跑 `clash-on` 或 `clash-rules`。A 或 B 中的显式操作立即开始，自动更新仍要求 B 稳定 90 秒。处于 C 时，应先恢复 B 或显式进入 A 再下载。
+终端最后会输出 `requested_source`、`active_source`、`result` 和 `reason`（`accepted` 退出 `0`，拒绝、回退、回滚或验证超时退出非零）。即使验证过了也仍要走完正常健康观察期，可用 `proxy-status` 查看 `Active source` 和 `Dropped leaves`（发生回退时，活动来源可能与请求的来源不同）。
 
-终端结果包含 `requested_source`、`active_source`、`result` 和 `reason`。接受时显示 `accepted` 并退出零。拒绝、回退、回滚及验证超时退出非零。成功验证仍须经过正常的健康观察期。可用 `proxy-status` 查看活动来源和 `Dropped leaves` 数量。回退时，活动来源可能与请求的来源不同。
+想对已登记来源直接拉取、选中并验证，跑 `sudo clash-source use SOURCE_ID`（加 `--revision REVIEWED_DIGEST` 可强制核对版本；下载失败保留原选择，在 `proxy-only` 下候选仍须包含已选固定出口，想换出口先在 `rules` 接受更新再选新出口）。底层命令 `review FILE --id SOURCE_ID` 和 `register FILE --id SOURCE_ID --digest REVIEWED_DIGEST --previous PREVIOUS_DIGEST` 也保留着（首次登记用 `none` 作上一修订；不带 `--id` 的 `review` 会列出清单，多条清单时 `register` 须指定 ID）。
 
-用 `sudo clash-source use SOURCE_ID` 立即下载、选择并验证已登记来源。附加 `--revision REVIEWED_DIGEST` 可要求登记版本完全匹配。下载失败保留原选择。在 `proxy-only` 下候选必须匹配固定出口。要更换固定出口，先在 `rules` 中接受更新，再选择新出口。
+更新登记会让该来源的旧下载和批准失效：已跑着的核心保留原来源身份，已接受快照也保留原修订供审计比较，但重启或回滚必须用符合当前登记修订的快照（先下载并接受新修订再依赖离线启动；`sudo clash-source list` 可看选择、活动授权、修订、已接受摘要和本地验证结果）。从 Sops 清单删掉条目不会撤销本地登记，需要用 `sudo clash-source revoke SOURCE_ID`（可加 `--revision REVIEWED_DIGEST`）移除本地登记及排队任务和快照（撤销活动来源会进 **C**、清掉 **B** 租约并停核心；撤销非活动来源则不影响当前授权）。开启运行时路由且处于 **C** 时，可以先用 `sudo clash-source use SOURCE_ID --select-only` 选好替代来源，再用 `sudo proxy-control recover` 拉取恢复。
 
-底层命令 `review FILE --id SOURCE_ID` 和 `register FILE --id SOURCE_ID --digest REVIEWED_DIGEST --previous PREVIOUS_DIGEST` 仍可使用。首次登记使用 `none` 作为上一修订。不带 `--id` 的 review 可列出清单摘要，多条清单进行 register 时须指定 ID。
-
-更新登记会使该来源的旧下载及批准失效。已运行的核心保留原来源身份，已接受快照保留原修订供审计比较。重新启动或回滚须使用符合当前登记修订的快照。先下载并接受新修订，再离线启动。`sudo clash-source list` 显示选择、活动授权、登记修订、已接受摘要和本地验证结果。
-
-从 Sops 清单删除条目后，已登记副本仍然存在。用 `sudo clash-source revoke SOURCE_ID` 移除本地登记及其排队任务和快照。附加 `--revision REVIEWED_DIGEST` 可限定为指定修订。撤销活动来源会进入 C、清除 B 租约并停止核心。撤销非活动来源会保留现有活动授权。
-
-启用运行时路由时，可在 C 用 `sudo clash-source use SOURCE_ID --select-only` 选择已登记的替代来源，再用 `sudo proxy-control recover` 通过 C 的恢复流程取得该来源。
-
-`clash-source-select.path` 监听 GUI 的 `profiles.yaml`，切换到已映射 UID 会请求对应的登记来源。
-未知 profile 不改变选择。
-修改 GUI URL、YAML 或脚本不授予新权限。
-GUI 选择与实际来源不同时，可查看请求、下载和应用日志。
+`clash-source-select.path` 盯着 GUI 的 `profiles.yaml`，切到已映射 UID 就会请求对应来源（未知 profile 不动选择，改 GUI URL/YAML/脚本也不授新权限）。如果 GUI 选择和实际活动来源对不上，查一下这几个日志：
 
 ```bash
 journalctl -u clash-source-select -u clash-source-download -u clash-source-apply
 ```
 
-A 中的 GUI 请求会下载并选择来源，供下次 `clash-on` 使用。
+在 **A** 下发起 GUI 请求会下载并选中来源，留给下次 `clash-on` 用。
 
-`clash-source refresh` 只准备候选。
-直接请求自动下载和应用流程时，可启动 `clash-source-refresh.service`。
-显式运行 `clash-on` 时，有已接受快照便先用它启动，并记录一次待处理的更新请求。
-B 在同一次启动、快照、策略和路由选择下经验证并持续健康 90 秒后，协调器启动下载服务。
-离开健康 B 后重新计时。
-C 中请求继续排队，`proxy-status` 显示延期原因。`clash-off` 会取消尚未处理的下载和应用请求。
-root timer 在开机约两分钟后开始判断所选来源是否到期，GUI 关闭时仍运行。
-每轮下载任务最多尝试三次，间隔 15 秒，服务总时限为 210 秒。
-导入或回滚尚未收尾时，已下载的候选按摘要等待应用。
-启动 Verge 时，启动器把已登记配置的 GUI URL 指向本机受控入口。已打开的旧窗口需重新启动一次。原生刷新按钮通过该入口使用同一个队列，候选生效或确认与生效快照等价后才收到成功响应。未能应用时可在 `proxy-status` 查看下载与应用结果。Verge 在 B 中运行时使用自己的定时器，关闭后由 root 读取已登记配置的刷新间隔和自动更新开关。未配置间隔时使用 30 分钟，设为零会停用定时刷新。
+`clash-source refresh` 只准备候选；想直接触发自动下载和应用流程可以启动 `clash-source-refresh.service`。显式跑 `clash-on` 时，有已接受快照就先用它启动并记一次待处理更新，等 **B** 在同一次启动、快照、策略和路由选择下持续健康 90 秒，协调器就会拉起下载（离开健康 **B** 重置计时，**C** 中继续排队，`clash-off` 则清空队列）。root timer 开机约两分钟后也会按期检查（哪怕关掉 GUI 照样跑；每轮最多试三次、间隔 15 秒、总超时 210 秒；若导入或回滚尚未收尾，候选按摘要排队等待应用）。启动 Verge 时，包装器会把已登记配置的 GUI URL 指向本机受控入口（已开着的旧窗口重开一次生效），点 Verge 的刷新按钮走同一队列，等候选生效或确认等价才返回成功；Verge 在 **B** 里用自己的定时器，关掉后由 root 读保存的间隔和自动更新开关（默认 30 分钟，设为 `0` 停用定时刷新）。
 
-当前快照仍获授权且完整，并通过新鲜的完整健康检查、就绪检查及所需 B 租约检查时，
-被拒或未变化的候选保留正在运行的核心和已有连接。
-当前授权失效或健康检查失败时，仍进入 C 恢复。
-实际切换先进入 C，再通过 helper IPC 替换核心，重新执行导入检查，通过代理健康检查后才返回 B。
-
-worker 失败区分 `fetch`、`parse`、`render`、`pin-addresses`。
-`proxy-status` 的 `Subscription download` 另显示固定的 DNS、TLS、连接或 HTTP 失败分类，以及可用的 HTTP 状态码。
-`Subscription download` 也显示候选是否正在等待应用。`Profile refresh` 显示审计与健康结果。
-`Dropped leaves` 按原因显示导入时剔除的节点数。`Leaf session sample` 显示有限运行时抽查发现的认证拒绝和会话不可用数量。
-
-按授权过滤不安全的 TLS 节点后，解析失败的节点和使用回环 IP 字面量的占位节点，最多丢弃 `max(1, remaining_node_count // 5)` 个。
-DNS 答案含非公网地址，或节点使用其他非公网 IP 字面量时，拒绝候选。
-下载、解析和审计失败保留有效的运行回退，没有回退则保持 C。
+只要当前快照依然获授权且完整、通过新鲜完整健康与就绪检查及所需 **B** 租约，被拒或未变化的候选就会让现核心和已有连接继续跑（当前授权失效或健康失败才走 **C** 恢复）。真正要切换时会先入 **C**，经 helper IPC 换核、重跑导入检查并等代理健康后再回 **B**。worker 失败分 `fetch`、`parse`、`render` 和 `pin-addresses`（`proxy-status` 的 `Subscription download` 会附带 DNS/TLS/连接/HTTP 失败分类、HTTP 状态码和等待应用状态；`Profile refresh` 给审计和健康结论；`Dropped leaves` 统计剔除数；`Leaf session sample` 报抽查到的认证拒绝和会话不可用）。过滤掉不安全的 TLS 节点后，解析失败和回环 IP 占位节点最多丢 `max(1, remaining_node_count // 5)` 个，非公网答案或非公网字面端点则直接拒掉候选（留住有效回退，没有回退就停在 **C**）。
 
 ### 恢复已登记来源
 
-启用运行时路由且在 C 中保留代理意图时，可以应用所选来源的最近一次下载。
+启用运行时路由并在 **C** 中保留代理意图时，可以先尝试应用所选来源最近一次下载的候选：
 
 ```sh
 sudo proxy-control recover --cached
 ```
 
-命令在停止核心前检查本机下载。候选须不同于已接受快照，并匹配当前登记修订和路由策略。通过常规内容审计和健康检查才会进入 B。
-命令和 `proxy-status` 会显示已检查的缓存为何不可用。
-没有兼容下载时，获取新候选。
+命令会在停核心前先检查本机下载（须不同于已接受快照且匹配当前登记修订和路由策略，同样要过内容审计和健康检查才进 **B**；不可用时命令和 `proxy-status` 会写明原因）。没有兼容缓存就抓一份新的：
 
 ```sh
 sudo proxy-control recover
 ```
 
-两种操作期间，C 均持续阻断普通应用和访客的公网访问。
-专用解析器通过已配置的认证 DoT 上游查询，并在本地验证 DNSSEC。下载进程使用登记的 HTTPS 端点的固定解析结果，验证 TLS 证书，只跟随登记的精确跳转。
-防火墙按服务身份、物理接口、源地址、目标地址和端口限制恢复流量。内核租约在 55 秒内到期，并切断已有恢复连接。收到上行变更通知或系统进入休眠时会提前撤权。
-命令先撤销恢复租约，再按请求的路由策略暂存候选。下载失败时保持 C 并保留已接受基线。进入 B 仍须通过常规内容审计和健康检查。
-在 `proxy-only` 下，下载内容仍需包含所选固定出口。如需采用来源中的其他出口，参见下文的出口选择流程。
-未启用运行时路由的配置可在 A 中按手动来源流程恢复。
+两种操作期间，**C** 都继续阻断普通应用和访客的公网访问。专用解析器经认证 DoT 上游做本地 DNSSEC 验证，下载进程对登记的 HTTPS 端点用固定解析结果、校验 TLS 证书并只跟精确跳转，防火墙按服务身份、物理接口、源/目标地址和端口把恢复流量锁在 55 秒内核租约内（收到上行变更或休眠提前撤权）。下载失败会保持 **C** 并留住已接受基线；在 `proxy-only` 下下载内容还得包含已选固定出口（要换出口看下面流程；没开运行时路由的配置在 **A** 里走手动来源流程）。
 
 ### 只读查看订阅变化
 
-本机自动导入正常节点轮换。
-需要查看所选来源候选与已接受基线的差异时，运行：
+本机平时会自动导入正常节点轮换，想看看当前候选和已接受基线差在哪，跑：
 
 ```sh
 clash-diff
 ```
 
-命令通过 sudo 读取本机快照，不下载候选、不写入审阅或批准记录，在 A、B、C 中都不改变网络模式。
-它显示节点地址、端口、TLS 名称、分组和规则，隐藏认证值与嵌套传输参数值。
-`clash-diff --json` 提供结构化输出。
-这是可选诊断命令，不是更新前置步骤。
+命令通过 `sudo` 读本地快照，不下载、不写批准记录，在 **A**、**B**、**C** 下都不改网络模式。输出节点地址、端口、TLS 名称、分组和规则，同时隐藏认证值和嵌套传输参数（`clash-diff --json` 输出 JSON），纯粹用来排查，不是更新前提。
 
-`proxy-status` 的 `Profile refresh` 显示刷新结果和原因，并列出审计类别与计数。
-`Last auto approval` 显示上次自动批准的类别、去重节点数和时间。
-`fallback` 表示候选未导入，仍运行此前快照，`verifying` 表示导入后等待健康接受。
-结构阻断需要修正来源内容或相应本地策略，不通过批准日常轮换来解决。
-每五分钟运行的桌面通知仅经 Noctalia 提示下载失败、导入被拒、回滚和健康失败。
-成功更新及非阻断的审计结果保留在 `proxy-status`，不弹窗。
-通知使用固定分类，不包含节点名、订阅 URL 或凭据。
+`proxy-status` 的 `Profile refresh` 和 `Last auto approval` 分别展示刷新结果、审计分类计数以及上次自动批准的去重节点数和时间（`fallback` 代表候选被拒、沿用旧快照；`verifying` 代表正在等健康接受）。遇到结构阻断得去改来源内容或本地策略，别靠批准日常轮换硬过。用户通知 timer 每五分钟读一次本地文件，只把下载失败、导入被拒、回滚和健康失败合并成每轮一条 Noctalia 通知（固定分类，不含节点名、URL 或凭据；成功更新、恢复、审计警告、订阅年龄和 GUI 副本差异不弹窗）。
 
 ### 门户登录
 
-门户登录先显式切 A，再用实际字面地址运行 `firefox-portal http://192.168.1.1/`。
-此入口使用全新数据、无扩展、单 IP 的 80/443 relay，15 分钟后终止。
-跳转到另一地址会失败，审核后显式为新地址另开会话。
-关闭后清理数据。
-日常 Firefox 可留在 A 使用。
-
-身份 Firefox 须恢复 B 后再启动。
-应保留可离线启动的 generation 与登记密钥备份。
-该命令不会创建恢复 generation 或更改 DNS 回退策略。
+需要过门户登录时，先显式切到 **A**（`clash-off`），再用实际字面 IP 跑 `firefox-portal http://192.168.1.1/`。它会拉起一个无扩展临时会话，背后是限死单 IP 80/443 端口、最多活 15 分钟的 relay（跳转到别的 IP 会失败，审阅后为新地址另开一次即可），关掉就清数据。日常 Firefox 可以留在 **A** 用，`firefox-identity` 则等恢复 **B** 再开。平时留好可离线启动的 generation 和登记密钥备份——这个命令不建恢复 generation 也不改 DNS 回退策略。
 
 ## 模式切换
 
-使用 Nushell 的 `clash-on`、`clash-off` 切换模式。
-启用运行时路由时，`clash-on` 每次启动核心后最多等待 90 秒，以完成 DNS 和 TUN 预热并取得新的就绪证明。
-若恢复的受控快照连续出现数据面故障，`clash-on` 可在 C 中尝试一次同一登记来源的兼容缓存更新。
-本机启用 `my.proxy.startupRecoveryFetch`，允许缓存不可用时在 C 中受限下载一次。此选项默认关闭。
-恢复流程与首次启动共用从首个核心启动起算的 210 秒就绪截止时间。常规更新仍等待 B 连续健康 90 秒。
-关闭 GUI 保留代理意图和受管核心运行。停止受管代理访问使用 `clash-off`。
+在 Nushell 里用 `clash-on` 和 `clash-off` 切换。开启运行时路由时，`clash-on` 每次起核心最多等 90 秒完成 DNS/TUN 预热并拿到就绪证明；要是恢复的受控快照连续在数据面翻车，`clash-on` 会在 **C** 里试一次兼容缓存更新（本机还开了 `my.proxy.startupRecoveryFetch`，缓存不可用时允许在 **C** 受限下载一次——共用从首个核心启动算起的 210 秒就绪截止）。关掉 GUI 不影响代理意图和核心运行，彻底停代理用 `clash-off`。
 
-本机使用 `clash-rules`、`clash-proxy-only` 一键选择路由子模式并请求 B。
-命令在终端返回包含模式的成功结果，或以非零状态返回失败阶段及可用原因。
-从 C 重试、以保留的 `proxy-only` 选择启动、显式切换路由或恢复来源时，核心启动后最多等待 90 秒确认代理就绪。
-它们不启动 GUI、不发送桌面通知，也不自动运行 `proxy-status`。
-B 和 C 中，`proxy-status` 显示请求的路由及上次生效的路由、事务 epoch，以及观测到的核心模式、TCP 叶节点和 DNS、UDP、ICMP 覆盖。
-底层命令为 `sudo proxy-control routing rules`、`sudo proxy-control routing proxy-only`。
-`clash-off` 保留本次启动的选择，`clash-on` 复用它，重启恢复 rules。
-Proxy-only 需要已接受的固定节点来源。若准备或完整健康检查失败，C 继续保护应用，重试时沿用请求的选择。
+`clash-rules` 和 `clash-proxy-only` 一键选好路由子模式并请求 **B**（核心启动后最多等 90 秒确认就绪），只在终端返回模式或失败阶段，不开 GUI、不发通知、也不跑 `proxy-status`（底层是 `sudo proxy-control routing rules` 和 `sudo proxy-control routing proxy-only`）。`clash-off` 会为本次启动留住选择，`clash-on` 复用它，重启恢复 `rules`。`proxy-only` 要求已有已接受的固定节点来源，准备或健康检查挂了就停在 **C** 等重试。
 
-用 `clash-egress` 列出已接受来源的出口 ID，用 `clash-egress APPROVED_NODE_ID` 选择其中一个并请求严格 B。
-将 `APPROVED_NODE_ID` 替换为列表中的完整 ID。底层入口为 `sudo proxy-control egress list` 和 `sudo proxy-control egress APPROVED_NODE_ID`。
-出口变更经 C 关闭旧流和 association。Rules 保留 GUI 选组，严格模式通过此 root 事务更换出口。
-所选出口在本次启动的 off/on 后保留。来源更改该节点后，须先在 rules 接受更新，再选择新 ID。
-策略边界见[路由策略](proxy_CN.md#路由策略)。
+用 `clash-egress` 列出已接受来源的出口 ID，再把完整 ID 填进 `clash-egress APPROVED_NODE_ID` 切到严格 **B**（底层是 `sudo proxy-control egress list` 和 `sudo proxy-control egress APPROVED_NODE_ID`）。换出口会经 **C** 关掉旧流和 association，本次启动 off/on 后保留，来源改了节点定义则得先在 `rules` 接受更新再选新 ID（见[路由策略](proxy_CN.md#路由策略)）。
 
-底层系统命令为 `sudo proxy-control on`、`sudo proxy-control off`。
-`on` 打开一次性配置导入窗口并启动 helper，受控来源本机由登记候选启动核心，兼容模式仍由 GUI 提供配置并启动核心。
-`off` 清除授权、停止 helper，并确认直连防火墙和路由策略已生效。
-`clash-off` 在切换完成后后台关闭 GUI。直连 DNS 的就绪状态通过 `proxy-status` 查看。
-A 中仅启动 `clash-verge` 不会授权核心。
+底层系统命令是 `sudo proxy-control on`（打开一次性导入窗口并起 helper，受控来源用登记候选起核心，兼容模式由 GUI 供配置）和 `sudo proxy-control off`（清授权、停 helper 并确认直连防火墙与路由生效；`clash-off` 还会后台关掉 GUI，直连 DNS 就绪用 `proxy-status` 单独看）。在 **A** 里光起 `clash-verge` 不会授权核心。
 
 | 命令 | 用途 |
 |---|---|
@@ -214,8 +118,7 @@ A 中仅启动 `clash-verge` 不会授权核心。
 | `proxy-control status direct` | 查看直连状态 |
 | `firefox --check` | 检查浏览器启动条件，不开窗口 |
 
-`status auto` 跟随请求的模式。
-系统未就绪时，`--check` 返回非零状态，`wait` 每十秒显示一次进度。
+`status auto` 跟随请求的模式，未就绪时 `--check` 返回非零，`wait` 每十秒报一次进度。
 
 | 工具 | 输出 |
 |---|---|
@@ -227,49 +130,19 @@ A 中仅启动 `clash-verge` 不会授权核心。
 | `proxy-inspect --posture` | 监听绑定、声明的入站策略和本机信任状态 |
 | `egress-audit` | 额外的主动网络探测 |
 
-`--no-color` 或 `NO_COLOR` 可关闭状态面板的颜色。
+用 `--no-color` 或 `NO_COLOR` 可以关掉状态面板的颜色。
 
-`proxy-policy` 同时显示原生 UID/接口/CIDR 授权、核心 DIRECT 范围、远程目标授权和订阅信任。
-这些权限相互独立：原生 restricted 与宽泛核心 DIRECT 范围并用时，连接本地代理入口的客户端仍可使用核心授权。
-限制宿主应用访问内网时，应同时审阅 `directEgress.mode="restricted"` 和 `localTargetCidrs=[]`，再声明必需授权。
-`proxy-inspect` 报告命令失败分类及退出码，不输出任意服务 stderr。
+`proxy-policy` 把原生 UID/接口/CIDR 授权、核心 `DIRECT` 范围、远程目标授权和订阅信任列在一起。它们相互独立：如果原生设为 `restricted` 但核心 `DIRECT` 范围很宽，连本地代理入口的客户端照样能用核心授权——真想锁死宿主应用访问内网，得同时配好 `directEgress.mode="restricted"` 和 `localTargetCidrs=[]`，再声明必需授权。`proxy-inspect` 只报失败分类和退出码，不吐任意服务 stderr。
 
-`proxy-inspect --posture` 查看调用者所在网络命名空间的 IPv4 和 IPv6 监听。
-它分别显示绑定和身份，以及 LAN、tailnet 和路由访客的入站声明。
-入站列描述策略，实际可达性还取决于网络状态、对端授权和服务配置。
-代理端口提示用于人工复核，命令不会连接监听端口。
-用 `--json` 获取结构化结果，并查看声明的控制器、浏览器和容器 Unix socket 元数据。
-
-用 `proxy-inspect --posture --pid PID` 查看特定进程的启动环境，或用 `sudo proxy-inspect --posture --privileged` 检查指定系统单元。
-报告只列跟踪的变量名及比对状态，还提供系统 CA bundle 摘要、SSH 状态和可读取的 Tailscale 设置摘要。
-无法读取的字段显示未知。需查看已保存的桌面代理模式时，从桌面会话运行。
-桌面配置通过断言保持 OpenSSH 关闭，并检查声明的宿主入站端口不含 TCP/22。
+`proxy-inspect --posture` 按调用者命名空间列出 IPv4/IPv6 监听，并把绑定/身份与 LAN、tailnet、路由访客的入站声明分开显示（代理端口提示仅供人工复核，不主动连端口；`--json` 补充结构化结果和声明的控制/浏览器/容器 Unix socket 元数据）。查特定进程启动环境用 `proxy-inspect --posture --pid PID`，查系统单元用 `sudo proxy-inspect --posture --privileged`（只列跟踪的变量名及比对状态、CA bundle 摘要、SSH 状态和可读 Tailscale 设置摘要；桌面会话内运行才会带出已保存的桌面代理模式）。桌面配置通过断言保持 OpenSSH 关闭，且声明的宿主入站端口不含 TCP/22。
 
 ## 远程桌面
 
-Sunshine 已启用，随 `graphical-session.target` 启动，将当前图形会话提供为 **Desktop**。
-部署后先登录电脑桌面，在电脑本机打开 `https://localhost:47990` 设置凭据并批准 Moonlight 配对 PIN。
-手机与电脑需登录同一获准的 tailnet，在 Moonlight 中手动添加电脑的 Tailscale IP，不依赖自动发现。
+Sunshine 随 `graphical-session.target` 启动，把当前会话暴露为 **Desktop**。部署后先在电脑桌面本机打开 `https://localhost:47990` 设好凭据并批准 Moonlight 配对 PIN，手机和电脑登录同一获准 tailnet，然后在 Moonlight 里手动填电脑的 Tailscale IP（不依赖自动发现，默认 `trustedLanCidrs` 为空所以不开放物理 LAN IP 直连）。
 
-同一 overlay 地址可用于局域网和公网，仍受 tailnet 权限策略约束。
-默认 `trustedLanCidrs` 为空，不直接开放物理 LAN IP 的远控访问。
+管理界面只接本机客户端、关闭 UPnP，串流走 [options.nix](../../system/config/network/options.nix) 里明写的 tailnet TCP/UDP 端口列表（清空某协议列表就关掉该协议全部入站，删掉端口会切断对端已有连接而不影响其他服务和主动出站），手机到电脑的 grants 另在 Tailscale 后台配。**A** 和健康 **B** 允许远控，**C** 会立刻切断会话（包括既有 UDP 流和已解密 tailnet 入站），需要直连就在本机跑 `clash-off`。
 
-管理界面仅接受本机客户端，默认 tailnet 防火墙也不放行该端口。
-UPnP 关闭。
-串流使用 [options.nix](../../system/config/network/options.nix) 的明确 TCP/UDP 清单。
-清空某个协议的列表可关闭该协议的所有入站服务。移除端口会切断对端已建立的该端口连接。其他获准服务和本机主动发起的连接可以继续使用。
-手机到电脑的 grants 需另在 Tailscale 管理后台配置，仓库不包含该权限策略。
-
-A 与健康 B 允许远控。
-C 会切断会话，包括已建立的 UDP 流及已解密 tailnet 入站。
-需要直连 A 时在本地使用 `clash-off`。
-
-[sunshine.nix](../../system/programs/sunshine.nix) 选择 CUDA 构建变体。
-配置的 `https://cache.nixos-cuda.org` 提供与 lock 和软件包选项所选 derivation 匹配的二进制缓存。
-可用 `nix build --max-jobs 0 --no-link .#nixosConfigurations.lfour.config.services.sunshine.package` 检查缓存可用性，该命令禁用本地编译。
-
-凭据和配对状态保存在用户的 Sunshine 目录，Desktop 入口和服务设置由 Nix 声明。
-硬件捕获/编码与手机串流在部署后的图形会话中检查。
+[sunshine.nix](../../system/programs/sunshine.nix) 选了 CUDA 构建变体，`https://cache.nixos-cuda.org` 提供与 lock 匹配的缓存（可用 `nix build --max-jobs 0 --no-link .#nixosConfigurations.lfour.config.services.sunshine.package` 验证缓存命中而不本地编译）。凭据和配对状态留在用户的 Sunshine 目录，Desktop 入口和服务设置由 Nix 声明，部署后在图形会话里检查硬件捕获/编码和手机串流：
 
 ```sh
 systemctl --user status sunshine.service
@@ -278,14 +151,7 @@ sudo tailscale netcheck
 sudo tailscale ping <手机的-tailnet-名称或-IP>
 ```
 
-可选受限 B、Unbound DoT 开关和时间目标限制见[直连例外](egress_CN.md)。
-受限 B 保留协商后的 Sunshine 媒体。
-C 始终切断远控。
-
-Tailscale 打标失败时，B 仍会阻断未打标的 root UDP。
-应检查服务权限和 socket mark，需要直连时在本地运行 `clash-off`。
-升级检查见[维护手册](maintenance_CN.md#验证)。
-专用访客账户保留独立边界。
+可选受限 **B**（保留协商后的 Sunshine 媒体）、Unbound DoT 开关和时间目标限制见[直连例外](egress_CN.md)（**C** 始终切断远控）。如果 Tailscale 打标失败，**B** 会阻断未打标的 root UDP——核对服务权限和 socket mark，或本机跑 `clash-off` 切直连（升级检查见[维护手册](maintenance_CN.md#验证)，专用访客账户保留独立边界）。
 
 ## 状态与定位
 
@@ -300,30 +166,21 @@ Tailscale 打标失败时，B 仍会阻断未打标的 root UDP。
 | `/run/dns-upstream/state.json` | DNS 模式/原因、加密策略、会话、预算、截止和 override |
 | `/run/dns-policy/state.json` | Broker 租约状态与应用代次 |
 | `/run/gost-relay/state.json` | Relay 观测与应用代次 |
-| `/run/netsec/alerts/*.json` | 各 owner 告警。`/run/netsec/failed` 汇总 owner |
+| `/run/netsec/alerts/*.json` | 各 owner 告警（`/run/netsec/failed` 汇总 owner） |
 | `/run/proxy-mode/intent`、`core-seen` | 单次开机意图和崩溃检测标记 |
 | `/run/proxy-mode/authorized-config`、`config-digest`、`authorize-window` | root 私有快照授权与一次性导入凭据 |
-| `/run/proxy-mode/profile-refresh.json` | 最近刷新结果、digest、固定原因、审计计数、上次自动批准和 20 条历史，权限 0644 |
-| `/run/proxy-mode/profile-refresh-pin.json` | 被拒候选 digest、健康失败标记与一小时 TTL，权限 0644 |
-| `/run/proxy-mode/source-fetch.json` | 绑定本次启动的下载结果、固定失败分类与可用的 HTTP 状态码，权限 0644 |
+| `/run/proxy-mode/profile-refresh.json` | 最近刷新结果、digest、固定原因、审计计数、上次自动批准和 20 条历史，权限 `0644` |
+| `/run/proxy-mode/profile-refresh-pin.json` | 被拒候选 digest、健康失败标记与一小时 TTL，权限 `0644` |
+| `/run/proxy-mode/source-fetch.json` | 绑定本次启动的下载结果、固定失败分类与可用的 HTTP 状态码，权限 `0644` |
 | `/run/proxy-mode/profile-refresh-verifying.json` | root 私有待验证事务及上一快照路径 |
 | `/run/proxy-mode/profile-refresh-settled.json`、`profile-refresh-commit.json`、`profile-refresh-restart.json` | root 私有 settled 授权、提交中断恢复和待完成内核恢复 |
-| `/run/proxy-mode/effective-config.json`、`boot-id` | 绑定共享 boot identity 的 effective YAML 摘要。`effective-config-sha256` 是兼容镜像 |
+| `/run/proxy-mode/effective-config.json`、`boot-id` | 绑定共享 boot identity 的 effective YAML 摘要（`effective-config-sha256` 是兼容镜像） |
 | `/run/proxy-mode/health-observations.json` | 本次启动最近 20 次完整探测结果，包含脱敏阶段、分层耗时和快照摘要 |
 | `/run/proxy-mode/health-failure.json` | 最近失败探针的固定原因、可用的脱敏 `failure_stage`、分层耗时、boot identity 与快照摘要，恢复后仍保留 |
 
-消费者读取原子 JSON，独立 `status`、`reason`、`version`、`result`、`verified-version` 是兼容镜像。
-仅原因变化更新 `revision`。
-内核策略提交更新 `policy_version`，`version` 是其别名。
-跨新代次的检查结果丢弃。
+消费者读取原子 JSON（独立的 `status`、`reason`、`version`、`result`、`verified-version` 是兼容镜像）；仅原因变化更新 `revision`，内核策略提交更新 `policy_version`（`version`），跨新代次的检查结果直接丢弃。
 
-就绪要求模式、DNS、broker、relay 同代次且新鲜，没有告警，并有新鲜验证。
-验证器的 `ok` 和 `degraded` 都表示硬性检查已通过。
-`degraded` 另有观察性警告，显示为 `Passed · warnings`。
-失败或未知结果不算就绪。
-Broker 必须为 `applied`。B 要求 DNS 状态为 `proxy`，严格 DNS 下的 A 接受 `dot` 或 `dot-priming`。
-消费者默认有效期 120 秒，验证为 420 秒以容纳五分钟定时器及有界执行。
-Boot identity 和单调时间戳拒绝跨开机、未来与陈旧记录。
+就绪要求模式、DNS、broker、relay 同代次且新鲜、无活动告警并有新鲜验证（`ok` 和 `degraded` 都表示硬性检查通过，`degraded` 另有观察性警告显示为 `Passed · warnings`，失败或未知不算就绪）。Broker 须为 `applied`，**B** 要求 DNS 状态 `proxy`，严格 DNS 下的 **A** 接受 `dot` 或 `dot-priming`；消费者默认有效期 120 秒、验证 420 秒，boot identity 和单调时间戳会挡掉跨开机、未来和陈旧记录。
 
 | 原因 | 定位方向 |
 |---|---|
@@ -331,11 +188,11 @@ Boot identity 和单调时间戳拒绝跨开机、未来与陈旧记录。
 | `unauthorized-core`、`core-gone` | 意图、启动器/helper 与核心 cgroup |
 | `no-tun`、`tun` | 设备、受管表/规则、实际选路与 fake-IP HTTP |
 | `config` | 快照摘要、受管 API 和 TCP/UDP 监听身份 |
-| `route` | 日志实际叶子为 DIRECT/REJECT 或与选择图不符 |
+| `route` | 日志实际叶子为 `DIRECT`/`REJECT` 或与选择图不符 |
 | `obs`、`obs:1/3`、`obs:2/3`、`obs:3/3` | HTTP 完成、精确源端口日志和选择观测 |
 | `resolver-error`、`split-error` | DNS 身份或批准 Wi-Fi profile/租约 |
-| DNS `proxy-priming`、`degraded-proxy` | B 正在确认选定的核心解析器或探测已失败。检查核心 DNS 监听及选定的 DoH 路径 |
-| DNS `degraded-dot-only` | 检查 A 的已认证 DoT 上游及 DNSSEC 探测结果 |
+| DNS `proxy-priming`、`degraded-proxy` | **B** 正在确认选定的核心解析器或探测已失败；检查核心 DNS 监听及选定的 DoH 路径 |
+| DNS `degraded-dot-only` | 检查 **A** 的已认证 DoT 上游及 DNSSEC 探测结果 |
 
 ```sh
 journalctl -b -u proxy-mode -u dns-upstream -u gost-relay -u clash-verge
@@ -344,127 +201,57 @@ cat /run/dns-upstream/state.json
 cat /var/lib/dns-upstream/history.log
 ```
 
-部分日志和授权文件需要 sudo。
-诊断输出中应去掉快照、订阅配置等敏感内容。
+部分日志和授权文件需要 `sudo`，贴诊断输出时别把快照或带订阅的配置发出去。
 
 ### 拒绝计数器
 
-运行 `sudo proxy-inspect --drops`，读取 `inet lf_filter` 中已有拒绝计数器的精简 JSON 视图。
-普通 `proxy-inspect` 也在 `drops` 字段提供同一视图。
-命令只读本地状态和 nftables，不改规则、不清零计数、不发送探测。
+`sudo proxy-inspect --drops`（普通 `proxy-inspect` 也会在 `drops` 字段带上）只读本地状态和 `inet lf_filter` 里现有的拒绝计数器，不改规则、不清零计数也不发探测：
 
 ```sh
 sudo proxy-inspect --drops | jq '{available,error,policy,state_consistent,groups:[.groups[] | select((.packets // 0) > 0)]}'
 ```
 
-每组给出稳定的 `reason`、`role`、所在 `chain` 及已计数的包数/字节数。
-路由访客角色使用配置的接口名。
-policy 记录包含所观测模式、转换原因和代次。
-`state_consistent=false` 表示状态不可读或采集期间发生变化。
-此视图不证明就绪。
+每组给出稳定的 `reason`、`role`（路由访客用配置的接口名）、`chain`、包/字节计数以及观测模式、原因和代次（`state_consistent=false` 代表状态不可读或采集中变了，这个视图不证明就绪）。
 
 | 原因 | 计数的拒绝 |
 |---|---|
-| `mode-c-output`、`mode-c-input` | C 的输出或回复/入站 guard |
+| `mode-c-output`、`mode-c-input` | **C** 的输出或回复/入站 guard |
 | `guest-source-policy` | 访客源地址超出声明范围，包括未声明的地址族 |
 | `guest-target-policy` | 路由访客的受保护或不支持目标 |
 | `dns-client-policy` | 应用访问内部解析器入口 |
 | `dns-listener-identity`、`proxy-listener-identity` | 未授权本地 socket UID 的回复 |
 | `proxy-inlet-access` | 对受保护本地代理端口的显式访问 |
 
-计数仅覆盖列出链中带 counter 的 drop。
-`uncounted_rules` 给出选中但没有计数器的 drop 数。
-`installed=false` 且计数为 null 表示链不存在。
-零计数不证明入口已启用或健康。
-读取/解析失败返回 `available=false`、固定错误类别和空 groups，`--drops` 退出 1。
-缺少 nftables 所需权限时为 `permission-denied`。
-
-计数从各条规则最近一次安装或 flush 开始，重载、修复和模式变化可能重置部分计数。
-比较快照时须结合该生命周期和策略代次。
-历史总量不能把某次连接及其原始/NAT 目标归因到当前模式。
-输出组数由配置角色固定，不含逐包日志、目标地址或原始规则。
-流量增大只改变数字总量。
+计数只涵盖列出链中带 counter 的 drop（`uncounted_rules` 报没计数的 drop，`installed=false` 且计数为 `null` 代表链不存在，零计数不证明入口启用或健康；读取/解析失败返回 `available=false`、固定错误类别如 `permission-denied`、空 groups 并退出 `1`）。计数从每条规则最近一次安装或 flush 算起（重载、修复和模式切换可能重置部分计数），历史总量也不能把某次连接或原始/NAT 目标归因到当前模式。输出组数按角色固定，不含逐包日志、目标地址或原始规则。
 
 ### 刷新状态
 
-`proxy-status` 的 `Auto update` 显示更新调度，`Profile refresh` 和 `Update result` 显示最近刷新，`Profile vs runtime` 显示 GUI 副本信息。
-受控来源将 GUI 副本视为展示用途，兼容导入则比较 GUI 与已导入快照的摘要。
-`proxy-policy` 包含 `profile_refresh`，`proxy-inspect` 提供最多 20 条脱敏刷新历史。
+`proxy-status` 把更新信息拆到 `Auto update`（调度）、`Profile refresh`/`Update result`（最近刷新）和 `Profile vs runtime`（GUI 副本——受控来源只作展示，兼容导入比对摘要），`proxy-policy` 带 `profile_refresh`，`proxy-inspect` 则提供最多 20 条脱敏历史。
 
-`Subscription download` 将下载进度和错误与导入结果分开显示。
-`deferred` 表示网络保护使本次尝试延期，不是下载失败，也不触发弹窗。
-`Content audit` 显示内容自动批准，不表示健康检查已经接受。
-`restored` 表示启动时复用了符合当前策略的已接受快照。
-`verifying` 表示已导入快照正在等待健康结果。
-最近更新失败与订阅年龄分别显示，原有接受时间予以保留。
-受控来源以 root 记录为依据，GUI 更新时间不代表 root 更新成功。
-`fallback` 表示候选被拒绝，旧授权快照保留。
-`rolled_back` 表示已恢复快照授权并请求替换核心。
-核心是否恢复须查看网络就绪字段。
-摘要不同只表示内容不同，不能据此判断哪个文件更新。
+`Subscription download` 把拉取和下载错误与导入分开显示：`deferred` 表示网络保护顺延了尝试（不算失败、不弹窗），`Content audit` 报自动内容批准（不等同健康接受），`restored` 表示启动复用了已接受快照，`verifying` 表示正等健康结果，`fallback` 表示候选被拒、留住旧快照，`rolled_back` 表示恢复授权并请求换核（核心是否恢复看就绪字段）。最近更新失败和订阅年龄分开显示以保留上次接受时间（受控来源以 root 记录为准，GUI 更新时间不代表 root 成功），摘要不同也只说明内容不同而非谁更新。切换订阅共用同一 root 策略、不会扩大 `subscriptionAuditAllowedHosts`；受保护路由仍无法确定时，`enforce` 保留旧快照方便你先看审计分类再调策略。
 
-切换订阅仍使用同一份 root 策略。
-新的 hosts 覆盖须匹配 `subscriptionAuditAllowedHosts`，切换动作本身不会扩大该权限。
-探测目标和预期路由均可配置。
-受保护路由仍无法确定时，`enforce` 保留旧快照，应先根据审计分类定位约束，再决定策略。
-
-用户通知 timer 每五分钟读取本地文件，将更新和健康失败合并为每轮一条消息。
-刷新失败按结果与完整摘要去重，下载失败按尝试时间去重，健康失败按状态迁移提醒。
-成功更新、健康恢复、审计警告、订阅年龄及 GUI 副本差异不触发弹窗。
-去重状态私有存于 `$XDG_STATE_HOME/clash-verge/refresh-notified.json`，发送成功后才推进。
-timer 不下载订阅。
+用户通知 timer 每五分钟读一次本地文件，把更新和健康失败合并成每轮一条消息（刷新失败按结果和完整摘要去重，下载失败按尝试时间去重，健康失败按状态迁移提醒），状态私有存在 `$XDG_STATE_HOME/clash-verge/refresh-notified.json` 且发送成功后才推进，不下载订阅，也不因成功更新、恢复、审计警告、订阅年龄或 GUI 副本差异弹窗。
 
 ### 订阅连通性
 
-显式运行 `proxy-subscription --check --json` 检查当前订阅。
-命令从 GUI 索引读取地址，报告 HTTP 状态、传输路径、耗时、字节数、HTTPS 和重定向次数。
-提供 `--etag` 时发送条件 GET，没有 validator 时发送普通 GET。
-
-检查先使用当前网络策略允许的直连路径，传输失败后尝试配置的 mixed 端口。
-403 等完整 HTTP 响应直接报告，不再通过代理重试。
-命令不写 profile、不导入配置，也不推进更新时间。
-
-总超时默认 15 秒，覆盖域名解析、两条传输路径、重定向和正文读取。
-`--timeout` 支持 1–120 秒。
-响应上限为 8 MiB，最多允许三次同源重定向，跨源跳转和 HTTPS 降级均拒绝。
-输出不包含 URL、响应正文和 validator 原文。
-`proxy-inspect --deep` 另提供服务重启次数和固定 journal 查询命令，供有权限的操作者排障。
+显式跑 `proxy-subscription --check --json` 测试当前订阅：它从 GUI 索引读地址，报告 HTTP 状态、传输路径、耗时、字节数、HTTPS 和重定向次数（带 `--etag` 发条件 GET）。命令先走当前策略允许的直连路径，传输失败才试配置的 mixed 端口（拿到 `403` 这类完整 HTTP 响应直接报告，不再经代理重试），不写 profile、不导入配置也不推进更新时间。总超时默认 15 秒（`--timeout` 支持 1–120 秒），上限 8 MiB、三次同源重定向（跨源跳转和 HTTPS 降级均拒绝），输出不含 URL、响应正文和 validator 原文。`proxy-inspect --deep` 另附服务重启次数和固定 journal 查询命令。
 
 ## 协调与防火墙恢复
 
-Socket 目录事件、TUN link 监视、nft 事件、NetworkManager dispatcher 和 dhcpcd hook 唤醒监督器。
-自适应轮询后备为转换中两秒、执行模式最多五秒、直连最多 60 秒。
-模式监督器有 90 秒 watchdog。
-取消的探针不算失败观测。
+Socket 目录事件、TUN link 监视、`nft` 事件、NetworkManager dispatcher 和 `dhcpcd` hook 都会唤醒监督器，辅以自适应轮询（转换中 2 秒、执行模式最多 5 秒、直连最多 60 秒）和 90 秒模式监督器 watchdog（取消的探针不算失败观测）。
 
-构建期的[预期规则](../../system/config/network/proxy/coordinator.nix) 在 LKL 用户态内核中用同版 nft 生成。
-Verifier 比较所属表、hook、priority、policy 和完整有序表达式，仅规范化 handle、counter、集合元素顺序和受严格约束的 DNS 租约。
-读取/解析错误是失败，不当作空成功。
-没有核心但正确安装 C 也能通过。
-
-`nftables-verify` 报告失败和告警后仍退出零，以便修复/重建继续。
-应看 JSON 结论，不能只看 unit 退出码。
-各组件只清自己的告警，忙碌轮次保留排队验证请求。
+构建期[预期规则](../../system/config/network/proxy/coordinator.nix)在 LKL 用户态内核里用同版 `nft` 生成。Verifier 比对所属表、hook、priority、policy 和完整有序表达式（仅规范化 handle、counter、集合元素顺序和受严控的 DNS 租约；读取/解析错误算失败，正确安装的 **C** 哪怕没有核心也能过）。`nftables-verify` 报出失败和告警后仍退出 `0` 让修复/重建继续，所以要看 JSON 结论别只看 unit 退出码（各组件只清自己的告警，忙碌轮次保留排队验证请求）。
 
 ```sh
 sudo systemctl restart nftables.service
 sudo systemctl start nftables-verify.service
 ```
 
-Restart/reload 原子重装所属静态策略和安全模式。
-代理意图先回 C，再由健康门恢复 B。
-主表丢失后，独立守卫继续阻断代理意图下的流量。若要热回滚到引入 `inet lf_policy_guard` 之前的代次，先用 `clash-off` 明确进入 A，清除独立守卫的逐包要求。
-Stop 保留已加载规则。
-`nftables-verify-repair.service` 显式修复并复验。`nftables-recover` 重试失败的 nftables 单元，并恢复首次启动作业因防火墙依赖失败而取消、且已启用的网络和时间服务。
-不要清空全局 ruleset。
+Restart/reload 原子重装所属静态策略和安全模式（代理意图先过 **C** 再由健康门开 **B**，主表丢失时 `inet lf_policy_guard` 继续阻断代理意图下的流量——若要热回滚到引入 `inet lf_policy_guard` 之前的代次，先 `clash-off` 切进 **A** 清掉逐包要求）。停掉 `nftables` 会保留已装规则，`nftables-verify-repair.service` 显式修复并复验，`nftables-recover` 重试失败的 `nftables` unit 并拉起首启时因防火墙依赖被取消的网络和时间服务。别清空全局 ruleset。
 
 ## 防火墙表迁移
 
-`proxy-control migrate-firewall` 显式删除 `inet filter`、`ip proxymode_nat` 和 `ip6 proxymode_nat`，并安装[保留表](network_CN.md#防火墙生命周期)。
-普通启动、重载和修复保留这三个名称。
-执行迁移前须确认这些表归本配置所有。
-
-查看迁移目标并确认归属：
+`proxy-control migrate-firewall` 会显式删掉 `inet filter`、`ip proxymode_nat` 和 `ip6 proxymode_nat` 并装上[保留表](network_CN.md#防火墙生命周期)（普通启动、重载和修复不动这三个名字）。动手前先确认它们归本配置所有：
 
 ```sh
 sudo nft list table inet filter
@@ -472,69 +259,46 @@ sudo nft list table ip proxymode_nat
 sudo nft list table ip6 proxymode_nat
 ```
 
-确认归属后执行迁移，并检查安装的策略：
+确认后执行迁移并复验：
 
 ```sh
 sudo proxy-control migrate-firewall
 sudo systemctl start nftables-verify.service
 ```
 
-该 root 命令持有 operator 和 policy 锁，以一次 nft 事务提交三个目标表的删除、静态规则和安全模式。
-事务被拒绝时保留已安装的规则和目标表。
-目标表允许缺失，因此在名称仍归本配置所有时支持重复执行。
-
-代理意图或核心仍在运行时先安装 C，监督器在健康检查通过后开放 B。
-直连意图且没有核心时安装 A。
-迁移保留意图、授权和运行中的核心。
-使用上文诊断命令检查模式和验证 JSON。
-清理仅在本命令执行期间发生，其它服务的表由各自所有者管理。
+这条 root 命令持有 operator 和 policy 锁，用一次 `nft` 事务提交三个删表、静态规则和安全模式（事务被拒就保留原规则和目标表，也允许目标表缺失以支持重复执行）。代理意图或核心仍在跑时先装 **C** 再等健康开 **B**，直连意图且无核心时直接装 **A**，整个过程保留意图、授权和运行中的核心，也不碰其他服务的表。
 
 ## 核心命名空间恢复
 
-宿主的 `Mihomo` 接口是受管 veth。
-用 `sudo ip -n lf-clash-core link` 和 `sudo ip netns exec lf-clash-core nft list table inet mihomo` 查看实际核心 TUN 和 auto-redirect 表。
-完整就绪使用 `proxy-control status proxy --check`，仅有宿主接口不能证明已就绪。
+宿主的 `Mihomo` 接口是受管 `veth`，看实际核心 TUN 和 `auto-redirect` 表用 `sudo ip -n lf-clash-core link` 和 `sudo ip netns exec lf-clash-core nft list table inet mihomo`，完整就绪看 `proxy-control status proxy --check`（光有宿主接口不算就绪）。
 
-`clash-on` 停止旧 helper 后重建私有命名空间，保持配置的来源授权流程，并断开已有核心连接。
-物理上行变化和恢复钩子自动重启已经授权的核心。
-如果 LAN/VPN 与内部地址冲突，通过 `my.proxy.coreLink` 选择未占用的私有 /30 与 /64，各子网及其 host/core 端点应一起调整，不删除重叠检查来恢复连接。
-内部 MAC 为不同的本地单播地址，与物理 MAC 随机化独立。
-激活前保留上一系统 generation。
+`clash-on` 停掉旧 helper 后重建私有命名空间、保持来源授权流程并断开已有核心连接，物理上行变化和休眠唤醒也会自动重启已授权核心。万一 LAN/VPN 和内部地址冲突，通过 `my.proxy.coreLink` 换一组空闲私有 `/30` 和 `/64`（子网和 host/core 端点一起改，别删重叠检查）。内部 MAC 是独立的本地单播地址，与物理 MAC 随机化无关，激活前记得留好上一代系统。
 
-返回使用宿主 TUN 的 generation 时：
+要退回使用宿主 TUN 的旧代次：
 
-1. 执行 `sudo proxy-control off`，等待 A。
-2. 停止 `clash-core-network.service`。清理只移除其拥有的 namespace、veth 和路由优先级。即使存在残留所有权标记，也拒绝删除其它接口或旧版 TUN。
-3. 激活选定 generation，按正常 `clash-on` 流程启动。
+1. 执行 `sudo proxy-control off` 并等 **A** 就绪。
+2. 停掉 `clash-core-network.service`（清理只删它自己的 namespace、`veth` 和路由优先级，拒绝删外来接口或旧 TUN）。
+3. 激活选定代次，按正常 `clash-on` 流程启动。
 
 ## 配置入口
 
 | 来源 | 设置 |
 |---|---|
 | [machine.nix](../../system/config/machine.nix) | 用户、接口及匹配键、UID、端口、mark、网段和上游 |
-| [options.nix](../../system/config/network/proxy/options.nix) | TUN、表 2022、fake-IP、探针、开机意图、proxyOnly、dnsEncryption、共享域名过滤、访客、split DNS 和新鲜度 |
+| [options.nix](../../system/config/network/proxy/options.nix) | TUN、表 2022、fake-IP、探针、开机意图、`proxyOnly`、`dnsEncryption`、共享域名过滤、访客、split DNS 和新鲜度 |
 | [profile.nix](../../system/config/network/proxy/profile.nix) | root 受管 DNS/TUN/profile 约定 |
 | [routing.nix](../../system/config/network/proxy/routing.nix) | `runtimeRouting`、不可变 rules/proxy-only 策略及 `proxyOnlyDnsUpstreams` |
 | [options.nix](../../system/config/network/options.nix) | 宿主/访客私网、逐接口访客信任/源地址、独立 socket 访客账户、宿主端口、热点、tailnet 和 Wi-Fi MAC |
 | [cvr-merge.nix](../../home/config/clash/cvr-merge.nix) | 匹配的 GUI Merge 及路由增强 |
-| [firefox.nix](../../home/programs/firefox/firefox.nix)、[options.nix](../../home/programs/firefox/options.nix) | 原生浏览器、networkPath、nvidiaAcceleration、隐私、策略、字体和外层沙箱 |
+| [firefox.nix](../../home/programs/firefox/firefox.nix)、[options.nix](../../home/programs/firefox/options.nix) | 原生浏览器、`networkPath`、`nvidiaAcceleration`、隐私、策略、字体和外层沙箱 |
 
-TUN 默认 `Mihomo`，表 2022、规则优先级 9000、内部 mark 8227/8228、fallback priority 32768、file descriptor 0，由 parser、模板和健康检查共用。
-`tunMode=false` 选择 HTTP-only/redir-host，不再要求 TUN。
-Fake-IP 网络由 `fakeIpRange` 推导，避免单独修改消费者。
+TUN 默认值（`Mihomo`、表 2022、规则优先级 9000、内部 mark 8227/8228、fallback 优先级 32768、fd 0）由 parser、模板和健康检查共用；`tunMode=false` 切到 HTTP-only/`redir-host` 不再要 TUN，fake-IP 网络从 `fakeIpRange` 推导，别单独改消费者。
 
-`runtimeRouting` 在模块中默认为 false，本机配置已启用。
-它要求受控来源、本地 DNSSEC、严格加密 DNS、隔离 TUN、内核授权租约，以及作为 rules 开机默认的 `proxyOnly=false`。
-旧 `proxyOnly` 仍用于不启用运行时切换的构建期策略。
-`proxyOnlyDnsUpstreams` 接受认证的字面地址 HTTPS 解析器，始终绑定远程组。
-已接受快照分别保存在 `approved/rules`、`approved/proxy-only`，包含本地重渲染所需的原始 Rule 数据和固定节点。
-探测参数变化时，运行时路由用经过摘要校验的原始订阅规则重新渲染，再按当前策略审计结果。
-旧格式快照的原始规则无法可靠恢复时，需要刷新已登记来源并导入新的下载代。
+`runtimeRouting` 模块默认 `false`、本机已开，要求受控来源、本地 DNSSEC、严格加密 DNS、隔离 TUN、内核授权租约和作为 `rules` 开机默认的 `proxyOnly=false`（旧 `proxyOnly` 留给不开运行时切换的配置）。`proxyOnlyDnsUpstreams` 接认证字面地址 HTTPS 解析器且始终走远程组。已接受快照分存在 `approved/rules` 和 `approved/proxy-only` 下，带着探测参数变化时本地重渲染所需的原始 `Rule` 数据和固定节点（旧格式快照恢复不了原始规则时，刷新来源并导入新下载代）。
 
-需要不同访客信任级别时，应显式选择开发网桥，并只为其它访客授权必要的私网服务。
-宿主 socket 后端另需独立固定账户。
+核心内部服务访问由[目标授权](proxy_CN.md#域名目标)独立管理（`localTargetCidrs` 管本地 `DIRECT`，`remoteTargetGrants` 按叶节点、核心入口、协议和端口授权远程内部地址，`nat64Prefixes` 声明已知翻译前缀；内部后缀只放行本地解析私网答案，不授节点代解析或拨号；Gost CONNECT 在核心里是 `HTTPS`，改完策略需重建并重启核心；**A** 留字面门户，**C** 阻断，原生[直连授权](egress_CN.md)各自独立）。
 
-选择空闲 UID 与互不重叠的 subordinate 范围：
+需要不同访客信任级别时，显式把开发网桥设为可信、只给其他访客授权必需私网服务，宿主 socket 后端则另配空闲 UID 和不重叠 subordinate 范围的独立固定账户：
 
 ```nix
 my.hardening = {
@@ -558,42 +322,13 @@ users.users.guestnet = {
 };
 ```
 
-示例地址需要替换。
-内建网桥源地址/网关默认来自 `my.machine`。
-额外 `guestInterfaces` 必须有规范且互不重叠的 `guestNetworks` 源 CIDR。
-仅在需要开放宿主服务时，才为相应角色添加 `hostTcpPorts` / `hostUdpPorts`，目标限定于声明网关。
-IPv6 需显式 ULA 源地址/网关，访客 IPv6 公网仍拒绝。
-热点只有明确调整自身 trust 后才变为可信。
+替换示例地址：内建网桥源地址/网关来自 `my.machine`，额外 `guestInterfaces` 须有规范且互不重叠的 `guestNetworks` 源 CIDR，仅需开放宿主服务时才加 `hostTcpPorts`/`hostUdpPorts`（限定于声明网关），IPv6 需显式 ULA 源/网关（访客公网 IPv6 仍拒），热点只有显式改 trust 才可信。先装好完整 `nft` 策略再以 `guestnet` 起 `pasta` 或 rootless Docker（Docker 用户单元会清掉受限账户继承的代理环境变量），改动身份或 UID 映射前停旧后端，撤销运行中后端的私网访问时保持身份声明、删授权并重载防火墙以切断双向跟踪流量。光改 `socketGuestUsers` 不会迁移桌面容器，这些账户走独立真实地址 DNS 路径、没有明文/split DNS 后备（见[访客边界](network_CN.md#访客与容器)）。
 
-先安装/协调完整 nft 策略，再以 `guestnet` 运行 pasta 或 rootless Docker。
-Docker 用户单元会为受限账户清除继承的显式代理环境变量，并使用声明的 rootless 包与设置。
-新增/更改身份或委派 UID 映射前停止旧后端。
-为运行中的后端撤销私网访问时，保持身份声明、移除授权并重载防火墙，已跟踪连接的双向流量都会切断。
-
-仅设置 `socketGuestUsers` 不会迁移桌面容器。
-这些账户使用单独的真实地址 DNS 路径，没有明文/split DNS 后备。
-见[访客边界](network_CN.md#访客与容器)。
-
-Wi-Fi profile 显式的克隆 MAC 优先于 `my.hardening.wifi.clonedMacAddress`。
-否则默认 `stable-ssid` 为相同 SSID 保留相同 MAC。
-`permanent` 选择硬件地址，`preserve` 保持当前地址。
-需要协调身份变化时，声明 `my.hardening.wifi.identities`，查看 `network-identity plan UUID`，关闭自动连接并断开后再执行 `apply` 或 `restore`。
-完整步骤、有线策略和 DHCP 状态准备见[链路身份](identity_CN.md)。
-
-核心内部服务访问由[目标授权](proxy_CN.md#域名目标)单独管理：`localTargetCidrs` 限定本地 DIRECT，`remoteTargetGrants` 按实际叶节点、核心入口、协议和端口授权远程内部地址，`nat64Prefixes` 声明已知翻译前缀。
-内部后缀只允许本地解析私网答案，不授权节点代解析或拨号。
-
-Gost CONNECT 在核心中是 `HTTPS`。
-修改后需重建并有意导入/重启核心。
-A 字面门户、C 阻断与原生直连授权各自保持独立。
+Wi-Fi profile 显式设的克隆 MAC 优先于 `my.hardening.wifi.clonedMacAddress`（默认 `stable-ssid` 同 SSID 保同 MAC，`permanent` 用硬件地址，`preserve` 保持当前地址）；需要协同变更时声明 `my.hardening.wifi.identities`，用 `network-identity plan UUID` 检查，关自动连接并断开后再 `apply` 或 `restore`（完整步骤、有线策略和 DHCP 状态准备见[链路身份](identity_CN.md)）。
 
 ## VirtualBox
 
-VirtualBox 使用原生驱动和图形界面，可与系统已有的 QEMU/KVM、libvirt 分别使用。激活配置后重新登录，让桌面会话取得 `vboxusers` 组权限。
-
-在虚拟机的网络设置中将网卡接到 **仅主机网络（Host-only Adapter）**，接口选择 `vboxnet0`，客户系统使用 DHCP。如果 VirtualBox 的网络管理器为 `vboxnet0` 启用了内置 DHCP，请关闭它，使用系统提供的 DHCP。
-
-访客通过 `192.168.56.1` 获取网关和受管 DNS。A 直连公网 IPv4，健康 B 经 TPROXY，C 阻断公网。私网和宿主服务按 `guestNetworks.vboxnet0` 的受限访客策略开放。接入其它虚拟网卡会改变该虚拟机的联网路径。
+VirtualBox 使用原生驱动和界面，可与 QEMU/KVM、libvirt 共存——激活后重新登录即可取得 `vboxusers` 组权限。虚拟机网卡接到 **仅主机网络（Host-only Adapter）** 选 `vboxnet0` 并用 DHCP（如果 VirtualBox 网络管理器给 `vboxnet0` 开了内置 DHCP，关掉它用系统的）。访客以 `192.168.56.1` 作网关和受管 DNS：公网 IPv4 在 **A** 直连、健康 **B** 经 TPROXY、**C** 阻断，私网和宿主服务按 `guestNetworks.vboxnet0` 受限访客策略开放（接其他虚拟网卡会改变联网路径）。
 
 ```sh
 systemctl status vboxnet0.service vboxnet-dnsmasq.service
@@ -602,9 +337,7 @@ VBoxManage list hostonlyifs
 
 ## Hermes 容器
 
-[`system/programs/hermes/`](../../system/programs/hermes) 集中存放 agent 配置、技能、邮件 CLI 与容器后端。
-后端在专用账户的 user manager 中运行 `hermes-docker.service`，由 `hermes-containers.socket` 和 `.service` 向 Hermes 提供固定 Unix 字节流。
-专用账户的私有 runtime 和数据目录保留独立权限。
+[`system/programs/hermes/`](../../system/programs/hermes) 集中放着 agent 配置、技能、邮件 CLI 和容器后端。后端在专用账户 user manager 里跑 `hermes-docker.service`，通过 `hermes-containers.socket`/`.service` 向 Hermes 暴露固定 Unix 字节流，私有 runtime 和数据目录保持独立权限。
 
 | 资源 | 默认位置 |
 |---|---|
@@ -612,16 +345,7 @@ VBoxManage list hostonlyifs
 | 受限后端 HOME / Docker 数据 | `/var/lib/hermes-containers` / `/var/lib/hermes-containers/docker` |
 | Hermes Docker API | `unix:///run/hermes-containers/docker.sock` |
 
-Gateway、dashboard 和 Hermes 登录 shell 将 `DOCKER_HOST` 指向该 API。
-Socket 模式为 0660，仅允许后端账户及 `hermes-container-clients` 成员访问。
-桌面继续使用自己的 Docker 入口。
-直接以 Hermes 运行的本地 terminal、MCP 和浏览器工具仍使用宿主代理策略。
-
-后端清除继承的代理环境变量，使用过滤后的真实地址 DNS。
-A 允许公网 IPv4 直连，B 按宿主公网策略经过受管核心，C 切断应用流量。
-私网、元数据、fake-IP 目标和宿主代理入口默认没有授权。
-默认 Docker 网桥没有外部 IPv6 路径。
-其它已支持的原生后端路径仍受 UID 守卫的双栈检查约束。
+Gateway、dashboard 和 Hermes 登录 shell 把 `DOCKER_HOST` 指到这个 `0660` socket（仅后端账户和 `hermes-container-clients` 成员可访），桌面留用自己的 Docker 入口，直接以 Hermes 跑的本地 terminal、MCP 和浏览器工具仍用宿主代理策略。后端会清掉继承代理变量并走过滤后的真实地址 DNS：**A** 允许公网 IPv4 直连，**B** 按宿主公网策略过受管核心，**C** 切断应用流量，私网/元数据/fake-IP 和宿主代理入口默认无授权，默认 Docker 网桥没有外部 IPv6 路径（其他受支持原生后端保留 UID 守卫的双栈检查）。
 
 ```sh
 sudo systemctl status hermes-containers.socket hermes-containers.service
@@ -629,31 +353,19 @@ sudo systemctl --user --machine=hermes-containers@.host status hermes-docker.ser
 sudo -u hermes env DOCKER_HOST=unix:///run/hermes-containers/docker.sock docker info --format '{{.DockerRootDir}}'
 ```
 
-专用账户 user manager 启动前，retirement unit 先停止 Hermes 旧 user Docker。
-仍有旧 dockerd 时拒绝启动。
-全局 Docker user unit 排除 Hermes 和专用后端账户，后者使用独立 unit。
-新后端继续受 `user.slice` 继承的保留端口 bind 限制约束。
+专用账户 user manager 启动前，retirement unit 会先停 Hermes 旧 user Docker（仍有旧 `dockerd` 就拒绝启动；全局 Docker user unit 排除 Hermes 和专用后端，后者用独立 unit 并继承 `user.slice` 的保留端口 bind 限制）。`/var/lib/hermes` 的 agent 数据和旧账户的 Docker 镜像卷都留在原位、不会自动导入。迁移容器数据按这三步走：
 
-`/var/lib/hermes` 中的 agent 数据，以及旧账户的 Docker 镜像和卷都保留原位。
-镜像和卷不会自动导入新后端。
-
-迁移需要保留的容器数据时：
-
-1. 激活前停止业务写入，使用旧账户的 UID 映射导出镜像和卷。
+1. 激活前停止写入，按旧账户 UID 映射导出镜像和卷。
 2. 通过新 Docker 入口加载镜像并恢复卷。
-3. 检查恢复结果后，再处理旧数据和 UID 映射。
+3. 确认恢复无误后再清理旧数据和 UID 映射。
 
-递归修改所有权不能代替迁移。
-返回旧后端配置前，先停止专用 daemon 和两个 API unit。
+递归改属主代替不了导出恢复；退回旧后端配置前先停掉专用 daemon 和两个 API unit。
 
 ## Hermes time MCP
 
-`time` MCP 保留 stdio 接口，使用 NixOS 配置的时区。桥接进程清空环境后连接 `/run/hermes-time/mcp.sock`，该 socket 仅允许 root 和 `hermes-time-clients` 组访问。
-每条连接由 `untrusted.slice` 中以 `hermes-time` 账户启动的 `hermes-time@.service` 实例处理。服务可访问只读 Nix store 和临时 `/work`，私有网络命名空间内仅允许 Unix socket。
+`time` MCP 保留 stdio 接口并用 NixOS 配置的时区：stdio 桥接清掉环境后连 `/run/hermes-time/mcp.sock`（仅 root 和 `hermes-time-clients` 可访），每条连接在 `untrusted.slice` 下以 `hermes-time` 账户拉起一个 `hermes-time@.service` 实例，只能看到只读 Nix store、临时 `/work` 和仅限 Unix socket 的私有网络命名空间。
 
-Gateway 和 dashboard 在 systemd 启动时清除继承的代理与 CA 覆盖键，并使用声明的系统 CA bundle。
-兼容模式为 gateway 恢复受管的本地 Gost 代理。联网 MCP 和浏览器工具使用各自声明的选项。
-`proxy-inspect --posture` 报告进程启动环境。Hermes 在进程内加载 profile `.env`，其中的覆盖值可在启动后生效。
+Gateway 和 dashboard 在 systemd 启动时清掉继承的代理与 CA 覆盖键并用系统 CA bundle（兼容模式为 gateway 恢复受管 Gost 代理，联网 MCP 和浏览器工具各自用声明选项；`proxy-inspect --posture` 报启动环境，Hermes 进程内加载的 `.env` 可在启动后生效）。
 
 ```sh
 systemctl status hermes-time.socket
@@ -662,9 +374,7 @@ systemctl list-units 'hermes-time@*.service'
 
 ## 离线恢复
 
-需要直连时用 `clash-off`。
-
-默认 `dnsEncryption="opportunistic"` 下，A 中门户/DNS 恢复先读 DNS 状态和历史，必要时显式开启有界续租 override：
+想走直连就跑 `clash-off`。默认 `dnsEncryption="opportunistic"` 下，**A** 中门户/DNS 恢复先看 DNS 状态和历史，确实需要时再开有界续租 override：
 
 ```sh
 sudo touch /run/dns-upstream/force-plaintext
@@ -672,27 +382,20 @@ sudo touch /run/dns-upstream/force-plaintext
 sudo rm /run/dns-upstream/force-plaintext
 ```
 
-它允许明文 DNS 并继续计入预算，不能越过 C 的出站 guard，范围见 [DNS](dns_CN.md)。
+这会放行明文 DNS 并继续扣会话预算，但越不过 **C** 的出站 guard（范围见 [DNS](dns_CN.md)）。在 `my.proxy.dnsEncryption="strict"` 下，override 会被忽略且不给明文后备（`clash-off` 仍切到带加密 DNS 的 **A**）——试试字面 HTTP 门户地址、换个上行，或修好 DoT 配置；若门户非得靠不可用的公网 DNS，就得事先留一个预构建好的 `opportunistic` generation 离线切过去（出差依赖严格模式前先备好，私网 split DNS 和 MagicDNS 仍按各自批准和模式运行）。
 
-`my.proxy.dnsEncryption="strict"` 忽略 override，不授予明文后备。
-`clash-off` 选择的 A 也保留加密 DNS。
-可尝试字面 HTTP 门户地址、更换上行或修复认证 DoT 配置。
-门户若依赖不可用的公网 DNS，需要主动改变策略，例如离线选择已构建的 `opportunistic` generation。
-在出行依赖严格模式前先准备可用 generation。
-私网 split DNS 和 MagicDNS 仍受各自批准及模式约束。
+遇到系统 generation 故障起不来时按顺序恢复：
 
-系统 generation 故障时，按以下顺序恢复：
-
-1. 从 systemd-boot 菜单选择旧条目。菜单保留八个 generation。
-2. 如果菜单中没有需要的条目，检查 `/nix/var/nix/profiles/system-*-link` 中保留的系统。以 root 选择对应 store 路径并安装启动项：
+1. 从 `systemd-boot` 菜单挑旧条目（菜单保留 8 个 generation）。
+2. 菜单里没有就去 `/nix/var/nix/profiles/system-*-link` 找，以 root 设回路径并装回启动项：
 
    ```sh
    nix-env -p /nix/var/nix/profiles/system --set /nix/store/<nixos-system-path>
    /nix/var/nix/profiles/system/bin/switch-to-configuration boot
    ```
 
-3. 如果所有已安装系统都无法启动，使用 NixOS ISO 解锁并挂载根目录和 ESP，再通过 `nixos-enter --root /mnt` 进入系统恢复。
+3. 全都起不来时用 NixOS ISO 解锁挂载根目录和 ESP，再 `nixos-enter --root /mnt` 进去修。
 
 ## 配置检查
 
-[维护手册](maintenance_CN.md#验证)列出了配置和依赖变更所需的检查。
+配置和依赖变更需要跑的检查都在[维护手册](maintenance_CN.md#验证)里。

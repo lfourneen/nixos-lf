@@ -4,46 +4,21 @@ English | [简体中文](CN/proxy_CN.md) | [Documentation](README.md)
 
 ## Controlled subscription sources
 
-The host selects `controlledSources=true`, `subscriptionTrust="fixed"`, `profileRefreshPolicy="auto"` and blocking content audit.
-The reusable module retains the legacy GUI import path when controlled sources are disabled.
-The GUI-specific import and mutable-provider descriptions below apply to that compatibility path.
+This host enables `controlledSources=true`, `subscriptionTrust="fixed"`, `profileRefreshPolicy="auto"`, and blocking content audits. When controlled sources are off, the reusable module keeps the legacy GUI import path—the GUI-specific import and mutable-provider notes later in this guide apply to that compatibility mode.
 
-`clash-source` registers sources through a root-only broker, with one source selected at a time.
-Each has its own subscription, providers, revision, approvals and accepted baseline.
-`add <id>` reviews and registers a catalog entry, then downloads, selects and verifies it.
-`use <id>` performs the same immediate download and verification for an existing registration.
-The GUI can request only sources mapped to a root-approved `gui-profile` UID.
-The broker downloads the mapped source and rechecks the mapping and registration before selecting it.
+`clash-source` registers sources through a root-only broker, keeping one source selected at a time with its own subscription, providers, revision, approvals, and accepted baseline. `add <id>` reviews and registers a catalog entry, then downloads, selects, and verifies it; `use <id>` runs the same immediate fetch and verification for an existing registration. The GUI can only request sources mapped to a root-approved `gui-profile` UID, and the broker downloads the mapped source and rechecks both mapping and registration before selecting it.
 
-An unprivileged worker downloads the HTTPS subscription and registered HTTP providers, pins public endpoint addresses and renders the configuration.
-Nix supplies listeners, DNS, TUN settings and geodata.
-Providers become inline nodes.
-GUI URLs, YAML, scripts and caches cannot authorize a new source.
+An unprivileged worker fetches the HTTPS subscription and registered HTTP providers, pins public endpoint addresses, and renders the config—Nix provides listeners, DNS, TUN settings, and geodata, while providers are expanded into inline nodes. GUI URLs, YAML, scripts, and caches can never authorize a new source.
 
-The Sops `proxy_source` string can hold `{"sources":[...]}` for all definitions.
-`review/register FILE --id ID` selects one entry.
-An unqualified review lists the catalog, while registration refuses an ambiguous multi-entry choice.
-Legacy single-source JSON remains accepted.
-IDs and GUI mappings must be unique.
-Only the selected entry contributes to its registration digest.
-Adding another definition neither changes that digest nor approves the new source.
-Removing a catalog entry does not revoke its registered copy.
+The Sops `proxy_source` string holds all definitions as `{"sources":[...]}` (legacy single-source JSON still works). `review/register FILE --id ID` picks one entry; running `review` without `--id` lists the catalog, while `register` refuses an ambiguous multi-entry choice. IDs and GUI mappings must be unique. Only the selected entry enters the registration digest—adding another definition neither changes that digest nor approves the new source, and removing a catalog entry doesn't revoke its registered copy.
 
-Downloads enforce normal TLS hostname verification, pinned public socket addresses, exact approved HTTPS redirects, 8 MiB per response, a 32 MiB combined budget and a worker deadline.
-The default User-Agent is `clash.meta`.
-Each endpoint may register a single-line ASCII `user-agent` of at most 256 characters.
-Custom UA and credentials are removed permanently after a cross-origin redirect.
-YAML aliases and duplicate keys are refused.
+Downloads enforce standard TLS hostname verification, pinned public socket addresses, exact approved HTTPS redirects, an 8 MiB per-response limit, a 32 MiB combined budget, and a worker deadline. The default User-Agent is `clash.meta`, though an endpoint can register a single-line ASCII `user-agent` up to 256 characters (custom UA and credentials are permanently stripped after a cross-origin redirect). YAML aliases and duplicate keys are rejected.
 
-Node domains are pinned while retaining their TLS identity.
-Unresolvable nodes may be dropped up to `max(1, node_count // 5)`.
-Non-public answers and rule-referenced empty groups still refuse the candidate.
-The renderer supports `select`, `url-test` and `fallback` groups.
-Members must be explicit or refer to registered providers.
+Node domains are pinned while keeping their TLS identity; up to `max(1, node_count // 5)` unresolvable nodes may be dropped, though non-public answers and rule-referenced empty groups still reject the candidate. The renderer supports `select`, `url-test`, and `fallback` groups whose members are explicit or reference registered providers:
 
 | Field | Accepted value |
 |---|---|
-| `url` | Latency-test URL: HTTPS, or HTTP on its default port 80, without credentials or fragment |
+| `url` | Latency-test URL: HTTPS, or HTTP on default port 80, without credentials or fragment |
 | `interval` | Integer, 1–86400 seconds |
 | `tolerance` | 0–60000 ms |
 | `timeout` | 100–60000 ms |
@@ -51,261 +26,87 @@ Members must be explicit or refer to registered providers.
 | `lazy` | Boolean |
 | `expected-status` | HTTP status expression |
 
-`load-balance`, dynamic filters, `rule-providers` and provider filters/overrides are unsupported.
-Controlled sources require protected node data channels. HTTP and SOCKS5 require authenticated TLS and are limited to TCP. SOCKS5 TLS covers association setup on the TCP stream, while the native UDP data path sends plaintext datagrams.
-Shadowsocks requires an approved AEAD cipher and a shared secret. VMess requires authenticated TLS or VMess AEAD (`alterId: 0` with an approved cipher and a valid UUID). VLESS requires authenticated TLS on a supported carrier. Trojan, Hysteria2, TUIC and AnyTLS use their supported authenticated transports.
-The source renderer removes unsupported transport variants. It rejects the candidate if removing them leaves no usable node or breaks a required route or group. The managed core independently checks the effective profile, including restored snapshots.
-AnyTLS participates in Rule routing only and is not offered as a fixed egress; the single-leaf validator keeps its existing protocol list.
-Nodes that need a DNS lookup for their ECH configuration are excluded from `lf-remote`, the managed DNS group `lf-dns`, and the fixed-egress candidates. This avoids circular resolution when a DNS transport leaf dials.
-They remain eligible in subscription groups where another leaf can carry the encrypted lookup. Nodes with an inline `ech-opts.config` are eligible for the managed groups.
+`load-balance`, dynamic filters, `rule-providers`, and provider filters/overrides are unsupported. Controlled sources also require protected node data channels: HTTP and SOCKS5 require authenticated TLS and are TCP-only (SOCKS5 TLS protects association setup over TCP, while native UDP datagrams stay plaintext); Shadowsocks requires an approved AEAD cipher and shared secret; VMess requires authenticated TLS or VMess AEAD (`alterId: 0`, approved cipher, valid UUID); VLESS requires authenticated TLS on a supported carrier; and Trojan, Hysteria2, TUIC, and AnyTLS use their supported authenticated transports. The source renderer drops unsupported variants and rejects the candidate if no usable node remains or a required route/group breaks, while the managed core rechecks the effective profile (including restored snapshots). AnyTLS participates in `Rule` routing only and is excluded from fixed-egress candidates (the single-leaf validator keeps its existing protocol list). Nodes that need a DNS lookup for their ECH config are also excluded from `lf-remote`, the managed DNS group `lf-dns`, and fixed-egress candidates to prevent circular resolution when a DNS transport leaf dials—they remain usable in subscription groups where another leaf can carry the encrypted lookup, and nodes with an inline `ech-opts.config` stay eligible.
 
-A private manifest records source ID, revision, response hashes, transformer, policy, rendered YAML, dropped-node count and geodata.
-The snapshot digest includes it.
-Registrations and approvals live in root-private `/var/lib/clash-source/sources/<id>`.
-A shared `source.lock` protects the atomic `selected` pointer.
-Existing single-source state migrates on the next broker operation.
+A private manifest records the source ID, revision, response hashes, transformer, policy, rendered YAML, dropped-node count, and geodata, and is included in the snapshot digest. Registrations and approvals live under root-private `/var/lib/clash-source/sources/<id>`, protected by a shared `source.lock` around the atomic `selected` pointer (older single-source state migrates on the next broker run).
 
-Approved snapshots survive switching and reboot.
-Fetch failures preserve the selection, and parser, audit or health failures preserve the authorized runtime snapshot.
-Until checks complete, `Active source` can differ from the requested selection.
+Approved snapshots survive switching and reboots. Fetch failures keep the prior selection, while parser, audit, or health failures preserve the authorized runtime snapshot—so `Active source` can temporarily differ from the requested selection until checks finish.
 
-The apply service checks downloaded candidates before interrupting a ready core.
-An update that changes only the formatting or comments in the downloaded response keeps existing connections. The apply service compares the rendered rules in order, nodes, credentials and assets against the authorized baseline and checks the source, policy, egress, running core and B readiness. A rejected candidate can also leave the authorized core serving.
-A transient HTTP observation failure does not restart the core for an equivalent update. The supervisor still requires a new complete proof to extend the kernel lease. During renewal the identity relay can use the remaining time on the last committed lease for the same generation.
-Applying a changed candidate enters C before restarting the core and must pass startup checks again.
-The coordinator checks the transport firewall against the staged digest before a health round. In `proxy-only`, this installs the candidate's pinned endpoint tuples while the application lease is revoked.
-Without a compatible fallback, C remains in effect.
-An interrupted routing transaction preserves proxy intent and puts unfinished routing back into a verifiable state. Retry with `clash-on`.
+Before interrupting a ready core, the apply service inspects downloaded candidates. If an update only changes formatting or comments—meaning rendered rules in order, nodes, credentials, and assets match the authorized baseline and the source, policy, egress, running core, and **B** readiness all check out—existing connections stay open (a rejected candidate can also leave the authorized core running, and a transient HTTP observation failure won't restart the core for an equivalent update, though the supervisor still needs a fresh full proof to extend the kernel lease; during renewal, the identity relay can use the remaining time on the last committed lease for that generation). Applying an actually changed candidate enters **C** before restarting the core and runs startup checks again. Before a health round, the coordinator verifies the transport firewall against the staged digest (in `proxy-only`, loading the candidate's pinned endpoint tuples while the application lease is revoked). If no compatible fallback exists, **C** stays active. An interrupted routing transaction preserves proxy intent and resets unfinished routing to a verifiable state—retry with `clash-on`.
 
-When mixed HTTP fails in Rules mode, the health check only tries or rotates DNS leaves. The `lf-remote` application exit stays at the user's selection and fails closed instead of silently changing nodes or the public egress IP. A temporary DNS selection is committed after the corresponding DNS and route checks pass. Failure or timeout restores the previous selection, and a manual selection takes precedence. The TUN check starts with the first completed DNS candidate and cancels the remaining lookups after a verified success.
-The root controller can sample leaf sessions over TLS to the configured literal DoH endpoints. When Rules is healthy and the probe has time left, it checks the DNS selection at most once a minute. If the current DNS leaf fails that probe, it can switch to another DNS leaf that reaches a DoH endpoint and returns a validated DNS answer; the application exit is not changed. DNS answers, mixed HTTP, route proof and the remaining checks determine readiness.
-`proxy-status` shows a short identifier for the observed DNS leaf. It reports explicit authentication rejection as `node-auth`, unreachable DoH endpoints as `session-unavailable`, and unresolved validator probes as `validator-dns` when session evidence stays inconclusive or a sampled session works. A DoH timeout still permits an HTTP trial for that leaf. Rules recovery samples different parts of the authorized list across rounds.
-B can also diagnose the system resolver through an unprivileged desktop UID.
-During a remote outage, a valid Rules B lease can continue carrying traffic already allowed by the rules. `proxy-status` shows remote degradation and any observed domestic DNS and DIRECT route results. The existing deadline stays in effect until a complete health proof renews the lease.
+When mixed HTTP fails in `rules` mode, the health check only tests or rotates DNS leaves—`lf-remote` stays on the user's chosen application exit and fails closed instead of silently switching nodes or changing your public egress IP. A temporary DNS pick is committed only after matching DNS and route checks pass (failure or timeout restores the prior pick, and manual selections win). TUN checks start with the first completed DNS candidate and cancel the remaining lookups once verified. The root controller can also sample leaf sessions over TLS to the configured literal DoH endpoints: when `rules` is healthy and probe time remains, it checks the DNS pick at most once a minute, switching to another DNS leaf that reaches DoH and returns a validated DNS answer if the current one fails (without touching the application exit). DNS answers, mixed HTTP, route proof, and the other checks still determine readiness. `proxy-status` shows a short ID for the observed DNS leaf, reporting explicit auth rejections as `node-auth`, unreachable DoH endpoints as `session-unavailable`, and unresolved validator probes as `validator-dns` when session evidence is inconclusive or a sampled session works (a DoH timeout still allows an HTTP trial for that leaf, and `rules` recovery samples different slices of the authorized list across rounds). **B** can also diagnose the system resolver via an unprivileged desktop UID. During a remote outage, a live `rules` **B** lease can keep carrying traffic already permitted by the rules (`proxy-status` notes remote degradation along with domestic DNS and `DIRECT` route results), with the existing deadline holding until a full proof renews the lease.
 
-When daily Firefox reports a missing server, run `getent ahosts www.bilibili.com` from the desktop and then `curl --noproxy '*' -IsS --max-time 6 https://www.bilibili.com/`. Inspect the matching connection in Verge to see its DIRECT or proxy chain. To exercise the identity browser's Unix relay, CONNECT and certificate validation, run `curl --unix-socket /run/clash-strict/proxy.sock --noproxy '' -x http://localhost:80 -IsS --max-time 6 https://search.nixos.org/`. These requests run only on demand.
+If daily Firefox reports a missing server, test system resolution from your desktop terminal with `getent ahosts www.bilibili.com`, then test plain HTTPS with `curl --noproxy '*' -IsS --max-time 6 https://www.bilibili.com/` and check the connection in Verge to see whether it hit `DIRECT` or a proxy chain. To test the identity browser's Unix relay, `CONNECT`, and certificate validation directly, run `curl --unix-socket /run/clash-strict/proxy.sock --noproxy '' -x http://localhost:80 -IsS --max-time 6 https://search.nixos.org/` (these only run on demand).
 
-`clash-off` revokes runtime authority and retires the current routing epoch. A reports the routing selection as inactive and retains the source's accepted baseline for later startup.
-With automatic refresh, the next `clash-on` prefers an accepted snapshot that matches the current source revision, managed policy and renderer settings. Reusing it records `restored`.
-It repeats parser, content-audit and digest checks, and fresh live health still gates B.
-The shared blocklist has a stable policy path, so a validated blocklist update does not invalidate the accepted subscription baseline.
-The coordinator coalesces startup and timer requests. In C it keeps the requests pending.
-In B it starts the downloader after 90 continuous seconds of verified health for the same boot, snapshot, policy and routing selection.
-A mapped GUI request uses the same download gate. In A the download runs directly and prepares the source for the next proxy startup.
-In B a successful download queues its exact candidate for application. If another import or rollback is in progress, the apply service retries with that candidate after rechecking the selection, registration and digest.
-Foreground core startup can finish while the background request is waiting or downloading. `clash-off` cancels queued downloads and applications.
-With runtime routing, an explicit command can apply a downloaded candidate in C or fetch a fresh one under a short kernel lease. See [recover a registered source](operations.md#recover-a-registered-source).
-A first import without an accepted baseline uses the available candidate and the ordinary health observation window.
-Stopping and restarting does not waive structural checks.
+`clash-off` revokes runtime authority and retires the current routing epoch, leaving **A** with routing shown as inactive while keeping the source's accepted baseline for the next startup. With automatic refresh on, the next `clash-on` prefers an accepted snapshot matching the current source revision, managed policy, and renderer settings (recording `restored`), still repeating parser, content-audit, and digest checks while gating **B** on live health. Because the shared blocklist uses a stable policy path, validated blocklist updates don't invalidate accepted baselines. The coordinator coalesces startup and timer requests (keeping them pending in **C**), and in **B** triggers the downloader after 90 continuous seconds of verified health under the same boot, snapshot, policy, and routing selection. Mapped GUI requests follow the same gate; in **A**, downloads run directly to prepare for the next proxy startup. In **B**, a successful download queues its exact candidate for apply (if another import or rollback is running, the apply service waits and rechecks selection, registration, and digest before retrying), while foreground core startup can finish in parallel; `clash-off` cancels queued downloads and applies. With runtime routing, explicit commands can apply a downloaded candidate in **C** or fetch a fresh one under a short kernel lease (see [recover a registered source](operations.md#recover-a-registered-source)). A first import without an accepted baseline uses the available candidate and the normal health observation window; stopping and restarting never waives structural checks.
 
-Node identity, authentication and transport changes are compared against that source's own accepted baseline, including after switching sources or rebooting.
-This host automatically approves `node_identity`, `node_authentication` and `node_transport` changes, including logical-server and TLS-name rotation.
-The same policy applies to the first `clash-on` after reboot and to the root refresh timer.
-Routine updates require no manual review.
+Node identity, authentication, and transport changes are compared against each source's own accepted baseline—even across source switches or reboots. This host automatically approves `node_identity`, `node_authentication`, and `node_transport` changes (including logical-server and TLS-name rotation) on both the first `clash-on` after reboot and the root refresh timer, so routine updates need no manual review.
 
-The reusable `my.proxy.subscriptionAuditAutoApprove` option defaults to an empty list, which disables automatic approval.
-Automatic approval requires controlled sources, `profileRefreshPolicy="auto"`, `subscriptionAudit="enforce"` and an accepted baseline.
-Every deny category must belong to the configured list, and there must be no unresolved findings.
-The audit compares permissions across node names. An alias of an unchanged leaf retains its existing classification. A new leaf without equivalent permissions must qualify for all three approval categories.
-Private or metadata addresses, certificate-validation bypasses, plaintext credentials, unauthorized hosts overrides, protected-route changes and malformed input continue to block import.
-Sensitive-route changes in either direction are also excluded from automatic approval.
+In the reusable module, `my.proxy.subscriptionAuditAutoApprove` defaults to `[]` (disabled). Enabling it requires controlled sources, `profileRefreshPolicy="auto"`, `subscriptionAudit="enforce"`, and an accepted baseline: every deny category must be in the configured list, with no unresolved findings. The audit compares permissions across node names—an alias of an unchanged leaf keeps its classification, while a new leaf without equivalent permissions must satisfy all three approval categories. Private or metadata addresses, cert-verification bypasses, plaintext credentials, unauthorized `hosts` overrides, protected-route changes, sensitive-route changes in either direction, and malformed input still block import. Each automatic approval record lasts five minutes and binds candidate, baseline, source revision, managed policy, validator policy, and audit policy; import repeats parser, approval, and blocking-audit checks before health acceptance or rollback. Setting the option back to `[]` disables auto-approval without relaxing checks on existing records (see [source registration](operations.md#source-registration)).
 
-Each automatic record expires after five minutes and binds the candidate, baseline, source revision, managed policy, validator policy and audit policy.
-Import repeats the normal parser, approval checks and blocking audit before health acceptance or rollback.
-Changing the option to `[]` disables automatic approval without weakening checks on existing records.
-See [source registration](operations.md#source-registration).
-
-Source downloads and node-address pinning use the filtered real-address gateway on `127.0.0.1:1056`, independently of B's fake-IP answers.
-Only the dedicated `clash-fetch` account and root can query that port directly.
-The worker still rejects non-public answers and verifies HTTPS certificates.
-Subscription downloads, pinned node endpoints and C recovery require native addresses. They refuse synthesized addresses under the configured `nat64Prefixes`.
-A usable DNS family can be used when the other family is unavailable.
-Downloads validate the entire address set before connecting and retry public addresses within one deadline, preserving HTTPS hostname and certificate checks.
-A controlled source can pin up to two alternate public addresses for a TCP-backed node. A failed dial or a 250 ms delay starts the next attempt, with at most two dials active per race. TLS retains the original node identity and certificate policy. Fixed exits can use the additional addresses when the operator selects the identity that includes them. Existing single-address grants, the WireGuard relay and native UDP or QUIC connections continue to use their fixed endpoint.
-Website TCP dials apply the same timing to locally validated destination addresses. The relay sends application data only on the winning connection.
-If no usable answer remains, refresh fails without falling back to system DNS.
-Fresh lookups in Rules use the infrastructure Unbound's DoT path. With `unboundDotInProxy=false`, only eligible cached or local answers are available on that path. Runtime `proxy-only` uses the core application validator. [Resolver paths](dns.md#restricted-socket-guest-dns)
+Source downloads and node-address pinning use the filtered real-address gateway on `127.0.0.1:1056` independently of **B**'s fake-IP answers (only `clash-fetch` and root can query it directly). The worker rejects non-public answers and verifies HTTPS certificates; subscription downloads, pinned node endpoints, and **C** recovery all require native addresses and refuse synthesized addresses under `nat64Prefixes`, though one usable family can stand in when the other is down. Downloads validate the full address set before connecting and retry public addresses within one deadline while preserving HTTPS hostname and cert checks. A controlled source can pin up to two alternate public addresses for a TCP-backed node: a failed dial or a 250 ms delay starts the next attempt (at most two concurrent dials per race), TLS keeps the original node identity and cert policy, and fixed exits can use those alternates when the operator picks an identity that includes them (single-address grants, the WireGuard relay, and native UDP/QUIC keep their fixed endpoints). Website TCP dials apply the same timing to locally validated destination addresses, forwarding data only on the winning connection. If no usable answer remains, refresh fails without falling back to system DNS. Fresh lookups in `rules` use infrastructure Unbound's DoT path (`unboundDotInProxy=false` limits that path to eligible cached or local answers), while runtime `proxy-only` uses the core application validator ([resolver paths](dns.md#restricted-socket-guest-dns)).
 
 ## Visibility and trust
 
 | Participant | Information it can observe |
 |---|---|
-| Browser and destination | Application content. The destination also knows accounts/cookies and exit address |
-| Local HTTP proxy/core | CONNECT names, DNS and routing metadata. Plaintext HTTP content |
-| Access network / DNS service | Transport addresses and timing. The resolver knows queries it answers |
-| Entry/exit operators | Their adjacent addresses and flow timing. An exit sees destination metadata and plaintext HTTP |
-| Colluding operators | Additional correlations. Local health probes cannot establish their honesty |
+| Browser and destination | Application content; the destination also knows accounts/cookies and exit address |
+| Local HTTP proxy/core | CONNECT names, DNS and routing metadata, and plaintext HTTP content |
+| Access network / DNS service | Transport addresses and timing; the resolver knows queries it answers |
+| Entry/exit operators | Adjacent addresses and flow timing; an exit sees destination metadata and plaintext HTTP |
+| Colluding operators | Additional correlations; local health probes cannot establish their honesty |
 
-Status reports `controlled-fetch`, `legacy-unverified` or unknown provenance separately from mode, routing and availability.
-The panel shows the latest refresh result, audit categories and counts, and the last automatic approval with its unique node count and time.
-HTTPS certificate checks authenticate the download connection.
-Publisher content signatures remain unchecked because this configuration has no publisher signature verifier.
-Automatic content checks can reject identifiable risks, but cannot establish who initiated a rotation or authenticate the publisher.
-A domain comparison cannot distinguish an operator rotation from a malicious replacement.
-TLS protects authenticated content, while ECH and separate profiles do not hide accounts, destination IPs or timing.
-An operator can still log or collude.
+Status reports `controlled-fetch`, `legacy-unverified`, or unknown provenance separately from mode, routing, and availability, and shows the latest refresh result, audit categories/counts, and the last automatic approval (unique node count and timestamp). HTTPS certificate checks authenticate the download connection, though publisher content signatures aren't checked because no publisher verifier is configured: automatic checks catch identifiable risks, not who initiated a rotation or whether a publisher is authentic (domain diffs can't tell an operator rotation from a malicious swap). TLS protects authenticated content, while ECH and separate profiles do not hide accounts, destination IPs, or timing—an operator can still log or collude.
 
-The desktop controller exposes the core's live logs and connection metadata, including destination names and proxy chains. The root helper keeps its core log files under `/var/lib/clash-verge-service/logs` in a root-only state directory. Its file rotation uses a 10 MiB limit and a file-count setting of eight. The system journal has a separate retention policy.
+The desktop controller exposes live core logs and connection metadata (including destination names and proxy chains). The root helper writes core log files under root-only `/var/lib/clash-verge-service/logs`, rotating at 10 MiB across eight files (the system journal has its own retention policy).
 
 ## Components and identities
 
 | Component | Default endpoint / state | Identity |
 |---|---|---|
-| Mihomo | Mixed `127.0.0.1:7897`, DNS `:1053`, TUN `Mihomo` | `clash-core`, UID 982. `NET_ADMIN` and `NET_RAW` inside the core network namespace |
-| Clash Verge helper | On-demand `clash-verge.service` | Root with bounded launch/file capabilities. Network capabilities confined to the core namespace |
-| GUI controller forwarder | `/run/user/<desktop-uid>/clash-verge-rev/verge-mihomo.sock` | Desktop UID, core group, no capabilities. Socket 0600 |
+| Mihomo | Mixed `127.0.0.1:7897`, DNS `:1053`, TUN `Mihomo` | `clash-core`, UID 982; `NET_ADMIN` and `NET_RAW` inside the core network namespace |
+| Clash Verge helper | On-demand `clash-verge.service` | Root with bounded launch/file capabilities; network capabilities confined to the core namespace |
+| GUI controller forwarder | `/run/user/<desktop-uid>/clash-verge-rev/verge-mihomo.sock` | Desktop UID, `core` group, no capabilities; socket 0600 |
 | Gost | HTTP `127.0.0.1:33332`, transparent `127.0.0.1:33333` and `[::1]:33333` | UID 987, no capabilities |
 | dnsmasq / Unbound / dhcpcd | Local DNS / wired DHCP | UIDs 985 / 983 / 986 |
 
-[identity.nix](../system/programs/clash/service/identity.nix) and [runtime.nix](../system/programs/clash/service/runtime.nix) define the core identity and service contract.
-The root launcher starts the core via `setpriv`, retaining only the two network capabilities in its permitted, effective, inheritable, ambient and bounding sets.
-The real controller is `/run/clash-verge-rev/core/mihomo.sock`.
-Supervisors use it directly.
-A capless desktop-UID `socat` service in the host namespace supplies the GUI path over Unix byte streams, without passing file descriptors.
+[identity.nix](../system/programs/clash/service/identity.nix) and [runtime.nix](../system/programs/clash/service/runtime.nix) define the core identity and service contract. The root launcher drops privileges via `setpriv`, keeping only those two network capabilities across permitted, effective, inheritable, ambient, and bounding sets. Supervisors talk directly to `/run/clash-verge-rev/core/mihomo.sock`, while a capless desktop-UID `socat` service in the host namespace exposes the GUI path over Unix byte streams without passing file descriptors.
 
-The helper retains the privileges needed for identity changes, directory ownership and child management.
-It accepts only the packaged, root-owned launcher as an executable.
-Managed logs use `/var/lib/clash-verge-service/logs`, with fixed rotation.
-Caller-supplied IPC paths do not drive root chmod/unlink or startup reconciliation.
-Systemd owns child cleanup.
-The helper's private state is separate from the writable core cache in `/var/lib/clash-core`.
+The helper keeps only the privileges needed for identity transitions, directory ownership, and child management, accepting only the packaged root-owned launcher as an executable. Managed logs stay in `/var/lib/clash-verge-service/logs` with fixed rotation, caller-supplied IPC paths never trigger root `chmod`/`unlink` or startup reconciliation, systemd handles child cleanup, and helper private state stays separate from writable core cache in `/var/lib/clash-core`.
 
-The helper enforces fixed execution paths and file-operation rules at its privileged boundary.
-Systemd places the helper and core in `lf-clash-core` before execution.
-The core cannot administer host interfaces, routes or firewall tables.
-Host setup and policy changes belong to fixed root services.
-Desktop programs sharing the GUI UID can use its permitted GUI/controller operations.
-The packaged upstream GUI is used without source changes; the Nix package keeps its upstream unwrapped output and substitutes only the launch wrapper, helper and core.
-Its System Proxy, TUN and core-mode controls remain clickable and may update local preferences.
-They cannot change managed runtime state:
+At its privileged boundary, the helper enforces fixed execution paths and file-operation rules, and systemd places both helper and core in `lf-clash-core` before execution. The core cannot touch host interfaces, routes, or firewall tables (those belong to fixed root services), while desktop programs sharing the GUI UID can use permitted GUI/controller operations. The upstream GUI is used unmodified—Nix keeps its `.unwrapped` output and swaps only the launch wrapper, helper, and core—so System Proxy, TUN, and core-mode buttons stay clickable and save local preferences, but are silently discarded before touching the OS or managed core:
 
-- The launch wrapper starts the GUI with write-discarding helper shims.
-  A private mount namespace replaces the absolute gsettings and KDE helper paths that nixpkgs substitutes into the binary; `dconf` and the version-5 KDE helpers are replaced by path shims.
-  A memory GSettings backend and the version-5 helper names remain as a fallback when a private namespace is unavailable.
-  System-proxy, PAC and proxy-guard writes therefore return success without changing the OS.
-  Reads still use the real helpers where the shim can forward them.
-- The controller discards `PATCH /configs` for `mode` and `tun` with 204, and discards `PUT /configs` profile reloads with 204 instead of applying them.
-  Other configuration fields and all other writes remain forbidden, so a discarded reload never triggers the GUI's restart fallback.
-- The managed parser shadows the generated profile's core mode to `rule` and its whole `tun` section with the root policy before final validation.
-  A GUI preference cannot make a restart fail validation or change the live TUN.
+- **Launch wrapper shims.** A private mount namespace masks the absolute `gsettings` and KDE helper paths that Nixpkgs substitutes into the binary, while `dconf` and KDE 5 helpers are replaced by PATH shims (falling back to a memory GSettings backend and KDE 5 helper names if a mount namespace isn't available). System-proxy, PAC, and proxy-guard writes return success without altering OS settings, while reads pass through to real helpers where possible.
+- **Controller write policy.** `PATCH /configs` for `mode` or `tun` and `PUT /configs` profile reloads return `204` without applying, while other fields and writes return `403` (so discarded reloads never trigger the GUI's restart fallback).
+- **Managed parser.** Before final validation, the parser pins the generated profile's core mode to `rule` and overwrites the entire `tun` block with the root policy, so GUI preferences can't break validation or alter the live TUN.
 
-The GUI may keep and display a different local preference; it is not authoritative.
-Use the controller, `proxy-status` or the managed core for actual state.
-Missing or corrupt runtime policy cannot grant a control write.
-Status reads, managed proxy-group selection, connection closing, delay tests and logs remain available.
-The upstream "close connections on mode change" preference can still close connections when clicking a mode control. Disable that preference to preserve sessions; the core-mode request itself is discarded.
-The helper uses kernel Unix peer credentials for lifecycle requests. GUI stop requests and starts of an already running core return success without acting.
-With controlled sources, only root may request a core start. Closing the GUI leaves the managed core running; use `clash-off` to leave B.
+Whatever local preference the GUI displays isn't authoritative—check the controller, `proxy-status`, or the managed core for real state (missing or corrupt runtime policy never unlocks control writes). Status reads, managed proxy-group selection, closing connections, delay tests, and logs all work normally; note that Verge's "close connections on mode change" option still closes connections if you click a mode control, so turn it off if you want sessions left alone (the core-mode request itself is discarded either way). The helper checks kernel Unix peer credentials for lifecycle calls: GUI stop requests and starts of an already-running core are silent no-ops, controlled-source starts require root, closing the GUI leaves the core running, and `clash-off` is how you exit **B**.
 
-An explicitly enabled IPv4 guest TPROXY inlet binds `0.0.0.0:7896`.
-The ordinary mixed/DNS/controller endpoints remain local under `allow-lan=false`.
-The packaged listener handles this bind separately and selects IPv4 sockets.
-Its TCP/UDP UID and service cgroup are checked before B.
-Guest interface/source authorization remains in the firewall.
-Later core auto-redirect preserves the owned guest mark instead of replacing its transparent socket.
-See [guest networking](network.md#guests-and-containers).
+An explicitly enabled IPv4 guest TPROXY inlet binds `0.0.0.0:7896`, while ordinary mixed/DNS/controller endpoints stay local under `allow-lan=false`. The packaged listener handles this bind separately with IPv4 socket selection, checks its TCP/UDP UID and service cgroup before **B** (guest interface/source authorization stays in the firewall), and core `auto-redirect` preserves the owned guest mark rather than replacing its transparent socket (see [guest networking](network.md#guests-and-containers)).
 
 ## Compatibility GUI imports
 
-`proxy-control preflight` checks the desktop profile, required assets and the managed parser without changing network intent.
-`clash-on` requires this preparation to succeed, records proxy intent and enters C before starting the helper.
-It clears refresh pins and pending health checks, preserves intact snapshot authority, and opens a single-use import window for 300 seconds.
-A failed import consumes the window.
+`proxy-control preflight` validates the desktop profile, required assets, and managed parser without changing network intent. `clash-on` requires preflight to pass, records proxy intent, enters **C** before starting the helper, clears refresh pins and pending health checks, preserves intact snapshot authority, and opens a single-use 300-second import window (which a failed import consumes).
 
-[clash-verge-stage.py](../system/programs/clash/service/clash-verge-stage.py) accepts bounded regular files owned by the desktop user, rejects symlinks and detects concurrent input changes.
-It copies YAML and geodata into a root-owned snapshot, normalizes the controller location and runs `-t` as the separate `clash-validate` identity without capabilities.
-Snapshot directories use 0750 and files use 0640.
-Authority records and parser diagnostics remain private to root.
-
-Authorized `127.0.0.1` and `::1` TCP/UDP targets reach host loopback through a separate capless `clash-loopback` broker.
-Its Unix channels check the peer UID and reject reserved proxy/DNS ports.
-UDP interception preserves the original destination port.
-Opportunistic DNS port 53 has a fixed host-gateway mapping.
-Strict DNS disables it.
-These channels carry bytes and datagrams, never host socket descriptors.
-Other loopback aliases are not forwarded.
-
-The snapshot digest covers YAML, geodata bytes and absent optional assets.
-Assets include `Country.mmdb`, `GeoIP.dat`, `GeoSite.dat`, `ASN.mmdb` and `BundleMRS.7z`.
-Legacy country-database names are normalized.
-`cache.db` and the `proxies/` provider cache point to separate writable core state and are outside this digest.
+[clash-verge-stage.py](../system/programs/clash/service/clash-verge-stage.py) accepts bounded regular files owned by the desktop user, rejects symlinks, detects concurrent edits, copies YAML and geodata into a root-owned snapshot (`0750` dirs, `0640` files), normalizes the controller path, and runs `-t` as capability-free `clash-validate` (authority records and parser diagnostics stay root-only). Authorized `127.0.0.1` and `::1` TCP/UDP targets reach host loopback through the capless `clash-loopback` broker, which checks peer UID, blocks reserved proxy/DNS ports, preserves original destination ports on UDP interception, and maps port 53 to the host gateway only under opportunistic DNS (strict DNS disables it)—carrying bytes and datagrams, never host socket descriptors, and ignoring other loopback aliases. The snapshot digest covers YAML, geodata bytes (`Country.mmdb`, `GeoIP.dat`, `GeoSite.dat`, `ASN.mmdb`, `BundleMRS.7z`, with legacy country-db names normalized), and absent optional assets, while `cache.db` and the `proxies/` provider cache live in separate writable state outside the digest.
 
 ### Refresh policies
 
-`my.proxy.profileRefreshPolicy` defaults to `strict`.
-A changed GUI YAML requires another `clash-on` window.
-With `auto`, changed YAML can be imported while proxy intent remains active, after the same input, parser, content-audit and digest checks.
-The host configuration selects `auto`.
+`my.proxy.profileRefreshPolicy` defaults to `strict` (requiring a new `clash-on` window for changed GUI YAML); this host sets `auto`, allowing changed YAML to be imported while proxy intent is active once input, parser, content-audit, and digest checks pass. Unchanged YAML follows the normal restart path and reuses authorized geodata; GUI database updates alone never trigger an import, managed geodata downloads stay off (even to replace a missing or corrupt database), and `clash-off` revokes authority and blocks GUI updates from restarting the core.
 
-Unchanged YAML follows the ordinary restart path and reuses the authorized geodata.
-GUI database updates alone do not trigger an import.
-Managed geodata downloads remain disabled, including replacement of a missing or corrupt database.
-`clash-off` revokes authorization and requests direct mode.
-GUI updates cannot restart the core while intent is direct.
+A validated candidate enters `verifying`, where `profile-refresh-verify.timer` checks every 10 seconds and requires at least 60 seconds of observation before accepting a fresh health result for that digest (`accepted` sets the settled baseline; consecutive imports during observation keep that baseline). Failure restores the baseline and its authority, swaps the core over helper IPC, and records `rolled_back`—leaving the helper listener up unless helper transport itself failed. Startup imports always keep the full 60-second window with no early rollback; subsequent imports with a settled fallback can roll back after `my.proxy.profileRefreshFailureGraceSeconds` (default 20 s, range 20–60 s) once two consecutive fresh full-health failures hit the same candidate and policy. On first import, DNS or controller observation failures keep the candidate in verification while a definitive refusal clears the snapshot and its authority. Confirm recovery with `proxy-status` (an active helper unit alone doesn't prove readiness, GUI delay history can be empty after a restart, and **C** blocks GUI latency checks—readiness uses fresh mixed-port and TUN probes).
 
-A validated candidate enters `verifying`.
-`profile-refresh-verify.timer` checks every ten seconds and requires at least 60 seconds of observation before accepting a fresh health result for that candidate digest.
-Success records `accepted` and establishes the settled baseline.
-Consecutive imports during observation retain that baseline.
-Failure restores it and its authority, replaces the core through helper IPC and records `rolled_back`.
-The helper listener remains available during replacement. Only an unavailable helper transport triggers a unit restart.
-
-Startup imports retain the full 60-second observation window without early rollback.
-For subsequent imports with a settled fallback, at least two consecutive fresh full-health failures for the same candidate and policy allow rollback after `my.proxy.profileRefreshFailureGraceSeconds`.
-This option defaults to 20 seconds and accepts 20–60 seconds; rollback occurs on the next verifier run.
-Missing or stale failure proofs retain the 60-second window, and successful acceptance always requires that full window.
-On first import, a DNS or controller observation failure keeps the candidate under verification. A definitive refusal clears the effective snapshot and its authority. A later healthy observation can settle a pending candidate.
-Use `proxy-status` to confirm service recovery.
-The helper unit being active alone does not prove core readiness.
-GUI delay history can be empty after a core restart, and C also blocks GUI latency requests.
-Readiness uses fresh mixed-port and TUN requests, independently of the GUI delay list.
-
-At startup, candidate read or validation failures under `auto` preserve an intact authorized snapshot, record `fallback` and start the core from that snapshot.
-Without a valid fallback, startup fails with exit 78.
-The launcher always runs the effective snapshot.
-Rejected candidate digests are pinned for one hour, so ordinary restarts reuse the rejection without extending its lifetime.
-Controlled sources with automatic approval enabled recheck audit rejections against the current policy.
-Within the current boot, controlled sources retain health-failure pins across `clash-on` and `clash-off` for the remaining TTL, preventing the same failed candidate from being approved again.
-Both commands cancel pending health checks. Compatibility GUI imports also clear their pins.
-
-`/run/proxy-mode/profile-refresh.json` is published atomically with mode 0644.
-It contains the policy, latest result, candidate and previous digests, fixed failure reason, snapshot time, last acceptance time, content-audit categories, last automatic approval and up to 20 history entries.
-Displayed digests use 12 characters.
-The record excludes subscription URLs, credentials, node names, private paths and raw parser output.
+At startup under `auto`, candidate read or validation errors keep an intact authorized snapshot (`fallback`), failing with exit 78 if no valid fallback exists; the launcher always runs the effective snapshot. Rejected digests are pinned for one hour (reused across ordinary restarts without extending TTL, though controlled sources with auto-approval recheck audit rejections against current policy). Within the same boot, controlled sources keep health-failure pins across `clash-on`/`clash-off` for their remaining TTL so the same bad candidate isn't approved again; both commands cancel pending health checks, and compatibility GUI imports clear their pins. `/run/proxy-mode/profile-refresh.json` (`0644`) atomically publishes policy, latest result, truncated 12-char digests, fixed failure reason, timestamps, audit categories, last auto-approval, and up to 20 history entries—never URLs, credentials, node names, private paths, or raw parser output.
 
 ### Content audit
 
-`my.proxy.subscriptionAudit` supports `off`, `warn` and `enforce`, with `warn` as the module default.
-The host configuration selects `enforce`.
-The worker runs offline as `clash-validate`, without capabilities, after `-t` and before snapshot commit.
-`off` disables only this additional check.
-The managed parser and digest checks always apply.
+`my.proxy.subscriptionAudit` supports `off`, `warn` (module default), and `enforce` (used here), running offline as capability-free `clash-validate` between `-t` and snapshot commit (`off` only disables this extra check; managed parser and digest checks always run).
 
-The audit checks node server addresses, `skip-cert-verify`, empty groups, invalid group references, YAML key structure, hosts mappings and provider configuration changes.
-Historical comparisons use the last settled YAML.
-Use `subscriptionAuditProtectedRoutes` to specify the required route class for an exact domain, including on first import. Use `sensitiveDomains` to compare the route classes of a suffix against the accepted profile.
-Mutable provider contents retain the separate trust model described below.
-The Sops-encrypted `insecure_sources` allowlist controls early removal of `skip-cert-verify` leaves before node-address resolution.
-The worker limits the combined loss from resolution failures and literal loopback placeholders to one fifth of the remaining nodes, rounded down with a minimum limit of one.
-Use one registered source ID per line. Blank lines and duplicate IDs are valid.
-A missing or unreadable file, invalid UTF-8 or any malformed ID disables sanitizing for every source.
-Without this permission, the worker retains those leaves for the later checks. [Sops allowlists](../system/secrets/whitelist.yaml)
-Intentional non-public node endpoints require `my.proxy.subscriptionAuditServerCidrs`.
-This audit exception grants no application access, and multicast endpoints remain refused.
+The audit checks node server addresses, `skip-cert-verify`, empty or invalid groups, YAML key structure, `hosts` mappings, and provider config changes against the last settled YAML (`subscriptionAuditProtectedRoutes` enforces required route classes for exact domains even on first import; `sensitiveDomains` compares suffix routes against the accepted profile; mutable providers keep the trust model below). The Sops-encrypted `insecure_sources` allowlist ([Sops allowlists](../system/secrets/whitelist.yaml)) controls early stripping of `skip-cert-verify` leaves before address resolution—combined losses from unresolvable nodes and literal loopback placeholders are capped at `floor(remaining_nodes / 5)` (at least 1). Put one registered source ID per line (blank lines and duplicates are fine; a missing/unreadable file, invalid UTF-8, or malformed ID disables sanitizing for all sources, leaving those leaves for later checks). Intentional non-public node endpoints must be listed in `my.proxy.subscriptionAuditServerCidrs` (which grants no app access; multicast is always refused).
 
-`my.proxy.remoteOnlyCatchAll` defaults to `false` and is enabled on this host.
-The Merge script follows the final catch-all policy and its group references, removing DIRECT and other non-proxy members.
-It supports arbitrary subscription group names and refuses empty or cyclic groups.
-Shared groups lose those manual choices.
-Explicit DIRECT rules and unrelated groups remain available.
-Dynamic provider routing still requires a conclusive audit under `enforce`.
-The constraint applies when the GUI generates YAML.
-Reapply the current profile after changing Merge policy to regenerate it before requesting a fresh import.
+`my.proxy.remoteOnlyCatchAll` (enabled here) tells the Merge script to walk the final catch-all policy and its group references, stripping `DIRECT` and other non-proxy members across any subscription group names while rejecting empty or cyclic groups (shared groups lose those manual choices; explicit `DIRECT` rules and unrelated groups stay intact, and dynamic provider routing still needs a conclusive audit under `enforce`). Because this runs when the GUI generates YAML, reapply the current profile after changing Merge policy before requesting a new import.
 
-Hosts mappings require an explicit root allowlist on every import, including the first.
-Each supplied name and value must match `my.proxy.subscriptionAuditAllowedHosts`.
-Entries may be omitted.
-The default empty allowlist permits no subscription hosts overrides.
+Every import—including the first—checks `hosts` mappings against `my.proxy.subscriptionAuditAllowedHosts` (default `{}`, blocking all subscription `hosts` overrides):
 
 ```nix
 my.proxy.subscriptionAuditAllowedHosts = {
@@ -313,170 +114,63 @@ my.proxy.subscriptionAuditAllowedHosts = {
 };
 ```
 
-`my.proxy.sensitiveDomains` enables targeted checks for user-selected domain suffixes and defaults to an empty list.
-The checker supports ordered `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD` and `MATCH` rules with statically resolvable groups.
-It identifies proven DIRECT-to-proxy or DIRECT-to-reject changes.
-Mixed routes below a suffix conservatively produce `unknown`, as can GEOSITE, GEOIP, logical rules and dynamic groups.
-This is not a complete Mihomo routing evaluator.
-Infrastructure targets are not automatically added to this list.
+`my.proxy.sensitiveDomains` (default `[]`) checks user-chosen suffixes across ordered `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, and `MATCH` rules with statically resolvable groups to catch proven `DIRECT`-to-proxy or `DIRECT`-to-reject shifts (mixed routes, `GEOSITE`, `GEOIP`, logical rules, and dynamic groups conservatively return `unknown`; this is not a full Mihomo evaluator, and infra targets aren't added automatically). `my.proxy.subscriptionAuditProtectedRoutes` declares expected `direct`, `proxy`, or `reject` routes for exact domains (health and delay-test domains default to `proxy`; add your subscription and update domains here)—each candidate must prove every protected route, and indeterminate rules or groups fail compliance.
 
-`my.proxy.subscriptionAuditProtectedRoutes` declares the expected `direct`, `proxy` or `reject` route for exact domains.
-Health and delay-test domains default to `proxy`.
-Declare subscription and update domains here with their intended routes.
-The candidate must prove each current protected route. Sensitive suffixes still require a comparison with the last settled baseline when one exists.
-Indeterminate rules or groups cannot establish compliance.
-
-`enforce` rejects deny results and unknown routing for sensitive domains or protected targets, using `blocked by audit` or `audit indeterminate`.
-A worker failure also prevents acceptance under `enforce`.
-`warn` records findings and continues the import.
-Structural warnings cover large rule or node count changes, concentration on one host, new plaintext credential nodes and broad geographic routing changes.
-Public findings contain fixed categories and counts.
+Under `enforce`, any deny verdict, worker failure, or indeterminate sensitive/protected route blocks import (`blocked by audit` or `audit indeterminate`). `warn` logs findings and proceeds. Structural warnings flag large rule/node count swings, host concentration, new plaintext credential nodes, and broad geographic routing shifts, publishing only fixed categories and counts.
 
 ## Managed profile and controller
 
-[profile.nix](../system/config/network/proxy/profile.nix) is the root policy.
-[cvr-merge.nix](../home/config/clash/cvr-merge.nix) generates the matching GUI Merge configuration.
-The final core parser enforces listeners, mark, DNS, TUN routes/exclusions and private-target settings after GUI/subscription processing.
-Mihomo races eligible addresses when opening an outbound TCP connection. In the core namespace it binds outbound transport to the host-facing veth, `lf-host`.
-The managed parser applies both settings to cached profiles, and the GUI cannot change them through the controller.
-Rule providers are pinned empty and automatic geodata updates are disabled.
-Unconditional `MATCH,DIRECT` and `FINAL,DIRECT` rules are refused.
-Subscription rules and group selection otherwise retain their authorized meaning.
+[profile.nix](../system/config/network/proxy/profile.nix) defines the root policy and [cvr-merge.nix](../home/config/clash/cvr-merge.nix) generates the matching GUI Merge config. After GUI/subscription processing, the final core parser enforces listeners, mark, DNS, TUN routes/exclusions, and private-target settings (Mihomo races eligible addresses for outbound TCP and binds outbound transport inside the core namespace to `lf-host`), applying them to cached profiles too so the GUI can't alter them through the controller. Rule providers are pinned empty, automatic geodata updates are disabled, and unconditional `MATCH,DIRECT`/`FINAL,DIRECT` rules are refused while other rules and group choices keep their meaning. The core reports a `managed-policy` digest for system invariants alongside the separate snapshot digest binding YAML and assets.
 
-The core reports a `managed-policy` digest to health consumers.
-This policy digest describes system invariants.
-The separate snapshot digest binds authorized YAML and assets.
-
-On restart, a generated profile that differs only in the system-owned `mode` and `tun` fields reuses the accepted snapshot; any other change still needs `clash-on`.
-The root policy also supplies the shared domain-filter store path, additions and exceptions.
-The core checks DNS before hosts/cache/fake-IP and application targets before TCP/UDP dialing, so delegated HTTP/SOCKS resolution uses the same list as system DNS.
-Internal bootstrap resolver queries use the filter too.
-Their transport and target-validation scope remain separate.
-See [DNS](dns.md) for split DNS, native MagicDNS and literal-IP boundaries.
+On restart, a generated profile differing only in system-owned `mode` and `tun` fields reuses the accepted snapshot (any other change still needs `clash-on`). The root policy also provides the shared domain-filter store path, additions, and exceptions: the core checks DNS before hosts/cache/fake-IP and application targets before TCP/UDP dialing so delegated HTTP/SOCKS lookups follow the same list as system DNS (internal bootstrap queries use the filter too, with separate transport and target-validation scopes; see [DNS](dns.md) for split DNS, native MagicDNS, and literal-IP boundaries).
 
 | Controller operation | Managed behavior |
 |---|---|
-| GET / HEAD / OPTIONS | Read access. Desktop DNS and delay requests that initiate network traffic require B authorization |
-| PUT / DELETE `/proxies/<name>` | Select or release a proxy choice in rules. Runtime proxy-only returns 403; root controls exit changes |
-| DELETE `/connections` or `/connections/<id>` | Close connections |
-| PATCH `/configs` | An empty patch, `mode`, or `tun` is discarded with 204 and never applied. A patch containing any other field returns 403 |
-| PUT `/configs` | Discarded with 204; the GUI's reload path cannot replace the system-rendered profile |
+| `GET` / `HEAD` / `OPTIONS` | Read access; desktop DNS and delay requests that initiate network traffic require **B** authorization |
+| `PUT` / `DELETE /proxies/<name>` | Select or release a proxy choice in `rules`; runtime `proxy-only` returns `403` (root controls exit changes) |
+| `DELETE /connections` or `/connections/<id>` | Close connections |
+| `PATCH /configs` | Empty patch, `mode`, or `tun` returns `204` without applying; any other field returns `403` |
+| `PUT /configs` | Returns `204` without applying (GUI reload cannot replace the system-rendered profile) |
 | Other writes | Forbidden by default |
 
-Rule disabling, provider/geodata/storage changes, restart and upgrade APIs are forbidden.
-Core mode is fixed by the system-rendered profile; the managed parser also pins it to `rule`.
-Both controller sockets enforce the write policy. The direct Unix socket identifies root recovery probes by their peer credentials.
-New controller write endpoints require an explicit policy decision when upgrading the core.
+Disabling rules, changing providers/geodata/storage, restarts, and upgrades are all forbidden over the controller. Core mode is pinned to `rule`, both controller sockets enforce the same write policy (the direct Unix socket identifies root recovery probes by peer credentials), and new write endpoints on a core upgrade require an explicit policy decision.
 
-Desktop node, group and provider tests use the exact HTTPS endpoint in `my.proxy.delayTestUrl`, including its path and query. The controller maps Verge's built-in fallback URL to that endpoint and caps each dial at 10 seconds. Batch requests allow up to 30 additional seconds for scheduling. Only successful HTTP responses count. Group and provider batches omit built-in direct adapters.
-Desktop DNS queries and delay tests require current B authorization. The controller cancels requests still running when that authorization expires or is revoked. In C, the desktop can still read controller state and existing results. Recovery DNS queries from the root Unix peer use the configured probe names.
-
-The managed core uses Verge's unified delay. When the probe can make a second request on the connection, the figure measures that request. Recovery probes finish on the first successful response. Cold DNS, socket setup and the first TLS handshake still affect the time to first byte for a new application connection.
-
-This host measures desktop latency with `my.proxy.delayTestUrl` (the gstatic endpoint here). When the same health round proves the primary failed and the configured fallback succeeds through the expected proxy, desktop tests may use `my.proxy.delayTestFallbackUrl` for the 60-second proof window. Verge displays denied tests as zero; check the desktop test authorization in `proxy-status` and repeat the test once the lease recovers. The supervisor continues to prove the configured domain targets through mixed HTTP and TUN.
-
-Desktop tests share 64 dial slots and a budget of 64 starts per second with a burst of 128. Up to four distinct group or provider batches can run concurrently, each with at most 8 dials. Automatic checks use their own 10 slots and 10 starts per second. Root health probes sent directly over the Unix controller have separate slots. The fixed exit stays selected during its delay test.
+Desktop node, group, and provider latency tests hit the exact HTTPS endpoint in `my.proxy.delayTestUrl` (the controller maps Verge's built-in fallback URL there, caps each dial at 10 s with up to 30 s batch scheduling, counts only successful HTTP responses, and skips built-in direct adapters in group/provider batches). Desktop DNS queries and delay tests require active **B** authorization and are cancelled if it expires or is revoked (in **C**, the desktop can still read controller state and existing results; root recovery DNS queries over the direct Unix socket use configured probe names). The core uses Verge's unified delay (measuring a second request on a reused connection when possible, while recovery probes finish on the first response; cold DNS, socket setup, and first TLS handshakes still affect new app connections). Here, `my.proxy.delayTestUrl` is the `gstatic` endpoint; if a health round proves the primary failed while `my.proxy.delayTestFallbackUrl` succeeds through the expected proxy, desktop tests can use the fallback for that 60-second proof window (Verge displays denied tests as `0`—check `proxy-status` and retest once the lease recovers). Desktop tests share 64 dial slots (64 starts/s, burst 128; up to four concurrent group/provider batches of at most 8 dials each), automatic checks have their own 10 slots (10 starts/s), root probes over the Unix controller have separate slots, and fixed exits stay pinned during delay tests.
 
 ## Subscription trust in compatibility mode
 
-`my.proxy.subscriptionTrust="source"` accepts proxy providers as trusted, mutable sources.
-`"fixed"` refuses providers so inline node contents belong to the authorized YAML snapshot.
-Preflight reports inline-node and provider counts, source hosts and TLS verification requests without subscription URLs or credentials.
-For controlled sources, run `sudo proxy-control preflight` to read the root-owned source state.
+`my.proxy.subscriptionTrust="source"` treats proxy providers as trusted mutable sources, whereas `"fixed"` refuses providers so inline nodes are bound to the authorized YAML snapshot. Preflight summarizes counts, source hosts, and cert-verification requests without leaking URLs or credentials (for controlled sources, run `sudo proxy-control preflight` to read root-owned source state).
 
-For compatibility imports outside controlled sources, the global merge script filters inline nodes with `skip-cert-verify` enabled and removes their group references.
-An emptied group without provider members stops configuration generation.
-The core rejects certificate verification bypasses after per-profile extensions and provider overrides. Keep `my.proxy.insecureProxyExceptions` empty and configure a trusted certificate or CA on the node.
-`remoteTargetGrants` with mutable providers additionally requires `allowDynamicRemoteGrants=true`.
-Fixed mode binds inline node contents to each authorized import.
-
-Preflight checks the generated profile, assets and managed parser.
-It reports certificate-policy rejections separately and records a sanitized preparation summary.
-Provider contents are checked by the core during loading and refresh.
-The snapshot's root-owned `proxies/` link points to writable `/var/lib/clash-core/proxies/`.
-HTTP providers use that directory by default.
-Explicit provider paths must remain relative to `proxies/`.
-
-HTTP providers try their cache first, fetch remotely after a cache rejection, and retain their last accepted nodes and cache on a rejected refresh.
-Configured fallback payloads remain available during initialization failures.
-Providers with a positive update interval retry automatically.
-
-Fast snapshot checks compare protected file identities, permissions, sizes and ctime/mtime against the last full verification.
-Authorization changes, changed metadata or a 60-second interval require a complete SHA-256 pass.
-Startup/import always performs full verification.
-A sandbox without an observable boot identity also requires full verification.
-Snapshot files and the verification record are writable only by trusted root.
+Outside controlled sources, the global merge script strips inline nodes with `skip-cert-verify` and drops their group references (halting generation if a group with no provider members becomes empty), and the core refuses cert-verification bypasses after per-profile extensions and provider overrides—keep `my.proxy.insecureProxyExceptions` empty and configure valid certs or CAs on nodes (`remoteTargetGrants` with mutable providers also needs `allowDynamicRemoteGrants=true`). Preflight checks profile, assets, and managed parser; providers are checked by the core on load/refresh, with the snapshot's `proxies/` symlink pointing to writable `/var/lib/clash-core/proxies/` (HTTP providers try cache first, fetch remotely on cache rejection, retain their last accepted nodes/cache if a refresh fails, keep fallback payloads during init failures, and retry automatically when their update interval is positive). Fast snapshot checks compare file identities, permissions, sizes, and `ctime`/`mtime` against the last full verification, forcing a full SHA-256 pass on auth/metadata changes, every 60 seconds, on startup/import, or inside sandboxes without a visible boot ID. Snapshot files and verification records are writable only by root.
 
 ## Routing policy
 
-This host enables `my.proxy.runtimeRouting=true`. Select either B routing mode without rebuilding:
+This host enables `my.proxy.runtimeRouting=true`, letting you switch between the two **B** routing submodes without rebuilding:
 
 ```sh
 clash-rules
 clash-proxy-only
 ```
 
-Both commands request proxy access, including from A or C. The terminal reports success with the selected mode, or failure with its cause.
-They do not open the GUI, send desktop notifications or print the network overview.
-In B and C, `proxy-status` shows the routing selection, transaction epoch, observed core mode and protocol coverage.
-The root interfaces are `sudo proxy-control routing rules` and `sudo proxy-control routing proxy-only`.
-Both routing submodes render core `mode: rule`.
-That core setting tells Mihomo to evaluate the rendered rule list; it does not select `rules` versus `proxy-only`.
-The GUI's Rule/Global/Direct labels are core-mode requests, not routing submode selectors.
-Those requests are discarded, so the GUI cannot switch the core away from `rule` or select a routing submode.
+Both request proxy access (even from **A** or **C**) and report either the active mode or the failure reason in the terminal—without opening the GUI, sending notifications, or printing the overview. In **B** and **C**, `proxy-status` shows the routing selection, transaction epoch, observed core mode, and protocol coverage (the root commands are `sudo proxy-control routing rules` and `sudo proxy-control routing proxy-only`). Both submodes render core `mode: rule` so Mihomo evaluates the rendered rule list; Verge's Rule/Global/Direct buttons are core-mode requests (which are discarded), not routing-submode selectors.
 
-`rules` preserves subscription conditions, including domestic DIRECT and profile REJECT, plus managed probe overrides.
-Runtime `proxy-only` sends all supported application traffic through one fixed leaf from the accepted source's remote catch-all.
-The effective snapshot contains that node and a single-member `lf-remote` selector. Native TCP/UDP, explicit proxies, strict Firefox and both DNS validator transports use this same leaf.
-Automatic testing, fallback and GUI selection cannot replace it. Final adapter checks retain DIRECT/COMPATIBLE refusal.
-The original rules, groups and all pinned source nodes remain separate, so returning to rules restores subscription routing.
+`rules` keeps subscription conditions (including domestic `DIRECT`, profile `REJECT`, and managed probe overrides), whereas runtime `proxy-only` pins all supported application traffic—native TCP/UDP, explicit proxies, strict Firefox, and both DNS validator transports—to a single fixed leaf from the accepted source's remote catch-all (auto-testing, fallback, and GUI selection cannot swap it, `DIRECT`/`COMPATIBLE` remain refused, and original rules/groups/nodes are saved separately so switching back to `rules` restores them).
 
-Use `clash-egress` to list candidates, then `clash-egress APPROVED_NODE_ID` with a complete ID from that list.
-The root interfaces are `sudo proxy-control egress list` and `sudo proxy-control egress APPROVED_NODE_ID`.
-The first strict selection uses the first reachable remote leaf in the catch-all graph unless an exit was already selected this boot.
-An exit change runs the same C transaction, closes old TCP streams and UDP associations, and requires fresh complete health and authorization.
-A ready selection of the same ID is idempotent. Node failure stays in C without selecting another node.
+Run `clash-egress` to list candidates and `clash-egress APPROVED_NODE_ID` to pick one (root equivalents: `sudo proxy-control egress list` and `sudo proxy-control egress APPROVED_NODE_ID`). If you haven't picked an exit yet in this boot, the first strict switch uses the first reachable remote leaf in the catch-all graph. Changing exits runs through **C**, closes old TCP streams and UDP associations, and requires fresh health and authorization (re-selecting the same ready ID is a no-op; node failure holds **C** rather than failing over). Exit IDs bind the full pinned node definition (`egress_requested` and `egress_epoch` alongside routing epoch and snapshot), survive `clash-off`/`clash-on` and switching to `rules` within the current boot, and reset on reboot. If a source changes the chosen node's address, credentials, or transport, accept the update in `rules` first and then pick the new ID; similarly, if a system rebuild replaces the active policy or health artifacts and leaves an older-generation selection active, run `clash-rules` to start a new rules transaction and then `clash-egress` to pick an exit for the new policy.
 
-Exit IDs bind the complete pinned node definition. Health, leases, refreshes and rollback bind `egress_requested` and `egress_epoch` as well as the routing epoch and snapshot.
-Off/on and switching to rules retain the strict exit choice for this boot; reboot clears it.
-If a source changes the chosen node's address, credentials or transport, the old ID cannot authorize its replacement. Accept the updated source in rules before selecting its new ID.
+`proxy-status --json` reports `capabilities.egress="fixed-leaf"` in strict mode, with `capabilities.udp_declared` showing the adapter's UDP flag (`unsupported` when missing, `not-probed` otherwise; IPv6 depends on the node, and unsupported requests never fail over). If you need active UDP checks, set `my.proxy.udpHealth.address` and `my.proxy.udpHealth.port` to an approved public literal UDP echo server: in healthy transparent `proxy-only`, a timer sends one nonce every two minutes as an ordinary desktop socket and reports `verified`, `no-reply`, or `error` in `capabilities.udp` (150-second TTL, advisory only—it doesn't affect leases, refreshes, or exit choice). `capabilities.remote_nat="not-measured"` reminds you that a single node may still use different NAT addresses across TCP/UDP or destinations.
 
-A system generation can replace the active routing policy or its health artifacts. If the active selection belongs to a previous generation, the proxy stays blocked. Run `clash-rules` to revoke the old selection and start a new rules transaction. Then use `clash-egress` to select a strict exit for the new policy.
+Every switch installs **C**, revokes **B** authorization, stops the old core and relay flows, applies the immutable policy, and recreates the core namespace, waiting for parser, content-audit, listener, routing, DNS/TUN, and full health checks before returning **B** (failures hold the requested mode and **C** without falling back to **A** or `rules`; repeating an already-ready selection keeps the running core if the snapshot still matches). `clash-off` switches to **A** while remembering the routing choice for the next `clash-on`, and rebooting resets to `rules` (`bootMode` independently decides whether boot starts in **A** or requests proxy).
 
-`proxy-status --json` reports `capabilities.egress="fixed-leaf"` for the strict selection.
-`capabilities.udp_declared` reports the selected adapter's UDP flag when available. By default UDP is `unsupported` when the adapter lacks it and `not-probed` otherwise. IPv6 targets remain node-dependent, and unsupported requests cannot use another leaf or DIRECT.
-
-For a host that needs a UDP check, set `my.proxy.udpHealth.address` and `my.proxy.udpHealth.port` to a public literal address and port of an approved UDP echo server. In healthy transparent Proxy-only, the timer sends one nonce as an ordinary desktop socket every two minutes. `capabilities.udp` reports `verified`, `no-reply` or `error` for the current exit. The verdict expires after 150 seconds and is advisory. It has no role in the application lease, automatic refresh or exit selection.
-`capabilities.remote_nat="not-measured"` keeps the remote boundary explicit: one node can still use different NAT addresses for TCP/UDP or destinations.
-A single NAT guarantee requires independent target observations. IPv4 and IPv6 may have separate declared exit addresses.
-
-A switch first installs C and revokes B authorization, stops the old core and relay flows, installs the selected immutable policy, and recreates the core namespace.
-Parser, content audit, listener, routing, DNS/TUN and full health checks must pass before B can return.
-The command waits for shared readiness and verification. A failed switch retains its requested mode and C; it never chooses A or rules automatically.
-Repeating an already ready selection preserves the core when its snapshot still matches the current source revision and policy.
-
-`clash-off` selects A and keeps the current routing selection. `clash-on` reuses that selection.
-A reboot resets the selection to rules; `bootMode` independently controls whether the boot requests A or proxy access.
-
-Proxy-only requires an accepted local source for the current registration revision with pinned literal node addresses. Complete health acceptance in rules before the first offline strict startup for a new revision.
-Node TLS identities remain intact. Neither switching nor strict startup needs a direct DNS lookup or a subscription download.
-Application and source-worker DNS use locally validated answers over remote encrypted transports; see [DNS](dns.md#mode-b-managed-mihomo-dns).
-LAN, multicast, time synchronization, Tailscale and inbound service replies are disabled in proxy-only. DHCP, NDP and necessary transport errors remain scoped exceptions.
-See [strict egress](egress.md#proxy-only-egress).
-
-The reusable module defaults `runtimeRouting=false`. Enabling it requires controlled sources, isolated TUN, local DNSSEC, strict encrypted DNS and a kernel authorization lease.
-The older build-time `proxyOnly` option remains available for configurations without runtime routing; it controls core routing and DIRECT refusal, independently of host exceptions.
-Keep it false when runtime routing is enabled. The application-proxy transport supports fixed-port TCP/UDP nodes.
+`proxy-only` requires an accepted local source for the current revision with pinned literal node addresses—complete health acceptance in `rules` before your first offline strict startup on a new revision. Switching and strict startup need no direct DNS or subscription download (app and worker DNS use locally validated answers over remote encrypted transports; see [DNS](dns.md#mode-b-managed-mihomo-dns)), while LAN, multicast, time sync, Tailscale, and inbound service replies are disabled (leaving only scoped DHCP, NDP, and necessary transport errors; see [strict egress](egress.md#proxy-only-egress)). In the reusable module `runtimeRouting` defaults to `false` (enabling it requires controlled sources, isolated TUN, local DNSSEC, strict encrypted DNS, and a kernel lease; keep legacy build-time `proxyOnly=false` when using runtime routing).
 
 ### WireGuard exit with real ping
 
-Set `my.proxy.ipTunnel` to use a controlled WireGuard exit in runtime `proxy-only`. System DNS then returns validated real addresses, so both `ping hostname` and `ping IP` can send native echo requests. The core and strict Firefox use a fixed SOCKS5 relay on the same WireGuard peer. The peer forwards ICMP at the IP layer and originates the proxied TCP/UDP connections.
+Setting `my.proxy.ipTunnel` switches runtime `proxy-only` to a controlled WireGuard exit: system DNS returns locally validated real addresses so both `ping hostname` and `ping IP` send native ICMP echo requests, while the core and strict Firefox use a fixed SOCKS5 relay on the same WireGuard peer (which forwards ICMP at the IP layer and originates proxied TCP/UDP). Configure both ends before switching:
 
-Configure the two ends before selecting the mode.
-
-1. On the peer, authorize the client's tunnel addresses as one IPv4 host route and one IPv6 host route. Enable forwarding for both families and allow related ICMP errors, including IPv4 fragmentation-needed and IPv6 Packet Too Big. Configure forwarded echo and the SOCKS5 relay to use the same public source address per family.
-2. Bind the peer's SOCKS5 listener to a public literal address reachable inside the tunnel. This can be the same address as the WireGuard endpoint. Scope inbound access to the WireGuard interface and the client addresses. The SOCKS5 UDP association must advertise the configured relay address and fixed relay port. Register the node in the source's remote catch-all with `udp: true`. The relay is available only as the fixed leaf of the configured WireGuard exit. Keep a reachable protected node in the catch-all for initial source acceptance and Rules operation.
-3. Declare the endpoint, peer key, client addresses, relay and two controlled public echo targets beyond the peer. Keep the client private key in a root-only runtime file, such as a sops secret.
+1. On the peer, route the client's IPv4 and IPv6 tunnel addresses as host routes, enable dual-stack forwarding, allow related ICMP errors (IPv4 fragmentation-needed and IPv6 Packet Too Big), and use the same public source address per family for forwarded echo and the SOCKS5 relay.
+2. Bind the peer's SOCKS5 listener to a public literal address reachable inside the tunnel (which can match the WireGuard endpoint), restrict inbound access to the WireGuard interface and client addresses, advertise the configured relay address and fixed port in SOCKS5 UDP associations, and register the node in the source's remote catch-all with `udp: true` (keeping another reachable node in the catch-all for initial source acceptance and `rules` mode).
+3. On the client, declare the endpoint, peer key, client addresses, relay, and two controlled public echo targets beyond the peer, with the client private key in a root-only runtime file (e.g. a sops secret):
 
 ```nix
 my.proxy.ipTunnel = {
@@ -495,57 +189,28 @@ my.proxy.ipTunnel = {
 };
 ```
 
-After applying the configuration, use `clash-proxy-only`. `clash-egress` lists compatible leaves on the declared relay. `proxy-status --json` reports `capabilities.icmp="verified-dual-stack"` after the kernel route checks, both echo probes and the existing application and DNS checks pass. Loss of the tunnel leaves C in force. `clash-rules` and `clash-off` remove the WireGuard interface and its routes.
-
-The status reports the current WireGuard health stage, including a route or echo failure by address family. If both echo probes fail, it also reports whether a recent peer handshake was observed. Each address family gets one retry for a missing echo reply within the same health budget. Both must pass to grant or renew the lease. To activate a changed peer or relay while the old policy is selected, use the `clash-rules` recovery transaction before selecting the new exit.
+After applying, run `clash-proxy-only` (`clash-egress` lists compatible leaves on that relay). Once kernel routes, both echo probes, and the normal app/DNS checks pass, `proxy-status --json` reports `capabilities.icmp="verified-dual-stack"` (tunnel failure holds **C**; `clash-rules` and `clash-off` tear down the WireGuard interface and its routes). Status shows the WireGuard health stage by family (and whether a recent peer handshake was seen if both probes fail); each family gets one retry within the health budget, and both must pass to grant or renew the lease. To pick up a changed peer or relay while an older policy is selected, run `clash-rules` first before selecting the new exit.
 
 ## Domain targets
 
-Managed sniffing is disabled in both Rule and uniform proxy modes.
-Explicit target names and fake-IP mappings remain the routing identity.
-An ECH cover SNI cannot replace the dial target.
-Literal-IP traffic uses IP rules.
-The parser also normalizes cached GUI profiles to this policy.
-See [browser ECH discovery](browser.md#ech-discovery-and-proxy-compatibility).
+Managed sniffing is disabled in both `Rule` and uniform proxy modes: explicit target names and fake-IP mappings supply domain routing identity (an ECH cover SNI never replaces the dial target), literal IPs use IP rules, and the parser normalizes cached GUI profiles to match (see [browser ECH discovery](browser.md#ech-discovery-and-proxy-compatibility)).
 
-[target_guard.go](../system/programs/clash/mihomo/guard/target_guard.go) validates application targets before TCP/UDP egress.
-Public names must resolve locally to nonempty, entirely public answers.
-One resolver error gets one retry.
-TCP interleaves validated IPv4/IPv6 candidates and attempts at most eight literal addresses at the selected leaf, with a two-second attempt ceiling and six-second total deadline.
-Each candidate requires that leaf’s egress authorization.
-
-The node receives a pinned IP and performs no target-name lookup.
-UDP pins one target for its association.
-Internal suffixes in `privateTargetDomains` and the authenticated MagicDNS suffix permit private answers, but still require local resolution, pinning and egress authorization.
-They do not create a resolver route or bypass the shared domain filter.
-
-The core tries the next candidate when dialing returns an error.
-A successful dial hands the connection to the application, which sends its data through that connection.
-For optimistic or one-way proxy protocols, tunnel establishment is the dial success point.
-Candidate fallback ends there.
+[target_guard.go](../system/programs/clash/mihomo/guard/target_guard.go) validates application targets before TCP/UDP egress. Public names must resolve locally to non-empty, all-public answers (one retry on resolver error). TCP interleaves validated IPv4/IPv6 candidates and tries up to eight addresses at the selected leaf (2-second per-attempt cap, 6-second total deadline), with each candidate checked against that leaf's egress policy—the node receives a pinned IP and never resolves the target name itself, while UDP pins one target per association. `privateTargetDomains` and the authenticated MagicDNS suffix allow private answers, but still require local resolution, pinning, and egress authorization (they don't create a resolver route or bypass the shared domain filter). The core tries the next candidate on dial errors and hands off the connection on the first success (for optimistic or one-way proxy protocols, tunnel establishment counts as dial success and ends fallback).
 
 ### Local and remote authorization
 
-Authorization runs at the actual selected leaf, including nested, fallback and load-balancing groups.
-A name such as `DIRECT` does not confer direct authority on a remote adapter.
-The managed parser pins the core to `rule`; the GUI cannot enable Global or Direct routing.
-`proxyOnly` still independently refuses application DIRECT.
+Authorization runs at the actual selected leaf (including nested, fallback, and load-balancing groups). Naming a remote adapter `DIRECT` confers no direct authority, the managed parser pins `rule` mode (so the GUI can't enable Global or Direct), and `proxyOnly` independently blocks application `DIRECT`.
 
 | Target reaching the core | Local DIRECT | Remote proxy |
 |---|---|---|
-| Public literal or checked public name | Allowed unless `proxyOnly` refuses DIRECT | Allowed |
+| Public literal or checked public name | Allowed unless `proxyOnly` refuses `DIRECT` | Allowed |
 | Private/CGNAT/loopback/ULA/link-local literal, or private answer for an approved internal suffix | Must match `localTargetCidrs` and a host inlet | Requires a matching `remoteTargetGrants` entry |
-| Listed metadata endpoint, unspecified, multicast, selected reserved/transition range or raw fake-IP | Refused | Refused, including with a grant |
-| Known NAT64 translation | Embedded IPv4 must pass public-address checks | Same. A private embedded address cannot be granted |
+| Listed metadata endpoint, unspecified, multicast, selected reserved/transition range, or raw fake-IP | Refused | Refused, even with a grant |
+| Known NAT64 translation | Embedded IPv4 must pass public-address checks | Same; a private embedded address cannot be granted |
 
-`localTargetCidrs` defaults to the shared local/private ranges.
-Host inlets are core metadata types `HTTP`, `HTTPS`, `SOCKS4`, `SOCKS5`, `REDIR` and `TUN`.
-Guest `TPROXY` has no default local grant.
-Setting `localTargetCidrs=[]` removes this core permission.
-It does not alter native host firewall grants, guest forwarding or A's direct Gost passthrough.
+`localTargetCidrs` defaults to shared local/private ranges for host inlets (`HTTP`, `HTTPS`, `SOCKS4`, `SOCKS5`, `REDIR`, `TUN`; guest `TPROXY` has no default local grant). Setting `localTargetCidrs=[]` removes that core permission without changing native host firewall grants, guest forwarding, or **A**'s Gost passthrough.
 
-Remote grants default to empty.
-An intentional service in a node's private network needs an exact leaf name, canonical internal CIDR, core inlet, transport and destination ports:
+Remote grants default to empty. To expose an internal service behind a proxy node, specify the exact leaf name, canonical CIDR, core inlet, transport, and ports:
 
 ```nix
 my.proxy.remoteTargetGrants = [{
@@ -557,55 +222,14 @@ my.proxy.remoteTargetGrants = [{
 }];
 ```
 
-The grant authorizes the IP as interpreted by that node.
-It grants no remote DNS lookup and no other node, inlet, transport or port.
-For a name, also declare its internal suffix and provide an answer through authorized hosts or the core's resolver.
-A grant matches the configured leaf name.
-It does not authenticate a remote server.
-Use trusted profile/provider sources and avoid reusing a granted name for another node.
-Inlets describe what the core actually receives: Gost's forwarded CONNECT is `HTTPS`, including traffic relayed from its transparent inlet.
-They do not authenticate an application or preserve its original UID.
-
-Each new destination in a reused UDP association is validated and pinned against the association's actual leaf.
-Cached mappings retain that provenance and recheck the current inlet, destination port and egress grants on every packet.
-Changing ports cannot reuse a narrower grant.
-Established TCP connections are not retroactively inspected.
-Rebuild and deliberately import/restart the core when changing policy.
+This authorizes the IP as interpreted by that node—nothing else (no remote DNS, other nodes, inlets, transports, or ports; for a hostname, declare its internal suffix and provide an answer via authorized `hosts` or the core resolver). Because grants match leaf names rather than authenticating remote servers, only use trusted sources and avoid reusing a granted name on another node. Remember that inlets reflect what the core actually receives (Gost's forwarded `CONNECT`—including from its transparent inlet—arrives as `HTTPS`, without authenticating the app or preserving its UID). Each new destination in a reused UDP association is validated and pinned against the association's leaf, and cached mappings recheck inlet, destination port, and egress grants on every packet so switching ports can't reuse a narrower grant. Established TCP connections aren't retroactively checked—rebuild and re-import/restart the core after policy changes.
 
 ### Address classes and modes
 
-IPv4-mapped addresses are normalized before authorization.
-The non-grantable metadata list covers `169.254.169.254`, `169.254.170.2`, `100.100.100.200` and `fd00:ec2::254`.
-Scoped IPv6 literals with a zone are refused.
+IPv4-mapped addresses are normalized before checks, zone-scoped IPv6 literals are refused, and the non-grantable metadata list covers `169.254.169.254`, `169.254.170.2`, `100.100.100.200`, and `fd00:ec2::254`. Well-known `64:ff9b::/96` is always recognized, and `nat64Prefixes` can declare extra [RFC 6052](https://www.rfc-editor.org/rfc/rfc6052.html) translation prefixes (lengths 32, 40, 48, 56, 64, 96; most specific wins)—embedded public IPv4 is usable, while private, metadata, and synthetic embedded targets fail closed, and `64:ff9b:1::/48` stays refused unless explicitly declared. The fake-IP pool is strictly a routing identity: a live mapping must recover its domain first, then pass filtering, resolution, and authorization (missing mappings and real DNS answers with synthetic targets are refused, even for custom pools).
 
-The well-known `64:ff9b::/96` is always recognized.
-`nat64Prefixes` declares additional [RFC 6052](https://www.rfc-editor.org/rfc/rfc6052.html) translation prefixes of length 32, 40, 48, 56, 64 or 96.
-Overlapping declarations use the most specific prefix.
-Public embedded IPv4 remains usable, while private, metadata and synthetic embedded targets fail closed.
-The local-use `64:ff9b:1::/48` is refused unless explicitly declared as a translator.
-
-The configured fake-IP pool is a routing identity, never an egress destination.
-A live mapping must first recover its domain, which then passes normal filtering, resolution and authorization.
-Missing mappings and real DNS answers containing synthetic targets are refused, including with a customized pool.
-
-These rules apply to application traffic reaching the core, usually in B.
-In A, Gost and native sockets follow the A firewall policy and retain literal HTTP portal access.
-C blocks ordinary applications before the core, so local and remote grants cannot reopen access.
-
-Internal bootstrap, proxy-endpoint transport and authenticated MagicDNS have separate infrastructure permissions.
-Rule-routed DNS does not inherit them.
-Native LAN and guest forwarding also have separate policies.
-The core can administer only its private network namespace.
-Root services administer the host.
+These rules govern application traffic reaching the core (typically in **B**). In **A**, Gost and native sockets follow **A**'s firewall policy and keep literal HTTP portal access; **C** blocks ordinary apps ahead of the core, so neither local nor remote grants can reopen access. Internal bootstrap, proxy-endpoint transport, and authenticated MagicDNS have separate infrastructure permissions that rule-routed DNS doesn't inherit, native LAN and guest forwarding stay separate, and the core only administers its private network namespace while root services run the host.
 
 ## Gost lifecycle
 
-[relay.nix](../system/programs/gost/relay.nix) follows the mode's atomic state.
-It reaps the previous process before binding, avoids `SO_REUSEPORT`, requires exactly one listener per endpoint and limits descriptors, memory and tasks.
-In B it relies on the supervisor's health decision and rechecks the mixed listener identity.
-It uses passive socket observations rather than connecting to the transparent inlet, with a self-loop detector as a backstop.
-
-The relay also accepts legacy bare numeric IPv6 CONNECT targets with valid ports while retaining Go's HTTP framing and buffered tunnel bytes.
-Prefer standard `[IPv6]:port` syntax.
-Gost is invoked by store path, not installed on the system PATH or in the initrd.
-See [Patch maintenance](maintenance.md) for all source and packaging customizations.
+[relay.nix](../system/programs/gost/relay.nix) follows the mode's atomic state—reaping the previous process before binding, avoiding `SO_REUSEPORT`, requiring one unique listener per endpoint, and bounding descriptors, memory, and tasks. In **B**, it trusts the supervisor's health verdict and rechecks the mixed listener identity using passive socket checks (with a self-loop detector as backstop) rather than connecting to the transparent inlet. It also handles legacy bare numeric IPv6 `CONNECT` targets with valid ports while preserving Go's HTTP framing and buffered tunnel bytes (prefer `[IPv6]:port` where possible). Gost is invoked by store path—never placed on `PATH` or in the `initrd`—and all source/packaging tweaks are listed in [Patch maintenance](maintenance.md).

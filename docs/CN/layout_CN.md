@@ -2,9 +2,7 @@
 
 [English](../layout.md) | 简体中文 | [文档目录](README_CN.md)
 
-`system/` 管理系统服务与策略，`home/` 中的 Home Manager 模块管理桌面和用户应用。
-各模块目录以 `default.nix` 列出导入项，软件包、服务和设置放在被导入的模块中。
-overlay 入口使用直接导入来提供软件包 overlay 函数。
+`system/` 负责系统服务和策略，`home/` 里的 Home Manager 模块管桌面和用户应用。每个模块目录都用 `default.nix` 来汇总导入，具体的软件包、服务定义和配置项写在被导入的子模块里；overlay 入口则直接导出软件包覆盖函数。
 
 ## 系统与桌面职责
 
@@ -19,15 +17,11 @@ overlay 入口使用直接导入来提供软件包 overlay 函数。
 | [`system/programs/systemd/`](../../system/programs/systemd) | journald 与 coredump 全局设置 |
 | [`system/hardware/`](../../system/hardware) | 设备声明及配套的启动、CPU 和 NVIDIA 服务设置 |
 
-`home/config/clash/status.py` 从 `system/config/network/proxy/state.py` 读取共用就绪契约。
-diagnostics 模块为交互 shell 和自动化调用者提供命令入口，Nushell 转发 `proxy-status` 参数。
-特权配置导入与快照授权由系统侧 Clash 服务负责。
+`home/config/clash/status.py` 从 `system/config/network/proxy/state.py` 读取共用的就绪状态契约。`diagnostics` 模块把状态和诊断命令导出给交互式 shell 和自动化脚本调用，Nushell 也会把 `proxy-status` 的参数原样转过去。至于特权配置导入和快照授权，统一由系统侧的 Clash 服务负责。
 
 ## 网络配置
 
-`system/config/network/default.nix` 组合网络功能。
-`options.nix` 定义宿主及访客访问选项，`proxy/options.nix` 定义受管代理选项。
-机器身份、接口、UID 和端口统一来自 `system/config/machine.nix`。
+`system/config/network/default.nix` 负责把整套网络功能组装起来。宿主和访客的访问控制选项写在 `options.nix`，受管代理选项在 `proxy/options.nix`，而机器相关的身份、网卡名、UID 和端口都统一取自 `system/config/machine.nix`。
 
 | 子目录 | 内容 |
 |---|---|
@@ -43,13 +37,9 @@ diagnostics 模块为交互 shell 和自动化调用者提供命令入口，Nush
 
 ## Clash 与 Gost 构建输入
 
-Clash 的 `gui/` 保存系统包的 GUI 启动与默认值处理。
-`service/` 保存 helper 补丁、服务身份、核心启动器、授权快照和准备检查。
-`mihomo/` 按 `patches/`、`guard/`、`config/`、`controller/` 和 `tests/` 组织构建载荷，由软件包 fileset 收集并交给构建期 patcher。
+在 Clash 目录中，`gui/` 放系统包的 GUI 启动脚本与默认值处理，`service/` 放 helper 补丁、服务身份、核心启动器、授权快照工具和准备检查，`mihomo/` 则按 `patches/`、`guard/`、`config/`、`controller/` 和 `tests/` 分类存放构建载荷，由软件包 fileset 收集后交给构建期 patcher。
 
-Gost 在自己的程序目录内使用 `patches/`、`src/` 和 `tests/`。
-[package.nix](../../system/programs/gost/package.nix) 构建定制 Gost，[relay.nix](../../system/programs/gost/relay.nix) 定义 relay 服务。
-源码入口及验证命令见[维护手册](maintenance_CN.md)。
+Gost 在自己的程序目录内按 `patches/`、`src/` 和 `tests/` 组织代码，由 [package.nix](../../system/programs/gost/package.nix) 构建定制版 Gost，并由 [relay.nix](../../system/programs/gost/relay.nix) 定义 relay 服务。源码入口和对应的验证命令见[维护手册](maintenance_CN.md)。
 
 ## 测试
 
@@ -60,5 +50,4 @@ Gost 在自己的程序目录内使用 `patches/`、`src/` 和 `tests/`。
 | [`tests/home/firefox/`](../../tests/home/firefox) | 浏览器策略、运行时、沙箱和 ECH fixture |
 | [`tests/deployment/`](../../tests/deployment) | 部署复制检查 |
 
-[tests/checks.nix](../../tests/checks.nix) 将这些检查接入 `checks.x86_64-linux.*`。
-检查选择及命令见[维护手册](maintenance_CN.md#验证)。
+[tests/checks.nix](../../tests/checks.nix) 把这些检查接进了 `checks.x86_64-linux.*`。具体该跑哪些检查、怎么跑，参考[维护手册](maintenance_CN.md#验证)。

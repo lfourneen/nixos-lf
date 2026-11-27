@@ -2,7 +2,7 @@
 
 [English](../README.md) | 简体中文 | [项目首页](../../README_CN.md)
 
-这里介绍网络系统的工作方式，包括流量路由、DNS、代理、Firefox 和访客网络。
+这一组文档主要说明这套工作站网络栈的设计与用法，包括流量路由、DNS、透明代理、Firefox 隔离和访客网络。
 
 | 手册 | 内容 |
 |---|---|
@@ -16,12 +16,6 @@
 | [操作与诊断](operations_CN.md) | 模式切换、状态、恢复、配置入口与检查 |
 | [网络补丁与自定义维护](maintenance_CN.md) | 自定义清单、构建接入、源码兼容性检查和组件测试选择 |
 
-了解流量路径和 A/B/C 模式，从[网络架构](network_CN.md)开始。
-查找命令和排障方法，使用[操作与诊断](operations_CN.md)。
-更新依赖或调整本地定制，查阅[维护手册](maintenance_CN.md)。
+初次阅读建议先看[网络架构](network_CN.md)，把流量路径和 A/B/C 三个模式搞清楚；日常操作和排障查[操作与诊断](operations_CN.md)；准备升级依赖或动本地补丁时再对照[维护手册](maintenance_CN.md)。
 
-默认策略开机使用直连 A。
-请求代理后，核心就绪时进入 B，不可用时进入 C。
-`proxyOnly` 控制核心内部的路由，`bootMode` 控制开机模式，具体设置见对应手册。
-
-接口名、服务 UID 和端口统一定义在 [machine.nix](../../system/config/machine.nix)。
+默认策略下，系统开机进入直连模式 **A**。请求开启代理后，核心就绪就进入 **B**，不可用就停在 **C**。核心内部的路由策略由 `proxyOnly` 控制，开机默认模式由 `bootMode` 控制，具体选项都在对应手册里有说明；网卡名、服务 UID 和端口则统一写在 [machine.nix](../../system/config/machine.nix) 里。
