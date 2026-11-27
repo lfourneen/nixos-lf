@@ -90,7 +90,7 @@ class FlatpakProxyMigrationTests(unittest.TestCase):
         self.assertIn("HTTP_PROXY=http://app.invalid:8080", flatpak("--system", "--show", "org.example.ProxyFixture"))
 
     def test_repair_after_transparent_install_uses_deployed_provenance_once(self):
-        self.recorded("a", {"GTK_THEME": "Adwaita-dark"})
+        self.recorded("a", {"GTK_THEME": "Adwaita"})
         legacy = self.state("b", LEGACY)
         self.deployed(6, "b", legacy)
         current = self.deployed(7, "a", self.record.readlink())
@@ -110,7 +110,7 @@ class FlatpakProxyMigrationTests(unittest.TestCase):
         self.assertEqual(self.path.read_text(), "[Environment]\n")
 
     def test_state_values_or_unreferenced_store_artifacts_do_not_grant_ownership(self):
-        self.recorded("a", {"GTK_THEME": "Adwaita-dark"})
+        self.recorded("a", {"GTK_THEME": "Adwaita"})
         legacy = self.state("b", LEGACY)
         self.deployed(6, "b", legacy, reference_only=True)
         current = self.deployed(7, "a", self.record.readlink())
@@ -122,7 +122,7 @@ class FlatpakProxyMigrationTests(unittest.TestCase):
         self.assertFalse((self.overrides.parent / migration.RECEIPT).exists())
 
     def test_only_latest_explicit_declaration_is_considered(self):
-        self.recorded("a", {"GTK_THEME": "Adwaita-dark"})
+        self.recorded("a", {"GTK_THEME": "Adwaita"})
         self.deployed(5, "b", self.state("b", LEGACY))
         self.deployed(6, "c", self.state("c", {"HTTPS_PROXY": PROXY}))
         self.current.symlink_to(self.deployed(7, "a", self.record.readlink()))

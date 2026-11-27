@@ -113,10 +113,8 @@ in
     gnomeExtensions.wifi-qrcode
     gnomeExtensions.workspace-indicator
 
-    # Gnome windows themes
+    # GNOME icon theme
     pkgs.adwaita-icon-theme
-    adwaita-qt
-    adwaita-qt6
 
     # Applications
     dconf-editor

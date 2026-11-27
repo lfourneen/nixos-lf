@@ -3,10 +3,10 @@
 {
   gtk = {
     enable = true;
-    colorScheme = "dark";
+    colorScheme = "light";
 
     theme = {
-      name = "Adwaita-dark";
+      name = "Adwaita";
       package = pkgs.gnome-themes-extra;
     };
 
@@ -36,11 +36,12 @@
 
   qt = {
     enable = true;
-    platformTheme.name = "adwaita";
 
+    # Breeze's default palette is the light variant. Avoid the Adwaita QStyle
+    # and its Qt platform theme: some Qt apps render incorrectly or lag with
+    # the Adwaita style.
     style = {
-      name = "adwaita-dark";
-      package = pkgs.adwaita-qt6;
+      name = "breeze";
     };
   };
 }

@@ -260,7 +260,7 @@ let
       screenshot = { directory = "${homeDir}/Pictures/Screenshots"; };
     };
     theme = {
-      mode = "dark";
+      mode = "light";
       builtin = "Noctalia";
       # Palette/templates/lockscreen follow whatever wallpaper Noctalia holds.
       # waywallen-bridge feeds the live wallpaper's still frame in through

@@ -26,8 +26,10 @@ in
 
     overrides.settings.global = {
       Environment = {
-        GTK_THEME = "Adwaita-dark";
-        QT_QPA_PLATFORMTHEME = "gtk3";
+        GTK_THEME = "Adwaita";
+        # Do not bridge Flatpak Qt apps through GTK; Qt falls back to its
+        # own light style instead.
+        QT_QPA_PLATFORMTHEME = "";
       } // lib.optionalAttrs (!config.my.proxy.transparentApplications) legacyProxy;
 
       Context = {
