@@ -80,7 +80,10 @@ let
       };
     };
     location = { address = "Chengdu, China"; };
-    lockscreen = { monitors = [ "eDP-1" "HDMI-A-1" ]; };
+    lockscreen = {
+      monitors = [ "eDP-1" "HDMI-A-1" ];
+      blurred_desktop = false;
+    };
     lockscreen_widgets = {
       enabled = true;
       schema_version = 2;
@@ -107,6 +110,7 @@ let
           rotation = 0.0;
           type = "clock";
           settings = {
+            background = false;
             background_color = "shadow";
             clock_style = "digital";
             format = "{:%H:%M}";
@@ -123,6 +127,7 @@ let
           rotation = 0.0;
           type = "clock";
           settings = {
+            background = false;
             background_color = "shadow";
             clock_style = "digital";
             format = "{:%H:%M}";

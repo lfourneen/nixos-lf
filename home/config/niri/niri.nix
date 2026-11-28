@@ -454,6 +454,21 @@ let
       border { off; }
     }
 
+    // DSH desktop
+    window-rule {
+      match app-id=r#"^dsh-desktop"#
+      open-maximized true
+      opacity 1.0
+      background-effect { blur false; }
+    }
+
+    // Kitty
+    window-rule {
+      match app-id=r#"^kitty$"#
+      opacity 1.0
+      background-effect { blur true; }
+    }
+
     window-rule {
       match app-id="^catwhale-pet$" title="^Catwhale Pet$"
       open-floating true
