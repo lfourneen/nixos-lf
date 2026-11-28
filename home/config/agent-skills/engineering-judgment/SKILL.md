@@ -24,6 +24,12 @@ Deliver a change that works through its normal entry point, accounts for existin
 
 Prefer the existing implementation when it satisfies the contract. If a patch spreads the same rule across multiple places or successive fixes move the failure between layers, revisit ownership before adding another patch.
 
+## Budget resource-intensive work
+
+- Before compiling, running large test suites, or starting other resource-intensive work, check the host's CPU capacity, available RAM, swap, and current load. Check the effective resource limits where the workers run, including cgroup limits and build daemons. Leave headroom for the desktop and other active work.
+- Cap parallel jobs by both the CPU budget and the usable memory budget divided by estimated peak memory per job. Account for nested parallelism, memory-heavy phases such as linking, and other jobs already running. If peak usage is unknown, start with one job when there is headroom, measure its peak, and use that result to set the cap.
+- On Linux, check whether `systemd-oomd` or another userspace OOM service is active and which cgroups it monitors. Watch memory and I/O pressure during the run and reduce parallelism if the machine starts stalling. Rerun interrupted or resource-sensitive checks under controlled load before treating their results as verification. See [Memory pressure and OOM](references/debugging-and-regression.md#memory-pressure-and-oom).
+
 ## Verify the delivered behavior
 
 - Use the project's normal entry points and checks. Where practical, compare the same input and environment before and after the change. Verify the adjacent behavior or downstream contract most likely to break. Expand coverage in proportion to the impact.

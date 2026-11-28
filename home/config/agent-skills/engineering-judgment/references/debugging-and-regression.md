@@ -19,4 +19,10 @@
 
 Compare specific test failures and contract changes against a comparable baseline when one exists. Check whether each difference comes from the product, the environment, or the harness. Inspect reported results as well as exit codes, and confirm the runner selected the intended tests if discovery is in doubt. Use isolated resources for tests that write shared state. Name blocked checks and the conclusions that depend on them.
 
+## Memory pressure and OOM
+
+- On Linux, use `nproc`, `free -h`, and `swapon --show` for the starting budget. Use `/proc/pressure/memory` and `/proc/pressure/io` to check stalls. For cgroup v2 workloads, check `cpu.max`, `memory.current`, `memory.high`, `memory.max`, and `memory.events` in the worker cgroup and relevant ancestors. Identify the actual worker cgroup when a client delegates work to a daemon.
+- With systemd, use `systemctl is-active systemd-oomd` and `oomctl dump` to check the active policy, monitored cgroups, and pressure limits. Systemd-oomd can act on sustained stalls. The kernel can invoke its own OOM killer when an allocation fails. Free RAM and unused swap alone cannot establish that a high-order allocation can obtain contiguous pages.
+- After an unexpected process exit, correlate timestamps in `journalctl -k -b` and `journalctl -u systemd-oomd -b`. Match the victim PID and cgroup to the affected workload. For kernel OOM, check the allocation order, zone watermarks, and buddy free-list counts before attributing it to fragmentation or a limit. A `SIGKILL` or exit code `137` alone cannot identify who sent the signal.
+
 [Systematic Debugging](https://github.com/khasky/awesome-agent-skills/tree/main/skills/awesome-bug-fix) · [Regression Sweep](https://github.com/khasky/awesome-agent-skills/tree/main/skills/awesome-regression-sweep)
