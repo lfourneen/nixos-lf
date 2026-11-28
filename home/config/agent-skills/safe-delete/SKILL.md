@@ -1,11 +1,11 @@
 ---
 name: safe-delete
-description: Use when deleting files or directories or clearing caches. Verify the deletion scope, use the trash for recoverable user data, and handle path, recovery, and permission issues.
+description: Use when deleting files or directories or clearing caches. Verify the deletion scope and move targets to the trash with trash-put. The user empties the trash.
 ---
 
 # Safe deletion
 
-Choose a deletion method based on what the data is used for. Stay within the scope authorized for the task.
+Stay within the scope authorized for the task.
 
 ## Verify the target
 
@@ -15,25 +15,25 @@ Inspect the target and its parent directory. Confirm the path, file type, and co
 - For variables and batches, check for empty values and inspect the expanded paths. Build an explicit list before operating on each entry.
 - Determine scope from the actual contents and task. A directory named `cache`, `dist`, or `node_modules` still needs inspection.
 
-## Deletion methods
+## Move targets to the trash
 
-Use the trash for user files and data that should remain recoverable.
+Use `trash-put` for every deletion, including temporary files, build outputs, and caches. Quote each path and use `--` to end option parsing.
 
 ```bash
 trash-put -- "$target"
 ```
 
-Use `rm -- "$target"` for disposable temporary files, build outputs, or caches confirmed to be in scope. Add a recursive flag only when deleting a directory. Quote paths and use `--` to end option parsing. Inspect the results of a bulk search before passing them to a deletion command.
+Call `trash-put` directly, even in shells where `rm` is aliased to it. Never substitute `rm`, `rm -rf`, or any other permanent deletion method.
 
-If `trash-put` is missing, make the tool available first. If moving a file fails, keep it in place and diagnose the failure. Empty the trash only when the task explicitly calls for it.
+If `trash-put` is missing, make the tool available first. If the move fails, keep the target in place and diagnose the failure.
 
-On this machine, interactive Brush aliases `rm` to `trash-put`. Call `trash-put` explicitly when trashing from scripts. Python deletion APIs and the external `rm` binary retain their usual behavior.
+The agent's deletion task ends once the move is verified. The user empties the trash themselves.
 
 ## Verification and recovery
 
 Use `trash-list` to check the original path and deletion time. Use `trash-restore` when recovery is needed. The default home trash is `${XDG_DATA_HOME:-$HOME/.local/share}/Trash`, with trashed files under `files` and recovery metadata under `info`. Other mounts may use their own trash directories. Use the records from the tool to identify the correct one.
 
-After permanent deletion, verify the intended target is gone and that the parent and neighboring paths are consistent with the requested scope. Report whether each target was moved to the trash or permanently deleted.
+Verify the target is absent from its original path and report which targets were moved to the trash.
 
 ## Permission errors
 
