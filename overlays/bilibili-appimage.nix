@@ -2,11 +2,11 @@
 
 let
   pname = "bilibili";
-  version = "1.20.0";
-  # Upstream tags the release v1.20.0-2 while the asset and version stay 1.20.0.
+  version = "1.21.0";
+  # Upstream appends a packaging revision to the release tag.
   src = pkgs.fetchurl {
-    url = "https://github.com/msojocs/bilibili-linux/releases/download/v1.20.0-2/bilibili-${version}-x86_64.AppImage";
-    hash = "sha256-FsACPr7MpS7gKUjSR6kC5lZi4VbQxF1QIrj8KytivLM=";
+    url = "https://github.com/msojocs/bilibili-linux/releases/download/v${version}-1/bilibili-${version}-x86_64.AppImage";
+    hash = "sha256-yzoW6dnWXnJRxh9Zv45bWe4QKylnKXFVJM0ScvtWh3w=";
   };
   appimageContents = pkgs.appimageTools.extract { inherit pname version src; };
 
