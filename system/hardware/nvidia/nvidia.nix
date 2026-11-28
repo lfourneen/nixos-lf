@@ -1,8 +1,22 @@
 { config, pkgs, ... }:
 
 let
-  nvidiaPackage =
+  nvidiaDriver =
     (pkgs.unstable.linuxPackagesFor config.boot.kernelPackages.kernel).nvidiaPackages.latest;
+
+  # Backport NVIDIA/open-gpu-kernel-modules#1525 for the affected driver.
+  # Recheck the atomic-state allocation when updating the driver version.
+  nvidiaPackage =
+    if nvidiaDriver.version == "615.78.08" then
+      nvidiaDriver.overrideAttrs (previous: {
+        passthru = previous.passthru // {
+          open = previous.passthru.open.overrideAttrs (module: {
+            patches = module.patches ++ [ ./nvidia-drm-atomic-state-kvzalloc.patch ];
+          });
+        };
+      })
+    else
+      nvidiaDriver;
 
   # Restores the full FP16/BF16/TF32 tensor-core throughput that GeForce cards
   # ship capped. Loaded from the initrd *before* nvidia binds the GPU.
@@ -101,12 +115,14 @@ in
 
   # KernelParams
   boot.kernelParams = [
-    "tsc=reliable"
+    # Time can move backwards when tasks migrate between CPUs on this host.
+    "tsc=unstable"
+
     "nvidia-drm.fbdev=1"
     "nvidia.NVreg_TemporaryFilePath=/var/tmp"
     "transparent_hugepage=always"
+
     # Opt-in for gpu_unlock; drop this line to leave the GPU completely untouched.
     "gpu_unlock.targets=0000:01:00.0"
   ];
 }
-
