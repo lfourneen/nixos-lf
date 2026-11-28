@@ -79,6 +79,31 @@ if [ "$SKIP_EVAL" -eq 1 ]; then
   export DEPLOY_SKIP_EVAL=1
 fi
 
+# Warm the store with the locked flake inputs before elevating. Flake input
+# fetching ignores `nix eval --offline`, so when an input is missing from the
+# store (for example after a garbage collection) the root-side staged eval
+# would download it mid-deploy, and a slow or blocked GitHub fetch aborts the
+# run. Fetching them here uses the invoking user's Nix cache and proxy
+# configuration, so the staged eval resolves every input from the store.
+if [ "${DEPLOY_SKIP_EVAL:-0}" != "1" ]; then
+  command -v nix >/dev/null 2>&1 \
+    || die "nix is required for the staged evaluation; set DEPLOY_SKIP_EVAL=1 only for tests"
+  echo "📦 Fetching locked flake inputs into the store ..."
+  # GitHub intermittently truncates a tarball or drops the redirect mid-fetch;
+  # every attempt resumes where the previous one stopped, so a few retries
+  # converge instead of aborting a deployment over one bad transfer.
+  fetched=0
+  for attempt in 1 2 3; do
+    if nix flake archive --no-write-lock-file "$REPO_DIR" >/dev/null; then
+      fetched=1
+      break
+    fi
+    [ "$attempt" -eq 3 ] || echo "⚠️  flake input fetch failed (attempt $attempt/3), retrying ..." >&2
+  done
+  [ "$fetched" -eq 1 ] \
+    || die "could not fetch the locked flake inputs; check GitHub access and the proxy, then retry"
+fi
+
 # Elevate once for the whole run. Per-command sudo prompts do not work reliably
 # with sudo-rs and a non-tty parent process.
 if [ "$(id -u)" -ne 0 ] && [ "${#SUDO_CMD[@]}" -gt 0 ]; then
